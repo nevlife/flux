@@ -1,0 +1,12 @@
+<library path="flux_tools_rviz">
+  <class
+    name="flux_tools/Image"
+    type="flux_tools::rviz::ImageDisplay"
+    base_class_type="rviz_common::Display"
+  >
+    <description>
+      Shows a sensor_msgs/Image published over a flux channel, read from shared memory inside
+      rviz2 without going through DDS.
+    </description>
+  </class>
+</library>

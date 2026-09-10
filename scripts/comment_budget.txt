@@ -1,0 +1,24 @@
+# Comment budget. A ratchet, not a target: these numbers may go down and never up.
+#
+# An audit measured 24% comment density across flux_core, flux_cpp and flux_py, classified a
+# sample, and found 45% of it prose that belongs in docs/ and 25% a restatement of the next
+# line. Comments record only what the code cannot show. Nothing enforced that, so the number is
+# pinned here rather than left to whoever reviews the next diff.
+#
+# density: comment lines / code lines over every .cpp/.hpp/.h/.cu under those packages' src and
+# include. Lowering it means deleting a comment or writing code; both are the point.
+#
+# block: the longest run of consecutive // lines allowed in a file. A block past this is an
+# essay, and an essay belongs in docs/ where a checker reads its links and a reader finds it.
+#
+# block-exempt: files whose longest block predates the limit. Each records its current value and
+# may only shrink. Adding a row here needs a reason a reviewer accepts, not a rerun of this file.
+
+density 0.245
+block 12
+
+block-exempt flux_core/include/flux/wire.hpp 21
+block-exempt flux_cpp/include/flux/ros/subscription.hpp 16
+block-exempt flux_cpp/include/flux/ros/message_filters/subscriber.hpp 15
+block-exempt flux_core/include/flux/discovery.hpp 13
+block-exempt flux_core/src/discovery.cpp 13

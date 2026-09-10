@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flux_gen</name>
+  <version>0.0.0</version>
+  <description>
+    flux adapter generator. Parses ROS .msg schemas into flux's flat-wire layout (columns,
+    variable tail, jagged bulk), assigns byte offsets, derives a schema fingerprint, and emits
+    the C++ header and Python module that read and write that layout. Message packages call
+    flux_generate_adapters() to opt a message in.
+  </description>
+  <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <exec_depend>python3</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <!-- test_emit round-trips the ROS bridge against the real message types; skipped if absent. -->
+  <test_depend>geometry_msgs</test_depend>
+  <test_depend>sensor_msgs</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

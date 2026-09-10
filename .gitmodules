@@ -1,0 +1,3 @@
+[submodule "thirdparty/nanobind"]
+	path = thirdparty/nanobind
+	url = https://github.com/wjakob/nanobind.git

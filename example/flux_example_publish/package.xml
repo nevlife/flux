@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flux_example_publish</name>
+  <version>0.0.0</version>
+  <description>
+    One-copy publish over flux: the publisher builds a sensor_msgs/Image in its own buffer and
+    hands the bytes to publish(). The schema lives in the fingerprint, so the frame carries no
+    descriptor. C++ and Python nodes for both sides.
+  </description>
+  <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>flux_cpp</depend>
+  <depend>flux_example_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>rclpy</depend>
+
+  <exec_depend>flux_py</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

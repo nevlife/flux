@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flux_example_lidar</name>
+  <version>0.0.0</version>
+  <description>
+    A frame whose size changes every publish. The sweep's point count varies, so the slot is
+    sized for the worst case and the Builder commits only the prefix it built. sensor_msgs
+    /PointCloud2, with the nested PointField array built in the slot too.
+  </description>
+  <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>flux_cpp</depend>
+  <depend>flux_example_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>rclpy</depend>
+
+  <exec_depend>flux_py</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

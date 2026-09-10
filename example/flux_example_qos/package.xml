@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flux_example_qos</name>
+  <version>0.0.0</version>
+  <description>
+    What a consumer's QoS decides. qos_newest takes depth 1, so it only ever sees current state.
+    qos_backlog takes depth 8 with transient_local(4) and a deliberately slow callback, so the
+    lag window and the replay on attach both become visible in lost() and refused().
+  </description>
+  <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>flux_cpp</depend>
+  <depend>flux_example_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>rclpy</depend>
+
+  <exec_depend>flux_py</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

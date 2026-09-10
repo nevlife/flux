@@ -1,0 +1,17 @@
+chains:
+  perception_to_control:
+    target: soft
+    stages:
+      - node: /flux_loan_image_pub
+        external: true
+        expect_priority: 0
+      - node: /flux_rt_stage
+        group: work
+        policy: fifo
+        priority: 70
+        cpus: [2]
+      - node: /flux_control
+        group: loop
+        policy: fifo
+        priority: 90
+        cpus: [3]

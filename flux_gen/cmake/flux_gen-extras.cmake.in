@@ -1,0 +1,8 @@
+# Loaded by find_package(flux_gen): exposes flux_generate_adapters() and the path the generator
+# is importable from, so a consumer's build does not depend on colcon having set PYTHONPATH.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(FLUX_GEN_PYTHON_DIR
+  "${flux_gen_DIR}/../../../lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages")
+
+include("${flux_gen_DIR}/flux_generate_adapters.cmake")

@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flux_example_msgs</name>
+  <version>0.0.0</version>
+  <description>
+    flux adapters for the sensor_msgs types the example packages publish. Generated at build time
+    from the installed Image.msg and PointCloud2.msg, so no schema is copied and the two
+    transports cannot drift. Exports the C++ headers and installs the Python modules.
+  </description>
+  <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>flux_gen</build_depend>
+  <depend>sensor_msgs</depend>
+
+  <exec_depend>flux_gen</exec_depend>
+  <exec_depend>flux_py</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

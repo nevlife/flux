@@ -1,0 +1,65 @@
+repos:
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.6
+    hooks:
+      - id: clang-format
+        types_or: [c++, c]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.41.0
+    hooks:
+      - id: markdownlint
+        args: [-c, .markdownlint.yaml, --fix]
+
+  - repo: local
+    hooks:
+      - id: no-emoji
+        name: no emoji
+        entry: scripts/check_no_emoji.sh
+        language: script
+        types: [text]
+
+      - id: docs-tracked
+        name: no untracked files under docs/
+        entry: scripts/check_docs_tracked.sh
+        language: script
+        pass_filenames: false
+        always_run: true
+
+      # always_run rather than files:. Both checkers read the whole document set -- api.en.md,
+      # raw_api.en.md and core_api.en.md, and the examples of all three packages -- so a pattern naming
+      # a subset of that would let an edit to the rest skip the gate. A checker that runs on some
+      # edits is a checker whose verdict depends on which file you touched.
+      - id: doc-examples
+        name: user document fences match the compiled examples
+        entry: scripts/check_doc_examples.py
+        language: script
+        pass_filenames: false
+        always_run: true
+
+      - id: api-surface
+        name: every public C++ name is in a user document
+        entry: scripts/check_api_surface.py
+        language: script
+        pass_filenames: false
+        always_run: true
+
+      - id: contracts
+        name: contracts.en.md names tests that exist
+        entry: scripts/check_contracts.py
+        language: script
+        pass_filenames: false
+        always_run: true
+
+      - id: flake8
+        name: python defect classes (setup.cfg [flake8])
+        entry: python3 -m flake8
+        language: system
+        types: [python]
+
+      - id: comment-density
+        name: comment budget (scripts/comment_budget.txt)
+        entry: scripts/check_comment_density.py
+        language: script
+        pass_filenames: false
+        always_run: true

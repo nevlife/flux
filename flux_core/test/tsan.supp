@@ -1,0 +1,32 @@
+# ThreadSanitizer suppressions for the seqlock idiom ("memory ordering").
+#
+# The slot seqlock and the signpost seqlock guard plain (non-atomic) fields: payload bytes,
+# FrameMeta, commit_ticket, writer identity, and the signpost (cur, epoch) pair. A reader may
+# race a writer on those bytes BY DESIGN -- the read is validated against the seq word and
+# discarded on mismatch, so the racy value is never used. The C++ memory model still calls the
+# discarded read a data race, which is what these entries suppress. TSan's job here is
+# everything else.
+#
+# Only the WRITER side is listed, and only the leaf that performs the plain store. TSan suppresses
+# a report when either stack matches, so naming the leaf covers every reader of those bytes,
+# including a payload read in caller code whose stack is nowhere near this library.
+#
+# The granularity is the point. Whole-file entries (race:src/channel.cpp) hid four real races.
+# Whole-function entries (race:flux::Channel::publish and five more) hid less but still too much:
+# `race:flux::Channel::publish` substring-matches publish_meta, whose fifty lines carry the
+# slot-claim CAS and the Dekker recheck. Those are not seqlock-validated; they are the
+# ordering this library is hardest to get right, and a defect in either was suppressed. The same
+# held for finish_commit (latest CAS, wake gate), stamp_writer (writer_ready_/writer_id_) and
+# recover_stuck_writes (the forward re-claim CAS).
+#
+# The leaves are [[gnu::noinline]] in channel.cpp for this file's sake: TSan matches a suppression
+# against stack frames, so an inlined leaf leaves nothing to name and every entry below goes dead
+# silently. Removing that attribute breaks these suppressions without breaking the build.
+#
+# Adding an entry means claiming the racing field is seqlock-validated, and that the function
+# named does nothing but store it. Nothing else belongs here.
+race:store_frame_bytes
+race:store_frame_meta
+race:store_commit_ticket
+race:store_writer_identity
+race:signpost_write
