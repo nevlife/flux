@@ -4,7 +4,9 @@
 #ifndef Q_MOC_RUN
 #include "flux/ros/subscription.hpp"
 #include "rviz_common/display.hpp"
+#include "rviz_common/properties/bool_property.hpp"
 #include "rviz_common/properties/editable_enum_property.hpp"
+#include "rviz_common/properties/float_property.hpp"
 #include "rviz_common/render_panel.hpp"
 
 #include <rclcpp/node.hpp>
@@ -60,9 +62,14 @@ private:
   bool ensureTexture(std::uint32_t width, std::uint32_t height, Ogre::PixelFormat format);
   bool ensureNv12Textures(std::uint32_t width, std::uint32_t height);
   void setupNv12Material(const std::string & id);
+  void setupRangeMaterial(const std::string & id);
+  void setRange(float lo, float hi);
   void fitRectangleToImage();
 
   rviz_common::properties::EditableEnumProperty * topic_property_;
+  rviz_common::properties::BoolProperty * normalize_property_;
+  rviz_common::properties::FloatProperty * min_property_;
+  rviz_common::properties::FloatProperty * max_property_;
 
   rclcpp::Node::SharedPtr node_;
   std::unique_ptr<flux::ros::Subscription> sub_;
@@ -76,6 +83,8 @@ private:
   Ogre::TexturePtr y_texture_;
   Ogre::TexturePtr uv_texture_;
   bool nv12_active_ = false;
+  // 16-bit and float frames (depth) are uploaded as-is and mapped to a range in the shader.
+  Ogre::MaterialPtr range_material_;
   std::unique_ptr<rviz_common::RenderPanel> render_panel_;
 
   std::uint32_t width_ = 0;

@@ -9,4 +9,14 @@
       rviz2 without going through DDS.
     </description>
   </class>
+  <class
+    name="flux_tools/PointCloud2"
+    type="flux_tools::rviz::PointCloud2Display"
+    base_class_type="rviz_common::Display"
+  >
+    <description>
+      Shows a sensor_msgs/PointCloud2 published over a flux channel, read from shared memory
+      inside rviz2 without going through DDS. Rendering is the stock point cloud renderer.
+    </description>
+  </class>
 </library>

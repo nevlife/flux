@@ -1,7 +1,7 @@
 #include "flux_tools/rviz/image_display.hpp"
 
-#include "flux/discovery.hpp"
 #include "flux/qos.hpp"
+#include "flux_tools/rviz/topic_list.hpp"
 #include "rviz_common/display_context.hpp"
 #include "rviz_common/properties/status_property.hpp"
 #include "rviz_common/ros_integration/ros_node_abstraction_iface.hpp"
@@ -23,9 +23,14 @@
 #include <OgreTextureManager.h>
 #include <OgreTextureUnitState.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <exception>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 namespace flux_tools::rviz
@@ -37,8 +42,8 @@ namespace
 using Image = sensor_msgs::flux_msg::Image;
 using rviz_common::properties::StatusProperty;
 
-// Only the encodings Ogre uploads as-is. Anything else (16-bit, float, YUV) needs a conversion
-// pass and would reintroduce the copy this display exists to avoid.
+// Only the encodings Ogre uploads as-is. 16-bit and float go up as-is too and are scaled to a
+// range in the fragment shader; YUV is NV12 only.
 Ogre::PixelFormat pixel_format(std::string_view encoding)
 {
   if (encoding == "rgb8") {
@@ -59,7 +64,42 @@ Ogre::PixelFormat pixel_format(std::string_view encoding)
   if (encoding == "mono16" || encoding == "16UC1") {
     return Ogre::PF_L16;
   }
+  if (encoding == "32FC1") {
+    return Ogre::PF_FLOAT32_R;
+  }
   return Ogre::PF_UNKNOWN;
+}
+
+bool is_range_format(Ogre::PixelFormat format)
+{
+  return format == Ogre::PF_L16 || format == Ogre::PF_FLOAT32_R;
+}
+
+// One read pass over the slot, no copy. NaN and inf (32FC1 no-return pixels) are skipped, as
+// are zeros in 16UC1 (the no-return value of the depth cameras that publish it).
+template <typename T>
+std::pair<float, float> scan_range(
+  const std::uint8_t * data, std::uint32_t w, std::uint32_t h, std::uint32_t step)
+{
+  float lo = std::numeric_limits<float>::infinity();
+  float hi = -std::numeric_limits<float>::infinity();
+  for (std::uint32_t y = 0; y < h; ++y) {
+    const std::uint8_t * row = data + std::size_t{step} * y;
+    for (std::uint32_t x = 0; x < w; ++x) {
+      T v;
+      std::memcpy(&v, row + std::size_t{x} * sizeof(T), sizeof v);
+      const float f = static_cast<float>(v);
+      if (!std::isfinite(f) || f == 0.0f) {
+        continue;
+      }
+      lo = std::min(lo, f);
+      hi = std::max(hi, f);
+    }
+  }
+  if (!(lo < hi)) {
+    return {0.0f, 1.0f};
+  }
+  return {lo, hi};
 }
 
 int next_id()
@@ -77,6 +117,17 @@ ImageDisplay::ImageDisplay()
   connect(
     topic_property_, &rviz_common::properties::EditableEnumProperty::requestOptions, this,
     &ImageDisplay::fillTopicList);
+  normalize_property_ = new rviz_common::properties::BoolProperty(
+    "Normalize Range", true,
+    "16-bit and 32FC1 frames: map the smallest and largest value of each frame to black and "
+    "white. Off: use Min Value and Max Value.",
+    this);
+  min_property_ = new rviz_common::properties::FloatProperty(
+    "Min Value", 0.0f, "Value shown as black when Normalize Range is off, in the frame's units.",
+    this);
+  max_property_ = new rviz_common::properties::FloatProperty(
+    "Max Value", 1.0f, "Value shown as white when Normalize Range is off, in the frame's units.",
+    this);
 }
 
 ImageDisplay::~ImageDisplay()
@@ -122,6 +173,60 @@ void ImageDisplay::setupScreenRectangle()
   screen_rect_->setBoundingBox(infinite);
   screen_rect_->setMaterial(material_);
   setupNv12Material(id);
+  setupRangeMaterial(id);
+}
+
+void ImageDisplay::setupRangeMaterial(const std::string & id)
+{
+  auto & mgr = Ogre::HighLevelGpuProgramManager::getSingleton();
+  const std::string group = material_->getGroup();
+
+  Ogre::HighLevelGpuProgramPtr vp =
+    mgr.createProgram(id + "RangeVP", group, "glsl", Ogre::GPT_VERTEX_PROGRAM);
+  vp->setSource(
+    "void main() {\n"
+    "  gl_Position = gl_ModelViewProjectionMatrix * gl_Vertex;\n"
+    "  gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+    "}\n");
+
+  // lo and hi are in sampled units: 16-bit textures sample as value / 65535, float as-is.
+  Ogre::HighLevelGpuProgramPtr fp =
+    mgr.createProgram(id + "RangeFP", group, "glsl", Ogre::GPT_FRAGMENT_PROGRAM);
+  fp->setSource(
+    "uniform sampler2D tex;\n"
+    "uniform float lo;\n"
+    "uniform float hi;\n"
+    "void main() {\n"
+    "  float v = texture2D(tex, gl_TexCoord[0].xy).r;\n"
+    "  float g = clamp((v - lo) / (hi - lo), 0.0, 1.0);\n"
+    "  gl_FragColor = vec4(g, g, g, 1.0);\n"
+    "}\n");
+
+  range_material_ =
+    rviz_rendering::MaterialManager::createMaterialWithNoLighting(id + "RangeMaterial");
+  range_material_->setSceneBlending(Ogre::SBT_REPLACE);
+  range_material_->setDepthWriteEnabled(false);
+  range_material_->setDepthCheckEnabled(false);
+  range_material_->setCullingMode(Ogre::CULL_NONE);
+  Ogre::Pass * pass = range_material_->getTechnique(0)->getPass(0);
+  pass->setVertexProgram(vp->getName());
+  pass->setFragmentProgram(fp->getName());
+  Ogre::TextureUnitState * tu = pass->createTextureUnitState();
+  tu->setName("tex");
+  tu->setTextureFiltering(Ogre::TFO_NONE);
+  tu->setTextureAddressingMode(Ogre::TextureUnitState::TAM_CLAMP);
+  Ogre::GpuProgramParametersSharedPtr params = pass->getFragmentProgramParameters();
+  params->setNamedConstant("tex", 0);
+  params->setNamedConstant("lo", 0.0f);
+  params->setNamedConstant("hi", 1.0f);
+}
+
+void ImageDisplay::setRange(float lo, float hi)
+{
+  Ogre::GpuProgramParametersSharedPtr params =
+    range_material_->getTechnique(0)->getPass(0)->getFragmentProgramParameters();
+  params->setNamedConstant("lo", lo);
+  params->setNamedConstant("hi", hi > lo ? hi : lo + 1.0f);
 }
 
 void ImageDisplay::setupNv12Material(const std::string & id)
@@ -244,15 +349,7 @@ void ImageDisplay::updateTopic()
 
 void ImageDisplay::fillTopicList(rviz_common::properties::EditableEnumProperty * property)
 {
-  property->clearOptions();
-  for (const flux::TopicView & t : flux::enumerate_topics()) {
-    if (
-      t.fingerprint == Image::kFingerprint && t.domain == flux::process_domain() && t.key_exact &&
-      flux::read_channel_stats(t.signpost).live)
-    {
-      property->addOptionStd(t.key);
-    }
-  }
+  fill_topic_list(property, Image::kFingerprint);
 }
 
 void ImageDisplay::subscribe()
@@ -299,8 +396,13 @@ bool ImageDisplay::ensureTexture(
   if (!texture_) {
     return false;
   }
-  material_->getTechnique(0)->getPass(0)->getTextureUnitState(0)->setTexture(texture_);
-  screen_rect_->setMaterial(material_);
+  if (is_range_format(format)) {
+    range_material_->getTechnique(0)->getPass(0)->getTextureUnitState(0)->setTexture(texture_);
+    screen_rect_->setMaterial(range_material_);
+  } else {
+    material_->getTechnique(0)->getPass(0)->getTextureUnitState(0)->setTexture(texture_);
+    screen_rect_->setMaterial(material_);
+  }
   width_ = width;
   height_ = height;
   format_ = format;
@@ -401,6 +503,17 @@ void ImageDisplay::update(float, float)
     box.rowPitch = step / bpp;
     box.slicePitch = box.rowPitch * height;
     texture_->getBuffer()->blitFromMemory(box);
+    if (is_range_format(format)) {
+      float lo = min_property_->getFloat();
+      float hi = max_property_->getFloat();
+      if (normalize_property_->getBool()) {
+        std::tie(lo, hi) = format == Ogre::PF_L16 ?
+          scan_range<std::uint16_t>(data.data(), width, height, step) :
+          scan_range<float>(data.data(), width, height, step);
+      }
+      const float unit = format == Ogre::PF_L16 ? 1.0f / 65535.0f : 1.0f;
+      setRange(lo * unit, hi * unit);
+    }
   }
 
   ++frames_;
