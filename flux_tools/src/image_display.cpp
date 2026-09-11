@@ -246,7 +246,10 @@ void ImageDisplay::fillTopicList(rviz_common::properties::EditableEnumProperty *
 {
   property->clearOptions();
   for (const flux::TopicView & t : flux::enumerate_topics()) {
-    if (t.fingerprint == Image::kFingerprint && t.domain == flux::process_domain()) {
+    if (
+      t.fingerprint == Image::kFingerprint && t.domain == flux::process_domain() && t.key_exact &&
+      flux::read_channel_stats(t.signpost).live)
+    {
       property->addOptionStd(t.key);
     }
   }

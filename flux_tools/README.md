@@ -12,7 +12,7 @@ Opens a `flux_cpp` subscription inside the rviz2 process and, on every render ti
 | Type | `sensor_msgs/Image`. The adapter is generated at build time by `flux_gen` from the installed `Image.msg` |
 | QoS | `depth=1`, `max_borrow=1`. The view lives only inside `update()` and is released right after the upload |
 | Encoding | `rgb8` `bgr8` `rgba8` `bgra8` `mono8` `8UC1` `mono16` `16UC1` are uploaded to the texture as is. `nv12` (half-resolution UV after the Y plane, `step` is the Y row pitch) is uploaded as two textures, Y and UV, and a fragment shader produces RGB with BT.601. Anything else is shown as an error in the status panel |
-| Topic list | Filled with `Image` fingerprint channels in the same domain via `flux::enumerate_topics()`. Direct input also works |
+| Topic list | Filled with live `Image` publishers whose exact channel names are known in the same domain. Persistent signposts without a publisher are omitted. Direct input also works |
 
 ### Usage
 
