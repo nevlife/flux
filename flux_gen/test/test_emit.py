@@ -382,6 +382,7 @@ def test_ros_bridge_round_trips_real_messages(tmp_path):
     # point is that it agrees with rosidl on every field, nesting and array.
     import numpy as np
     from geometry_msgs.msg import PoseStamped
+    from rclpy.serialization import deserialize_message, serialize_message
     from sensor_msgs.msg import Image, PointCloud2, PointField
 
     from flux_gen.cli import ament_registry, generate
@@ -402,7 +403,11 @@ def test_ros_bridge_round_trips_real_messages(tmp_path):
             buf = bytearray(1 << 20)
             b = mod.Builder(buf)
             mod.msg_to_frame(msg, b)
-            return mod.frame_to_msg(mod.View(memoryview(buf)[:b.size__]))
+            back = mod.frame_to_msg(mod.View(memoryview(buf)[:b.size__]))
+            # Equality is Python-level; only the C converter notices a numpy scalar in an int
+            # field, and it aborts the process rather than raising.
+            assert deserialize_message(serialize_message(back), type(msg)) == msg
+            return back
 
         ps = PoseStamped()
         ps.header.frame_id = "map"
