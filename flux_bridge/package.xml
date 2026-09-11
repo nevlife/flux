@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flux_bridge</name>
+  <version>0.0.0</version>
+  <description>
+    Republishes flux channels as DDS topics so stock ROS 2 tools (ros2 bag, rqt, ros2 topic) can
+    read them. Lazy: a channel is relayed only while a ROS 2 subscriber for its name exists.
+    Ships ros2 topic echo_flux / hz_flux and ros2 bag record_flux, which create that subscriber
+    before running the stock verb.
+  </description>
+  <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>flux_py</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>ros2cli</exec_depend>
+  <exec_depend>ros2topic</exec_depend>
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>rosidl_runtime_py</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

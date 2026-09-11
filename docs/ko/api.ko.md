@@ -163,6 +163,8 @@ back = frame_to_msg(Image.View(f))
 
 둘 다 필드를 전부 복사한다. `frame_to_msg`는 구독자마다 한 번씩 복사가 붙어 구독자 수와 무관한 0복사 성질이 사라진다. ROS 토픽에서 받은 걸 flux로 넘기거나 기존 함수 시그니처가 메시지 객체를 요구할 때만 쓴다. 데이터를 아직 안 만들었으면 `Builder`/`View`를 직접 쓴다(`docs/copy_model.md`).
 
+stock ROS 2 도구(`ros2 bag`, `rqt`, `ros2 topic`)는 `flux_bridge`를 통해 flux 채널을 본다. 이 `frame_to_msg` 경로에 보는 채널마다 DDS publisher 하나를 얹은 것이다([bridge.md](bridge.ko.md)).
+
 ## 3. C++
 
 `#include "flux/ros/publisher.hpp"` · `"flux/ros/subscription.hpp"` · `"flux/ros/executor.hpp"`

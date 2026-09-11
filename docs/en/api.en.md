@@ -163,6 +163,8 @@ back = frame_to_msg(Image.View(f))
 
 Both copy every field. `frame_to_msg` adds one copy per subscriber, so the zero-copy property that is independent of the subscriber count is lost. Use it only when forwarding data received on a ROS topic into flux, or when an existing function signature requires a message object. If the data has not been produced yet, use `Builder`/`View` directly (`docs/copy_model.md`).
 
+Stock ROS 2 tools (`ros2 bag`, `rqt`, `ros2 topic`) see a flux channel through `flux_bridge`, which is this `frame_to_msg` path plus one DDS publisher per watched channel ([bridge.md](bridge.en.md)).
+
 ## 3. C++
 
 `#include "flux/ros/publisher.hpp"` · `"flux/ros/subscription.hpp"` · `"flux/ros/executor.hpp"`

@@ -68,6 +68,7 @@ colcon test
 | [`docs/en/raw_api.en.md`](docs/en/raw_api.en.md) | The surface without a `.msg` |
 | [`docs/en/qos.en.md`](docs/en/qos.en.md) | `depth`, `durability`, `max_borrow`, and the reasons for an empty view |
 | [`docs/en/message_shapes.en.md`](docs/en/message_shapes.en.md) | How a `.msg` is laid out |
+| [`docs/en/bridge.en.md`](docs/en/bridge.en.md) | `flux_bridge`: flux channels on DDS for `ros2 bag`, `rqt`, `ros2 topic` |
 
 ## License
 
