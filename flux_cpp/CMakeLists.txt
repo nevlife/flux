@@ -27,6 +27,12 @@ find_package(message_filters REQUIRED)
 # layer's work.
 find_package(yaml_cpp_vendor REQUIRED)
 find_package(yaml-cpp REQUIRED)  # the vendor package only points at it; the target comes from here
+# Jazzy's yaml-cpp config exports the namespaced target; Humble's (0.7) exports the bare one.
+if(TARGET yaml-cpp::yaml-cpp)
+  set(FLUX_YAML_CPP_TARGET yaml-cpp::yaml-cpp)
+else()
+  set(FLUX_YAML_CPP_TARGET yaml-cpp)
+endif()
 
 add_library(flux_cpp
   src/ros_boundary.cpp
@@ -45,7 +51,7 @@ target_include_directories(flux_cpp PUBLIC
 ament_target_dependencies(flux_cpp PUBLIC flux_core rclcpp)
 # Private: yaml-cpp is an implementation detail of the chain-declaration reader. Its types never
 # reach flux/ros/rt_spec.hpp, so a consumer of flux_cpp does not inherit the dependency.
-target_link_libraries(flux_cpp PRIVATE yaml-cpp::yaml-cpp)
+target_link_libraries(flux_cpp PRIVATE ${FLUX_YAML_CPP_TARGET})
 target_compile_options(flux_cpp PRIVATE -Wall -Wextra -Wpedantic)
 
 # The code fences in docs/en/api.en.md section 3 are the anchored regions of this file. Compiling it

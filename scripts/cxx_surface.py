@@ -13,7 +13,7 @@ ENUM_HEAD = re.compile(r"\benum\s+(?:class|struct)?\s*([A-Za-z_]\w*)")
 NAMESPACE_HEAD = re.compile(r"\bnamespace\s+([A-Za-z_][\w:]*)\s*$")
 USING_ALIAS = re.compile(r"\busing\s+([A-Za-z_]\w*)\s*=")
 IDENT = re.compile(r"[A-Za-z_]\w*")
-SKIP_DECL = re.compile(r"\boperator\b|=\s*delete\b|\boverride\b|\bfriend\b|\bstatic_assert\b")
+SKIP_DECL = re.compile(r"\boperator\b|=\s*delete\b|\boverride\b|\bFLUX_ROS_OVERRIDE_SINCE_JAZZY\b|\bfriend\b|\bstatic_assert\b")
 
 
 def strip_noise(src):

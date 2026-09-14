@@ -314,8 +314,8 @@ TEST(FluxExecutor, DeliversASerializedSubscription)
   std::atomic<std::size_t> bytes{0};
   auto gen_sub = sub_node->create_generic_subscription(
     "/exec/serialized", "std_msgs/msg/UInt64", rclcpp::QoS(10),
-    [&](const rclcpp::SerializedMessage & m) {
-      bytes.store(m.size());
+    [&](std::shared_ptr<rclcpp::SerializedMessage> m) {  // the one form Humble also accepts
+      bytes.store(m->size());
       got.fetch_add(1);
     });
 
@@ -687,7 +687,11 @@ TEST(FluxExecutor, TheInheritedSpinAndCancelDriveThisExecutor)
 
   std::this_thread::sleep_for(200ms);
   EXPECT_FALSE(returned.load()) << "the inherited spin() returned without being cancelled";
+#if defined(RCLCPP_VERSION_MAJOR) && RCLCPP_VERSION_MAJOR >= 28
   base.cancel();
+#else
+  ex.cancel();  // Humble's cancel() is not virtual; through the base it never reaches stop()
+#endif
   spinner.join();
   EXPECT_TRUE(returned.load());
 

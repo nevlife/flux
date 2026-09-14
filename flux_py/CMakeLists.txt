@@ -24,8 +24,15 @@ find_package(Python 3.8 COMPONENTS Interpreter Development.Module REQUIRED)  # n
 # PYTHON_INSTALL_DIR is only populated during ament_package(); we install before that, so
 # compute it now (same helper ament uses, so the install path and PYTHONPATH hook agree).
 _ament_cmake_python_get_python_install_dir()
+# Humble's ament resolves the dir to local/lib/.../dist-packages while colcon looks for
+# lib/.../site-packages, so colcon writes no PYTHONPATH hook there. Register ament's own.
+_ament_cmake_python_register_environment_hook()
 
 # Vendored nanobind lives at the flux repo root (shared, single submodule).
+if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/nanobind/CMakeLists.txt)
+  message(FATAL_ERROR
+    "thirdparty/nanobind is empty. Run `git submodule update --init` in the flux checkout.")
+endif()
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/nanobind
                  ${CMAKE_CURRENT_BINARY_DIR}/nanobind EXCLUDE_FROM_ALL)
 

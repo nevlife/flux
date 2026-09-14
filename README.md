@@ -22,7 +22,7 @@ colcon test
 ## Requirements
 
 - Linux 6.7+ (io_uring futex wait; older kernels fall back to one wait thread per channel)
-- ROS 2 Jazzy
+- ROS 2 Jazzy (Humble builds; see the executor note in `docs/en/api.en.md`)
 - C++17
 - Python 3.8+, numpy
 - cmake 3.16+

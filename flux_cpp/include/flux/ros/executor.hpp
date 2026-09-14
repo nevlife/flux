@@ -11,6 +11,9 @@
 #include <rclcpp/service.hpp>
 #include <rclcpp/subscription_base.hpp>
 #include <rclcpp/waitable.hpp>
+#if __has_include(<rclcpp/version.h>)
+#include <rclcpp/version.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -103,22 +106,32 @@ public:
   // The rest still throw. Their contracts are about a wait set and a
   // duration budget this executor does not have, and a plausible-looking approximation that is
   // subtly wrong is worse than a refusal the caller can see.
-  void cancel() override;
+  //
+  // Virtual in rclcpp since Jazzy (28) only. On Humble these are plain members, so cancel()
+  // through `rclcpp::Executor &` is rclcpp's and does not stop this executor.
+#if defined(RCLCPP_VERSION_MAJOR) && RCLCPP_VERSION_MAJOR >= 28
+#define FLUX_ROS_OVERRIDE_SINCE_JAZZY override
+#else
+#define FLUX_ROS_OVERRIDE_SINCE_JAZZY
+#endif
+  void cancel() FLUX_ROS_OVERRIDE_SINCE_JAZZY;
   void spin() override;
   void spin_once(std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1)) override;
   void spin_some(std::chrono::nanoseconds max_duration = std::chrono::nanoseconds(0)) override;
   void spin_all(std::chrono::nanoseconds max_duration) override;
-  void spin_node_some(rclcpp::node_interfaces::NodeBaseInterface::SharedPtr node) override;
-  void spin_node_some(std::shared_ptr<rclcpp::Node> node) override;
+  void spin_node_some(rclcpp::node_interfaces::NodeBaseInterface::SharedPtr node)
+    FLUX_ROS_OVERRIDE_SINCE_JAZZY;
+  void spin_node_some(std::shared_ptr<rclcpp::Node> node) FLUX_ROS_OVERRIDE_SINCE_JAZZY;
   void spin_node_all(
     rclcpp::node_interfaces::NodeBaseInterface::SharedPtr node,
-    std::chrono::nanoseconds max_duration) override;
+    std::chrono::nanoseconds max_duration) FLUX_ROS_OVERRIDE_SINCE_JAZZY;
   void spin_node_all(
-    std::shared_ptr<rclcpp::Node> node, std::chrono::nanoseconds max_duration) override;
+    std::shared_ptr<rclcpp::Node> node, std::chrono::nanoseconds max_duration)
+    FLUX_ROS_OVERRIDE_SINCE_JAZZY;
   rclcpp::FutureReturnCode spin_until_future_complete_impl(
     std::chrono::nanoseconds timeout,
     const std::function<std::future_status(std::chrono::nanoseconds wait_time)> & wait_for_future)
-    override;
+    FLUX_ROS_OVERRIDE_SINCE_JAZZY;
 
   // Spin until stop(). `tick_ns` bounds each blocking wait so the stop is noticed and late flux
   // publishers get attached (negative = block until an event). A ROS timer due sooner shortens

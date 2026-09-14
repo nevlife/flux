@@ -373,7 +373,7 @@ ex.stop();                       // spin을 끝낸다. 콜백에서 불러도 �
 
 끝내는 방법은 `stop()`이다. 자기 종료 플래그를 이미 들고 있으면 `spin(run, tick_ns)`가 그것도 함께 본다.
 
-상속받은 rclcpp 진입점 중 셋은 flux에서 뜻이 정확히 하나라 구현했다 -- `spin()`은 기본 tick의 `spin(tick_ns)`, `cancel()`은 `stop()`, `spin_once(timeout)`은 `spin_once(timeout.count())`다. 그래서 `rclcpp::Executor &`로 들고 있는 호출자도 이 executor를 제대로 돌린다. 나머지(`spin_some`·`spin_all`·`spin_node_some`·`spin_node_all`·`spin_until_future_complete`)는 throw다 -- 이 executor에 없는 wait set과 duration 예산에 대한 계약이고, 그럴듯한 근사는 flux 채널을 조용히 건너뛴다.
+상속받은 rclcpp 진입점 중 셋은 flux에서 뜻이 정확히 하나라 구현했다 -- `spin()`은 기본 tick의 `spin(tick_ns)`, `cancel()`은 `stop()`, `spin_once(timeout)`은 `spin_once(timeout.count())`다. 그래서 `rclcpp::Executor &`로 들고 있는 호출자도 이 executor를 제대로 돌린다. Humble에서는 rclcpp의 `cancel()`이 virtual이 아니라, `rclcpp::Executor &`를 통한 `cancel()`은 rclcpp의 플래그만 내리고 이 executor를 세우지 못한다. Humble에서는 `stop()`이나 flux 타입으로 부른 `cancel()`로 세운다. 나머지(`spin_some`·`spin_all`·`spin_node_some`·`spin_node_all`·`spin_until_future_complete`)는 throw다 -- 이 executor에 없는 wait set과 duration 예산에 대한 계약이고, 그럴듯한 근사는 flux 채널을 조용히 건너뛴다.
 
 ```cpp doc:executor_api
 bool merged = ex.uses_io_uring();   // false면 채널당 스레드 폴백으로 돌고 있다

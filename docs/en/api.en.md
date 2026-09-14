@@ -373,7 +373,7 @@ Subscriptions that did not exist at call time are connected by the rescan at the
 
 The way to end is `stop()`. If you already hold your own shutdown flag, `spin(run, tick_ns)` watches that too.
 
-Three of the inherited rclcpp entry points have exactly one meaning in flux and are implemented. `spin()` is `spin(tick_ns)` with the default tick, `cancel()` is `stop()`, and `spin_once(timeout)` is `spin_once(timeout.count())`. So a caller holding this as `rclcpp::Executor &` drives this executor correctly. The rest (`spin_some`, `spin_all`, `spin_node_some`, `spin_node_all`, `spin_until_future_complete`) throw. They are contracts about a wait set and a duration budget that this executor does not have, and a plausible approximation would silently skip flux channels.
+Three of the inherited rclcpp entry points have exactly one meaning in flux and are implemented. `spin()` is `spin(tick_ns)` with the default tick, `cancel()` is `stop()`, and `spin_once(timeout)` is `spin_once(timeout.count())`. So a caller holding this as `rclcpp::Executor &` drives this executor correctly. On Humble, `cancel()` is not virtual in rclcpp, so that call through `rclcpp::Executor &` only clears rclcpp's own flag and does not stop this executor. Stop it with `stop()` or `cancel()` on the flux type there. The rest (`spin_some`, `spin_all`, `spin_node_some`, `spin_node_all`, `spin_until_future_complete`) throw. They are contracts about a wait set and a duration budget that this executor does not have, and a plausible approximation would silently skip flux channels.
 
 ```cpp doc:executor_api
 bool merged = ex.uses_io_uring();   // false means it is running on the per-channel thread fallback
