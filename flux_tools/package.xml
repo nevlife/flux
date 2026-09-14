@@ -4,8 +4,9 @@
   <name>flux_tools</name>
   <version>0.0.0</version>
   <description>
-    Viewer plugins that subscribe to flux channels directly. The rviz2 Image and PointCloud2
-    displays take a frame from shared memory inside the rviz2 process; no CDR, no DDS.
+    Viewer plugins that subscribe to flux channels directly. The rviz2 Image, PointCloud2 and
+    DepthCloud displays take a frame from shared memory inside the rviz2 process; no CDR,
+    no DDS.
   </description>
   <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
   <license>MIT</license>
@@ -14,6 +15,7 @@
   <buildtool_depend>flux_gen</buildtool_depend>
 
   <depend>flux_cpp</depend>
+  <depend>image_transport</depend>
   <depend>pluginlib</depend>
   <depend>qtbase5-dev</depend>
   <depend>rclcpp</depend>
@@ -22,6 +24,8 @@
   <depend>rviz_ogre_vendor</depend>
   <depend>rviz_rendering</depend>
   <depend>sensor_msgs</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

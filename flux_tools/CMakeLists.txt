@@ -15,6 +15,7 @@ set(CMAKE_AUTOMOC ON)
 find_package(ament_cmake REQUIRED)
 find_package(flux_cpp REQUIRED)
 find_package(flux_gen REQUIRED)
+find_package(image_transport REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(rclcpp REQUIRED)
@@ -47,8 +48,11 @@ foreach(pair "Image:image" "PointCloud2:point_cloud2")
 endforeach()
 
 add_library(flux_tools_rviz SHARED
+  src/depth_cloud_display.cpp
   src/image_display.cpp
   src/point_cloud2_display.cpp
+  include/flux_tools/depth_projection.hpp
+  include/flux_tools/rviz/depth_cloud_display.hpp
   include/flux_tools/rviz/image_display.hpp
   include/flux_tools/rviz/point_cloud2_display.hpp
   include/flux_tools/rviz/topic_list.hpp
@@ -58,6 +62,7 @@ target_include_directories(flux_tools_rviz
   PRIVATE "${_adapters}")
 target_link_libraries(flux_tools_rviz
   flux_cpp::flux_cpp
+  image_transport::image_transport
   rviz_common::rviz_common
   rviz_default_plugins::rviz_default_plugins
   rviz_rendering::rviz_rendering
@@ -69,6 +74,13 @@ target_compile_options(flux_tools_rviz PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_options(flux_tools_rviz PRIVATE -Wno-pedantic)
 
 pluginlib_export_plugin_description_file(rviz_common plugins_description.xml)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_depth_projection test/test_depth_projection.cpp)
+  target_include_directories(test_depth_projection PRIVATE include)
+  ament_target_dependencies(test_depth_projection sensor_msgs)
+endif()
 
 install(TARGETS flux_tools_rviz
   ARCHIVE DESTINATION lib

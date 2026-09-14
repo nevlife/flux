@@ -19,4 +19,15 @@
       inside rviz2 without going through DDS. Rendering is the stock point cloud renderer.
     </description>
   </class>
+  <class
+    name="flux_tools/DepthCloud"
+    type="flux_tools::rviz::DepthCloudDisplay"
+    base_class_type="rviz_common::Display"
+  >
+    <description>
+      Back-projects a depth sensor_msgs/Image published over a flux channel into 3D points,
+      using the CameraInfo published next to it on DDS. Rendering is the stock point cloud
+      renderer.
+    </description>
+  </class>
 </library>
