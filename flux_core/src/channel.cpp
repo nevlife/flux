@@ -890,16 +890,11 @@ bool Channel::reattach_if_replaced() noexcept
   if (sh_->outstanding.load(std::memory_order_acquire) != 0)
     return false;  // a view still aliases us
   // A rotation (publisher restart) bumps the signpost epoch. Same epoch => same current segment.
-  // Read it off the mapping this consumer holds: signpost_epoch() reopens and remaps the object
-  // (discovery.hpp says as much), which turned every probe into a syscall run even though the
-  // page was already here. The reopen is the fallback for a consumer that never got a mapping.
+  // Read it off the mapping this consumer holds rather than reopening the object on every probe.
+  // No mapping means no bootstrapped signpost, which is epoch 0.
   if (!signpost_.valid()) signpost_ = SignpostView(signpost_name_);
   std::uint32_t ep = 0;
-  if (signpost_.valid()) {
-    if (!signpost_.epoch(ep)) return false;  // torn read: look again on the next stall
-  } else {
-    ep = signpost_epoch(signpost_name_);
-  }
+  if (signpost_.valid() && !signpost_.epoch(ep)) return false;  // torn read: look again later
   if (ep == signpost_epoch_) {
     // Still the advertised current, yet starved: if its publisher group is dead no rotation is
     // coming, and this mapping pins a dead stream. Flag it for the owner.
