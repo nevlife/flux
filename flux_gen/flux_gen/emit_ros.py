@@ -42,10 +42,10 @@ def ros_py_module(type_name):
     return f"{pkg}.msg", name
 
 
-def _access(base, path, sep="."):
+def _access(base, path):
     out = base
     for part in path:
-        out = f"{out}[{part}]" if isinstance(part, int) else f"{out}{sep}{part}"
+        out = f"{out}[{part}]" if isinstance(part, int) else f"{out}.{part}"
     return out
 
 

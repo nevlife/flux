@@ -87,10 +87,9 @@ def _parse_size(inner, tok, ctx):
     return size
 
 
-def _parse_type(tok, ctx=None):
+def _parse_type(tok, ctx):
     """Split a type token into (base, kind, size). Handles T, T[], T[N], T[<=N] and the
     string bound form string<=N (bound dropped -- a bounded string is still a var tail)."""
-    ctx = ctx or {}
     base = tok
     kind = ArrayKind.SCALAR
     size = 0
@@ -221,8 +220,8 @@ class Registry(dict):
     unqualified reference is a wrong fingerprint that both generated ends then agree on.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self):
+        super().__init__()
         self.ambiguous = {}
         self._owners = {}
 
