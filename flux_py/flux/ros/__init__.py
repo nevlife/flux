@@ -657,19 +657,7 @@ class _FluxChild:
         self._flux.stop()
 
     def join(self):
-        if self.thread is None:
-            return
-        self.thread.join(timeout=5.0)
-        if self.thread.is_alive():
-            # Bounded so one wedged group cannot hang the whole teardown, but never silent: an
-            # abandoned thread is what turns a stuck child into a SIGABRT at interpreter exit,
-            # and that used to arrive with nothing said about where it came from.
-            warnings.warn(
-                f"flux: PartitionedExecutor child {self._label!r} did not stop within 5 s and was abandoned; "
-                "the process may abort at interpreter shutdown",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+        _join_child(self.thread, self._label)
 
 
 class _RosChild:
@@ -708,20 +696,24 @@ class _RosChild:
             pass
 
     def join(self):
-        if self.thread is None:
-            return
-        self.thread.join(timeout=5.0)
-        if self.thread.is_alive():
-            # Bounded so one wedged group cannot hang the whole teardown, but never silent: an
-            # abandoned thread is what turns a stuck child into a SIGABRT at interpreter exit,
-            # and that used to arrive with nothing said about where it came from.
-            warnings.warn(
-                f"flux: PartitionedExecutor child {self._label!r} did not stop within 5 s and was abandoned; "
-                "the process may abort at interpreter shutdown",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+        _join_child(self.thread, self._label)
         self._exec.remove_node(self._node)
+
+
+def _join_child(thread, label):
+    if thread is None:
+        return
+    thread.join(timeout=5.0)
+    if thread.is_alive():
+        # Bounded so one wedged group cannot hang the whole teardown, but never silent: an
+        # abandoned thread is what turns a stuck child into a SIGABRT at interpreter exit,
+        # and that used to arrive with nothing said about where it came from.
+        warnings.warn(
+            f"flux: PartitionedExecutor child {label!r} did not stop within 5 s and was abandoned; "
+            "the process may abort at interpreter shutdown",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
 def _require_flux_only(group):
