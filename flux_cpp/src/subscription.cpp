@@ -71,7 +71,7 @@ bool Subscription::attach()
   } catch (const std::runtime_error &) {
     return false;  // the publisher left between the probe above and the open
   }
-  ch_->qos(qos_);  // validated in the constructor, so this cannot throw here
+  ch_->qos(qos_);
   return true;
 }
 

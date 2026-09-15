@@ -233,8 +233,6 @@ sensor_msgs::msg::PointCloud2::SharedPtr PointCloud2Display::takeFrame()
   return msg;
 }
 
-// The view lives inside takeFrame(), so the slot is back with the publisher before the
-// transformers and the TF lookup run on the copy.
 void PointCloud2Display::update(float wall_dt, float ros_dt)
 {
   if (sub_) {

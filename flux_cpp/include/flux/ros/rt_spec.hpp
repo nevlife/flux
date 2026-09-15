@@ -19,10 +19,9 @@ namespace flux::ros
 
 // One thread on the chain.
 //
-// `external` marks a thread flux cannot set -- an rmw listener, a CUDA worker, a node handed to
-// some other executor. Those are declared anyway: a stage flux merely omits and a stage flux does
-// not own must not look alike, and the second is a normal part of every chain that mixes flux
-// with ROS transport.
+// `external` marks a thread flux cannot set: an rmw listener, a CUDA worker, a node handed to
+// some other executor. Declared anyway, so a stage flux merely omits and a stage flux does not
+// own do not look alike.
 struct RtStage
 {
   std::string node;   // fully-qualified ROS node name
@@ -45,17 +44,15 @@ std::string stage_name(const std::string & node, const std::string & group);
 void reject_external(const RtStage & stage, const char * caller);
 }  // namespace detail
 
-// A parsed declaration file. Every rule it enforces is checked once, here, against the whole file
-// -- which is the reason the declarations live in one file at all. Per-node settings cannot check
-// an ordering no single node can see.
+// A parsed declaration file. Every rule it enforces is checked once, here, against the whole
+// file. That is why the declarations live in one file: per-node settings cannot check an
+// ordering no single node can see.
 class RtSpec
 {
 public:
   RtSpec() = default;
 
-  // Parse `path`. Throws std::runtime_error on any violation: an unknown key, a missing one, a
-  // chain whose RT priorities do not strictly increase along the flow, or one stage declared
-  // twice with different settings.
+  // Parse `path`. Throws std::runtime_error on any violation (docs/en/api.en.md, RtSpec).
   static RtSpec load(const std::string & path);
 
   // Parse the path in FLUX_RT_SPEC. Unset leaves an empty spec, which is the no-op every node
@@ -65,8 +62,8 @@ public:
   bool empty() const noexcept { return stages_.empty(); }
   const std::vector<RtStage> & stages() const noexcept { return stages_; }
 
-  // The stage declared for this node and group label. Throws if the file does not name it: a
-  // label the file never heard of is a typo, and applying nothing would hide it.
+  // The stage declared for this node and group label. Throws if the file does not name it:
+  // applying nothing would hide a typo.
   const RtStage & stage(const rclcpp::Node & node, const std::string & group = "") const;
 
   // Same lookup without the throw; nullptr when absent.
@@ -80,26 +77,17 @@ private:
   std::vector<RtStage> stages_;
 };
 
-// Put a declared stage on the CALLING thread: the bare-thread counterpart of
-// PartitionedExecutor::schedule. A node's own worker (an inference loop, a driver poll) is a
-// chain stage like any other -- the file names it by a label the caller picks, exactly as it names
-// a callback group -- but no executor owns that thread, so only the thread itself can apply.
-//
-// Takes the stage whole for the reason schedule does. `strict` and `control_priority` are the two
-// values no single node can derive, and passing them field by field is where they get lost:
-// control_priority defaults to 0, which turns the priority-order check into Unknown without
-// saying so. Rejects an external stage, like schedule.
+// Put a declared stage on the calling thread: the bare-thread counterpart of
+// PartitionedExecutor::schedule, for a worker (an inference loop, a driver poll) no executor
+// owns. Takes the stage whole for the reason schedule does, and rejects an external stage.
 rt::Report apply_checked(const RtStage & stage);
 
-// Check a thread against what the file declared for it, without setting anything. This is the
-// only thing flux ever does for an `external` stage, and for the stages it does set it is the
-// check that outlives the apply: `chrt`, systemd or a later apply by user code can move a thread
-// afterwards, and apply-time readback cannot see that.
+// Check a thread against what the file declared for it, without setting anything: the only
+// thing flux does for an `external` stage, and for the stages it sets the check that outlives
+// the apply (`chrt`, systemd or a later apply can move a thread afterwards).
 //
-// `tid` is the thread to read (rt::this_tid on the thread itself, or a tid the caller resolved),
-// not the stage's owner -- the file names stages by node and label, and nothing in it maps a
-// label to a kernel thread. Findings: `observed-policy`, `observed-priority`, `observed-cpus`.
-// A thread that cannot be read is a Fail, not an absent finding.
+// `tid` is the thread to read (rt::this_tid on the thread itself, or a tid the caller resolved).
+// The file names stages by node and label, and nothing in it maps a label to a kernel thread.
 rt::Report verify(const RtStage & stage, int tid);
 
 }  // namespace flux::ros

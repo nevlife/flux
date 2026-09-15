@@ -27,16 +27,10 @@
 namespace flux::ros
 {
 
-// Single-threaded executor that blocks on ONE io_uring for both flux subscriptions and ROS
-// entities. The merged wait itself is flux::Executor, which knows nothing about ROS; this class
-// adds the bridge that makes ROS readiness poke that wait (a POLLIN on the wake fd, fed by the
-// readiness callback of every subscription, service, client and waitable).
-//
-// It waits itself but does NOT take ROS messages itself: once the wake fd fires it hands the node
-// over to rclcpp's own execution path. Taking by hand means re-implementing every branch rclcpp
-// already has -- serialized subscriptions need a different take, intra-process ones are notified
-// through a different object entirely -- and getting one wrong fails silently. Inheriting buys
-// those branches, plus timers and services, at no cost to the merged wait.
+// Single-threaded executor that blocks on one io_uring for both flux subscriptions and ROS
+// entities. The merged wait is flux::Executor, which knows nothing about ROS; this class adds
+// the bridge that makes ROS readiness poke that wait, and hands ready ROS entities to rclcpp's
+// own execution path rather than taking them itself (docs/en/api.en.md, Executor).
 //
 // Like rclcpp's executors it drives entities it is handed; it does not create them.
 class Executor : public rclcpp::Executor
@@ -51,28 +45,21 @@ public:
   Executor & operator=(const Executor &) = delete;
 
   // Drive a flux subscription: its callback runs on the spin thread, once per frame its QoS
-  // admits. The subscription must outlive this executor and must carry a callback. Registration
-  // is pre-spin only: this and the other add calls throw std::logic_error while spin() runs (the
-  // spin thread iterates these lists).
-  //
-  // `priority` orders the visit within a pass, higher first, ties in registration order. It is
-  // an ordering priority, not a preemptive one.
+  // admits. The subscription must outlive this executor and must carry a callback. This and the
+  // other add calls throw std::logic_error while spin() runs: the spin thread iterates these
+  // lists without a lock. `priority` orders the visit within a pass, higher first.
   void add(Subscription & sub, int priority = 0);
 
-  // Drive any flux::Source: what a Subscription is one of, and what a message_filters Subscriber
-  // (flux/ros/message_filters/subscriber.hpp) is another. The narrower overload above exists to
-  // reject a Subscription with no callback; a Source is asked to deliver and answers for itself,
-  // so there is nothing to check here.
+  // Drive any flux::Source, such as a message_filters Subscriber
+  // (flux/ros/message_filters/subscriber.hpp). The narrower overload above exists to reject a
+  // Subscription with no callback; a Source answers for itself, so there is nothing to check here.
   void add(flux::Source & src, int priority = 0);
 
-  // Drive a ROS node: rclcpp services its subscriptions, timers, services and actions exactly as
-  // its own executor would, while readiness reaches the merged wait through the wake fd. Every
-  // entity that has a readiness callback is hooked -- subscriptions (both the rmw queue and, with
-  // intra-process comms on, the intra-process waitable), services, clients, and waitables, which
-  // is what an action server and an action client each are. Timers have no such event and are
-  // answered by shortening the wait to the nearest deadline instead. Entities created after this
-  // call are bridged at the top of the next spin pass. Do not also hand the node to an rclcpp
-  // executor.
+  // Drive a ROS node: rclcpp services its entities as its own executor would, while readiness
+  // reaches the merged wait through the wake fd. Every entity with a readiness callback is
+  // hooked; timers have none and are answered by shortening the wait to the nearest deadline.
+  // Entities created after this call are bridged at the top of the next spin pass. Do not also
+  // hand the node to an rclcpp executor.
   void add_ros_node(const rclcpp::Node::SharedPtr & node);
 
   // Drive one callback group instead of a whole node: the group is claimed
@@ -98,17 +85,10 @@ public:
   void remove_callback_group(
     rclcpp::CallbackGroup::SharedPtr group_ptr, bool notify = true) override;
 
-  // Three of the inherited entry points have an exact flux meaning, so they are implemented
-  // rather than refused: spin() is spin(default tick), cancel() is stop(), and spin_once(timeout)
-  // is spin_once(timeout.count()). Overriding them is what keeps `ex.spin()` from reaching
-  // rclcpp's own loop, which would service ROS entities and silently skip flux channels.
-  //
-  // The rest still throw. Their contracts are about a wait set and a
-  // duration budget this executor does not have, and a plausible-looking approximation that is
-  // subtly wrong is worse than a refusal the caller can see.
-  //
-  // Virtual in rclcpp since Jazzy (28) only. On Humble these are plain members, so cancel()
-  // through `rclcpp::Executor &` is rclcpp's and does not stop this executor.
+  // Three inherited entry points have an exact flux meaning and are implemented: spin() is
+  // spin(default tick), cancel() is stop(), spin_once(timeout) is spin_once(timeout.count()).
+  // The rest throw (docs/en/api.en.md, Executor). Virtual in rclcpp since Jazzy (28) only: on
+  // Humble cancel() through `rclcpp::Executor &` is rclcpp's and does not stop this executor.
 #if defined(RCLCPP_VERSION_MAJOR) && RCLCPP_VERSION_MAJOR >= 28
 #define FLUX_ROS_OVERRIDE_SINCE_JAZZY override
 #else
@@ -166,9 +146,8 @@ public:
   // long as it lasts.
   //
   // Raises rclcpp's `spinning` for the pass and restores it. rclcpp reads that flag twice per
-  // entity -- to hand work over, and to run it -- because clearing it is how cancel() discards
-  // work found before the cancel. A pass that never raises it is indistinguishable from a
-  // cancelled executor and services nothing. is_spinning() is true for the pass.
+  // entity, to hand work over and to run it, because clearing it is how cancel() discards work
+  // found before the cancel. A pass that never raises it services nothing.
   int pump_ros(int budget);
   int pump_ros() { return pump_ros(ros_budget_); }
 
@@ -191,7 +170,6 @@ public:
   // thread fallback is active because the kernel lacks io_uring FUTEX_WAIT.
   bool uses_io_uring() const noexcept { return core_.uses_io_uring(); }
 
-  // Registered flux subscriptions.
   std::size_t size() const noexcept { return core_.size(); }
 
 private:
@@ -226,10 +204,8 @@ private:
   std::vector<rclcpp::node_interfaces::NodeBaseInterface::WeakPtr> ros_nodes_;
   std::vector<rclcpp::CallbackGroup::WeakPtr> ros_groups_;  // group mode: same re-scan, one group
   // Keyed by address so a re-scan can skip what is already bridged; weak so this executor does
-  // not keep an entity the user dropped alive just to signal for it. Services, clients and
-  // waitables are bridged for the same reason subscriptions are: without a hook they are ready
-  // only as far as the tick can see, and an action -- which is one waitable -- would take up to
-  // a full tick to accept a goal.
+  // not keep an entity the user dropped alive just to signal for it. Without a hook an entity is
+  // ready only as far as the tick can see, so an action would take up to a tick to accept a goal.
   std::unordered_map<const rclcpp::SubscriptionBase *, rclcpp::SubscriptionBase::WeakPtr> ros_subs_;
   std::unordered_map<const rclcpp::ServiceBase *, rclcpp::ServiceBase::WeakPtr> ros_services_;
   std::unordered_map<const rclcpp::ClientBase *, rclcpp::ClientBase::WeakPtr> ros_clients_;

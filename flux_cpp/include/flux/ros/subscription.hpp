@@ -23,26 +23,20 @@ namespace flux::ros
 // rclcpp::Subscription does for ROS. Attaches lazily (the publisher may start later). The
 // FrameView holds the borrow only for the duration of one call; copy out anything kept longer.
 //
-// Two ways to read it, and the callback decides which. With one, hand this to a
-// flux::ros::Executor or a PartitionedExecutor and the callback runs per frame on their
-// spin thread. Without one, read it yourself with peek()/take()/take_blocking() on whatever
-// schedule you already have.
+// Two ways to read it, and the callback decides which: with one, hand this to a
+// flux::ros::Executor or a PartitionedExecutor; without one, peek()/take()/take_blocking() on
+// your own schedule. It never drives itself: a periodic wake would charge every subscription a
+// latency bound and idle wakeups the futex does not.
 //
-// It never drives itself. A wall-timer path used to exist and was removed: it woke on a period
-// rather than on a publish, so every subscription paid a latency bound and an idle wakeup that
-// the futex does not.
-//
-// `qos` decides which frames are delivered (docs/en/qos.en.md): depth == 1 yields the newest only,
-// depth == N drains up to N per wake in publish order, durability whether the ring's backlog is
-// replayed on attach. Throws std::invalid_argument if the QoS is not honourable.
+// `qos` decides which frames are delivered (docs/en/qos.en.md). Throws std::invalid_argument if
+// the QoS is not honourable.
 class Subscription : public flux::Source
 {
 public:
   using Callback = std::function<void(const FrameView &)>;
 
-  // `mem` is opt-in page residency for this subscriber's own mapping. It is
-  // per-process: a publisher that committed its pages says nothing about this mapping, and it is
-  // re-applied on every re-attach.
+  // `mem` is opt-in page residency for this subscriber's own mapping, re-applied on every
+  // re-attach. A publisher that committed its pages says nothing about this mapping.
   Subscription(
     rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
     Callback cb = {}, const QoS & qos = QoS{}, Device device = Device::Cpu,
@@ -74,10 +68,8 @@ public:
   // currently points at.
   const std::string & segment_name() const noexcept { return seg_name_; }
 
-  // This process's domain, the one this subscription searched.
-  // attached() says whether a publisher was found; this says where it looked. Apart, they
-  // separate "no publisher yet" from "a publisher exists, in a domain this node is not looking
-  // in" -- one frameless subscription otherwise.
+  // This process's domain, the one this subscription searched. attached() says whether a
+  // publisher was found; this says where it looked (docs/en/api.en.md, Subscription).
   const std::string & domain() const noexcept { return flux::process_domain(); }
   const QoS & qos() const noexcept { return qos_; }
 
@@ -100,7 +92,7 @@ public:
   // a kernel through device_ptr() rather than host loads through data().
   bool host_addressable() const noexcept { return ch_ ? ch_->host_addressable() : true; }
 
-  // The stream a consuming kernel must be launched on -- the one a release waits for. Undeclared
+  // The stream a consuming kernel must be launched on, the one a release waits for. Undeclared
   // on a host subscription.
   const gpu::Stream & stream() const noexcept { return stream_; }
 

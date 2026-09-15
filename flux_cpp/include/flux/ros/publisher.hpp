@@ -17,23 +17,21 @@ class Node;
 namespace flux::ros
 {
 
-// Publisher side of a flux channel, named after a ROS topic. Creates the shm segment
-// and publishes zero-copy frames into it. The owning node keeps using its
-// normal rclcpp publishers alongside this -- flux is opt-in per topic.
+// Publisher side of a flux channel, named after a ROS topic. Creates the shm segment and
+// publishes zero-copy frames into it. The owning node keeps using its normal rclcpp publishers
+// alongside this; flux is opt-in per topic.
 class Publisher
 {
 public:
   // Defaults match flux_py so both languages size a channel the same way. slot_size is an upper
-  // bound, not an allocation: the payload region is never touched at init, so tmpfs keeps it
-  // sparse and idle RAM stays near zero however large it is. slot_count is the ring depth --
-  // it bounds concurrent borrows and the retained history (ROS 2: the publisher's History
-  // depth), so it caps every consumer's depth and replay.
+  // bound, not an allocation (the payload stays sparse tmpfs); slot_count is the ring depth and
+  // caps every consumer's depth and replay.
   static constexpr std::uint32_t kDefaultSlotSize = 16u << 20;  // 16 MiB
   static constexpr std::uint32_t kDefaultSlotCount = 16u;
 
   // `device` declares what this publisher's frames are produced on.
   // Device::Cuda makes flux create the stream commit() fences on; a caller that already has one
-  // passes it to Channel directly instead. Throws when this host cannot serve the declaration --
+  // passes it to Channel directly instead. Throws when this host cannot serve the declaration:
   // a publisher that believes it is on the GPU must not quietly run off it.
   //
   // `mem` is opt-in page residency for this publisher's mapping. It covers this
@@ -69,7 +67,7 @@ public:
   // Bytes one slot holds. A generated adapter loans this much and commits the prefix it filled.
   std::uint32_t slot_size() const noexcept { return ch_.slot_size(); }
 
-  // The stream a producing kernel must be launched on -- the one commit() waits for. Undeclared
+  // The stream a producing kernel must be launched on, the one commit() waits for. Undeclared
   // on a host publisher.
   const gpu::Stream & stream() const noexcept { return ch_.stream(); }
 
@@ -79,9 +77,9 @@ public:
   std::uint64_t fence_failed() const noexcept { return ch_.fence_failed(); }
 
   // False when this channel's slots are GPU memory (a discrete GPU). publish() copies from host
-  // memory and so always fails there; loan() plus a kernel is the publish path. Asked
-  // rather than thrown, because publish() is noexcept for the hard-RT path -- flux_py, which has
-  // no such constraint and no header to read, raises instead (docs/en/contracts.en.md 3).
+  // memory and so always fails there; loan() plus a kernel is the publish path. Asked rather
+  // than thrown, because publish() is noexcept for the hard-RT path. flux_py, which has no such
+  // constraint and no header to read, raises instead (docs/en/contracts.en.md 3).
   bool host_addressable() const noexcept { return ch_.host_addressable(); }
 
   // How long commit blocked waiting on the declared stream. The
@@ -92,14 +90,12 @@ public:
   // policy that asked and was refused threw at construction rather than reporting false here.
   bool pages_committed() const noexcept { return ch_.pages_committed(); }
   bool pages_locked() const noexcept { return ch_.pages_locked(); }
-  // The fixed rendezvous name derived from the resolved topic + fingerprint -- the signpost,
-  // not the segment. The segment behind it carries a per-instance
-  // owner-id suffix and changes on every publisher restart.
+  // The signpost: the fixed name from the resolved topic and fingerprint, not the segment behind
+  // it, which carries an owner-id suffix and changes on every publisher restart.
   const std::string & segment_name() const noexcept { return seg_name_; }
 
-  // This process's domain, the one every name it builds carries.
-  // Reported because a domain this node did not expect is invisible otherwise: peers in another
-  // domain simply never appear, which reads exactly like a peer that has not started yet.
+  // This process's domain, the one every name it builds carries. A peer in another domain never
+  // appears, which reads like a peer that has not started yet.
   const std::string & domain() const noexcept { return flux::process_domain(); }
 
 private:

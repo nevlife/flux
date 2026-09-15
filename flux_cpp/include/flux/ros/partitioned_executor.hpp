@@ -32,7 +32,7 @@ namespace detail
 
 // One input of a synchronizer, reduced to whatever this executor can place on a thread. A flux
 // input is placed by add(); a plain ROS input by the callback group its subscription sits in.
-// Both null is an input this executor cannot place -- a chained filter, or a subscription whose
+// Both null is an input this executor cannot place: a chained filter, or a subscription whose
 // node was never handed to add_ros_node().
 struct SyncInput
 {
@@ -63,11 +63,9 @@ SyncInput as_sync_input(T & in)
 }
 }  // namespace detail
 
-// Callback-group partitioning: one child executor and one thread per callback
-// group, so no group's callback can delay another group's. A group holding flux subscriptions
-// gets a flux::ros::Executor sized to exactly those subscriptions (its own io_uring); a pure ROS
-// group gets a stock rclcpp SingleThreadedExecutor. The thread calling spin() only spawns
-// children and scans for callback groups created after spin started -- it runs no callbacks.
+// One child executor and one thread per callback group, so no group's callback can delay
+// another group's (docs/en/api.en.md, PartitionedExecutor). The thread calling spin() only
+// spawns children and scans for groups created after spin started; it runs no callbacks.
 class PartitionedExecutor
 {
 public:
@@ -77,31 +75,22 @@ public:
   PartitionedExecutor & operator=(const PartitionedExecutor &) = delete;
 
   // Assign a flux subscription to a callback group: same group, same thread. The group must
-  // belong to a node handed to add_ros_node() -- if its ROS callbacks ran on another executor
-  // the group's mutual exclusion would break, so flux-only assignments are rejected at spin.
+  // belong to a node handed to add_ros_node(); flux-only assignments are rejected at spin, since
+  // the group's ROS callbacks running on another executor would break its mutual exclusion.
   void add(Subscription & sub, const rclcpp::CallbackGroup::SharedPtr & group, int priority = 0);
 
-  // Same, for any flux::Source -- a message_filters Subscriber
-  // (flux/ros/message_filters/subscriber.hpp) is one. Assigning every input of one synchronizer
-  // to the same group is not a convention here but a requirement: the sync policy runs the
-  // matched callback while holding its own std::mutex, so inputs on two group threads couple
-  // those groups' priorities through a lock with no priority inheritance.
-  //
-  // `priority` orders the visit within the group's own pass, higher first, ties in registration
-  // order. It never crosses groups: those are separate threads and the OS orders them by the
-  // thread priority schedule() declares.
+  // Same, for any flux::Source, such as a message_filters Subscriber
+  // (flux/ros/message_filters/subscriber.hpp). Every input of one synchronizer must sit in the
+  // same group: the sync policy runs the matched callback under its own std::mutex, which has no
+  // priority inheritance, so inputs on two group threads would couple those groups' priorities.
+  // `priority` orders the visit within the group's own pass and never crosses groups.
   void add(flux::Source & src, const rclcpp::CallbackGroup::SharedPtr & group, int priority = 0);
 
-  // Declare that these inputs feed one synchronizer, so spin() can check they land on one thread.
-  // The requirement is the one add() above states; this is what turns it from prose into a
-  // refusal. A synchronizer does not tell anyone what its inputs are, so the set has to be
-  // declared -- upstream message_filters has no seam that would reveal it.
-  //
-  // Takes flux inputs and plain ROS message_filters::Subscriber alike: a graph mixing a flux
-  // topic with a DDS topic is the case this check exists for, because there the two inputs are
-  // serviced by different machinery (dispatch() and pump_ros()) that only a shared group puts on
-  // one thread. An input this executor cannot place is reported by unplaced_sync_inputs() rather
-  // than judged -- the same line rt::verify draws with Unknown findings.
+  // Declare that these inputs feed one synchronizer, so spin() can refuse inputs on two threads.
+  // The set has to be declared: upstream message_filters has no seam that reveals it. Takes flux
+  // inputs and plain ROS message_filters::Subscriber alike, since a graph mixing a flux topic
+  // with a DDS topic is the case this check exists for. An input this executor cannot place is
+  // reported by unplaced_sync_inputs() rather than judged.
   template <typename... Inputs>
   void add_sync_group(Inputs &... inputs)
   {
@@ -120,24 +109,16 @@ public:
   void add_ros_node(const rclcpp::Node::SharedPtr & node);
 
   // Declare the thread scheduling for the child that will serve `group`. The child applies it to
-  // itself before running any callback, so the thread never runs at the wrong priority. A refusal
-  // is the spin() error, not a downgrade. One schedule per group, and the group must actually be
-  // served here: a schedule that would silently never apply is rejected at spin.
-  //
-  // The child applies through rt::apply_checked, so preflight runs on the way in rather than only
-  // when a caller remembers to ask. `strict` decides what a Warn does -- Soft tolerates a host
-  // that is not configured for bounded latency, Hard refuses it.
-  // `control_priority` declares the consumer's control loop priority so transport can be checked
-  // to stay below it; left at 0 the check is reported Unknown rather than skipped silently.
+  // itself through rt::apply_checked before running any callback; a refusal is the spin() error,
+  // not a downgrade. One per group, and the group must be served here. `strict` decides what a
+  // Warn does. `control_priority` is the consumer's control loop priority, so transport can be
+  // checked to stay below it; left at 0 that check is reported Unknown.
   void schedule(
     const rclcpp::CallbackGroup::SharedPtr & group, const rt::Options & sched,
     rt::Strictness strict = rt::Strictness::Soft, int control_priority = 0);
 
-  // Same, taking a stage the declaration file already resolved. Strictness and
-  // control priority come from the chain rather than from this call site, which is the point of
-  // declaring the chain in one place: no node can derive them from its own settings alone.
-  // Rejects an external stage -- flux does not set those, and pretending to would put the one
-  // thread the file marked as somebody else's under this executor's schedule.
+  // Same, taking a stage the declaration file resolved: strictness and control priority come
+  // from the chain, which no node can derive from its own settings. Rejects an external stage.
   void schedule(const rclcpp::CallbackGroup::SharedPtr & group, const RtStage & stage);
 
   // Spawn one child per callback group and block until stop(). Re-scans the registered nodes
@@ -177,7 +158,7 @@ private:
   void check_sync_groups(const GroupMap & known);
   void check_schedule_labels(const GroupMap & known) const;
 
-  SpinControl ctl_;                     // wake fd, the spin/stop flag pair, and the reentry guard
+  SpinControl ctl_;
   std::atomic<bool> child_run_{false};  // parent-owned: children never see the caller's flag
 
   struct Assigned
@@ -186,11 +167,9 @@ private:
     int priority = 0;
   };
   std::vector<std::pair<rclcpp::CallbackGroup::SharedPtr, std::vector<Assigned>>> assigned_;
-  // One declared schedule: the thread options plus how strictly preflight's verdicts are read.
-  // `node` and `label` carry the stage's identity when a declaration file named this schedule, so
-  // spin() can check the name the file used against the group the call site handed over. An
-  // rclcpp callback group has no name of its own, so that pairing is the only thing linking the
-  // two, and nothing checked it.
+  // One declared schedule. `node` and `label` carry the stage's identity when a declaration file
+  // named it, so spin() can check the file's name against the group handed over: an rclcpp
+  // callback group has no name of its own, so that pairing is the only link between the two.
   struct Sched
   {
     rt::Options opts;
