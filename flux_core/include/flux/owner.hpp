@@ -28,7 +28,6 @@ struct OwnerId
   {
     return pid == o.pid && starttime == o.starttime;
   }
-  bool operator!=(const OwnerId & o) const noexcept { return !(*this == o); }
 };
 
 // The shm owner-file name for an identity: `/flux.owner.<pid>.<starttime>`.

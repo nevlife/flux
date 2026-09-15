@@ -21,12 +21,10 @@ namespace flux::gpu::detail
 constexpr int kSuccess = 0;
 
 constexpr int kAttrIntegrated = 18;
-constexpr int kAttrUnifiedAddressing = 41;
 constexpr int kAttrPageableMemoryAccess = 88;
 constexpr int kAttrHostRegisterSupported = 99;
 constexpr int kAttrVmmSupported = 102;
 constexpr int kAttrPosixFdHandleSupported = 103;
-constexpr int kAttrIpcEventSupported = 125;
 
 constexpr int kMemAllocationTypePinned = 0x1;
 constexpr int kMemHandleTypePosixFd = 0x1;

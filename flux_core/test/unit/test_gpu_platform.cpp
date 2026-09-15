@@ -41,7 +41,7 @@ TEST(GpuPlatform, ProbeIsTotal)
 
   std::cerr << "gpu route=" << flux::gpu::to_string(p.route) << " integrated=" << p.integrated
             << " pageable=" << p.pageable_access << " host_register=" << p.host_register
-            << " vmm=" << p.vmm << " fd=" << p.posix_fd_handle << " ipc_event=" << p.ipc_event
+            << " vmm=" << p.vmm << " fd=" << p.posix_fd_handle
             << " reason=\"" << p.reason << "\"\n";
 }
 

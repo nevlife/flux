@@ -27,10 +27,8 @@ using detail::Driver;
 using detail::ensure_context;
 using detail::kAttrHostRegisterSupported;
 using detail::kAttrIntegrated;
-using detail::kAttrIpcEventSupported;
 using detail::kAttrPageableMemoryAccess;
 using detail::kAttrPosixFdHandleSupported;
-using detail::kAttrUnifiedAddressing;
 using detail::kAttrVmmSupported;
 using detail::kMemHostRegisterDeviceMap;
 using detail::kMemHostRegisterReadOnly;
@@ -69,12 +67,10 @@ Platform probe(int device)
   Platform p;
   p.device = device;
   p.integrated = drv.attribute(handle, kAttrIntegrated);
-  p.unified_addressing = drv.attribute(handle, kAttrUnifiedAddressing);
   p.pageable_access = drv.attribute(handle, kAttrPageableMemoryAccess);
   p.host_register = drv.attribute(handle, kAttrHostRegisterSupported);
   p.vmm = drv.attribute(handle, kAttrVmmSupported);
   p.posix_fd_handle = drv.attribute(handle, kAttrPosixFdHandleSupported);
-  p.ipc_event = drv.attribute(handle, kAttrIpcEventSupported);
 
   p.route = select(p);
   if (p.route == Route::None) {

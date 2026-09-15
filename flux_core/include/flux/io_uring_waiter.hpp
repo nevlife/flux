@@ -79,11 +79,6 @@ public:
 
   bool valid() const noexcept { return ring_fd_ >= 0; }
 
-  // How many waits may be armed between two wait() calls. Arming more than this in one round
-  // would overwrite an unsubmitted entry, so arm()/arm_poll() flush instead; a caller that
-  // wants every wait in one syscall sizes the ring with `entries`.
-  unsigned capacity() const noexcept { return sq_entries_; }
-
   // Arm a one-shot FUTEX_WAIT on `word`, expecting it still equals `expected`. `tag`
   // identifies the channel and comes back from wait(). If *word already != expected the
   // kernel completes it at submit time (data pending) -- still reported by wait().

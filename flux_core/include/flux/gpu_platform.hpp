@@ -42,12 +42,10 @@ struct Platform
   Route route = Route::None;
   int device = -1;
   bool integrated = false;
-  bool unified_addressing = false;
   bool pageable_access = false;
   bool host_register = false;
   bool vmm = false;
   bool posix_fd_handle = false;
-  bool ipc_event = false;
   std::string reason;  // non-empty exactly when route == None
 
   // True when a host shm mapping is the GPU buffer, so the engine keeps StorageKind::HostInline

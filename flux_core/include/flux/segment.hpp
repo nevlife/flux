@@ -20,9 +20,7 @@ struct SegmentId
   std::uint64_t dev = 0;
   std::uint64_t ino = 0;
 
-  bool valid() const noexcept { return ino != 0; }
   bool operator==(const SegmentId & o) const noexcept { return dev == o.dev && ino == o.ino; }
-  bool operator!=(const SegmentId & o) const noexcept { return !(*this == o); }
 };
 
 // Owns the backing memory for one channel and exposes its base pointer + layout. Two backings:
