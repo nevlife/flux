@@ -59,8 +59,8 @@ private:
   void setupRenderPanel();
   void subscribe();
   void unsubscribe();
-  bool ensureTexture(std::uint32_t width, std::uint32_t height, Ogre::PixelFormat format);
-  bool ensureNv12Textures(std::uint32_t width, std::uint32_t height);
+  void ensureTexture(std::uint32_t width, std::uint32_t height, Ogre::PixelFormat format);
+  void ensureNv12Textures(std::uint32_t width, std::uint32_t height);
   void setupNv12Material(const std::string & id);
   void setupRangeMaterial(const std::string & id);
   void setRange(float lo, float hi);

@@ -275,11 +275,9 @@ void ImageDisplay::setupNv12Material(const std::string & id)
   params->setNamedConstant("texUV", 1);
 }
 
-bool ImageDisplay::ensureNv12Textures(std::uint32_t width, std::uint32_t height)
+void ImageDisplay::ensureNv12Textures(std::uint32_t width, std::uint32_t height)
 {
-  if (y_texture_ && width == width_ && height == height_ && nv12_active_) {
-    return true;
-  }
+  if (y_texture_ && width == width_ && height == height_ && nv12_active_) return;
   auto & tm = Ogre::TextureManager::getSingleton();
   if (y_texture_) {
     tm.remove(y_texture_);
@@ -297,9 +295,6 @@ bool ImageDisplay::ensureNv12Textures(std::uint32_t width, std::uint32_t height)
   uv_texture_ = tm.createManual(
     base + "UV", group, Ogre::TEX_TYPE_2D, width / 2, height / 2, 0, Ogre::PF_BYTE_LA,
     Ogre::TU_DYNAMIC_WRITE_ONLY_DISCARDABLE);
-  if (!y_texture_ || !uv_texture_) {
-    return false;
-  }
   Ogre::Pass * pass = nv12_material_->getTechnique(0)->getPass(0);
   pass->getTextureUnitState(0)->setTexture(y_texture_);
   pass->getTextureUnitState(1)->setTexture(uv_texture_);
@@ -308,7 +303,6 @@ bool ImageDisplay::ensureNv12Textures(std::uint32_t width, std::uint32_t height)
   height_ = height;
   format_ = Ogre::PF_UNKNOWN;
   nv12_active_ = true;
-  return true;
 }
 
 void ImageDisplay::setupRenderPanel()
@@ -379,11 +373,11 @@ void ImageDisplay::unsubscribe()
   sub_.reset();
 }
 
-bool ImageDisplay::ensureTexture(
+void ImageDisplay::ensureTexture(
   std::uint32_t width, std::uint32_t height, Ogre::PixelFormat format)
 {
   if (texture_ && width == width_ && height == height_ && format == format_ && !nv12_active_) {
-    return true;
+    return;
   }
   if (texture_) {
     Ogre::TextureManager::getSingleton().remove(texture_);
@@ -393,9 +387,6 @@ bool ImageDisplay::ensureTexture(
   texture_ = Ogre::TextureManager::getSingleton().createManual(
     name, material_->getGroup(), Ogre::TEX_TYPE_2D, width, height, 0, format,
     Ogre::TU_DYNAMIC_WRITE_ONLY_DISCARDABLE);
-  if (!texture_) {
-    return false;
-  }
   if (is_range_format(format)) {
     range_material_->getTechnique(0)->getPass(0)->getTextureUnitState(0)->setTexture(texture_);
     screen_rect_->setMaterial(range_material_);
@@ -407,7 +398,6 @@ bool ImageDisplay::ensureTexture(
   height_ = height;
   format_ = format;
   nv12_active_ = false;
-  return true;
 }
 
 void ImageDisplay::fitRectangleToImage()
@@ -465,10 +455,7 @@ void ImageDisplay::update(float, float)
       setStatus(StatusProperty::Error, "Image", "NV12 frame shorter than width x height x 1.5");
       return;
     }
-    if (!ensureNv12Textures(width, height)) {
-      setStatus(StatusProperty::Error, "Image", "Texture allocation failed");
-      return;
-    }
+    ensureNv12Textures(width, height);
     Ogre::PixelBox ybox(width, height, 1, Ogre::PF_BYTE_L, const_cast<std::uint8_t *>(data.data()));
     ybox.rowPitch = step;
     ybox.slicePitch = ybox.rowPitch * height;
@@ -494,10 +481,7 @@ void ImageDisplay::update(float, float)
       setStatus(StatusProperty::Error, "Image", "Frame data shorter than width x height x step");
       return;
     }
-    if (!ensureTexture(width, height, format)) {
-      setStatus(StatusProperty::Error, "Image", "Texture allocation failed");
-      return;
-    }
+    ensureTexture(width, height, format);
     // The upload reads the slot directly; `frame` is released when this function returns.
     Ogre::PixelBox box(width, height, 1, format, const_cast<std::uint8_t *>(data.data()));
     box.rowPitch = step / bpp;
