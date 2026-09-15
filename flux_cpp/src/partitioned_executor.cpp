@@ -95,8 +95,7 @@ void PartitionedExecutor::schedule_impl(const rclcpp::CallbackGroup::SharedPtr &
     // under one declaration and leave the file describing neither of them.
     if (s.from_stage && sched.from_stage && s.node == sched.node && s.label == sched.label) {
       throw std::invalid_argument(
-        "flux: stage " + sched.node + (sched.label.empty() ? "" : "/" + sched.label) +
-        " is already scheduled on another callback group; one stage declares one thread");
+        "flux: stage " + detail::stage_name(sched.node, sched.label) + " is already scheduled on another callback group; one stage declares one thread");
     }
   }
   scheduled_.push_back({group, std::move(sched)});
@@ -112,11 +111,7 @@ void PartitionedExecutor::schedule(
 void PartitionedExecutor::schedule(
   const rclcpp::CallbackGroup::SharedPtr & group, const RtStage & stage)
 {
-  if (stage.external) {
-    throw std::invalid_argument(
-      "flux: stage " + stage.node + (stage.group.empty() ? "" : "/" + stage.group) +
-      " is declared external, so flux does not set it; do not hand it to schedule()");
-  }
+  detail::reject_external(stage, "schedule()");
   schedule_impl(
     group, Sched{stage.opts, stage.strict, stage.control_priority, stage.node, stage.group, true});
 }
@@ -196,8 +191,8 @@ void PartitionedExecutor::check_schedule_labels(const GroupMap & known) const
     const std::string actual = base->get_fully_qualified_name();
     if (actual != sched.node) {
       throw std::invalid_argument(
-        "flux: schedule(group, stage): stage " + sched.node +
-        (sched.label.empty() ? "" : "/" + sched.label) + " names node " + sched.node +
+        "flux: schedule(group, stage): stage " + detail::stage_name(sched.node, sched.label) +
+        " names node " + sched.node +
         " but the group belongs to " + actual);
     }
     const bool is_default = base->get_default_callback_group() == group;
@@ -214,6 +209,16 @@ void PartitionedExecutor::check_schedule_labels(const GroupMap & known) const
         "spells as an omitted label");
     }
   }
+}
+
+void PartitionedExecutor::record_child_error() noexcept
+{
+  {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    if (!child_error_) child_error_ = std::current_exception();
+  }
+  failed_.store(true);
+  interrupt();
 }
 
 void PartitionedExecutor::spawn_children(std::int64_t tick_ns)
@@ -285,12 +290,7 @@ void PartitionedExecutor::spawn_children(std::int64_t tick_ns)
             ex->spin_once(std::chrono::nanoseconds(ros_tick));
           }
         } catch (...) {
-          {
-            std::lock_guard<std::mutex> lock(error_mutex_);
-            if (!child_error_) child_error_ = std::current_exception();
-          }
-          failed_.store(true);
-          interrupt();
+          record_child_error();
         }
       });
     } else {
@@ -303,12 +303,7 @@ void PartitionedExecutor::spawn_children(std::int64_t tick_ns)
           rt::apply_checked(sched.opts, sched.strict, sched.control_priority);
           ex->spin(child_run_, tick_ns);
         } catch (...) {
-          {
-            std::lock_guard<std::mutex> lock(error_mutex_);
-            if (!child_error_) child_error_ = std::current_exception();
-          }
-          failed_.store(true);
-          interrupt();
+          record_child_error();
         }
       });
     }

@@ -14,26 +14,17 @@
 namespace flux::ros
 {
 
-namespace
-{
-std::string resolve(rclcpp::Node & node, const std::string & topic)
-{
-  return node.get_node_topics_interface()->resolve_topic_name(topic);
-}
-
-}  // namespace
-
 Subscription::Subscription(
   rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint, Callback cb,
   const QoS & qos, Device device, const MemoryPolicy & mem)
-: seg_name_(flux::signpost_name(resolve(node, topic), fingerprint)),
+: seg_name_(flux::signpost_name(detail::resolve(node, topic), fingerprint)),
   fingerprint_(fingerprint),
   cb_(std::move(cb)),
   qos_(qos),
   stream_(gpu::stream_for(device)),  // same reason as qos_.validate(): refuse here, not later
   mem_(mem)
 {
-  detail::announce(node, seg_name_, resolve(node, topic), /*publisher=*/false);
+  detail::announce(node, seg_name_, detail::resolve(node, topic), /*publisher=*/false);
   qos_.validate();  // fail at construction, not inside a callback
   attach();  // join the stream here if the publisher is already up: volatile is measured from
              // where this subscription joined, not from the first wake

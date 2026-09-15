@@ -10,23 +10,15 @@
 namespace flux::ros
 {
 
-namespace
-{
-std::string resolve(rclcpp::Node & node, const std::string & topic)
-{
-  return node.get_node_topics_interface()->resolve_topic_name(topic);
-}
-}  // namespace
-
 Publisher::Publisher(
   rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint,
   std::uint32_t slot_size, std::uint32_t slot_count, Device device, const MemoryPolicy & mem)
-: seg_name_(flux::signpost_name(resolve(node, topic), fingerprint)),
+: seg_name_(flux::signpost_name(detail::resolve(node, topic), fingerprint)),
   ch_(
     open_publisher_segment(seg_name_, slot_size, slot_count, fingerprint, device),
     gpu::stream_for(device), mem)
 {
-  detail::announce(node, seg_name_, resolve(node, topic), /*publisher=*/true);
+  detail::announce(node, seg_name_, detail::resolve(node, topic), /*publisher=*/true);
 }
 
 Published Publisher::publish(const void * data, std::size_t nbytes) noexcept

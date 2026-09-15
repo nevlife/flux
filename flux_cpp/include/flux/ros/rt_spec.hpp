@@ -37,6 +37,14 @@ struct RtStage
   std::string chain;  // which chain declared this, for error messages
 };
 
+namespace detail
+{
+// How the file spells a stage: `node`, or `node/group` for a named callback group.
+std::string stage_name(const std::string & node, const std::string & group);
+// An external stage is a record of a thread flux does not set. `caller` names the refusing call.
+void reject_external(const RtStage & stage, const char * caller);
+}  // namespace detail
+
 // A parsed declaration file. Every rule it enforces is checked once, here, against the whole file
 // -- which is the reason the declarations live in one file at all. Per-node settings cannot check
 // an ordering no single node can see.

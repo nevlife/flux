@@ -14,6 +14,9 @@
 namespace flux::ros::detail
 {
 
+// The signpost is keyed by the resolved topic name: remapped and fully qualified.
+std::string resolve(rclcpp::Node & node, const std::string & topic);
+
 // Enumeration metadata, not a registration: nothing in the data plane reads it, and a failure to
 // write it is swallowed. The label is what a tool shows as the owner, so it
 // is the node's fully qualified name -- core has no notion of a node and never looks inside.

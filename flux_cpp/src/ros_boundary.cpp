@@ -5,6 +5,11 @@
 namespace flux::ros::detail
 {
 
+std::string resolve(rclcpp::Node & node, const std::string & topic)
+{
+  return node.get_node_topics_interface()->resolve_topic_name(topic);
+}
+
 void announce(
   rclcpp::Node & node, const std::string & signpost, const std::string & key, bool publisher)
 {

@@ -173,6 +173,7 @@ private:
 
   void declare_sync_group(std::vector<detail::SyncInput> inputs);
   void spawn_children(std::int64_t tick_ns);
+  void record_child_error() noexcept;  // from inside a child thread's catch handler
   void check_sync_groups(const GroupMap & known);
   void check_schedule_labels(const GroupMap & known) const;
 

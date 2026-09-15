@@ -13,6 +13,24 @@
 namespace flux::ros
 {
 
+namespace detail
+{
+
+std::string stage_name(const std::string & node, const std::string & group)
+{
+  return node + (group.empty() ? "" : "/" + group);
+}
+
+void reject_external(const RtStage & stage, const char * caller)
+{
+  if (!stage.external) return;
+  throw std::invalid_argument(
+    "flux: stage " + stage_name(stage.node, stage.group) +
+    " is declared external, so flux does not set it; do not hand it to " + caller);
+}
+
+}  // namespace detail
+
 namespace
 {
 
@@ -75,7 +93,7 @@ RtStage parse_stage(const YAML::Node & n, const std::string & chain)
     fail("stage node '" + st.node + "' in chain " + chain + " must be a fully-qualified name");
   }
   if (n["group"]) st.group = n["group"].as<std::string>();
-  const std::string where = st.node + (st.group.empty() ? "" : "/" + st.group);
+  const std::string where = detail::stage_name(st.node, st.group);
 
   st.external = n["external"] && n["external"].as<bool>();
   if (st.external) {
@@ -162,8 +180,8 @@ void check_cpu_exclusivity(const std::vector<RtStage> & stages)
       if (!is_rt(a) || !is_rt(b) || !shares_a_cpu(a, b)) continue;
       if (a.strict != rt::Strictness::Hard && b.strict != rt::Strictness::Hard) continue;
       fail(
-        "stages " + a.node + (a.group.empty() ? "" : "/" + a.group) + " and " + b.node +
-        (b.group.empty() ? "" : "/" + b.group) +
+        "stages " + detail::stage_name(a.node, a.group) + " and " +
+        detail::stage_name(b.node, b.group) +
         " are both pinned to the same cpu with an RT policy. SCHED_FIFO has no timeslice, so one "
         "holds the core until it blocks and the other cannot run; a hard chain gets one RT thread "
         "per core. Give them separate cpus, or declare the chain soft");
@@ -224,8 +242,7 @@ RtSpec RtSpec::load(const std::string & path)
           dup->opts.policy != st.opts.policy || dup->opts.priority != st.opts.priority ||
           dup->opts.cpus != st.opts.cpus) {
           fail(
-            "stage " + st.node + (st.group.empty() ? "" : "/" + st.group) +
-            " is declared differently by chains " + dup->chain + " and " + st.chain);
+            "stage " + detail::stage_name(st.node, st.group) + " is declared differently by chains " + dup->chain + " and " + st.chain);
         }
         continue;  // same declaration on both chains: keep the first
       }
@@ -259,7 +276,7 @@ const RtStage & RtSpec::stage(const rclcpp::Node & node, const std::string & gro
   const RtStage * st = find(name, group);
   if (st == nullptr) {
     fail(
-      "no stage '" + name + (group.empty() ? "" : "/" + group) +
+      "no stage '" + detail::stage_name(name, group) +
       "' in the spec; a label the file never names is a typo, and applying nothing would hide it");
   }
   return *st;
@@ -276,11 +293,7 @@ std::vector<const RtStage *> RtSpec::external() const
 
 rt::Report apply_checked(const RtStage & stage)
 {
-  if (stage.external) {
-    throw std::invalid_argument(
-      "flux: stage " + stage.node + (stage.group.empty() ? "" : "/" + stage.group) +
-      " is declared external, so flux does not set it; do not hand it to apply_checked()");
-  }
+  detail::reject_external(stage, "apply_checked()");
   return rt::apply_checked(stage.opts, stage.strict, stage.control_priority);
 }
 
@@ -322,7 +335,7 @@ void add(rt::Report & rep, const char * id, rt::Verdict v, std::string detail)
 
 rt::Report verify(const RtStage & stage, int tid)
 {
-  const std::string where = stage.node + (stage.group.empty() ? "" : "/" + stage.group);
+  const std::string where = detail::stage_name(stage.node, stage.group);
   rt::Report rep;
 
   rt::ThreadState st;
