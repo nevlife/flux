@@ -56,23 +56,24 @@ Opens a `flux_cpp` subscription inside the rviz2 process and, on every render ti
 
 ## rviz2 DepthCloud display (`flux_tools/DepthCloud`)
 
-Back-projects a depth `sensor_msgs/Image` channel into 3D points. The depth frame comes from flux; the `CameraInfo` that calibrates it comes from DDS, because it is a few hundred static bytes and every driver already publishes it there. The points go to the stock point cloud renderer, so styles, size, alpha, decay time, the transformers and selection are the stock ones.
+Back-projects a depth `sensor_msgs/Image` channel into 3D points on the GPU. The depth frame goes from the slot into a texture as-is, and a vertex shader turns each pixel into a point with the `CameraInfo` intrinsics. The CPU never touches a point, so the frame rate does not depend on the point count. The `CameraInfo` comes from DDS, because it is a few hundred static bytes and every driver already publishes it there.
 
 | Item | Content |
 | --- | --- |
-| Class | Inherits `rviz_common::Display` directly, like the other two. The property panel below `Max Range` belongs to `PointCloudCommon` |
+| Class | Inherits `rviz_common::Display` directly, like the other two |
 | Type | `sensor_msgs/Image` with encoding `16UC1`, `mono16` (millimeters) or `32FC1` (meters). Anything else is an error in the status panel |
-| QoS | flux: `depth=1`, `max_borrow=1`. The view lives only inside the back-projection and is released before the transformers and the TF lookup run. `CameraInfo`: `SensorDataQoS`, which matches a best effort and a reliable publisher alike |
+| QoS | flux: `depth=1`, `max_borrow=1`. The view lives only inside `update()` and is released right after the texture upload. `CameraInfo`: `SensorDataQoS`, which matches a best effort and a reliable publisher alike |
 | Camera Info | The topic is derived from the channel name by the `image_transport` rule, so `/cam/depth/image_raw` gives `/cam/depth/camera_info`. Editing `Camera Info Topic` pins it; a name still equal to the derived one is re-derived when the channel changes |
 | Projection | `p`, not `k`: on a rectified pair `p` carries the calibration that matches the image. `binning` and `roi` scale it the same way the stock display scales it |
-| Output | `x`, `y`, `z` float32, one pass from the slot into the cloud with no intermediate depth copy. Zero, negative and non-finite pixels are the no-return values of these encodings and are dropped, as are points outside `Min Range` and `Max Range`. `Max Range` 0 means no far limit |
-| Frame | The depth frame's `header.frame_id`, which is the camera optical frame, looked up in TF against the fixed frame |
+| Geometry | One vertex per pixel holding its pixel coordinate, built once per resolution. The vertex shader reads that pixel's depth from the texture and places the point; zero, negative and non-finite pixels are the no-return values of these encodings and go behind the far plane, as do points outside `Min Range` and `Max Range`. `Max Range` 0 means no far limit |
+| Color | A red to blue ramp over depth, from `Min Range` to `Max Range` (10 m past `Min Range` when `Max Range` is 0). `Point Size (Pixels)` and `Alpha` are the only render settings; there are no transformers, decay or selection |
+| Frame | The depth frame's `header.frame_id`, which is the camera optical frame, looked up in TF against the fixed frame at the frame's stamp |
 | Topic list | Live `Image` publishers in the same domain, same rule as the Image display |
 
 `Add` -> `flux_tools` -> `DepthCloud`, then pick the channel in `Topic`. Check that `Camera Info Topic` names a live `CameraInfo` publisher; the status says so when it does not.
 
 ### Cost
 
-- One pass over the depth frame, writing at most `width * height` points. The slot is held for that pass, not for the render.
-- Everything after it is the stock renderer's cost: transformers on the CPU, then one vertex buffer upload.
-- A 640x480 frame is 307200 points at 12 bytes, so 3.5 MB of cloud per frame. Clipping with `Max Range` cuts both the cloud and the render.
+- One texture upload per frame, the size of the depth frame (3.7 MB for 1280x720 `32FC1`), the same cost as the Image display showing that frame.
+- The vertex buffer is built once per resolution and never touched again; a 1280x720 frame is 921600 vertices at 12 bytes.
+- `Max Range` and `Min Range` change what is visible, not the cost.
