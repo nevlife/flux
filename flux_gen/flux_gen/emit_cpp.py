@@ -8,7 +8,7 @@ nothing to keep in sync but the offsets themselves.
 
 from .dtypes import ROS_PRIMITIVE, DType
 from .flatten import DYNAMIC_COUNT, LeafKind
-from .layout import STAMP_SIZE, elem_class_name as _elem_class
+from .layout import elem_class_name as _elem_class
 
 CPP_TYPE = {
     DType.BOOL: "bool",
@@ -124,7 +124,7 @@ def _view_accessors(block, base, out, prefix=(), recv="r_.", ind="    "):
                 f"{{ return {recv}get<std::uint32_t>({at(o + 4)}); }}")
             out.append(
                 f"{ind}std::string_view {n}__frame_id() const noexcept "
-                f"{{ return {recv}str({at(o + STAMP_SIZE)}); }}")
+                f"{{ return {recv}str({at(p.frame_id_offset)}); }}")
         else:  # RECORD_COLUMN / JAGGED
             cls = _elem_class(prefix + (p,))
             out.append(f"{ind}std::size_t {n}__size() const noexcept {{ return {recv}len({at(o)}); }}")
@@ -176,7 +176,7 @@ def _builder_accessors(block, base, out, prefix=(), recv="w_.", ind="    "):
             if p.kind == LeafKind.HEADER:
                 out.append(
                     f"{ind}void set__{n}__frame_id(std::string_view s) noexcept "
-                    f"{{ {recv}put_str({at(o + STAMP_SIZE)}, s); }}")
+                    f"{{ {recv}put_str({at(p.frame_id_offset)}, s); }}")
         else:  # RECORD_COLUMN / JAGGED
             cls = _elem_class(prefix + (p,))
             guard = (f"if (n != {p.count}) {{ {recv}poison(); return {cls}Array(); }} "

@@ -9,7 +9,7 @@ import keyword
 
 from .dtypes import DType
 from .flatten import DYNAMIC_COUNT, LeafKind
-from .layout import STAMP_SIZE, elem_class_name as _elem_class
+from .layout import elem_class_name as _elem_class
 
 NP_TYPE = {
     DType.BOOL: "np.bool_",
@@ -81,7 +81,7 @@ def _view_body(block, base, out, prefix=(), ind="    "):
                 out.append("")
                 out.append(f"{ind}@property")
                 out.append(f"{ind}def {n}__frame_id(self):")
-                out.append(f"{ind}    return self._r.string({at(o + STAMP_SIZE)})")
+                out.append(f"{ind}    return self._r.string({at(p.frame_id_offset)})")
         else:  # RECORD_COLUMN / JAGGED
             cls = _elem_class(prefix + (p,))
             out.append(f"{ind}@property")
@@ -146,7 +146,7 @@ def _builder_body(block, base, out, prefix=(), ind="    "):
                 out.append("")
                 out.append(f"{ind}@{n}__frame_id.setter")
                 out.append(f"{ind}def {n}__frame_id(self, s):")
-                out.append(f"{ind}    self._w.put_str({at(o + STAMP_SIZE)}, s)")
+                out.append(f"{ind}    self._w.put_str({at(p.frame_id_offset)}, s)")
         else:  # RECORD_COLUMN / JAGGED
             cls = _elem_class(prefix + (p,))
             out.append(f"{ind}def alloc__{n}(self, n):")
