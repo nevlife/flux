@@ -1,6 +1,6 @@
 """Unified executor: rclpy subscriptions and flux channels dispatched by one loop, one thread.
 
-The C++ side merges the two by pulling ROS into flux's io_uring -- rclcpp hands out an
+The C++ side merges the two by pulling ROS into flux's io_uring: rclcpp hands out an
 on-new-message callback, so a subscription can be bridged to an eventfd and armed in the same
 ring. rclpy does not hand that callback to Python, so that direction is closed here. This module
 goes the other way: a bridge thread waits on the io_uring and hands the dispatch to the spin
@@ -64,7 +64,7 @@ class Executor:
 
     Wraps an rclpy executor, so ROS timers, services and subscriptions keep working exactly as
     they do without flux. flux frames arrive as callbacks on the same thread, between ROS
-    callbacks -- no second executor, no locking between the two.
+    callbacks. No second executor, no locking between the two.
 
     Assembled the way `flux::ros::Executor` is, and with the same names: construct it, hand it
     the flux subscriptions and the nodes, then spin.
@@ -88,7 +88,7 @@ class Executor:
         self._closed = False
         self._thread = None
         # One callable, reused for every task: rclpy allocates a Task per create_task and there
-        # is no way around that (a Task is one-shot -- it refuses to run again once finished),
+        # is no way around that (a Task is one-shot and refuses to run again once finished),
         # but the body it carries need not be a new object. Weak, because a task queued just as
         # the context goes down is never run and never dropped, and a strong reference there
         # would keep this executor's channels mapped for the life of the process.
@@ -114,7 +114,7 @@ class Executor:
     def add_ros_node(self, node):
         """Register a node: its ROS callbacks run on this executor's spin thread.
 
-        Do not also hand the node to another executor -- rclpy keeps one `node.executor`, and the
+        Do not also hand the node to another executor: rclpy keeps one `node.executor`, and the
         second add silently takes the node away from the first. Idempotent per node.
         """
         if self._running:
@@ -236,7 +236,7 @@ class Executor:
             # Do not re-enter wait_for_work until dispatch() has finished: both drive the
             # same io_uring, and concurrent submit/wait on one ring is a data race. Bounded,
             # so a spin thread that died without running the task cannot strand this bridge
-            # forever -- a queued task stays queued, so nothing is lost by waiting again.
+            # forever. A queued task stays queued, so nothing is lost by waiting again.
             while self._running and not self._drained.wait(timeout=0.2):
                 pass
 
@@ -264,7 +264,7 @@ class PartitionedExecutor:
     `add_callback_group`, so the group's ROS callbacks and its flux frames land on the same
     child thread and the group's mutual exclusion survives the split.
 
-    rclpy has no `add_callback_group`. Its executor granularity is the node -- `add_node` writes
+    rclpy has no `add_callback_group`. Its executor granularity is the node: `add_node` writes
     `node.executor`, and a node belongs to one executor at a time. So the unit splits in two here,
     each as fine as rclpy allows it to be:
 
@@ -273,15 +273,15 @@ class PartitionedExecutor:
 
     A group handed to add_flux must hold no ROS entities. Not a style rule: rclpy cannot move a
     timer or a subscription onto this group's thread, so its ROS callbacks would keep running on
-    the node's thread while flux frames ran here -- the group's mutual exclusion broken with
+    the node's thread while flux frames ran here, the group's mutual exclusion broken with
     nothing said. Refusing is the same discipline the C++ side applies to a Reentrant group.
     A group that genuinely needs both transports on one thread is what `flux.ros.Executor` is.
 
     `set_thread_scheduling` settles which of those threads the kernel prefers and which cores it
     may use. Deliberately not named `schedule` like the C++ method: that one takes a Strictness
     and a control-loop priority and is part of a hard-RT chain declaration, and none of that
-    carries here. The Python path is not an RT target -- GIL and GC are unbounded latency sources
-    -- and a priority is not a bound.
+    carries here. The Python path is not an RT target. GIL and GC are unbounded latency sources,
+    and a priority is not a bound.
 
     What the extra threads buy is real but conditional: they overlap only work that releases the
     GIL (numpy, zlib, decode, memcpy in an extension). Callbacks that are pure Python bytecode
@@ -290,10 +290,10 @@ class PartitionedExecutor:
 
     def __init__(self, *, poll_tick_ns=2_000_000):
         self._poll_tick_ns = poll_tick_ns
-        self._assigned = []  # [(group, [(sub, callback, priority), ...])] -- insertion ordered
-        self._sync_groups = []  # [[filter, ...]] -- declared synchronizer input sets
+        self._assigned = []  # [(group, [(sub, callback, priority), ...])], insertion ordered
+        self._sync_groups = []  # [[filter, ...]], declared synchronizer input sets
         self._unplaced_sync_inputs = 0
-        self._sched = []  # [(unit, {policy, priority, cpus})] -- unit is a group or a node
+        self._sched = []  # [(unit, {policy, priority, cpus})], unit is a group or a node
         self._nodes = []
         self._children = []
         self._spinning = False
@@ -312,7 +312,7 @@ class PartitionedExecutor:
         """Assign a flux Subscription to a partition group: same group, same thread.
 
         The callback comes from the subscription, as it does for Executor.add_flux. `group` is an
-        rclpy callback group used purely as the partition token -- it must hold no ROS entities
+        rclpy callback group used purely as the partition token; it must hold no ROS entities
         (see the class docstring). Subscriptions sharing a group share one thread, in the order
         they were added, unless `priority` reorders them: higher goes first within that group's
         pass, and it never crosses groups, which are separate threads.
@@ -387,7 +387,7 @@ class PartitionedExecutor:
     def add_ros_node(self, node):
         """Register a node: its ROS callbacks get a thread of their own.
 
-        Do not also hand the node to another executor -- rclpy keeps one `node.executor`, and the
+        Do not also hand the node to another executor: rclpy keeps one `node.executor`, and the
         second add silently takes the node away from the first.
         """
         if self._spinning:
@@ -417,7 +417,7 @@ class PartitionedExecutor:
 
         This is not a real-time guarantee and does not become one at any priority: the GIL and
         the GC stay unbounded latency sources. What it settles is which thread the
-        kernel prefers when several are runnable, and which cores each may use -- which decides
+        kernel prefers when several are runnable, and which cores each may use. That decides
         something real whenever the callbacks release the GIL, and nothing at all when they do
         not. `flux.rt.Policy.Fifo` needs RLIMIT_RTPRIO or CAP_SYS_NICE; affinity alone needs
         neither.
@@ -634,8 +634,8 @@ class PartitionedExecutor:
 
 
 class _FluxChild:
-    """A group's thread: one flux.Executor, spun directly. No rclpy bridge -- the group holds no
-    ROS entity, so there is nothing on this thread to merge with."""
+    """A group's thread: one flux.Executor, spun directly. No rclpy bridge, because the group
+    holds no ROS entity, so there is nothing on this thread to merge with."""
 
     def __init__(self, flux_ex, tick_ns, on_error, label, sched=None):
         self._flux = flux_ex
@@ -758,18 +758,14 @@ def _apply_scheduling(sched):
 
 
 def _name_this_thread(name):
-    """Put `name` on the OS thread too. threading.Thread(name=) stops at Python.
+    """Put `name` on the OS thread too, where top -H, perf and /proc read it.
 
-    Worth the three lines: without it every executor thread this module starts shows as
-    `python3` in top -H, perf and /proc, which is where anyone asks what the extra threads of
-    a partitioned executor actually cost. PR_SET_NAME truncates at 15 bytes.
+    threading.Thread(name=) stops at Python. PR_SET_NAME truncates at 15 bytes.
     """
     _prctl(15, name.encode()[:15], 0, 0, 0)  # PR_SET_NAME
 
 
 def _sec(timeout_ns):
-    """Nanoseconds to the seconds rclpy wants. Negative means block until an event, which rclpy
-    spells as None."""
     return None if timeout_ns < 0 else timeout_ns / 1e9
 
 
@@ -812,7 +808,7 @@ class Subscription(_Subscription):
     flux_cpp: a subscription is a topic plus what to do with it, and splitting the two lets the
     same subscription be registered twice with different callbacks. `add_flux(sub)` reads it.
 
-    Leaving `callback` unset is allowed and gives the pull surface -- peek/take/take_blocking on
+    Leaving `callback` unset is allowed and gives the pull surface: peek/take/take_blocking on
     your own schedule. Only `add_flux` requires one.
     """
 
@@ -826,7 +822,7 @@ class Subscription(_Subscription):
 def _flux_source_of(subscription):
     """The flux Subscription behind whatever was handed to add_flux().
 
-    A `flux.ros.message_filters.Subscriber` is not a Subscription -- nanobind refuses a second
+    A `flux.ros.message_filters.Subscriber` is not a Subscription. nanobind refuses a second
     base class, so it owns one instead of being one. Unwrapping it here is what lets the same
     `add_flux(sub)` take either, as `ex.add(left)` does in C++.
     """
@@ -839,7 +835,7 @@ def _sync_input_thread(f):
 
     A flux Subscription is served by the callback group it was assigned to; an upstream
     message_filters.Subscriber by its node, which PartitionedExecutor gives a thread of its own.
-    Anything else -- a chain-middle filter, a Cache -- cannot be placed and is not judged.
+    Anything else (a chain-middle filter, a Cache) cannot be placed and is not judged.
     """
     inner = getattr(f, "subscription", None)
     if isinstance(inner, _Subscription):
@@ -854,8 +850,8 @@ def _callback_of(subscription, callback):
     """Resolve which callback to run: the explicit one, else the subscription's own.
 
     A flux.ros.Subscription carries its callback, which is the shape flux_cpp and rclpy both
-    have. A bare flux.Subscription cannot -- it is the pull surface and has nowhere to put one --
-    so the explicit argument stays for that case.
+    have. A bare flux.Subscription cannot, since it is the pull surface and has nowhere to put
+    one, so the explicit argument stays for that case.
     """
     if not isinstance(subscription, _Subscription):
         raise TypeError("add_flux expects a flux.Subscription")

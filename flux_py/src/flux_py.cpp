@@ -55,7 +55,7 @@ std::int64_t mono_ns()
 // its node first (namespace/remap), so the segment name is built from a fully-qualified name.
 // flux_py has no node, so the caller must pass that already-resolved absolute name; requiring
 // the leading '/' rejects a relative name that would otherwise silently name a different
-// segment than the matching C++ node. flux_py cannot apply a namespace itself -- pass the same
+// segment than the matching C++ node. flux_py cannot apply a namespace itself. Pass the same
 // absolute name a C++ node resolves to.
 
 // Enumeration metadata only. flux_py has no node, so the label stays empty; the key is what
@@ -302,7 +302,7 @@ flux::DType flux_from_dl(nb::dlpack::dtype dt)
         return flux::DType::F64;
     }
   } else if (code == C::Bfloat && dt.bits == 16) {
-    // Reached from any DLPack producer, numpy or not -- a torch bf16 CPU tensor publishes here
+    // Reached from any DLPack producer, numpy or not. A torch bf16 CPU tensor publishes here
     // even though numpy could never have held it.
     return flux::DType::BF16;
   }
@@ -313,7 +313,7 @@ flux::DType flux_from_dl(nb::dlpack::dtype dt)
 
 // Owner of a returned view. The borrowed FrameView aliases the subscriber's mmap, so the
 // view must not outlive that mapping: `keepalive` pins the Subscription python object (and
-// thus its Channel/Segment) for the view's lifetime. Declaration order matters -- members
+// thus its Channel/Segment) for the view's lifetime. Declaration order matters. Members
 // destroy in reverse, so `view` (the borrow) releases BEFORE `keepalive` drops the mapping.
 struct Held
 {
@@ -373,7 +373,7 @@ std::size_t checked_frame_shape(const flux::FrameView & v, std::size_t * shape)
   }
   // Size the check from the dtype, because that is what the view is sized from. Validating
   // against m.itemsize instead let a publisher that set the two inconsistently slip a view past
-  // the end of the frame -- and past the mapping.
+  // the end of the frame, and past the mapping.
   const std::size_t itemsize = flux::dtype_size(m.dtype);
   if (itemsize == 0 || m.itemsize != itemsize)
     throw std::runtime_error("flux: frame itemsize disagrees with its dtype");
@@ -428,7 +428,7 @@ nb::object view_from_frame(flux::FrameView && v, nb::handle keepalive)
   throw std::runtime_error("flux: unknown DType in frame");
 }
 
-// Map a numpy dtype (object, type, or string -- anything np.dtype() accepts) to a flux DType.
+// Map a numpy dtype (object, type, or string: anything np.dtype() accepts) to a flux DType.
 std::pair<flux::DType, std::uint32_t> flux_from_np_dtype(nb::handle dt)
 {
   // bfloat16 first, and by name. np.dtype("bfloat16") raises unless ml_dtypes is installed, so
@@ -484,7 +484,7 @@ std::pair<flux::DType, std::uint32_t> flux_from_np_dtype(nb::handle dt)
 }
 
 // numpy can only view host memory. On a dGPU channel the slot is a device address, so building
-// the view would hand Python a pointer whose first store faults -- and it faulted, before this
+// the view would hand Python a pointer whose first store faults. It did fault, before this
 // guard existed. Refused by name, with the two paths that do work.
 [[noreturn]] void device_payload_has_no_host_view(const char * what)
 {
@@ -574,15 +574,8 @@ public:
   {
   }
 
-  // A fresh writable view each call, owned by `self` (this Loan). Not cached: caching it would
-  // make the array's owner point back to the Loan that holds it -- a reference cycle nanobind
-  // does not collect. Each view pins the Loan (and its claimed slot) for its own lifetime.
-  //
-  // Reject once the slot is gone: after commit()/abort() the WriteSlot is consumed and its
-  // data pointer is null/stale, so building a writable array over it would alias a null base
-  // or a slot that is now published and may be borrowed by readers -- writing through it would
-  // corrupt a live frame. (An array handed out BEFORE commit stays writable; drop it before
-  // commit, mirroring the read-side FrameView contract.)
+  // A fresh view each call. Caching one would make the array's owner point back at the Loan
+  // that holds it, a cycle nanobind does not collect.
   nb::object array(nb::handle self)
   {
     if (!ws_.valid()) {
@@ -594,10 +587,6 @@ public:
     return track(writable_view(ws_.data(), shape_.size(), shape_.data(), dtype_, self));
   }
 
-  // `nbytes` publishes a prefix of the loan. A generated adapter loans the whole slot and only
-  // knows the frame's real size once it is built, so without this it would publish slot_size
-  // bytes on every frame. Only meaningful for a 1-D loan, where shrinking the byte count is the
-  // same statement as shrinking the shape.
   flux::Published commit(std::optional<std::uint64_t> nbytes)
   {
     // Same answer WriteSlot::commit gives a spent handle, so the two languages read alike.
@@ -653,15 +642,9 @@ private:
   std::vector<nb::object> issued_;
 
 public:
-  // The stream a producing kernel must be launched on. commit() waits on exactly this one, so
-  // taking it from here rather than keeping a copy is what stops the two from diverging.
-  // None on a publisher that declared no device.
   nb::object stream() const { return stream_object(ws_.stream()); }
   bool host_addressable() const { return ws_.host_addressable(); }
 
-  // Device-side view of the same reserved slot, for cp.asarray(loan).
-  // .array (numpy, host) stays alongside it -- on ShmDirect both name the same bytes, and which
-  // one a caller reaches for says whether the frame is built by a kernel or by the CPU.
   nb::dict cai()
   {
     if (!ws_.valid()) {
@@ -678,9 +661,6 @@ public:
     return cuda_array_interface(p, shape_.size(), shape_.data(), dtype_, false);
   }
 
-  // The write-side dual of Frame.__dlpack__: the reserved slot as a DLPack capsule, which is the
-  // only way to fill a loan whose dtype numpy cannot name. Device address when the
-  // publisher declared one, host address otherwise -- on ShmDirect they are the same bytes.
   nb::object dlpack(nb::handle self)
   {
     if (!ws_.valid()) {
@@ -695,8 +675,6 @@ public:
       dev != nullptr ? cuda_device_id() : 0);
   }
 
-  // Write-side dual of Frame.bits: the reserved slot as an unsigned numpy view of equal width,
-  // so a caller can fill a bf16 loan through its own spelling of the type.
   nb::object bits(nb::handle self)
   {
     if (!ws_.valid()) {
@@ -717,7 +695,7 @@ public:
   }
 
 private:
-  // Declaration order matters -- members destroy in reverse, so `ws_` (which writes to the slot
+  // Declaration order matters. Members destroy in reverse, so `ws_` (which writes to the slot
   // on abort) must go BEFORE `keepalive_` drops the publisher's mapping. Same rule as Held.
   nb::object keepalive_;
   flux::WriteSlot ws_;
@@ -731,7 +709,7 @@ private:
 // whose capsule ends the borrow whenever Python collects it, and that is fine because ending a
 // host borrow is a decrement. With a declared stream it is a GPU synchronization instead, and
 // letting it fall on an arbitrary thread at an arbitrary time is the non-determinism the fence
-// exists to remove -- so a GPU frame is scoped.
+// exists to remove. So a GPU frame is scoped.
 //
 // The object is inert until entered: __cuda_array_interface__ refuses outside a `with`, which is
 // what makes "cp.asarray(v) without a domain" fail loudly rather than work until the day the
@@ -780,14 +758,6 @@ public:
     return cuda_array_interface(p, ndim_, shape_, dtype_, /*read_only=*/true);
   }
 
-  // The borrowed bytes as a DLPack capsule, for consumers that read DLPack rather than
-  // __cuda_array_interface__ -- and the only way to hand out a dtype the CAI typestr and numpy
-  // both fail to spell, which is what bf16 needs.
-  //
-  // Guarded like cai(): the tensor a consumer builds from this capsule aliases the slot, so on a
-  // GPU channel it must not outlive the `with`. Consumer keywords (stream, max_version,
-  // dl_device, copy) are accepted and ignored -- flux closes both seams synchronously,
-  // so there is no stream to negotiate, and it has one address to give.
   nb::object dlpack(nb::handle self) const
   {
     require_readable();
@@ -798,9 +768,6 @@ public:
       dev != nullptr ? cuda_device_id() : 0);
   }
 
-  // The frame's bits as an unsigned numpy view of equal width, for a caller that wants to
-  // reinterpret them itself. Built on the host address, so it exists only where that address is
-  // one a host load may follow -- an iGPU slot is host memory too, a dGPU slot is not.
   nb::object bits(nb::handle self) const
   {
     require_readable();
@@ -808,8 +775,6 @@ public:
     return bits_view(held_->view.data(), ndim_, shape_, dtype_, anchor(self));
   }
 
-  // Readable outside the domain: which device holds the bytes is a property of the channel, and a
-  // consumer asks this before deciding whether to enter at all.
   nb::object dlpack_device() const
   {
     const bool dev = scoped();
@@ -818,8 +783,6 @@ public:
       dev ? cuda_device_id() : 0);
   }
 
-  // The stream a consuming kernel must be launched on -- the one release() waits for. Readable
-  // outside the domain: it is a property of the channel, not of the borrow.
   nb::object stream() const { return stream_object(stream_); }
   bool host_addressable() const { return host_addressable_; }
 
@@ -860,7 +823,7 @@ private:
     }
   }
 
-  // Declaration order matters -- members destroy in reverse, so `view_` (whose release touches
+  // Declaration order matters. Members destroy in reverse, so `held_` (whose release touches
   // the segment) must go before `keepalive_` drops the mapping. Same rule as Held and Loan.
   std::shared_ptr<Held> held_;
   flux::gpu::Stream stream_;
@@ -895,7 +858,7 @@ public:
   // The device restriction is stated here rather than in the signature so the refusal can name
   // the path that does work. flux copies host bytes into the slot; moving device bytes there is
   // a CUDA copy flux_core does not offer, and loan() already publishes from a kernel with no
-  // copy at all -- which is the point of a GPU channel.
+  // copy at all, which is the point of a GPU channel.
   flux::Published publish(nb::ndarray<nb::c_contig> arr)
   {
     if (arr.device_type() != nb::device::cpu::value) {
@@ -932,8 +895,6 @@ public:
     return ch_.publish(arr.data(), flux_from_dl(arr.dtype()), dims.data(), dims.size());
   }
 
-  // 0-copy publish: reserve a free slot and return a Loan whose .array writes straight into
-  // shared memory. commit() publishes. Returns None if every slot is borrowed (dropped).
   nb::object loan(nb::handle self, nb::object shape, nb::handle dtype)
   {
     std::vector<std::size_t> shp;
@@ -1005,8 +966,6 @@ public:
   // `self` is the python Subscription object; the returned view pins it so the mmap the
   // view aliases cannot be unmapped while the view is alive.
 
-  // Current state: the newest frame, without consuming it. Returns the same frame again when
-  // nothing new was published, so it is None only if nothing has ever been published.
   nb::object peek(nb::handle self)
   {
     if (!attach()) return nb::none();
@@ -1015,8 +974,6 @@ public:
     return wrap(std::move(v), self);
   }
 
-  // The next frame in publish order, consumed. None once caught up. qos.depth bounds how far
-  // behind this may sit; frames dropped by that window (or lapped by the ring) land in .lost.
   nb::object take(nb::handle self)
   {
     if (!attach()) return nb::none();
@@ -1025,10 +982,6 @@ public:
     return wrap(std::move(v), self);
   }
 
-  // take(), parking on the futex wake word until a frame arrives or timeout_ns elapses
-  // (negative = forever). Near-zero CPU, unlike polling take() in a loop. Returns None on
-  // timeout / if the publisher segment is not up yet. The GIL is released while parked.
-  // Nanoseconds, like every other flux timeout -- one unit across both languages.
   nb::object take_blocking(nb::handle self, std::int64_t timeout_ns)
   {
     if (!attach()) return nb::none();
@@ -1103,7 +1056,7 @@ private:
   // is scoped, because ending that borrow fences a stream. The
   // declaration decides, so the two never mix on one subscription.
   // A frame numpy cannot name comes back as flux.Frame for the same reason a GPU frame does:
-  // the object is what carries __dlpack__. Such a host frame needs no `with` -- ending
+  // the object is what carries __dlpack__. Such a host frame needs no `with`: ending
   // a host borrow is a decrement, so it releases on collection like the numpy view.
   nb::object wrap(flux::FrameView && v, nb::handle self)
   {
@@ -1121,7 +1074,7 @@ private:
   std::optional<flux::Channel> ch_;
 };
 
-// One wait for many subscriptions -- the Python counterpart of flux::ros::Executor.
+// One wait for many subscriptions, the Python counterpart of flux::ros::Executor.
 // The wait itself is flux::Executor, shared with flux_cpp so the ordering
 // rules that make a wake safe exist in one place; this adds only what Python needs on top.
 //
@@ -1212,8 +1165,8 @@ public:
   //
   // A callback almost always closes over the executor itself (`lambda v: ex.stop()`), so
   // Executor -> callback -> Executor is the normal case, not an edge case. Without these the
-  // cycle is uncollectable and it pins every registered Subscription -- and therefore its shm
-  // mapping -- for the life of the process.
+  // cycle is uncollectable and it pins every registered Subscription, and therefore its shm
+  // mapping, for the life of the process.
   int traverse(visitproc visit, void * arg) noexcept
   {
     for (auto & s : sources_) {
@@ -1276,14 +1229,14 @@ NB_MODULE(_flux, m)
   m.attr("NO_SCHEMA") = flux::kNoSchema;
 
   // Derives from RuntimeError so code that predates this type still catches it. Without its own
-  // translator, an attach that can never succeed would arrive as a bare RuntimeError -- the
+  // translator, an attach that can never succeed would arrive as a bare RuntimeError, losing the
   // distinction between "not up yet" and "will never work" that C++ callers get for free
   // (docs/en/contracts.en.md 1, X-019).
   nb::exception<flux::SegmentMismatch>(m, "SegmentMismatch", PyExc_RuntimeError);
 
   // A refused mlock or page commit carries an errno, and errno failures are OSError in Python.
-  // Without this nanobind lands them on RuntimeError, where `except OSError` -- the thing a
-  // caller writes for a resource limit -- does not catch them.
+  // Without this nanobind lands them on RuntimeError, where `except OSError`, the thing a
+  // caller writes for a resource limit, does not catch them.
   nb::register_exception_translator(
     [](const std::exception_ptr & p, void *) {
       try {
@@ -1297,7 +1250,7 @@ NB_MODULE(_flux, m)
   // Bound as an enum and accepted as a string: device="cuda" reads best at a call site, and
   // flux.Device.Cuda is what a typo cannot survive.
   nb::enum_<flux::Device>(m, "Device")
-    .value("Cpu", flux::Device::Cpu, "Host path. The default -- nothing here touches CUDA.")
+    .value("Cpu", flux::Device::Cpu, "Host path. The default. Nothing here touches CUDA.")
     .value(
       "Cuda", flux::Device::Cuda,
       "CUDA path. flux creates the stream both seams fence on. Raises ValueError when this host "
@@ -1342,7 +1295,7 @@ NB_MODULE(_flux, m)
       "FenceFailed", flux::Published::FenceFailed,
       "The declared stream could not be waited on. The slot is never reused, so a nonzero "
       ".fence_failed is a fault, not a rate.")
-    // A nanobind enum is truthy for every value, Ok included -- and Ok is 0, so neither the
+    // A nanobind enum is truthy for every value, Ok included. Ok is 0, so neither the
     // default nor an int cast says what a caller means by `if not p`. Spell it: true means the
     // frame went out.
     .def("__bool__", [](flux::Published p) { return p == flux::Published::Ok; });
@@ -1374,7 +1327,7 @@ NB_MODULE(_flux, m)
 
   // How long the two GPU seams blocked, kept apart because they block different threads: a
   // publisher owns the gap between launching a kernel and committing, while a callback consumer
-  // owns nothing -- its frame dies when the callback returns.
+  // owns nothing: its frame dies when the callback returns.
   nb::class_<flux::Channel::FenceWait>(m, "FenceWait")
     .def_ro("commit_ns", &flux::Channel::FenceWait::commit_ns)
     .def_ro("commit_count", &flux::Channel::FenceWait::commit_count)
@@ -1448,17 +1401,17 @@ NB_MODULE(_flux, m)
     .def_prop_ro(
       "array", [](nb::handle self) { return nb::cast<Loan &>(self).array(self); },
       "Writable numpy array aliasing the reserved slot. Write your frame here, then commit(). "
-      "Do not write after commit() -- the frame is then live and may be borrowed by readers.")
+      "Do not write after commit(): the frame is then live and may be borrowed by readers.")
     .def(
       "commit", &Loan::commit, nb::arg("nbytes") = nb::none(),
       "Publish the bytes written into array() with no copy. Returns a flux.Published: Ok, "
-      "Backpressure (dropped, a rate), or a fault -- flux.faulted(p) is the one check. Truthy "
+      "Backpressure (dropped, a rate), or a fault; flux.faulted(p) is the one check. Truthy "
       "only for Ok, so `if not loan.commit()` still reads. nbytes publishes only the first "
-      "nbytes of a 1-D loan -- what a generated adapter uses, since it loans the whole slot and "
+      "nbytes of a 1-D loan. A generated adapter uses that, since it loans the whole slot and "
       "sizes the frame as it builds it.")
     .def(
       "abort", &Loan::abort,
-      "Discard without publishing. The frame that slot held is dropped, not restored -- array "
+      "Discard without publishing. The frame that slot held is dropped, not restored: array "
       "aliases it, so it is gone as soon as you write. Lagging consumers count it in .lost.")
     .def_prop_ro("valid", &Loan::valid)
     .def_prop_ro(
@@ -1481,7 +1434,7 @@ NB_MODULE(_flux, m)
       "reach them through __cuda_array_interface__ or __dlpack__ instead.")
     .def_prop_ro(
       "stream", &Loan::stream,
-      "Stream handle a producing kernel must be launched on -- the one commit() waits for. None "
+      "Stream handle a producing kernel must be launched on, the one commit() waits for. None "
       "on a host publisher.");
 
   // Returned by a device subscription's peek/take instead of a numpy array. Scoped rather than
@@ -1500,7 +1453,7 @@ NB_MODULE(_flux, m)
       "you chose, not whenever Python collects the object.")
     // kwargs are swallowed: consumers pass stream=/max_version=/dl_device=/copy=, and flux has
     // one address and no stream to negotiate. Raises outside `with` for the same reason as
-    // __cuda_array_interface__ -- the capsule aliases the slot this borrow holds.
+    // __cuda_array_interface__: the capsule aliases the slot this borrow holds.
     .def(
       "__dlpack__",
       [](nb::handle self, nb::kwargs) { return nb::cast<Frame &>(self).dlpack(self); },
@@ -1519,7 +1472,7 @@ NB_MODULE(_flux, m)
       "reach them through __cuda_array_interface__ or __dlpack__ instead.")
     .def_prop_ro(
       "stream", &Frame::stream,
-      "Stream handle a consuming kernel must be launched on -- the one the release waits for.")
+      "Stream handle a consuming kernel must be launched on, the one the release waits for.")
     .def_prop_ro("shape", &Frame::shape)
     .def_prop_ro(
       "dtype", &Frame::dtype,
@@ -1552,8 +1505,7 @@ NB_MODULE(_flux, m)
       "(dropped; delivery is best-effort).")
     .def_prop_ro(
       "dropped", &Publisher::dropped,
-      "Frames this publisher discarded because every slot was borrowed. A property, like "
-      "Subscription.lost -- both are counters you read, not actions you perform.")
+      "Frames this publisher discarded because every slot was borrowed.")
     .def_prop_ro(
       "fence_failed", &Publisher::fence_failed,
       "Commits refused because the declared stream could not be waited on. Each costs a slot "
@@ -1561,7 +1513,7 @@ NB_MODULE(_flux, m)
       "'cpu'.")
     .def_prop_ro(
       "fence_wait", &Publisher::fence_wait,
-      "How long commit blocked on the declared stream. The release fields stay 0 -- a publisher "
+      "How long commit blocked on the declared stream. The release fields stay 0: a publisher "
       "holds no frames.")
     .def_prop_ro(
       "stream", &Publisher::stream,
@@ -1577,7 +1529,7 @@ NB_MODULE(_flux, m)
       "actually filled.")
     .def_prop_ro(
       "segment_name", &Publisher::segment_name,
-      "The fixed rendezvous name derived from the topic and fingerprint -- the signpost, not "
+      "The fixed rendezvous name derived from the topic and fingerprint: the signpost, not "
       "the segment. The segment behind it carries a per-instance suffix and is recreated on "
       "every publisher restart.")
     .def_prop_ro(
@@ -1663,7 +1615,7 @@ NB_MODULE(_flux, m)
       "languages.")
     .def(
       "add", &Executor::add, nb::arg("subscription"), nb::arg("callback"), nb::arg("priority") = 0,
-      "Register a Subscription and the callback to invoke per frame -- a zero-copy numpy view, "
+      "Register a Subscription and the callback to invoke per frame: a zero-copy numpy view, "
       "or a flux.Frame to open with `with` on a device subscription. What arrives is the "
       "subscription's QoS: depth=1 delivers the newest frame per wake, "
       "depth=N drains up to N in publish order. The callback runs on the spin thread; do not "
@@ -1688,8 +1640,7 @@ NB_MODULE(_flux, m)
       "Break out of spin(). Safe to call from a callback or another thread.")
     .def(
       "interrupt", &Executor::interrupt,
-      "Break the current wait without stopping the loop. Safe to call from another thread. "
-      "(Not called `wake`: flux uses that word for the in-segment futex wake generation.)")
+      "Break the current wait without stopping the loop. Safe to call from another thread.")
     .def(
       "dispatch", &Executor::dispatch,
       "Deliver every ready frame and re-arm, without blocking. Returns the callback count. "
@@ -1778,7 +1729,7 @@ NB_MODULE(_flux, m)
     "Resolve a domain from the environment, now: FLUX_DOMAIN if set, else the integer in "
     "`domain_env` if that names a set variable, else \"0\". Pass None to opt out of the "
     "inherited variable entirely. This reads the environment on every call, so it is a query "
-    "rather than the answer names are built from -- process_domain() is that.");
+    "rather than the answer names are built from; process_domain() is that.");
 
   // flux::rt, bound rather than rewritten in ctypes. The rollback on a half-applied request and
   // the read-back that catches an affinity a cpuset narrowed are the parts that are easy to get
@@ -1832,7 +1783,7 @@ NB_MODULE(_flux, m)
     "Raises rather than settling for less: OSError when the kernel refuses, RuntimeError when a "
     "check finds the request cannot take effect on this host or when the read-back disagrees "
     "with what was asked. Asking for nothing does nothing. Returns a human-readable report of "
-    "what the host was found to be -- diagnostic text, not a format to parse; empty when nothing "
+    "what the host was found to be. Diagnostic text, not a format to parse; empty when nothing "
     "was asked.");
 
   rt.def(

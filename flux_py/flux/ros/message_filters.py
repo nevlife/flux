@@ -1,34 +1,11 @@
 """message_filters sources over flux channels, so flux and DDS topics synchronize in one graph.
 
-The C++ counterpart is `flux::ros::message_filters` (docs/en/api.en.md 3). Same shape, one difference
-that the language forces: there, a callback is handed a `const FrameView &` whose borrow ends
-when it returns, so the filter has to `take()` the frame to own it. Here the object a callback
-receives already owns its borrow -- the numpy view's capsule holds it -- so queueing that object
-is all it takes, and upstream `message_filters` runs unmodified over it.
-
-    from sensor_msgs_flux.image import Image      # the flux adapter
-    from sensor_msgs.msg import Image as RosImage
-
-    left  = flux.ros.message_filters.Subscriber(node, Image, "left")
-    right = message_filters.Subscriber(node, RosImage, "right")   # a DDS topic, upstream's own
-
-    sync = message_filters.ApproximateTimeSynchronizer([left, right], 10, 0.02)
-    sync.registerCallback(on_pair)
-
-    ex = flux.ros.Executor()
-    ex.add_flux(left)          # the flux half is driven by the flux executor
-    ex.add_ros_node(node)      # the DDS half by rclpy, on the same thread
-    ex.spin()
-
-Every input of one synchronizer must be serviced by the same thread. The sync policies run the
-matched callback holding their own `threading.Lock`, and inputs on two threads couple through it.
-`flux.ros.Executor` satisfies this by construction. `PartitionedExecutor` cannot for a mixed
-graph -- rclpy has no `add_callback_group`, so a DDS input stays on its node's thread -- and
-`add_sync_group` there refuses the mix rather than let it run coupled.
+Usage and the same-thread rule are in docs/en/api.en.md (message_filters, Python). The object a
+callback receives already owns its borrow, so queueing it is all it takes and upstream
+`message_filters` runs unmodified over it.
 
 The filter path allocates: the policy queues are dicts and each frame carries a StampedFrame.
-Plain flux delivery allocates nothing. This path does not belong in a latency-critical chain
-.
+Plain flux delivery allocates nothing. This path does not belong in a latency-critical chain.
 """
 
 from builtin_interfaces.msg import Time
@@ -52,11 +29,8 @@ class _Header:
 class StampedFrame:
     """What a filter queue holds: the borrow and the stamp, never the bytes.
 
-    The payload stays in the segment for as long as this lives, which is what keeps the filter
-    path zero-copy -- and also what makes `max_borrow` the filter's business. A synchronizer
-    holds up to `queue_size` frames per input while it waits for partners, so `max_borrow` must
-    cover inputs x queue_size or the consumer runs out of leases and stops taking
-    (docs/en/borrow_lifetime.en.md).
+    The payload stays in the segment for as long as this lives, so `max_borrow` must cover
+    inputs x queue_size (docs/en/api.en.md).
     """
 
     __slots__ = ("frame", "header", "_adapter")
@@ -83,7 +57,7 @@ class Subscriber(SimpleFilter):
     cannot go here: `FrameMeta` carries no time of its own, so there is no key. C++ stops at
     compile time; here the first frame raises.
 
-    Hand this to an executor directly -- `ex.add_flux(sub)` reads the flux Subscription out of
+    Hand this to an executor directly; `ex.add_flux(sub)` reads the flux Subscription out of
     it. `.subscription` is that Subscription, for the pull surface and the QoS counters.
     """
 
