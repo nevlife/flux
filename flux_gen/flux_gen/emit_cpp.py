@@ -84,11 +84,10 @@ def _constants(layout):
     return "\n" + "\n".join(lines) + "\n"
 
 
-def _view_accessors(block, base, out, prefix=(), recv="r_.", ind="    "):
+def _view_accessors(block, base, out, prefix=(), recv="r_.", reader="r_", ind="    "):
     """`base` is the C++ expression for the block's frame offset ("" for the root block);
-    `recv` is how that block's class reaches its Reader (a member value, or a pointer)."""
-    reader = "r_" if recv == "r_." else "*r_"
-
+    `recv` is how that block's class reaches its Reader's members and `reader` the Reader
+    itself (a member value, or through a pointer)."""
     at = offset_at(base)
     for p in block.placed:
         n, o = ident(p.name), p.offset
@@ -138,9 +137,7 @@ def _view_accessors(block, base, out, prefix=(), recv="r_.", ind="    "):
                 f"{{ return {cls}({reader}, {recv}elem({at(o)}, i, {p.elem.stride}, {p.elem.align})); }}")
 
 
-def _builder_accessors(block, base, out, prefix=(), recv="w_.", ind="    "):
-    writer = "w_" if recv == "w_." else "*w_"
-
+def _builder_accessors(block, base, out, prefix=(), recv="w_.", writer="w_", ind="    "):
     at = offset_at(base)
     for p in block.placed:
         n, o = ident(p.name), p.offset
@@ -199,7 +196,7 @@ def _elem_classes(block, out, prefix=()):
         _elem_classes(p.elem, out, path)
         cls = _elem_class(path)
         body = []
-        _view_accessors(p.elem, "at_ + ", body, path, "r_->", "    ")
+        _view_accessors(p.elem, "at_ + ", body, path, recv="r_->", reader="*r_")
         out.append(f"""
   // one element of `{'.'.join(x.name for x in path)}`
   class {cls}
@@ -215,7 +212,7 @@ private:
     std::size_t at_;
   }};""")
         bbody = []
-        _builder_accessors(p.elem, "at_ + ", bbody, path, "w_->", "    ")
+        _builder_accessors(p.elem, "at_ + ", bbody, path, recv="w_->", writer="*w_")
         out.append(f"""
   class {cls}Builder
   {{
