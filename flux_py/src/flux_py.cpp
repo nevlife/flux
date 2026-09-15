@@ -58,16 +58,14 @@ std::int64_t mono_ns()
 // segment than the matching C++ node. flux_py cannot apply a namespace itself -- pass the same
 // absolute name a C++ node resolves to.
 
-// Enumeration metadata only. flux_py has no node, so the label stays empty
-// unless the caller passes one; the key is what makes a tool able to print the real topic name
-// rather than the name's punctuation-flattened spelling.
-void announce(
-  const std::string & signpost, const std::string & key, bool publisher, const std::string & label)
+// Enumeration metadata only. flux_py has no node, so the label stays empty; the key is what
+// makes a tool able to print the real topic name rather than the name's punctuation-flattened
+// spelling.
+void announce(const std::string & signpost, const std::string & key, bool publisher)
 {
   flux::ManifestEntry e;
   e.signpost = signpost;
   e.key = key;
-  e.label = label;
   e.publisher = publisher;
   flux::OwnerFile::announce(e);
 }
@@ -891,7 +889,7 @@ public:
         seg_name_, slot_size, slot_count, fingerprint, device_from(device)),
       flux::gpu::stream_for(device_from(device)), mem)
   {
-    announce(seg_name_, topic, /*publisher=*/true, /*label=*/"");
+    announce(seg_name_, topic, /*publisher=*/true);
   }
 
   // The device restriction is stated here rather than in the signature so the refusal can name
@@ -997,7 +995,7 @@ public:
     // where it is made, not once per frame on whichever thread ends up holding a view.
     stream_(flux::gpu::stream_for(device_from(device)))
   {
-    announce(seg_name_, topic, /*publisher=*/false, /*label=*/"");
+    announce(seg_name_, topic, /*publisher=*/false);
     qos_.validate();  // fail at construction, not on the first take
     attach();  // join the stream here if the publisher is already up: volatile is measured from
                // where this subscription joined, and attaching lazily would move that to the
