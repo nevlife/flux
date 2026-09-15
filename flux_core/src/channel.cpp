@@ -972,7 +972,6 @@ void Channel::maybe_reattach() noexcept
 
 bool Channel::ready() const noexcept
 {
-  if (sh_ == nullptr) return false;
   if (sh_->ctrl->init_state.load(std::memory_order_acquire) != kInitReady) return false;
   const std::uint64_t l = sh_->ctrl->latest.load(std::memory_order_acquire);
   return l != 0 && latest_ticket(l) > cursor_;

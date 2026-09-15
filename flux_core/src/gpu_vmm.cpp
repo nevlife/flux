@@ -78,7 +78,6 @@ struct Region
   ~Region()
   {
     const Driver & drv = driver();
-    if (!drv.vmm_ok()) return;
     if (addr != 0 && size != 0) {
       drv.mem_unmap(addr, size);
       drv.mem_address_free(addr, size);
