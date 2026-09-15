@@ -639,6 +639,7 @@ private:
     return arr;
   }
 
+  // Swallowed only to keep noexcept honest: a commit must not end in std::terminate over a flag.
   void revoke_issued() noexcept
   {
     for (auto & w : issued_) {
