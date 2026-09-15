@@ -73,8 +73,7 @@ void require_reachable(const Segment & seg, const gpu::Stream & stream)
   if (gpu::probe().route != gpu::Route::DeviceHandle) return;
   throw std::invalid_argument(
     "flux: this host reaches the GPU through the device handle path, so a channel that declares a "
-    "stream needs a device-backed payload; this segment's payload is host memory "
-    "");
+    "stream needs a device-backed payload; this segment's payload is host memory");
 }
 
 // Upper bound on a single park inside take_blocking. Re-running take() is what advances the
@@ -376,7 +375,7 @@ void Channel::stamp_writer(SlotHeader * sl, std::uint64_t odd) noexcept
       OwnerFile::ensure();  // this publisher must be probeable for a peer to recover its slots
       writer_id_ = OwnerFile::self();
     } catch (...) {
-      writer_id_ = OwnerId{};  // no owner file -> writer_pid stays 0 -> not recoverable (as before)
+      writer_id_ = OwnerId{};  // no owner file -> writer_pid stays 0 -> not recoverable
     }
     writer_ready_ = true;
   }
@@ -459,9 +458,7 @@ Published Channel::publish_meta(const void * data, const FrameMeta & meta) noexc
   // A device-backed slot is GPU memory. The memcpy below would store through a device
   // pointer, so this is a memory-safety gate, not only a policy one.
   if (sh_->device_payload) return Published::WrongDevice;
-  // meta_is_sane cannot fail from here -- meta_from derives itemsize and ndim rather than taking
-  // them -- but it is the invariant the consumer's view depends on, so it is checked where it is
-  // relied on rather than assumed.
+  // meta_from derives itemsize from dtype, so only a rank above kMaxDims fails here.
   if (meta.nbytes > sh_->layout.slot_size || !meta_is_sane(meta)) return Published::TooLarge;
   // The source is the caller's buffer, but the stream declared on this channel is the caller's
   // statement about where its frames come from, so the same fence applies before reading it.

@@ -168,8 +168,7 @@ void require_fenceable(const Stream & stream)
     throw std::invalid_argument(
       "flux: CUDA's legacy default stream cannot be declared on a channel: it resolves against "
       "the calling thread's current context, so a fence taken on a thread that has none fails "
-      "and costs a slot. Pass gpu::Stream::create() or your own stream handle "
-      "");
+      "and costs a slot. Pass gpu::Stream::create() or your own stream handle");
   }
 }
 

@@ -58,7 +58,7 @@ inline constexpr std::uint32_t latest_slot(std::uint64_t latest)
   return static_cast<std::uint32_t>(latest & kSlotMask);
 }
 
-// payload backing. Only HostInline is implemented; the rest reserve the GPU door.
+// Payload backing. HostInline and CudaIpc are implemented; DmaBuf is reserved.
 enum class StorageKind : std::uint8_t {
   HostInline = 0,
   CudaIpc = 1,

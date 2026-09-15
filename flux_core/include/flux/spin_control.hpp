@@ -8,9 +8,7 @@
 namespace flux
 {
 
-// The wake fd and the two loop flags every flux spin loop needs. Both executors need all of it,
-// and before this they had it twice with one difference that mattered: flux::Executor guards the
-// fd against its own destruction and flux::ros::PartitionedExecutor closed it outright.
+// The wake fd and the two loop flags every flux spin loop needs.
 //
 // The fd is held through a shared_ptr so waker() can outlive this object. A foreign readiness
 // hook may still be running on another thread when the owner goes away, and it must write to a
@@ -18,8 +16,7 @@ namespace flux
 //
 // "Am I spinning" and "should I stop" are two flags, not one. Sharing one means entering the loop
 // has to arm it, and that arming erases a stop() that landed while the caller was still starting
-// the thread -- the caller has moved on to join(), so nobody asks again and the loop never ends.
-//
+// the thread. The caller has moved on to join(), so nobody asks again and the loop never ends.
 class SpinControl
 {
 public:

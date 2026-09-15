@@ -441,7 +441,7 @@ void check_memory_lock(Report & rep)
     rep.findings.push_back(
       {"memory-lock", Verdict::Warn,
        "no locked memory: any page fault is an unbounded stall; lock and pre-fault the "
-       "working set (segment pre-commit is a planned flux opt-in)"});
+       "working set (MemoryPolicy::lock on the channel)"});
   }
 }
 
