@@ -264,6 +264,13 @@ INSTANTIATE_TEST_SUITE_P(
 
 }  // namespace
 
+TEST_P(ExecutorTest, RejectsZeroCapacityAndNonPositiveTick)
+{
+  EXPECT_THROW(flux::Executor(0, 1'000'000), std::invalid_argument);
+  EXPECT_THROW(flux::Executor(1, 0), std::invalid_argument);
+  EXPECT_THROW(flux::Executor(1, -1), std::invalid_argument);
+}
+
 TEST_P(ExecutorTest, DispatchDrainsEveryRegisteredSource)
 {
   FakeSource a, b;

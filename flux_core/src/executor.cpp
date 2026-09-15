@@ -14,9 +14,10 @@ namespace flux
 {
 
 Executor::Executor(unsigned max_channels, std::int64_t poll_tick_ns)
-: max_channels_(max_channels == 0 ? 1u : max_channels),
-  poll_tick_ns_(poll_tick_ns <= 0 ? 1'000'000LL : poll_tick_ns)
+: max_channels_(max_channels), poll_tick_ns_(poll_tick_ns)
 {
+  if (max_channels == 0) throw std::invalid_argument("flux: Executor max_channels must be >= 1");
+  if (poll_tick_ns <= 0) throw std::invalid_argument("flux: Executor poll_tick_ns must be > 0");
   // The fallback is selected by the kernel, which makes it untestable on a machine that has the
   // opcode. FLUX_DISABLE_IO_URING forces it, so the path Jetson Orin will run is exercised here.
   // On a kernel that has the opcode a refused ring setup (fd exhaustion) throws instead of
