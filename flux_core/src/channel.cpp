@@ -454,7 +454,6 @@ Published Channel::publish(
 Published Channel::publish_meta(const void * data, const FrameMeta & meta) noexcept
 {
   const std::size_t nbytes = static_cast<std::size_t>(meta.nbytes);
-  const std::uint32_t n = sh_->layout.slot_count;
   // A device-backed slot is GPU memory. The memcpy below would store through a device
   // pointer, so this is a memory-safety gate, not only a policy one.
   if (sh_->device_payload) return Published::WrongDevice;
@@ -463,21 +462,32 @@ Published Channel::publish_meta(const void * data, const FrameMeta & meta) noexc
   // The source is the caller's buffer, but the stream declared on this channel is the caller's
   // statement about where its frames come from, so the same fence applies before reading it.
   if (!sh_->fence(ChannelShared::Seam::Commit)) return Published::FenceFailed;
+  std::uint32_t s = 0;
+  std::uint64_t even = 0;
+  SlotHeader * sl = claim_slot(s, even);
+  if (sl == nullptr) return Published::Backpressure;
+  store_frame_bytes(payload(s), data, nbytes, sl, meta);
+  sh_->finish_commit(sl, s, even);  // stamp ticket, commit (release), latest + wake
+  return Published::Ok;
+}
+
+SlotHeader * Channel::claim_slot(std::uint32_t & s, std::uint64_t & even) noexcept
+{
+  const std::uint32_t n = sh_->layout.slot_count;
   // Two passes: on the first, select a free slot as usual; if none is free, reclaim slots
   // held by dead subscribers and retry once. The second pass drops.
   for (int pass = 0; pass < 2; ++pass) {
-    // Scan from just past the latest slot. With multiple publishers this is only a hint --
+    // Scan from just past the latest slot. With multiple publishers this is only a hint;
     // the CAS claim below resolves any collision.
     const std::uint64_t l = sh_->ctrl->latest.load(std::memory_order_relaxed);
     const std::int64_t start = (l == 0) ? 0 : (static_cast<std::int64_t>(latest_slot(l)) + 1);
 
     for (std::uint32_t k = 0; k < n; ++k) {
-      const std::uint32_t s =
-        static_cast<std::uint32_t>((start + static_cast<std::int64_t>(k)) % n);
+      s = static_cast<std::uint32_t>((start + static_cast<std::int64_t>(k)) % n);
       SlotHeader * sl = slot(s);
       if (sl->refcount.load(std::memory_order_acquire) != 0) continue;  // hint: skip borrowed
 
-      std::uint64_t even = sl->seq.load(std::memory_order_relaxed);
+      even = sl->seq.load(std::memory_order_relaxed);
       if (even & 1u) continue;  // another publisher holds this slot (odd) -> skip
       // claim: CAS even -> odd. Only one writer wins, so a slot has a single writer at a
       // time and the per-slot protocol is unchanged.
@@ -491,11 +501,7 @@ Published Channel::publish_meta(const void * data, const FrameMeta & meta) noexc
         continue;                                               // reselect
       }
       stamp_writer(sl, even + 1);  // record identity (seq is odd = even+1) for crash recovery
-
-      store_frame_bytes(payload(s), data, nbytes, sl, meta);  // write payload
-
-      sh_->finish_commit(sl, s, even);  // stamp ticket, commit (release), latest + wake
-      return Published::Ok;
+      return sl;
     }
 
     if (pass == 0) {  // starved: recover dead borrowers' and dead writers' slots, then retry
@@ -507,7 +513,7 @@ Published Channel::publish_meta(const void * data, const FrameMeta & meta) noexc
   }
 
   sh_->dropped.fetch_add(1, std::memory_order_relaxed);  // all slots held by live borrowers
-  return Published::Backpressure;
+  return nullptr;
 }
 
 void ChannelShared::finish_commit(SlotHeader * sl, std::uint32_t s, std::uint64_t even) noexcept
@@ -555,45 +561,14 @@ WriteSlot Channel::loan(DType dt, const std::uint64_t * shape, std::size_t ndim)
   // and commit() is where the caller already reads the outcome -- refusing in two places would
   // make the caller check twice for one mistake.
   const FrameMeta meta = meta_from(dt, shape, ndim);
-  // Slot selection + claim + Dekker recheck are identical to publish(); the only
-  // difference is the payload is written by the caller into the returned handle, not memcpy'd
-  // here, and the commit is deferred to WriteSlot::commit. The slot is left claimed (seq odd)
-  // for the loan's lifetime; it is not the latest yet, so no subscriber targets it.
-  const std::uint32_t n = sh_->layout.slot_count;
-  for (int pass = 0; pass < 2; ++pass) {
-    const std::uint64_t l = sh_->ctrl->latest.load(std::memory_order_relaxed);
-    const std::int64_t start = (l == 0) ? 0 : (static_cast<std::int64_t>(latest_slot(l)) + 1);
-
-    for (std::uint32_t k = 0; k < n; ++k) {
-      const std::uint32_t s =
-        static_cast<std::uint32_t>((start + static_cast<std::int64_t>(k)) % n);
-      SlotHeader * sl = slot(s);
-      if (sl->refcount.load(std::memory_order_acquire) != 0) continue;
-
-      std::uint64_t even = sl->seq.load(std::memory_order_relaxed);
-      if (even & 1u) continue;
-      if (!sl->seq.compare_exchange_strong(
-            even, even + 1, std::memory_order_seq_cst, std::memory_order_relaxed)) {
-        continue;
-      }
-      if (sl->refcount.load(std::memory_order_seq_cst) != 0) {  // Dekker recheck
-        sl->seq.store(even + 2, std::memory_order_seq_cst);
-        continue;
-      }
-      stamp_writer(sl, even + 1);  // record identity for crash recovery (loan holds the claim open)
-      return WriteSlot{sh_, sl, s, even, payload(s), sh_->layout.slot_size, meta};
-    }
-
-    if (pass == 0) {  // starved: recover dead borrowers' and dead writers' slots, then retry
-      const bool a = reclaim_dead();
-      const bool b = recover_stuck_writes();
-      if (a || b) continue;
-    }
-    break;
-  }
-
-  sh_->dropped.fetch_add(1, std::memory_order_relaxed);
-  return WriteSlot{};
+  // The payload is written by the caller into the returned handle and the commit is deferred
+  // to WriteSlot::commit. The slot is left claimed (seq odd) for the loan's lifetime; it is not
+  // the latest yet, so no subscriber targets it.
+  std::uint32_t s = 0;
+  std::uint64_t even = 0;
+  SlotHeader * sl = claim_slot(s, even);
+  if (sl == nullptr) return WriteSlot{};
+  return WriteSlot{sh_, sl, s, even, payload(s), sh_->layout.slot_size, meta};
 }
 
 WriteSlot::~WriteSlot()

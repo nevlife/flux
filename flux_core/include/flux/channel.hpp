@@ -597,8 +597,14 @@ private:
   // subtract its count from the slot refcount and free the entry. Run by
   // the publisher when starved. Returns true if any refcount was reclaimed.
   // The single publish body. Both public forms build the descriptor from their own arguments and
-  // hand it here, so slot selection and the seqlock protocol exist once.
+  // hand it here.
   Published publish_meta(const void * data, const FrameMeta & meta) noexcept;
+
+  // Slot selection, claim (seq even -> odd), Dekker recheck and writer stamp, shared by
+  // publish_meta() and loan(). On starvation reclaims dead borrowers and writers once, then
+  // counts a drop and returns nullptr. On success `s` is the slot index and `even` the seq the
+  // claim started from.
+  SlotHeader * claim_slot(std::uint32_t & s, std::uint64_t & even) noexcept;
 
   bool reclaim_dead() noexcept;
 
