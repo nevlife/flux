@@ -318,12 +318,10 @@ std::int64_t Executor::next_ros_timeout(std::int64_t tick_ns)
 {
   std::int64_t best = tick_ns;  // negative means block indefinitely
   auto consider = [&best](const rclcpp::CallbackGroup::SharedPtr & group) {
-    if (!group) return;
     group->collect_all_ptrs(
       [](const rclcpp::SubscriptionBase::SharedPtr &) {},
       [](const rclcpp::ServiceBase::SharedPtr &) {}, [](const rclcpp::ClientBase::SharedPtr &) {},
       [&best](const rclcpp::TimerBase::SharedPtr & timer) {
-        if (!timer) return;
         const std::int64_t due = timer->time_until_trigger().count();
         const std::int64_t wait = due > 0 ? due : 0;
         if (best < 0 || wait < best) best = wait;

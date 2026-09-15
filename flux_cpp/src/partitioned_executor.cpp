@@ -227,7 +227,7 @@ void PartitionedExecutor::spawn_children(std::int64_t tick_ns)
     if (auto node = it->lock()) {
       auto base = node->get_node_base_interface();
       base->for_each_callback_group([&known, &base](const rclcpp::CallbackGroup::SharedPtr & g) {
-        if (g) known.emplace(g.get(), GroupNode{g, base});
+        known.emplace(g.get(), GroupNode{g, base});
       });
       ++it;
     } else {
