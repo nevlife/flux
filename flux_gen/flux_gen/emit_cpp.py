@@ -43,6 +43,13 @@ def snake(name):
     return "".join(out)
 
 
+def offset_at(base):
+    """Offset expressions for a block reached through `base` ("" for the root block)."""
+    def at(off):
+        return f"{base}{off}" if base else str(off)
+    return at
+
+
 def cpp_type(dtype):
     # Refused rather than mapped: C++17 has no standard 16-bit float type, and raw uint16 bits
     # would read like numbers while meaning none of them. Revisit when C++23 is the floor.
@@ -82,9 +89,7 @@ def _view_accessors(block, base, out, prefix=(), recv="r_.", ind="    "):
     `recv` is how that block's class reaches its Reader (a member value, or a pointer)."""
     reader = "r_" if recv == "r_." else "*r_"
 
-    def at(off):
-        return f"{base}{off}" if base else str(off)
-
+    at = offset_at(base)
     for p in block.placed:
         n, o = ident(p.name), p.offset
         if p.kind == LeafKind.FIXED:
@@ -136,9 +141,7 @@ def _view_accessors(block, base, out, prefix=(), recv="r_.", ind="    "):
 def _builder_accessors(block, base, out, prefix=(), recv="w_.", ind="    "):
     writer = "w_" if recv == "w_." else "*w_"
 
-    def at(off):
-        return f"{base}{off}" if base else str(off)
-
+    at = offset_at(base)
     for p in block.placed:
         n, o = ident(p.name), p.offset
         if p.kind == LeafKind.FIXED:

@@ -8,6 +8,7 @@ attribute assignments rather than setter calls.
 import keyword
 
 from .dtypes import DType
+from .emit_cpp import offset_at
 from .flatten import DYNAMIC_COUNT, LeafKind
 from .layout import elem_class_name as _elem_class
 
@@ -47,9 +48,7 @@ def _constants(layout):
 
 
 def _view_body(block, base, out, prefix=(), ind="    "):
-    def at(off):
-        return f"{base}{off}" if base else str(off)
-
+    at = offset_at(base)
     for p in block.placed:
         n, o = ident(p.name), p.offset
         out.append("")
@@ -91,9 +90,7 @@ def _view_body(block, base, out, prefix=(), ind="    "):
 
 
 def _builder_body(block, base, out, prefix=(), ind="    "):
-    def at(off):
-        return f"{base}{off}" if base else str(off)
-
+    at = offset_at(base)
     for p in block.placed:
         n, o = ident(p.name), p.offset
         out.append("")
