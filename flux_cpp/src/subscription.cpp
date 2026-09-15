@@ -7,6 +7,8 @@
 
 #include <rclcpp/node.hpp>
 
+#include <stdexcept>
+#include <system_error>
 #include <utility>
 
 namespace flux::ros
@@ -66,14 +68,17 @@ FrameView Subscription::take_blocking(std::int64_t timeout_ns)
 bool Subscription::attach()
 {
   if (ch_) return true;
+  if (!flux::read_channel_stats(seg_name_).live) return false;  // no publisher yet; retry later
   try {
     // Channel::open, not open_subscriber_segment: only the former records the signpost
     // name + epoch, and without those a publisher restart is never detected.
     ch_.emplace(Channel::open(seg_name_, fingerprint_, stream_, mem_));
   } catch (const SegmentMismatch &) {
     throw;  // wrong fingerprint/version/config: retrying can never fix it, so say so
-  } catch (...) {
-    return false;  // publisher segment not up yet; retry on the next call
+  } catch (const std::system_error &) {
+    throw;  // a refused MemoryPolicy: reported, never downgraded to an unattached retry
+  } catch (const std::runtime_error &) {
+    return false;  // the publisher left between the probe above and the open
   }
   ch_->qos(qos_);  // validated in the constructor, so this cannot throw here
   return true;

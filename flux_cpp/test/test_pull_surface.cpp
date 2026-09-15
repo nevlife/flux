@@ -7,12 +7,15 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <gtest/gtest.h>
+#include <sys/resource.h>
+#include <unistd.h>
 
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 
 using namespace std::chrono_literals;
@@ -108,4 +111,36 @@ TEST_F(PullSurface, TakeFollowsPublishOrderAndCountsWhatTheRingLapped)
   EXPECT_EQ(first_byte(sub.take()), 3);
   EXPECT_FALSE(sub.take().valid());
   EXPECT_EQ(sub.lost(), 0u) << "nothing was lapped in a ring this size";
+}
+
+// docs/en/api.en.md, MemoryPolicy: a refused mlock is a std::system_error out of attach, not an
+// unattached subscription that keeps retrying as if no publisher were up.
+TEST_F(PullSurface, ARefusedMemoryPolicyThrowsInsteadOfLookingUnattached)
+{
+  struct rlimit saved;
+  ASSERT_EQ(::getrlimit(RLIMIT_MEMLOCK, &saved), 0);
+  if (saved.rlim_cur == RLIM_INFINITY && ::geteuid() == 0) {
+    GTEST_SKIP() << "running as root with no memlock limit: the kernel refuses nothing to lower";
+  }
+  const std::string topic = uniq("mem_refused_");
+  flux::ros::Publisher pub(*node_, topic, kFingerprint, kSlotSize, kSlots);
+
+  struct rlimit tiny = saved;
+  tiny.rlim_cur = 4096;  // one page, far below the segment
+  ASSERT_EQ(::setrlimit(RLIMIT_MEMLOCK, &tiny), 0);
+  flux::MemoryPolicy mem;
+  mem.lock = true;
+  bool threw = false;
+  bool attached = false;
+  try {
+    flux::ros::Subscription sub(
+      *node_, topic, kFingerprint, {}, flux::QoS{}, flux::Device::Cpu, mem);
+    attached = sub.attached();
+  } catch (const std::system_error &) {
+    threw = true;
+  }
+  ASSERT_EQ(::setrlimit(RLIMIT_MEMLOCK, &saved), 0);  // before any assertion can leave it lowered
+
+  EXPECT_TRUE(threw) << "the refusal came back as an " << (attached ? "attached" : "unattached")
+                     << " subscription instead of a throw";
 }
