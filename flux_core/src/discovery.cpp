@@ -24,6 +24,12 @@
 namespace flux
 {
 
+namespace
+{
+constexpr std::size_t kNameMax = 255;  // NAME_MAX for /dev/shm entries
+constexpr struct timespec kNap = {0, 100000};  // 100 us
+}  // namespace
+
 std::string canonical_domain(const std::string & raw)
 {
   if (raw.empty() || raw.size() > kMaxDomainLen) {
@@ -105,7 +111,6 @@ std::string segment_name(
 
   std::string body = flatten_key(key);
 
-  constexpr std::size_t kNameMax = 255;  // NAME_MAX for /dev/shm entries
   const std::size_t fixed = prefix.size() + std::strlen(suffix);
   if (fixed + body.size() > kNameMax) body.resize(kNameMax - fixed);
   return prefix + body + suffix;
@@ -125,7 +130,7 @@ std::string unique_segment_name(const std::string & signpost, const OwnerId & cr
     suffix, sizeof(suffix), ".%u.%llu", creator.pid,
     static_cast<unsigned long long>(creator.starttime));
   std::string name = signpost;
-  constexpr std::size_t kNameMax = 255;  // preserve the owner-id suffix; truncate the signpost part
+  // Preserve the owner-id suffix; truncate the signpost part.
   if (n > 0 && name.size() + static_cast<std::size_t>(n) > kNameMax) {
     name.resize(kNameMax - static_cast<std::size_t>(n));
   }
@@ -419,7 +424,6 @@ MappedSeg map_wait_validate(
   int fd, const std::string & name, std::uint64_t fingerprint, const SegmentLayout * expect,
   int kSpins, Device device = Device::Cpu)
 {
-  const struct timespec nap = {0, 100000};  // 100 us
 
   struct stat st
   {
@@ -431,7 +435,7 @@ MappedSeg map_wait_validate(
       sized = true;
       break;
     }
-    nanosleep(&nap, nullptr);
+    nanosleep(&kNap, nullptr);
   }
   if (!sized) throw std::runtime_error("flux: segment never sized '" + name + "'");
 
@@ -452,7 +456,7 @@ MappedSeg map_wait_validate(
       ready = true;
       break;
     }
-    nanosleep(&nap, nullptr);
+    nanosleep(&kNap, nullptr);
   }
   if (!ready) {  // transient: the creator may still be initializing, so this is retryable
     munmap(p, bytes);
@@ -543,7 +547,6 @@ bool signpost_object_sized(int fd) noexcept
 // kInitReady. Holds no lock; the caller owns the fd + mapping.
 MappedSp signpost_map(const std::string & name)
 {
-  const struct timespec nap = {0, 100000};  // 100 us
   for (int attempt = 0; attempt < 64; ++attempt) {
     int fd = ::shm_open(name.c_str(), O_CREAT | O_RDWR, 0600);
     if (fd < 0) fail("signpost shm_open", name, errno);
@@ -599,7 +602,7 @@ MappedSp signpost_map(const std::string & name)
       } else {
         for (int i = 0; i < kBootstrapSpins; ++i) {
           if (sp->init_state.load(std::memory_order_acquire) == kInitReady) break;
-          nanosleep(&nap, nullptr);
+          nanosleep(&kNap, nullptr);
         }
       }
     }
@@ -620,17 +623,6 @@ MappedSp signpost_map(const std::string & name)
     return {sp, static_cast<std::byte *>(p), fd};
   }
   throw std::runtime_error("flux: signpost bootstrap failed '" + name + "'");
-}
-
-void signpost_unmap(MappedSp & m) noexcept
-{
-  if (m.base != nullptr) {
-    munmap(m.base, kSignpostBytes);
-    ::close(m.fd);
-    m.base = nullptr;
-    m.sp = nullptr;
-    m.fd = -1;
-  }
 }
 
 // Seqlock read of the advertised (owner-id, epoch). False if no stable read within the budget.
@@ -698,7 +690,6 @@ Segment open_publisher_segment(
   // take the signpost write lock, recheck (R1), and create a fresh unique segment. A publisher
   // holds an OFD read lock on its segment for its lifetime (liveness).
   MappedSp msp = signpost_map(name);
-  const struct timespec nap = {0, 100000};  // 100 us
 
   // Try to join the segment the signpost advertises. Returns an invalid Segment to fall through
   // to the create path; rethrows SegmentMismatch when a live publisher genuinely disagrees about
@@ -732,7 +723,6 @@ Segment open_publisher_segment(
       const bool corpse = Segment::lock_write(fd);
       ::close(fd);
       if (corpse) return Segment{};
-      signpost_unmap(msp);
       throw;
     } catch (...) {
       if (fd >= 0) ::close(fd);  // transient (not ready yet) -> retry/create
@@ -749,13 +739,12 @@ Segment open_publisher_segment(
     // reads the fields directly, and our sealed signpost_write repairs the parity.
     signpost_read(msp.sp, cur, epoch);
     if (Segment joined = try_join(cur); joined.valid()) {
-      signpost_unmap(msp);
       return joined;
     }
 
     // No live current (or the join lost a race): take the signpost write lock to create.
     if (!Segment::lock_write(msp.fd)) {
-      nanosleep(&nap, nullptr);
+      nanosleep(&kNap, nullptr);
       continue;  // another publisher is creating -> retry the read/join
     }
     // R1: recheck under the lock -- a peer may have created a live segment while we waited.
@@ -770,7 +759,6 @@ Segment open_publisher_segment(
     if (cur2.pid != 0) {
       if (Segment joined = try_join(cur2); joined.valid()) {
         sp_unlock(msp.fd);
-        signpost_unmap(msp);
         return joined;
       }
     }
@@ -782,7 +770,7 @@ Segment open_publisher_segment(
     int fd = ::shm_open(seg.c_str(), O_CREAT | O_RDWR, 0600);
     if (fd < 0) {
       sp_unlock(msp.fd);
-      nanosleep(&nap, nullptr);
+      nanosleep(&kNap, nullptr);
       continue;
     }
 #ifdef FLUX_TESTING
@@ -826,7 +814,6 @@ Segment open_publisher_segment(
         s.attach_device(alloc.keepalive(), alloc.base());
       } catch (...) {
         sp_unlock(msp.fd);
-        signpost_unmap(msp);
         throw;  // s unlinks the segment on the way out: nothing was ever advertised
       }
     }
@@ -834,10 +821,8 @@ Segment open_publisher_segment(
     signpost_write(msp.sp, self, cur_epoch + 1);
     Segment::lock_read(fd);  // downgrade so other publishers can join
     sp_unlock(msp.fd);
-    signpost_unmap(msp);
     return s;
   }
-  signpost_unmap(msp);
   throw std::runtime_error("flux: segment bootstrap failed '" + name + "'");
 }
 
@@ -932,7 +917,6 @@ ChannelStats read_channel_stats(const std::string & signpost) noexcept
   try {
     MappedSp msp = signpost_map(signpost);
     const bool ok = signpost_read(msp.sp, cur, epoch);
-    signpost_unmap(msp);
     if (!ok || cur.pid == 0) return out;
   } catch (...) {
     return out;  // no signpost, or nothing bootstrapped in it yet
@@ -966,11 +950,13 @@ Segment open_subscriber_segment(
   const std::string & name, std::uint64_t fingerprint, std::uint32_t * out_epoch, Device device)
 {
   // `name` is the signpost name. Read the advertised current segment, then attach to it.
-  MappedSp msp = signpost_map(name);
   OwnerId cur{};
   std::uint32_t epoch = 0;
-  const bool ok = signpost_read(msp.sp, cur, epoch);
-  signpost_unmap(msp);
+  bool ok = false;
+  {
+    MappedSp msp = signpost_map(name);
+    ok = signpost_read(msp.sp, cur, epoch);
+  }
   if (!ok || cur.pid == 0) {
     // Transient in the normal case (the publisher is not up yet). It is also what a skew on either
     // name-scoping axis looks like -- a peer built against another flux layout, or one running in
