@@ -933,3 +933,32 @@ TEST(FluxExecutor, ASpinOnceDuringASpinNeitherThrowsNorEndsTheSpin)
   EXPECT_TRUE(returned.load());
   rclcpp::shutdown();
 }
+
+namespace
+{
+
+// A waitable that keeps rclcpp's default hooks, which throw. rclcpp's own EventsExecutor lets
+// that throw reach the caller; an executor that swallowed it would silently serve the waitable
+// on the tick alone.
+class HookLessWaitable : public rclcpp::Waitable
+{
+public:
+  void add_to_wait_set(rcl_wait_set_t &) override {}
+  bool is_ready(const rcl_wait_set_t &) override { return false; }
+  std::shared_ptr<void> take_data() override { return nullptr; }
+  void execute(const std::shared_ptr<void> &) override {}
+};
+
+}  // namespace
+
+TEST(FluxExecutor, AWaitableWithoutAReadinessHookIsRefusedNotSilentlyUnbridged)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_hookless_waitable_node");
+  auto waitable = std::make_shared<HookLessWaitable>();
+  node->get_node_waitables_interface()->add_waitable(waitable, nullptr);
+
+  flux::ros::Executor ex;
+  EXPECT_THROW(ex.add_ros_node(node), std::runtime_error);
+  rclcpp::shutdown();
+}

@@ -16,41 +16,23 @@ Executor::Executor(unsigned max_channels)
 
 Executor::~Executor()
 {
-  // Best effort throughout: stop new pokes before the wake fd goes.
+  // Stop new pokes before the wake fd goes.
   for (auto & [ptr, weak] : ros_subs_) {
     if (auto s = weak.lock()) {
-      try {
-        s->clear_on_new_message_callback();
-        if (s->get_intra_process_waitable() != nullptr) {
-          s->clear_on_new_intra_process_message_callback();
-        }
-      } catch (...) {
+      s->clear_on_new_message_callback();
+      if (s->get_intra_process_waitable() != nullptr) {
+        s->clear_on_new_intra_process_message_callback();
       }
     }
   }
   for (auto & [ptr, weak] : ros_services_) {
-    if (auto s = weak.lock()) {
-      try {
-        s->clear_on_new_request_callback();
-      } catch (...) {
-      }
-    }
+    if (auto s = weak.lock()) s->clear_on_new_request_callback();
   }
   for (auto & [ptr, weak] : ros_clients_) {
-    if (auto c = weak.lock()) {
-      try {
-        c->clear_on_new_response_callback();
-      } catch (...) {
-      }
-    }
+    if (auto c = weak.lock()) c->clear_on_new_response_callback();
   }
   for (auto & [ptr, weak] : ros_waitables_) {
-    if (auto wt = weak.lock()) {
-      try {
-        wt->clear_on_ready_callback();
-      } catch (...) {
-      }
-    }
+    if (auto wt = weak.lock()) wt->clear_on_ready_callback();
   }
 }
 
@@ -92,37 +74,28 @@ void Executor::bridge_group(const rclcpp::CallbackGroup::SharedPtr & group)
   // A waitable's hook carries an extra int naming which entity inside it fired; the wait layer
   // does not care which, so it is dropped here.
   const auto poke_waitable = [poke](std::size_t n, int) { poke(n); };
+  // Hooked before it is recorded, so an entity whose hook is refused is not left marked as
+  // bridged. rclcpp's own EventsExecutor lets the refusal propagate the same way.
   group->collect_all_ptrs(
     [this, &poke](const rclcpp::SubscriptionBase::SharedPtr & sub) {
-      if (!ros_subs_.emplace(sub.get(), sub).second) return;  // already bridged
-      try {
-        sub->set_on_new_message_callback(poke);
-        // Intra-process readiness comes through a separate waitable, not the rmw queue;
-        // without its own hook those messages would surface only on the tick.
-        if (sub->get_intra_process_waitable() != nullptr) {
-          sub->set_on_new_intra_process_message_callback(poke);
-        }
-      } catch (...) {
-        // Racing a context shutdown: the intra-process manager can already be gone.
-        // Unmark so a pass on a live context retries instead of keeping a dead bridge.
-        ros_subs_.erase(sub.get());
+      if (ros_subs_.count(sub.get()) != 0) return;
+      sub->set_on_new_message_callback(poke);
+      // Intra-process readiness comes through a separate waitable, not the rmw queue;
+      // without its own hook those messages would surface only on the tick.
+      if (sub->get_intra_process_waitable() != nullptr) {
+        sub->set_on_new_intra_process_message_callback(poke);
       }
+      ros_subs_.emplace(sub.get(), sub);
     },
     [this, &poke](const rclcpp::ServiceBase::SharedPtr & srv) {
-      if (!ros_services_.emplace(srv.get(), srv).second) return;
-      try {
-        srv->set_on_new_request_callback(poke);
-      } catch (...) {
-        ros_services_.erase(srv.get());
-      }
+      if (ros_services_.count(srv.get()) != 0) return;
+      srv->set_on_new_request_callback(poke);
+      ros_services_.emplace(srv.get(), srv);
     },
     [this, &poke](const rclcpp::ClientBase::SharedPtr & cli) {
-      if (!ros_clients_.emplace(cli.get(), cli).second) return;
-      try {
-        cli->set_on_new_response_callback(poke);
-      } catch (...) {
-        ros_clients_.erase(cli.get());
-      }
+      if (ros_clients_.count(cli.get()) != 0) return;
+      cli->set_on_new_response_callback(poke);
+      ros_clients_.emplace(cli.get(), cli);
     },
     // Timers are not hooked: they have no readiness event to fire. next_ros_timeout() shortens
     // the wait to the nearest deadline instead, which is the only thing that answers a timer.
@@ -130,53 +103,34 @@ void Executor::bridge_group(const rclcpp::CallbackGroup::SharedPtr & group)
     // An action server and an action client are each one Waitable, so this is the hook that
     // makes goal, cancel and result reach the ring on arrival rather than on the next tick.
     [this, &poke_waitable](const rclcpp::Waitable::SharedPtr & wt) {
-      if (!ros_waitables_.emplace(wt.get(), wt).second) return;
-      try {
-        wt->set_on_ready_callback(poke_waitable);
-      } catch (...) {
-        ros_waitables_.erase(wt.get());
-      }
+      if (ros_waitables_.count(wt.get()) != 0) return;
+      wt->set_on_ready_callback(poke_waitable);
+      ros_waitables_.emplace(wt.get(), wt);
     });
 }
 
 // Drop the hooks this executor installed. A hook outlives removal otherwise, and keeps waking
-// the ring for an entity no pass will service. Clearing is best-effort for the same reason
-// setting is: a context already shutting down can have taken the intra-process manager with it.
+// the ring for an entity no pass will service.
 void Executor::unbridge_group(const rclcpp::CallbackGroup::SharedPtr & group)
 {
   if (!group) return;
   group->collect_all_ptrs(
     [this](const rclcpp::SubscriptionBase::SharedPtr & sub) {
       if (ros_subs_.erase(sub.get()) == 0) return;
-      try {
-        sub->clear_on_new_message_callback();
-        if (sub->get_intra_process_waitable() != nullptr) {
-          sub->clear_on_new_intra_process_message_callback();
-        }
-      } catch (...) {
+      sub->clear_on_new_message_callback();
+      if (sub->get_intra_process_waitable() != nullptr) {
+        sub->clear_on_new_intra_process_message_callback();
       }
     },
     [this](const rclcpp::ServiceBase::SharedPtr & srv) {
-      if (ros_services_.erase(srv.get()) == 0) return;
-      try {
-        srv->clear_on_new_request_callback();
-      } catch (...) {
-      }
+      if (ros_services_.erase(srv.get()) != 0) srv->clear_on_new_request_callback();
     },
     [this](const rclcpp::ClientBase::SharedPtr & cli) {
-      if (ros_clients_.erase(cli.get()) == 0) return;
-      try {
-        cli->clear_on_new_response_callback();
-      } catch (...) {
-      }
+      if (ros_clients_.erase(cli.get()) != 0) cli->clear_on_new_response_callback();
     },
     [](const rclcpp::TimerBase::SharedPtr &) {},
     [this](const rclcpp::Waitable::SharedPtr & wt) {
-      if (ros_waitables_.erase(wt.get()) == 0) return;
-      try {
-        wt->clear_on_ready_callback();
-      } catch (...) {
-      }
+      if (ros_waitables_.erase(wt.get()) != 0) wt->clear_on_ready_callback();
     });
 }
 
