@@ -20,7 +20,7 @@ Offsets are uint32, so one frame of a generated schema is capped at 4 GiB regard
 
 from dataclasses import dataclass
 
-from .dtypes import SIZE, DType
+from .dtypes import SIZE
 from .fingerprint import fingerprint
 from .flatten import DYNAMIC_COUNT, LeafKind
 
@@ -103,10 +103,6 @@ class Block:
     placed: tuple
     stride: int  # size rounded up to align, so an array of these is addressable by index
     align: int
-
-    @property
-    def has_var(self):
-        return any(p.kind in VARIABLE or p.kind == LeafKind.HEADER for p in self.placed)
 
 
 @dataclass(frozen=True)
@@ -213,7 +209,3 @@ def walk(block):
             if p.elem is not None:
                 yield from rec(p.elem, path + (p,))
     yield from rec(block, ())
-
-
-def dtype_of(placed):
-    return placed.dtype if placed.dtype is not None else DType.U8

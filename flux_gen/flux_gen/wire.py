@@ -53,10 +53,6 @@ class Reader:
     def __len__(self):
         return self._n
 
-    @property
-    def buffer(self):
-        return self._buf
-
     def _region(self, off, n, esize, align):
         if off % align or off > self._n or n > (self._n - off) // esize:
             raise WireError(f"frame region [{off}, +{n}x{esize}) escapes a {self._n}-byte frame")
@@ -77,9 +73,6 @@ class Reader:
         self._region(off, 1, DESC_SIZE, 1)
         d = np.frombuffer(self._buf, dtype=_DESC, count=1, offset=off)[0]
         return int(d["off"]), int(d["len"])
-
-    def length(self, off):
-        return self.desc(off)[1]
 
     def span(self, off, dtype):
         """A variable array, as a view aliasing the frame."""
@@ -126,8 +119,6 @@ class ElemSeq:
         return self._n
 
     def __getitem__(self, i):
-        if isinstance(i, slice):
-            return [self[k] for k in range(*i.indices(self._n))]
         if i < 0:
             i += self._n
         if not 0 <= i < self._n:
@@ -182,19 +173,11 @@ class Writer:
         """Bytes to commit."""
         return self._used
 
-    @property
-    def buffer(self):
-        return self._buf
-
     def put(self, off, dtype, value):
         dt = np.dtype(dtype)
         if off + dt.itemsize > self._cap:
             raise WireError(f"scalar at {off} escapes the slot")
         np.frombuffer(self._buf, dtype=dt, count=1, offset=off)[0] = value
-
-    def put_block(self, off, dtype, values):
-        dst = self.block_view(off, dtype, len(values))
-        dst[:] = values
 
     def block_view(self, off, dtype, count):
         dt = np.dtype(dtype)
