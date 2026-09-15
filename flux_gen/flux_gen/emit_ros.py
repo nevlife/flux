@@ -278,8 +278,11 @@ def emit_py(layout, source):
 
     types = element_types(layout)
     alias = {t: f"_Ros{i}" for i, t in enumerate(types)}
-    imports = "\n".join(
-        f"from {ros_py_module(t)[0]} import {ros_py_module(t)[1]} as {alias[t]}" for t in types)
+    imports = []
+    for t in types:
+        module, name = ros_py_module(t)
+        imports.append(f"from {module} import {name} as {alias[t]}")
+    imports = "\n".join(imports)
 
     to_frame, to_msg = [], []
     _py_to_frame(layout.root, to_frame, "    ", "m", "b", 0)
