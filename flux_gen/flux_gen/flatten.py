@@ -176,10 +176,25 @@ def _expand(fld, registry, seen, package=None, prefix=()):
         elem_type=ident)]
 
 
-def _flatten(msg, registry, seen):
+def _frame_meta(fld):
+    """The HEADER or STAMP leaf a top-level field maps to, or None."""
+    if fld.kind != ArrayKind.SCALAR:
+        return None
+    if fld.type_name in HEADER_TYPES:
+        return Leaf(LeafKind.HEADER, path=(fld.name,))
+    if fld.type_name in TIME_TYPES:
+        return Leaf(LeafKind.STAMP, path=(fld.name,))
+    return None
+
+
+def _flatten(msg, registry, seen, top=False):
     out = []
     for fld in msg.fields:
-        out.extend(_expand(fld, registry, seen, msg.package))
+        meta = _frame_meta(fld) if top else None
+        if meta is not None:
+            out.append(meta)
+        else:
+            out.extend(_expand(fld, registry, seen, msg.package))
         if len(out) > MAX_LEAVES:
             raise Reject(f"{msg.name}: flattens to more than {MAX_LEAVES} leaves")
     return out
@@ -187,17 +202,7 @@ def _flatten(msg, registry, seen):
 
 def flatten_message(msg, registry):
     try:
-        leaves = []
-        for fld in msg.fields:
-            if fld.kind == ArrayKind.SCALAR and fld.type_name in HEADER_TYPES:
-                leaves.append(Leaf(LeafKind.HEADER, path=(fld.name,)))
-                continue
-            if fld.kind == ArrayKind.SCALAR and fld.type_name in TIME_TYPES:
-                leaves.append(Leaf(LeafKind.STAMP, path=(fld.name,)))
-                continue
-            leaves.extend(_expand(fld, registry, frozenset(), msg.package))
-            if len(leaves) > MAX_LEAVES:
-                raise Reject(f"{msg.name}: flattens to more than {MAX_LEAVES} leaves")
+        leaves = _flatten(msg, registry, frozenset(), top=True)
         if not leaves:
             # Constant-only messages (std_msgs/Empty, rcl_interfaces/ParameterType) carry no
             # payload, so there is nothing for a frame to be. Plain ROS handles them.
