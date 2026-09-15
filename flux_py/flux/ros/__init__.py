@@ -746,13 +746,9 @@ def _require_flux_only(group):
     )
 
 
-try:
-    _prctl = ctypes.CDLL(None, use_errno=True).prctl
-    _prctl.argtypes = [ctypes.c_int, ctypes.c_char_p,
-                       ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
-    _prctl.restype = ctypes.c_int
-except (OSError, AttributeError):
-    _prctl = None
+_prctl = ctypes.CDLL(None, use_errno=True).prctl
+_prctl.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+_prctl.restype = ctypes.c_int
 
 
 def _apply_scheduling(sched):
@@ -776,12 +772,7 @@ def _name_this_thread(name):
     `python3` in top -H, perf and /proc, which is where anyone asks what the extra threads of
     a partitioned executor actually cost. PR_SET_NAME truncates at 15 bytes.
     """
-    if _prctl is None:
-        return
-    try:
-        _prctl(15, name.encode()[:15], 0, 0, 0)  # PR_SET_NAME
-    except (OSError, ValueError):
-        pass  # naming is a convenience; never fail a spin over it
+    _prctl(15, name.encode()[:15], 0, 0, 0)  # PR_SET_NAME
 
 
 def _sec(timeout_ns):
