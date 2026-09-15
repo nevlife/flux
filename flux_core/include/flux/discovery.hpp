@@ -42,27 +42,20 @@ std::string canonical_domain(const std::string & raw);
 //                                           "7" cannot name two domains
 //   else                          -> kDefaultDomain
 //
-// A query, not the answer names are built from -- it reads getenv on every call, so two calls
+// A query, not the answer names are built from. It reads getenv on every call, so two calls
 // straddling a setenv disagree. process_domain() is what a name uses. `domain_env` names the
 // variable the host domain id comes from; nullptr opts out and takes FLUX_DOMAIN or
-// kDefaultDomain only. Core does not interpret the value it reads -- it renders an integer and
+// kDefaultDomain only. Core does not interpret the value it reads. It renders an integer and
 // stops. A value that cannot be canonicalized throws rather than falling back: a typo must not
 // silently share the default domain with everyone else.
 std::string resolve_domain(const char * domain_env);
 
 // This process's domain. Resolved from kDefaultDomainEnv on first use and fixed for the life of
-// the process, so every name this process builds carries the same domain no matter when it is
-// built.
-//
-// Latched rather than read per name because rcl latches the same variable: it reads ROS_DOMAIN_ID
-// once at context init and a node created later keeps that domain. Reading it per endpoint let
-// one process sit in two domains at once -- measured, by setting the variable between two
-// constructions -- while its ROS half stayed in one domain. That is the split core-side
-// resolution exists to close, relocated from between layers to inside a process.
+// the process, the way rcl latches ROS_DOMAIN_ID (docs/en/api.en.md, domain section).
 //
 // A throwing first call is not latched: the initialization is retried, so a corrected environment
-// resolves on the next call rather than pinning the failure. fork keeps the value, which is right
-// -- the child inherits the environment it was resolved from, and exec replaces the process.
+// resolves on the next call rather than pinning the failure. fork keeps the value, which is right.
+// The child inherits the environment it was resolved from, and exec replaces the process.
 const std::string & process_domain();
 
 // Valid POSIX shm name for a channel key + schema fingerprint: single leading '/', no other '/',
@@ -70,12 +63,12 @@ const std::string & process_domain();
 //
 // `key` is an opaque channel key, not a ROS topic: core neither resolves nor validates it, and
 // two keys that differ at all (`a/b` vs `/a/b`) name two segments. Peers agree on the key above
-// core -- flux_cpp resolves it through the node, flux_py has no node and so demands an already
+// core: flux_cpp resolves it through the node, flux_py has no node and so demands an already
 // absolute name (docs/en/contracts.en.md 3).
 //
 // `domain` is the third compatibility axis, beside the layout version and the fingerprint: two
 // domains never share a name, and nothing crosses between them. It is always present in the name,
-// never elided when it is the default -- an optional component would give one state two spellings
+// never elided when it is the default. An optional component would give one state two spellings
 // and let "unset" and "explicitly default" fail to meet.
 std::string segment_name(
   const std::string & key, std::uint64_t fingerprint,
@@ -95,7 +88,7 @@ std::string signpost_name(
 
 // Segment name for one publisher-group instance: `<signpost>.<pid>.<starttime>`, never reused
 // across restarts. If the result would exceed NAME_MAX the signpost portion is truncated, never
-// the owner-id suffix -- a subscriber must be able to rebuild the exact name from the signpost.
+// the owner-id suffix. A subscriber must be able to rebuild the exact name from the signpost.
 std::string unique_segment_name(const std::string & signpost, const OwnerId & creator);
 
 // Identity of the object `name` currently binds to. False if the name does not exist.
@@ -110,13 +103,13 @@ struct EndpointView
 };
 
 // One channel, as enumeration reports it. Built from the /dev/shm name namespace plus the
-// manifests of the processes currently holding owner locks -- there is no registry and no daemon,
+// manifests of the processes currently holding owner locks. There is no registry and no daemon,
 // so this is a snapshot taken by reading, not a subscription to anything.
 struct TopicView
 {
   std::string signpost;  // the fixed name; the identity everything else joins on
   std::string domain;    // parsed back out of the name
-  std::string key;       // the channel key
+  std::string key;
   std::uint64_t fingerprint = 0;
   // False when `key` came from the name rather than from a live participant's manifest. The name
   // maps every non-alnum key character to '.', so `/a/b` and `.a.b` are one name: what is
@@ -195,7 +188,7 @@ Segment open_publisher_segment(
 //
 // Throws SegmentMismatch when the advertised segment's payload lives somewhere this subscriber
 // cannot read it: a device-backed channel opened with Device::Cpu, or one on another GPU.
-// Permanent, not transient -- retrying never fixes either.
+// Permanent, not transient. Retrying never fixes either.
 Segment open_subscriber_segment(
   const std::string & name, std::uint64_t fingerprint, std::uint32_t * out_epoch = nullptr,
   Device device = Device::Cpu);
@@ -207,7 +200,7 @@ std::uint32_t signpost_epoch(const std::string & signpost) noexcept;
 
 // A held read-only mapping of one signpost. A subscriber keeps this for its lifetime so
 // watching for a publisher rotation is a seqlock read of a page it already has, rather than
-// reopening the object -- cheap enough to check on every take instead of behind a threshold.
+// reopening the object, cheap enough to check on every take instead of behind a threshold.
 // The signpost is persistent and rotations update it in place, so the
 // mapping stays valid across restarts. Move-only.
 class SignpostView

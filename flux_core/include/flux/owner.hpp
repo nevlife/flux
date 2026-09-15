@@ -45,7 +45,7 @@ struct ManifestEntry
 };
 
 // Liveness verdict for a probed owner. Dead also covers a missing
-// owner file (torn self-reported starttime, or already cleaned up) -- in every such case no
+// owner file (torn self-reported starttime, or already cleaned up). In every such case no
 // live participant holds the file under this identity, so the holder is reclaimable.
 enum class Liveness : std::uint8_t {
   Alive,

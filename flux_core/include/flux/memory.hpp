@@ -16,12 +16,12 @@ namespace flux
 struct MemoryPolicy
 {
   // Fault in every page of the mapping at attach: header, slot table, holder tables and payload.
-  // All of it or none -- a partial commit sets no bound, and a bound is the entire point.
+  // All of it or none. A partial commit sets no bound, and a bound is the entire point.
   bool precommit = false;
 
   // mlock the mapping, so the kernel may not swap it back out. A commit alone is undone by memory
   // pressure. Needs RLIMIT_MEMLOCK to cover the segment; a refusal is reported, never downgraded.
-  // Implies the commit -- mlock populates what it locks.
+  // Implies the commit, since mlock populates what it locks.
   bool lock = false;
 
   bool none() const noexcept { return !precommit && !lock; }

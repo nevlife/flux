@@ -32,7 +32,7 @@ struct Options
 
 // Apply to the calling thread, all-or-nothing: if the kernel refuses any part, what was
 // already changed is rolled back and std::system_error is thrown. Refusal is never
-// downgraded to a weaker setting -- a thread that asked for RT and silently runs
+// downgraded to a weaker setting. A thread that asked for RT and silently runs
 // SCHED_OTHER is the failure mode this interface exists to prevent.
 void apply(const Options & opts);
 
@@ -54,7 +54,7 @@ int this_tid();
 // refused across threads but reading is not, and the two are not the same risk:
 // an observer opens no window where the thread is half-configured and leaves no silent failure if
 // it never runs. That asymmetry is what lets a chain be checked whole, the stages flux does not
-// set included. Works across processes -- an external stage is another node's thread.
+// set included. Works across processes: an external stage is another node's thread.
 //
 // Throws std::system_error when the thread cannot be read, a thread that has exited included: a
 // thread that is gone and a thread at the wrong priority must not arrive as the same answer.
@@ -63,7 +63,7 @@ ThreadState observe(int tid);
 enum class Verdict : std::uint8_t { Ok, Warn, Fail, Unknown };
 
 // How much of preflight's judgement blocks an apply. Fail always blocks under
-// both: the request cannot take effect as asked. Warn is the split -- the request does take
+// both: the request cannot take effect as asked. Warn is the split. The request does take
 // effect, but the host is not configured for bounded latency, which soft RT tolerates and hard
 // RT does not. A caller that never states which it is gets the soft reading, so declaring Hard
 // is what turns those findings from a report nobody reads into a refusal.
@@ -93,7 +93,7 @@ struct Report
 // anything. Every verdict comes from a kernel-readable source (rlimits, /proc, /sys),
 // not from guessing. `control_priority` declares the consumer's control
 // loop RT priority (0 = not declared); transport work must stay strictly below it. Left
-// undeclared, `priority-order` is reported Unknown rather than omitted -- a check that did
+// undeclared, `priority-order` is reported Unknown rather than omitted. A check that did
 // not run and a check that passed must not look alike.
 Report preflight(const Options & opts, int control_priority = 0);
 
@@ -102,11 +102,11 @@ Report preflight(const Options & opts, int control_priority = 0);
 // Throws std::runtime_error with the report when the verdicts block, before
 // touching the thread; otherwise applies and returns the report so a Soft caller can log what it
 // tolerated. Nothing is applied on a throw. Options that ask for nothing are a full no-op here
-// too, judgement included -- there is no host to judge against an empty request.
+// too, judgement included. There is no host to judge against an empty request.
 //
 // The applied state is confirmed by reading it back, not by trusting the syscall's return: a
 // request the kernel accepted can still land elsewhere. A mismatch throws, having already changed
-// the thread -- the caller is told what it actually got rather than left believing the request.
+// the thread. The caller is told what it actually got rather than left believing the request.
 Report apply_checked(const Options & opts, Strictness strict, int control_priority = 0);
 
 }  // namespace flux::rt

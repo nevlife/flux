@@ -8,7 +8,7 @@
 
 // Which GPU payload route this host can take. flux_core does not link
 // CUDA: the driver is opened at runtime, so a build on a host with no CUDA still runs and
-// reports Route::None. Nothing here allocates, maps, or publishes -- probe() answers one
+// reports Route::None. Nothing here allocates, maps, or publishes. probe() answers one
 // question and every later GPU decision reads that answer instead of asking the driver again.
 
 namespace flux
@@ -70,7 +70,7 @@ public:
   Stream() = default;
 
   // Declares `native` (CUstream / cudaStream_t). A null handle is CUDA's legacy default stream,
-  // which is a real stream -- so construction is what declares, not the value. Nothing else can
+  // which is a real stream. Construction is what declares, not the value. Nothing else can
   // tell "the default stream" apart from "no stream".
   //
   // Declaring it is not the same as a channel accepting it: the legacy default stream resolves
@@ -83,7 +83,7 @@ public:
   //
   // Creating one rather than reusing CUDA's default stream is deliberate: which stream handle 0
   // names depends on how the caller's translation units were compiled, so a fence on it could
-  // wait on a different stream than the work went to -- the silent failure this design exists to
+  // wait on a different stream than the work went to, the silent failure this design exists to
   // prevent. A caller that has its own stream passes it instead.
   static Stream create();
 
@@ -93,7 +93,7 @@ public:
   // Block until work submitted to this stream before now has finished. An undeclared stream has
   // nothing to wait for and succeeds without touching CUDA.
   //
-  // False means the wait did not happen -- no driver, no context, a stream the driver rejects.
+  // False means the wait did not happen: no driver, no context, a stream the driver rejects.
   // The caller must read that as "still running". A fence that could not be taken must never
   // reach a caller as a fence that passed, because the only thing done next is to let the
   // publisher overwrite the bytes.
@@ -108,7 +108,7 @@ private:
 // A host mapping a kernel can reach because the driver was told about it (Route::ShmRegistered).
 // Empty on every other route: ShmDirect needs no registration because
 // the host address already is the device address, and DeviceHandle has no host payload to
-// register. Copies share one registration, which is released with the last of them -- a view
+// register. Copies share one registration, which is released with the last of them. A view
 // handed out before the channel went away must still be able to name its device address.
 class HostRegistration
 {
@@ -116,7 +116,7 @@ public:
   HostRegistration() = default;
 
   // Register [base, base + bytes) and resolve the device address it answers to. `read_only` must
-  // be set for a PROT_READ mapping -- a subscriber's payload is one after
+  // be set for a PROT_READ mapping. A subscriber's payload is one after
   // Segment::protect_payload(), and the driver refuses it with INVALID_VALUE unless told.
   //
   // Throws std::invalid_argument when the driver refuses. A caller that declared a stream must
@@ -155,7 +155,7 @@ void require_route();
 // reasons.
 //
 // Only CUDA's legacy default stream (a null handle) is refused. It names the current context's
-// default stream, and a CUDA context is current per thread -- so a fence taken on a thread that
+// default stream, and a CUDA context is current per thread. So a fence taken on a thread that
 // never touched CUDA fails, while the same declaration fences fine on the thread that did. Which
 // threads release a view is not something a channel knows, so the declaration is refused at the
 // point it is made rather than left to fail once per frame on whichever thread got the view.

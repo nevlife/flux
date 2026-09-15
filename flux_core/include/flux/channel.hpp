@@ -24,7 +24,7 @@ class Channel;
 // Outcome of a publish. Backpressure is the only transient one and the only one that bumps
 // dropped(); the rest are wiring mistakes or a fault, and a caller that treats them as a rate
 // never finds them. The publish path derives dtype and shape from its arguments, so a
-// self-contradicting descriptor is not among the outcomes -- it cannot be built.
+// self-contradicting descriptor is not among the outcomes. It cannot be built.
 enum class Published : std::uint8_t {
   Ok,
   Backpressure,  // every slot is borrowed; dropped()++
@@ -35,7 +35,7 @@ enum class Published : std::uint8_t {
 
 // One question instead of five. Backpressure is a rate: the ring was full, the frame was dropped,
 // and delivery is best-effort by design. Everything else is a fault that does not clear on its
-// own -- FenceFailed leaks the slot for good, and the other two describe a frame that can never
+// own. FenceFailed leaks the slot for good, and the other two describe a frame that can never
 // go out as written. A caller that logs on this and ignores the rest has covered the enum.
 constexpr bool faulted(Published p) noexcept
 {
@@ -61,9 +61,8 @@ struct ChannelShared
   {
   }
 
-  // Which of the two seams a fence closes. They block different threads
-  // -- commit blocks whoever publishes, release blocks whoever drops the view -- so their waits
-  // are accumulated apart.
+  // Which of the two seams a fence closes. They block different threads (commit blocks whoever
+  // publishes, release blocks whoever drops the view), so their waits are accumulated apart.
   enum class Seam : std::uint8_t { Commit, Release };
 
   // Wait for the declared stream before a caller acts on "the GPU is done".
@@ -107,7 +106,7 @@ struct ChannelShared
 
   // Make this mapping's payload reachable from a kernel when the host asks for registration
   // (Route::ShmRegistered). Does nothing on an undeclared stream, on a device-backed payload, or
-  // on a route that needs no registration. Throws when the driver refuses -- a channel that told
+  // on a route that needs no registration. Throws when the driver refuses. A channel that told
   // its caller a kernel can reach the payload must not go on without that being true.
   void register_host_payload();
 
@@ -134,7 +133,7 @@ struct ChannelShared
   bool device_payload = false;  // payload is device memory: no host store may touch it
   // Route::ShmRegistered only: the registration that makes the payload mapping device-addressable
   // and the device address it resolved to. Held here so it outlives the Channel exactly as the
-  // mapping does -- a FrameView still in a caller's hands may yet be asked for a device pointer.
+  // mapping does. A FrameView still in a caller's hands may yet be asked for a device pointer.
   gpu::HostRegistration host_registration;
   std::byte * device_payload_base = nullptr;
   std::atomic<std::uint64_t> dropped{0};
@@ -142,7 +141,7 @@ struct ChannelShared
   gpu::Stream stream;                         // process-local; undeclared = host-only
   std::atomic<std::uint64_t> fence_failed{0};
   // How long the seams actually block, per seam, as sum + count + worst. The
-  // deferred-commit upgrade is gated on this number and nothing else reports it -- fence_failed
+  // deferred-commit upgrade is gated on this number and nothing else reports it. fence_failed
   // counts failures, not waits. Only a declared stream is clocked, so a Cpu channel pays nothing.
   std::atomic<std::uint64_t> commit_wait_ns{0};
   std::atomic<std::uint64_t> commit_waits{0};
@@ -151,14 +150,14 @@ struct ChannelShared
   std::atomic<std::uint64_t> release_waits{0};
   std::atomic<std::uint64_t> release_wait_max_ns{0};
   // Of `outstanding`, the part a failed release fence left behind. A leaked lease is never
-  // returned, so once this reaches max_borrow the consumer can no longer borrow at all -- and
+  // returned, so once this reaches max_borrow the consumer can no longer borrow at all, and
   // that is a different refusal from a caller simply holding its views (Refused::fence).
   std::atomic<std::uint32_t> leases_leaked{0};
 };
 
 // RAII borrow of a committed frame. Zero-copy: data() points into the segment.
 // While a FrameView is alive it holds the borrow (refcount), so the publisher will
-// not overwrite the slot -- this type IS the "validated holder", and its lifetime
+// not overwrite the slot. This type IS the "validated holder", and its lifetime
 // is the window in which active => byte-locked holds. Move-only.
 class FrameView
 {
@@ -174,8 +173,8 @@ public:
   explicit operator bool() const noexcept { return valid(); }
 
   // The address ordinary host loads may read, or null when the payload is not one. Null
-  // rather than the device address is what makes a host-only reader -- a flux_gen adapter, or
-  // anything else over flux/wire.hpp -- fail where it is constructed rather than at its first
+  // rather than the device address is what makes a host-only reader (a flux_gen adapter, or
+  // anything else over flux/wire.hpp) fail where it is constructed rather than at its first
   // load: both wire::Reader and wire::Writer latch bad() on a null base. device_ptr() is the
   // address on that channel.
   const void * data() const noexcept { return host_addressable() ? data_ : nullptr; }
@@ -200,7 +199,7 @@ public:
 
   // Ends the borrow. With a declared stream the wait happens first, so the publisher never
   // regains the slot while a kernel still reads it. If that wait fails the borrow is deliberately
-  // left standing (Channel::fence_failed) -- releasing on an unverified fence is the corruption
+  // left standing (Channel::fence_failed). Releasing on an unverified fence is the corruption
   // this exists to prevent.
   void release() noexcept;
 
@@ -222,7 +221,7 @@ private:
 
 // 0-copy publish handle: the write-side dual of FrameView (split into
 // loan/commit). The producer writes the payload straight into data(); commit() publishes it.
-// If the handle is dropped without commit the claim is reverted -- but data() aliases the
+// If the handle is dropped without commit the claim is reverted, but data() aliases the
 // slot, so whatever frame it held is gone either way; abort only guarantees nothing is
 // published. Move-only.
 class WriteSlot
@@ -264,13 +263,13 @@ public:
   Published commit() noexcept;
 
   // Publish only the first nbytes of the loan. Valid on a 1-D loan, where a shorter byte count is
-  // the same statement as a shorter shape -- shape[0] is recomputed, never restated. A generated
+  // the same statement as a shorter shape. shape[0] is recomputed, never restated. A generated
   // adapter loans the whole slot and commits the prefix it actually built. TooLarge when the loan
   // is not 1-D, when nbytes exceeds it, or when nbytes is not a multiple of itemsize.
   Published commit(std::size_t nbytes) noexcept;
 
-  // Revert the claim without publishing. The frame the slot held is NOT restored -- data()
-  // aliased it -- but it is dropped rather than delivered with its old meta. Consumes the handle.
+  // Revert the claim without publishing. The frame the slot held is NOT restored, since data()
+  // aliased it, but it is dropped rather than delivered with its old meta. Consumes the handle.
   void abort() noexcept;
 
 private:
@@ -294,7 +293,7 @@ private:
 };
 
 // A declared stream is what makes a channel a GPU channel, so the Device a segment is opened with
-// is read off the stream rather than passed beside it -- two ways to say the same thing could
+// is read off the stream rather than passed beside it. Two ways to say the same thing could
 // disagree.
 inline Device device_of(const gpu::Stream & stream) noexcept
 {
@@ -306,10 +305,10 @@ inline Device device_of(const gpu::Stream & stream) noexcept
 // What a consumer sees is its QoS (docs/en/qos.en.md), set through qos().
 //
 // ONE THREAD PER Channel OBJECT. Many processes, and many Channel objects within a process, may
-// share a segment -- that is what the segment protocol is for. A single object is not shared:
+// share a segment. That is what the segment protocol is for. A single object is not shared:
 // cursor_, lost_, refused_, the stall counters and the re-attach state are plain members, and
 // sh_ (the whole mapping) is swapped wholesale by a re-attach. Two threads on one object is not
-// a benign counter race -- take() double-delivers frames it is supposed to consume, and a
+// a benign counter race. take() double-delivers frames it is supposed to consume, and a
 // re-attach can pull the mapping out from under the other thread's slot pointer. The atomics on
 // ChannelShared cover the cross-process protocol, not this. Give each thread its own Channel
 // (docs/en/api.en.md, the threading rules under the executor section), which costs one mapping.
@@ -363,7 +362,7 @@ public:
   }
 
   // Publisher: copy nbytes into the next free slot scanning forward from `latest`
-  // as one u8 run. Position, not age -- the two agree except right after a slot borrowed across
+  // as one u8 run. Position, not age. The two agree except right after a slot borrowed across
   // laps is released. Backpressure
   // when every slot is currently borrowed, TooLarge when nbytes exceeds slot_size (rejected,
   // never truncated). Only Backpressure bumps the drop counter.
@@ -409,12 +408,12 @@ public:
   FrameView take_blocking(std::int64_t timeout_ns = -1) noexcept;
 
   // Frames never delivered to this consumer since it joined the stream: lapped by the ring, or
-  // dropped by qos().depth. Cumulative, like the DDS sample-lost status -- diff it to get a rate.
+  // dropped by qos().depth. Cumulative, like the DDS sample-lost status. Diff it to get a rate.
   //
   // "Since it joined the stream" is literal: a re-attach joins a NEW stream with its own tickets,
   // so this restarts at 0 there while refused() carries over (that one counts this consumer's
   // refusals, which a fresh segment does not undo). A monitor differencing the two must bracket
-  // the diff with attach_generation() -- across a change, lost() is a restart and not a rate.
+  // the diff with attach_generation(). Across a change, lost() is a restart and not a rate.
   std::uint64_t lost() const noexcept { return lost_; }
 
   // Borrows this consumer did not release, and commits this publisher did not make, because the
@@ -433,7 +432,7 @@ public:
   // How long the two GPU seams blocked the threads that ran them. The
   // seams are kept apart because they block different threads and are answered by different
   // things: a publisher owns the gap between kernel launch and commit, while a callback consumer
-  // owns nothing -- its view dies the moment the callback returns.
+  // owns nothing. Its view dies the moment the callback returns.
   //
   // All zero on a channel with no declared stream; that channel is never clocked. Cumulative,
   // like lost(), except the two max fields, which are running worsts and never decrease.
@@ -485,7 +484,7 @@ public:
       return max_borrow + holder_table + not_ready + contended + bad_frame + no_owner_file + fence;
     }
   };
-  // Cumulative for this consumer's whole life, re-attaches included -- unlike lost(), which
+  // Cumulative for this consumer's whole life, re-attaches included, unlike lost(), which
   // restarts with each stream. See lost() for what that means for a monitor.
   const Refused & refused() const noexcept { return refused_; }
 
@@ -580,16 +579,16 @@ private:
   SlotHolder * holder_acquire(std::uint32_t s) noexcept;
 
   // Subscriber re-attach after a rotation. Swaps segments only when no
-  // view of ours is outstanding -- a live FrameView aliases the old mapping and must not
+  // view of ours is outstanding. A live FrameView aliases the old mapping and must not
   // dangle. Publishers never re-attach: they hold the liveness lock.
   bool reattach_if_replaced() noexcept;
   // Run at the start of a take (no lease held there, so a swap is safe). "Stalled" means a run
-  // of takes that produced no *new* frame -- either empty, or the same ticket again, which is
+  // of takes that produced no *new* frame: either empty, or the same ticket again, which is
   // what a subscriber left on an unlinked segment sees forever.
   void maybe_reattach() noexcept;
   // Has the mapped signpost moved off the epoch this consumer attached at? One seqlock read of
   // a page this Channel holds, so a stalled take can afford it every time. False on a torn read
-  // or no mapping -- the caller looks again rather than treating it as a change.
+  // or no mapping. The caller looks again rather than treating it as a change.
   bool rotation_seen() const noexcept;
   void note_stall(bool progressed) noexcept;
 
@@ -622,7 +621,7 @@ private:
   bool recover_stuck_writes() noexcept;
 
   std::shared_ptr<ChannelShared> sh_;
-  QoS qos_{};                           // consumer QoS (docs/en/qos.en.md)
+  QoS qos_{};
   MemoryPolicy mem_{};                  // page residency, re-applied on every attach
   std::uint64_t cursor_ = 0;            // last ticket take() returned
   std::uint64_t lost_ = 0;              // frames never delivered (cumulative)

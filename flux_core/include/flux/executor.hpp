@@ -76,7 +76,7 @@ public:
   // `priority` picks the next callback: the highest-priority channel with a frame ready goes,
   // and the choice is remade between callbacks, so a frame landing on a control channel during a
   // logging callback is served before the next logging frame. Ties keep registration order. Not
-  // preemptive -- a running callback is never displaced.
+  // preemptive. A running callback is never displaced.
   void add(Source & src, int priority = 0);
   std::size_t size() const noexcept { return entries_.size(); }
 
