@@ -66,9 +66,8 @@ def _write(path, text):
     return path
 
 
-def generate(msg_path, pkg, out_cpp=None, out_py=None, registry=None, depfile=None):
+def generate(msg_path, pkg, out_cpp, out_py, reg, depfile=None):
     """Generate adapters for one .msg. Returns the paths written."""
-    reg = registry if registry is not None else Registry()
     stem = os.path.basename(msg_path)[:-4]
     msg = reg.get(f"{pkg}/{stem}")
     if msg is None:
