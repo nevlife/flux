@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flux_bag</name>
+  <version>0.0.0</version>
+  <description>
+    Records flux channels and ROS topics into one rosbag2 bag without passing the frames
+    through DDS. Each flux frame is stored as a flux_msgs/FluxFrame around the slot bytes.
+  </description>
+  <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>flux_cpp</depend>
+  <depend>flux_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>rcutils</depend>
+  <depend>rosbag2_cpp</depend>
+  <depend>rosbag2_storage</depend>
+  <depend>rosbag2_transport</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

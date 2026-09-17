@@ -42,6 +42,11 @@ WriteSlot Publisher::loan(DType dt, std::initializer_list<std::uint64_t> shape) 
   return ch_.loan(dt, shape);
 }
 
+WriteSlot Publisher::loan(DType dt, const std::uint64_t * shape, std::size_t ndim) noexcept
+{
+  return ch_.loan(dt, shape, ndim);
+}
+
 std::uint64_t Publisher::dropped() const noexcept
 {
   return ch_.dropped();

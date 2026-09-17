@@ -61,6 +61,7 @@ public:
   // an invalid handle (and counts a drop) when every slot is borrowed.
   WriteSlot loan() noexcept;
   WriteSlot loan(DType dt, std::initializer_list<std::uint64_t> shape) noexcept;
+  WriteSlot loan(DType dt, const std::uint64_t * shape, std::size_t ndim) noexcept;
 
   std::uint64_t dropped() const noexcept;
 
