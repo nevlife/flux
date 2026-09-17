@@ -6,8 +6,8 @@
   <description>
     Republishes flux channels as DDS topics so stock ROS 2 tools (ros2 bag, rqt, ros2 topic) can
     read them. Lazy: a channel is relayed only while a ROS 2 subscriber for its name exists.
-    Ships ros2 topic echo_flux / hz_flux and ros2 bag record_flux, which create that subscriber
-    before running the stock verb.
+    Ships ros2 topic echo_flux / hz_flux, which create that subscriber before running the stock
+    verb. Recording is flux_bag, which does not go through this bridge.
   </description>
   <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
   <license>MIT</license>

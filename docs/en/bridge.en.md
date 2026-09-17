@@ -1,6 +1,6 @@
 # flux bridge
 
-`flux_bridge` republishes flux channels as DDS topics. It is the side path that lets the stock ROS 2 tools, `ros2 bag`, `rqt`, `ros2 topic`, read a channel that lives only in shared memory. It is not on the data path. A channel is relayed only while a ROS 2 subscriber for its name exists, so a channel nobody watches costs nothing.
+`flux_bridge` republishes flux channels as DDS topics. It is the side path that lets the stock ROS 2 tools, `rqt`, `ros2 topic`, read a channel that lives only in shared memory. Recording is not this path: `flux_bag` writes a channel to a bag straight from shared memory ([bag.md](bag.en.md)). It is not on the data path. A channel is relayed only while a ROS 2 subscriber for its name exists, so a channel nobody watches costs nothing.
 
 ```bash
 ros2 run flux_bridge bridge
@@ -29,18 +29,14 @@ A relay is one thread: `take_blocking()` on a `flux.Subscription(depth=1, max_bo
 
 ## The verbs
 
-A stock verb started cold misses the first poll, and `hz` waits on a topic with no publisher. The package registers three verbs that hold a subscription which does nothing, wait until the bridge's publisher is on the graph, then run the stock verb unchanged.
+A stock verb started cold misses the first poll, and `hz` waits on a topic with no publisher. The package registers two verbs that hold a subscription which does nothing, wait until the bridge's publisher is on the graph, then run the stock verb unchanged.
 
 ```bash
 ros2 topic echo_flux /cam/left --no-arr
 ros2 topic hz_flux /cam/left
-ros2 bag record_flux /cam/left /cam/right
-ros2 bag record_flux -a
 ```
 
-`echo_flux` and `hz_flux` take every argument the stock verb takes, plus `--bridge-timeout` (default 10 s). The channel name is looked up on the flux side, so it must be a live flux channel. `record_flux` takes every `ros2 bag record` argument. It keeps one subscription per flux channel that matches the selection (`-a`, topic names, `--regex`, `--exclude-regex`, `--exclude-topics`) for as long as the recording runs, so a relay stays on even if the recorder itself has not subscribed yet. No selection at all keeps every channel on.
-
-A bag written this way is a normal bag. `ros2 bag play`, `rqt_bag`, and anything else that reads rosbag2 read it. Playback publishes on DDS, not on flux.
+Both take every argument the stock verb takes, plus `--bridge-timeout` (default 10 s). The channel name is looked up on the flux side, so it must be a live flux channel.
 
 ## Cost
 
@@ -52,7 +48,7 @@ Measured on an Orin with 1280x720 NV12 frames (3.4 MB) at 30 Hz from the ZED wra
 | CDR serialization | 1.5 ms |
 | DDS delivery of 3.4 MB to a local subscriber | the rest. One relay with a subscriber lands at about 20 Hz |
 
-Relays run one thread each and the conversion holds the GIL, so several relays share one core's worth of Python. Three cameras plus a 55 MB mosaic recorded at the same time reached 7 Hz per camera in the bag. For a stream that must arrive whole at full rate, use a direct subscriber (`flux_tools`) or write the consumer against flux.
+Relays run one thread each and the conversion holds the GIL, so several relays share one core's worth of Python. Three cameras plus a 55 MB mosaic relayed at the same time reached 7 Hz per camera. For a stream that must arrive whole at full rate, use a direct subscriber (`flux_tools`), record it with `flux_bag`, or write the consumer against flux.
 
 ## What it does not do
 

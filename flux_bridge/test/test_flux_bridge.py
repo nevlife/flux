@@ -1,18 +1,15 @@
 """The decisions, without a live system.
 
 Relaying itself is flux.Subscription plus rclpy publish, both covered elsewhere. What is pinned
-here is which channels get a relay, which adapter a fingerprint selects, and how `ros2 bag
-record` arguments turn into a channel filter.
+here is which channels get a relay and which adapter a fingerprint selects.
 """
 
-import argparse
 import os
 import textwrap
 
 import pytest
 
 from flux_bridge import adapters
-from flux_bridge.activate import selector
 from flux_bridge.bridge import plan
 
 
@@ -60,30 +57,6 @@ def test_discover_ignores_directories_that_are_not_adapter_packages(tmp_path):
     (tmp_path / "other").mkdir()
     (tmp_path / "loose_flux.py").write_text("FINGERPRINT__ = 1\n")
     assert adapters.discover([str(tmp_path), os.path.join(str(tmp_path), "missing")]) == {}
-
-
-def _record_args(**overrides):
-    fields = {"all": False, "all_topics": False, "topics": None, "topics_positional": None,
-              "regex": None, "exclude_regex": None, "exclude_topics": None}
-    fields.update(overrides)
-    return argparse.Namespace(**fields)
-
-
-def test_selector_follows_record_arguments():
-    assert selector(_record_args(all=True))("/cam/left")
-    assert selector(_record_args(topics=["/cam/left"]))("/cam/left")
-    assert not selector(_record_args(topics=["/cam/left"]))("/cam/right")
-    assert selector(_record_args(topics_positional=["/cam/right"]))("/cam/right")
-    assert selector(_record_args(regex="^/cam/"))("/cam/left")
-    assert not selector(_record_args(regex="^/cam/"))("/lidar")
-    assert not selector(_record_args(all=True, exclude_topics=["/cam/left"]))("/cam/left")
-    assert not selector(_record_args(all=True, exclude_regex="left$"))("/cam/left")
-
-
-# rosbag2 records nothing without a selection, but the relay is cheap and the bag cannot record
-# what the bridge did not publish, so the tie goes to the relay.
-def test_selector_with_no_criteria_selects_everything():
-    assert selector(_record_args())("/anything")
 
 
 @pytest.mark.parametrize("name", ["/cam/left", ".cam.left"])

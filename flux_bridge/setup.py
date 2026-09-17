@@ -25,8 +25,5 @@ setup(
             "echo_flux = flux_bridge.verb.topic_echo_flux:TopicEchoFluxVerb",
             "hz_flux = flux_bridge.verb.topic_hz_flux:TopicHzFluxVerb",
         ],
-        "ros2bag.verb": [
-            "record_flux = flux_bridge.verb.bag_record_flux:BagRecordFluxVerb",
-        ],
     },
 )

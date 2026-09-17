@@ -1,6 +1,6 @@
 # flux bridge
 
-`flux_bridge`는 flux 채널을 DDS 토픽으로 다시 발행한다. 공유 메모리에만 있는 채널을 stock ROS 2 도구(`ros2 bag`, `rqt`, `ros2 topic`)가 읽게 하는 옆길이다. 데이터 경로에는 관여하지 않는다. 채널은 그 이름의 ROS 2 구독자가 있는 동안에만 중계되므로, 아무도 보지 않는 채널에는 비용이 붙지 않는다.
+`flux_bridge`는 flux 채널을 DDS 토픽으로 다시 발행한다. 공유 메모리에만 있는 채널을 stock ROS 2 도구(`rqt`, `ros2 topic`)가 읽게 하는 옆길이다. 녹화는 이 경로가 아니다. `flux_bag`이 채널을 공유 메모리에서 바로 bag에 쓴다([bag.md](bag.ko.md)). 데이터 경로에는 관여하지 않는다. 채널은 그 이름의 ROS 2 구독자가 있는 동안에만 중계되므로, 아무도 보지 않는 채널에는 비용이 붙지 않는다.
 
 ```bash
 ros2 run flux_bridge bridge
@@ -29,18 +29,14 @@ relay는 스레드 하나다. `flux.Subscription(depth=1, max_borrow=1)`에 `tak
 
 ## verb
 
-stock verb를 그냥 띄우면 첫 poll을 놓치고, `hz`는 발행자 없는 토픽을 기다린다. 이 패키지는 verb 셋을 등록한다. 아무 일도 하지 않는 구독을 하나 들고, bridge의 publisher가 graph에 오를 때까지 기다린 뒤, stock verb를 그대로 부른다.
+stock verb를 그냥 띄우면 첫 poll을 놓치고, `hz`는 발행자 없는 토픽을 기다린다. 이 패키지는 verb 둘을 등록한다. 아무 일도 하지 않는 구독을 하나 들고, bridge의 publisher가 graph에 오를 때까지 기다린 뒤, stock verb를 그대로 부른다.
 
 ```bash
 ros2 topic echo_flux /cam/left --no-arr
 ros2 topic hz_flux /cam/left
-ros2 bag record_flux /cam/left /cam/right
-ros2 bag record_flux -a
 ```
 
-`echo_flux`와 `hz_flux`는 stock verb의 모든 인자에 `--bridge-timeout`(기본 10초)을 더한 것이다. 채널 이름은 flux 쪽에서 찾으므로 살아 있는 flux 채널이어야 한다. `record_flux`는 `ros2 bag record`의 모든 인자를 받는다. 선택(`-a`, 토픽 이름, `--regex`, `--exclude-regex`, `--exclude-topics`)에 맞는 flux 채널마다 구독 하나를 기록이 끝날 때까지 유지하므로, recorder가 아직 구독하지 않았어도 relay가 켜져 있다. 선택이 아예 없으면 모든 채널을 켠다.
-
-이렇게 쓴 bag은 보통 bag이다. `ros2 bag play`, `rqt_bag`, rosbag2를 읽는 모든 것이 읽는다. 재생은 DDS로 발행하지 flux로 발행하지 않는다.
+둘 다 stock verb의 모든 인자에 `--bridge-timeout`(기본 10초)을 더한 것이다. 채널 이름은 flux 쪽에서 찾으므로 살아 있는 flux 채널이어야 한다.
 
 ## 비용
 
@@ -52,7 +48,7 @@ Orin, ZED wrapper의 1280x720 NV12 프레임(3.4 MB) 30 Hz, 기본 rmw에서 측
 | CDR 직렬화 | 1.5 ms |
 | 3.4 MB를 로컬 구독자까지 DDS로 전달 | 나머지. 구독자가 있는 relay 하나가 약 20 Hz |
 
-relay는 스레드 하나씩이고 변환은 GIL을 잡으므로, relay 여럿이 Python 한 코어를 나눠 쓴다. 카메라 셋과 55 MB mosaic을 동시에 기록했을 때 bag에는 카메라당 7 Hz가 들어갔다. 전체 속도로 빠짐없이 받아야 하는 스트림은 직접 구독 플러그인(`flux_tools`)을 쓰거나 소비자를 flux로 쓴다.
+relay는 스레드 하나씩이고 변환은 GIL을 잡으므로, relay 여럿이 Python 한 코어를 나눠 쓴다. 카메라 셋과 55 MB mosaic을 동시에 중계했을 때 카메라당 7 Hz가 나왔다. 전체 속도로 빠짐없이 받아야 하는 스트림은 직접 구독 플러그인(`flux_tools`)을 쓰거나 `flux_bag`으로 녹화하거나 소비자를 flux로 쓴다.
 
 ## 하지 않는 것
 

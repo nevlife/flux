@@ -10,8 +10,6 @@ installed adapter, so no DDS discovery is needed to learn it.
 
 import contextlib
 import os
-import re
-import threading
 import time
 
 import flux
@@ -104,73 +102,3 @@ def run_with_bridge(args, topic_name, action):
             return 1
         return action(args)
 
-
-def selector(args):
-    """topic key -> bool from `ros2 bag record` arguments. Unsure means yes: a spare relay is cheap."""
-    all_flag = getattr(args, "all", False) or getattr(args, "all_topics", False)
-    names = set(getattr(args, "topics", None) or []) | set(getattr(args, "topics_positional", None) or [])
-    include = re.compile(args.regex) if getattr(args, "regex", None) else None
-    exclude = re.compile(args.exclude_regex) if getattr(args, "exclude_regex", None) else None
-    excluded = set(getattr(args, "exclude_topics", None) or [])
-
-    def wanted(key):
-        if key in excluded or (exclude is not None and exclude.search(key)):
-            return False
-        if all_flag or key in names or (include is not None and include.search(key)):
-            return True
-        return not names and include is None
-
-    return wanted
-
-
-class Activator:
-    """Keeps one subscription per selected live channel so every relay stays on while recording."""
-
-    def __init__(self, wanted, interval=1.0, log=print):
-        self._wanted = wanted
-        self._interval = interval
-        self._log = log
-        self._adapters = discover()
-        self._subs = {}
-        self._skipped = set()
-        self._running = False
-        self._thread = None
-        self._exit = None
-
-    def __enter__(self):
-        self._exit = contextlib.ExitStack()
-        self._node = self._exit.enter_context(private_node(f"_flux_record_{os.getpid()}"))
-        self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="flux-activator")
-        self._thread.start()
-        return self
-
-    def __exit__(self, *exc):
-        self._running = False
-        self._thread.join()
-        self._exit.close()
-        return False
-
-    def _loop(self):
-        while self._running:
-            self.refresh()
-            time.sleep(self._interval)
-
-    def refresh(self):
-        domain = flux.process_domain()
-        for topic in flux.enumerate_topics():
-            key = topic.key
-            if topic.domain != domain or not topic.key_exact or key in self._subs:
-                continue
-            if not self._wanted(key):
-                continue
-            adapter = self._adapters.get(topic.fingerprint)
-            if adapter is None:
-                if key not in self._skipped:
-                    self._skipped.add(key)
-                    self._log(f"flux: skipping '{key}', no adapter for fingerprint {topic.fingerprint:#018x}")
-                continue
-            self._subs[key] = self._node.create_subscription(
-                adapter.message, key, lambda _msg: None, _dummy_qos()
-            )
-            self._log(f"flux: asking the bridge for '{key}' ({adapter.ros_type})")
