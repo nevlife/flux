@@ -34,6 +34,16 @@ if(FLUX_SANITIZER)
   add_link_options(-fsanitize=${FLUX_SANITIZER})
 endif()
 
+# The fuzz build instruments the library as well as the harness. With only the harness
+# instrumented the fuzzer is guided by the harness's own edges (about 40 for fuzz_frame) and ASan
+# never sees an access inside channel.cpp; with the library instrumented the same harness reaches
+# about 360 edges in seconds.
+set(FLUX_FUZZER OFF CACHE BOOL "Build the fuzz harnesses with libFuzzer (clang only)")
+if(FLUX_FUZZER)
+  add_compile_options(-fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
 # io_uring's futex opcode is an enum constant, not a macro, so the source cannot test for it.
 # Probe by compiling: without it flux_core still builds (Jetson Orin ships 5.15) and callers fall
 # back to a thread per channel.
@@ -122,13 +132,11 @@ set(flux_core_test_srcs
 #   FLUX_FUZZER=ON   real fuzzing, clang only: cmake -DFLUX_FUZZER=ON -DCMAKE_CXX_COMPILER=clang++
 #   default          linked against a replay main() and run over a fixed corpus by ctest, so the
 #                    harnesses cannot rot between fuzzing sessions
-set(FLUX_FUZZER OFF CACHE BOOL "Build the fuzz harnesses with libFuzzer (clang only)")
 set(flux_core_fuzzers fuzz_wire fuzz_frame)
 function(flux_add_fuzzer name)
   if(FLUX_FUZZER)
     add_executable(${name} test/fuzz/${name}.cpp)
-    target_compile_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined -g)
-    target_link_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined)
+    target_link_options(${name} PRIVATE -fsanitize=fuzzer)
   else()
     add_executable(${name} test/fuzz/${name}.cpp test/fuzz/fuzz_replay_main.cpp)
   endif()
