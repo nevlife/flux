@@ -657,10 +657,13 @@ Report apply_checked(const Options & opts, Strictness strict, int control_priori
   }
   apply(opts);
 
-  // Confirm by reading back rather than by trusting the syscall's return. A request the
-  // kernel accepted can still land elsewhere -- a cpuset narrows an affinity mask, and nothing
-  // stops another thread from re-scheduling this one between the two calls. Trusting the return
-  // is the same mistake as trusting apply() without preflight, one layer down.
+  // Confirm by reading back rather than by trusting the syscall's return: nothing stops another
+  // thread from re-scheduling this one between the two calls. Trusting the return is the same
+  // mistake as trusting apply() without preflight, one layer down.
+  //
+  // The affinity claim is observed within requested, not equal to it. A cpuset narrows the mask
+  // to the cpus it allows, and a thread on fewer of its requested cpus has left none of them;
+  // a cpu outside the request is the failure. ros::verify reads the same claim afterwards.
 #if defined(__linux__)
   const ThreadState got = current();
   if (opts.policy != Policy::Inherit) {

@@ -52,7 +52,7 @@ colcon test
 | multiple publishers | O |
 | enumeration and the `flux` CLI | △ |
 | RT: scheduling, affinity, page pre-commit, mlock | O |
-| RT: chain declaration file (`rt_spec`) | △ |
+| RT: chain declaration file (`rt_spec`) | △ (an `external` stage is verified only by a tid the caller resolves) |
 | GPU `ShmDirect` | △ |
 | GPU `ShmRegistered` | △ |
 | GPU `DeviceHandle` | △ |

@@ -534,12 +534,12 @@ for (const flux::ros::RtStage * e : spec.external()) {   // flux가 안 거는 �
 - `stages`는 데이터가 흐르는 순서다. RT 우선순위가 그 방향으로 커져야 한다 — 상류가 하류를 선점하면 굶긴다. `policy: other`처럼 RT가 아닌 단계는 이 규칙 밖이다.
 - `control_priority`는 파일이 유도한다 — 체인의 마지막 RT 우선순위가 control이고, 그 단계 자신은 0이다.
 - 모르는 키는 거절한다. 버전 필드는 없다.
-- 한 단계가 체인 둘에 나오는 것은 정상이다. 두 체인이 서로 다르게 선언하면 거절한다.
+- 한 단계가 체인 둘에 나오는 것은 정상이다. 두 체인이 서로 다르게 선언하면 거절한다. `strict`는 그 단계가 속한 체인 중 가장 엄격한 것이다. hard 체인에 속한 단계는 파일에서 어느 체인이 먼저 나오든 hard다.
 - hard 체인은 RT 단계마다 코어를 따로 준다. 둘이 같은 코어에 핀되면 거절한다 — `SCHED_FIFO`에는 타임슬라이스가 없어 하나가 다른 하나를 완전히 막는다. soft 체인은 허용한다.
-- `external` 단계는 `expect_priority`만 적는다. `policy`/`priority`/`cpus`는 못 가지고, `schedule`에 넘기면 거절한다.
+- `external` 단계는 `expect_priority`만 적는다. 1..99이고 0은 미선언이다. `policy`/`priority`/`cpus`는 못 가지고, `schedule`에 넘기면 거절한다.
 - 파일이 없거나 `FLUX_RT_SPEC`이 비면 빈 spec이다. 아무것도 선언 안 한 지금의 no-op 그대로다.
 - 파일에 없는 라벨을 `stage()`로 찾으면 던진다.
-- `verify(stage, tid)`는 아무것도 안 걸고 선언과 실제만 대조한다. finding은 `observed-policy`·`observed-priority`·`observed-cpus` 셋이고, 파일이 주장하지 않는 항목은 `Unknown`이다. 읽을 수 없는 스레드는 `observed-thread` Fail이다. `tid`는 호출자가 댄다.
+- `verify(stage, tid)`는 아무것도 안 걸고 선언과 실제만 대조한다. finding은 `observed-policy`·`observed-priority`·`observed-cpus` 셋이고, 파일이 주장하지 않는 항목은 `Unknown`이다. `observed-cpus`는 스레드가 선언한 cpu 안에서 돌면 Ok다. `apply_checked`가 되읽는 기준과 같아서, cpuset이 마스크를 좁힌 것은 통과하고 선언 밖 cpu는 Fail이다. 읽을 수 없는 스레드는 `observed-thread` Fail이다. `tid`는 호출자가 댄다.
 - 스레드에 거는 방법이 둘이다. 콜백 그룹은 `schedule(group, stage)`, 직접 만든 스레드는 그 안에서 `apply_checked(stage)`. 둘 다 stage를 통째로 넘긴다 — `strict`와 `control_priority`를 필드로 풀면 흘린다. `external` 단계는 둘 다 거절한다.
 
 ### rt (스레드 스케줄링)
@@ -590,7 +590,7 @@ const flux::rt::Finding * one = rep.find("cpu-online");   // 안 봤으면 nullp
 | `priority-order` | opts.priority vs `control_priority` | Fail: transport가 control 이상. transport는 control을 절대 preempt하지 않는다 |
 | `cpu-online` | `/sys/devices/system/cpu/online` | Fail: 없는 코어. `apply`가 EINVAL로 던진다 |
 | `cpu-isolation` | `/sys/devices/system/cpu/isolated`·`nohz_full` | Warn: pinning은 마이그레이션만 없앤다. 격리 없는 코어는 남과 공유된다 |
-| `rcu-offload` | `/proc/cmdline`의 `rcu_nocbs` + `nohz_full` | Warn: 미뤄둔 커널 해제가 RT 코어에서 돈다. 시각도 길이도 안 묶인다 |
+| `rcu-offload` | `/proc/cmdline`의 `rcu_nocbs` + `/sys/devices/system/cpu/nohz_full` | Warn: 미뤄둔 커널 해제가 RT 코어에서 돈다. 시각도 길이도 안 묶인다 |
 | `irq-affinity` | `/proc/irq/*/effective_affinity_list` | Warn: 핸들러는 RT 우선순위와 무관하게 그 코어의 모든 태스크를 선점한다 |
 | `cpu-governor` | `cpufreq/scaling_governor` | Warn: DVFS ramp가 wakeup 지연을 늘린다. RT 코어는 performance |
 | `kernel-preemption` | `/sys/kernel/realtime`·`/proc/version` | Warn: PREEMPT_RT 아님. 커널 내부 구간의 지연 상한이 없다 |

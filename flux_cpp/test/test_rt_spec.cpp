@@ -165,6 +165,68 @@ chains:
     << "two chains asking one thread to run differently is the conflict only a shared file sees";
 }
 
+// The stage's own declaration is the same on both chains, so it is not a conflict. Which chain the
+// file lists first is layout, not meaning: a camera that feeds a hard control chain is a hard
+// stage, and a soft logging chain listed above it must not read its Warn findings for it.
+TEST(RtSpec, TheStrictestChainAStageSitsOnDecidesItsStrictness)
+{
+  SpecFile f(R"(
+chains:
+  logging:
+    target: soft
+    stages:
+      - node: /camera_node
+        policy: fifo
+        priority: 70
+      - node: /logger_node
+        policy: other
+  control:
+    target: hard
+    stages:
+      - node: /camera_node
+        policy: fifo
+        priority: 70
+      - node: /control_node
+        policy: fifo
+        priority: 90
+)");
+  const auto spec = flux::ros::RtSpec::load(f.path());
+  const auto * cam = spec.find("/camera_node");
+  ASSERT_NE(cam, nullptr);
+  EXPECT_EQ(cam->strict, flux::rt::Strictness::Hard)
+    << "the soft chain came first in the file and the camera was read as soft";
+  const auto * logger = spec.find("/logger_node");
+  ASSERT_NE(logger, nullptr);
+  EXPECT_EQ(logger->strict, flux::rt::Strictness::Soft) << "the logging chain itself stays soft";
+}
+
+TEST(RtSpec, ExternalExpectPriorityIsAnRtPriorityOrUndeclared)
+{
+  const char * body = R"(
+chains:
+  c:
+    target: soft
+    stages:
+      - node: /a
+        external: true
+        expect_priority: %d
+)";
+  for (int bad : {-1, 100}) {
+    char text[512];
+    std::snprintf(text, sizeof text, body, bad);
+    SpecFile f(text);
+    EXPECT_THROW(flux::ros::RtSpec::load(f.path()), std::runtime_error)
+      << bad << " is not a priority any thread can run at, and verify would only ever fail it";
+  }
+  for (int fine : {0, 1, 99}) {
+    char text[512];
+    std::snprintf(text, sizeof text, body, fine);
+    SpecFile f(text);
+    EXPECT_NO_THROW(flux::ros::RtSpec::load(f.path()))
+      << fine << " is the range edge or the undeclared value";
+  }
+}
+
 TEST(RtSpec, RejectsWhatItDidNotRead)
 {
   // No version field: a version number announces a schema change and says nothing about a typo.

@@ -273,6 +273,96 @@ TEST(RtChain, VerifySeesADriftAwayFromTheDeclaration)
   EXPECT_EQ(after.find("observed-policy")->verdict, flux::rt::Verdict::Fail);
 }
 
+// The affinity claim is observed within declared, the reading apply_checked confirms. A file that
+// lists the cpus in another order, or a cpuset that narrows the mask to some of them, has not
+// moved the thread off any declared cpu.
+//
+// Deliberately not an RT stage, for the reason VerifySeesADriftAwayFromTheDeclaration gives.
+TEST(RtChain, VerifyReadsAffinityAsWithinTheDeclaration)
+{
+  const auto allowed = flux::rt::current().cpus;
+  if (allowed.size() < 2) GTEST_SKIP() << "flux-cap:two-cpus needs two cpus to declare in reverse";
+  const std::uint32_t lo = allowed[0];
+  const std::uint32_t hi = allowed[1];
+
+  SpecFile file(
+    "chains:\n  within:\n    target: soft\n    stages:\n      - node: /rtchain_within\n"
+    "        group: worker\n        policy: other\n        cpus: [" +
+    std::to_string(hi) + ", " + std::to_string(lo) + "]\n");
+  const auto spec = flux::ros::RtSpec::load(file.path());
+  const flux::ros::RtStage * st = spec.find("/rtchain_within", "worker");
+  ASSERT_NE(st, nullptr);
+
+  std::atomic<int> tid{0};
+  std::atomic<bool> ready{false};
+  std::atomic<bool> stop{false};
+  std::thread worker([&] {
+    flux::ros::apply_checked(*st);
+    tid.store(flux::rt::this_tid());
+    ready.store(true);
+    while (!stop.load()) std::this_thread::sleep_for(1ms);
+  });
+  while (!ready.load()) std::this_thread::sleep_for(1ms);
+
+  const flux::rt::Report reversed = flux::ros::verify(*st, tid.load());
+  ASSERT_NE(reversed.find("observed-cpus"), nullptr);
+  EXPECT_EQ(reversed.find("observed-cpus")->verdict, flux::rt::Verdict::Ok)
+    << "the kernel lists cpus ascending and the file did not:\n"
+    << reversed.to_string();
+
+  // Narrowed to one of the declared cpus, as a cpuset would: still within.
+  cpu_set_t one;
+  CPU_ZERO(&one);
+  CPU_SET(static_cast<int>(lo), &one);
+  ASSERT_EQ(::sched_setaffinity(tid.load(), sizeof one, &one), 0);
+  const flux::rt::Report narrowed = flux::ros::verify(*st, tid.load());
+  stop.store(true);
+  worker.join();
+  EXPECT_EQ(narrowed.find("observed-cpus")->verdict, flux::rt::Verdict::Ok) << narrowed.to_string();
+}
+
+// The other side of the same claim: a cpu the file never named is out, however the thread got
+// there. Two cpus suffice, so this is not folded into the test above behind a third-cpu branch
+// that a two-cpu host would silently skip.
+TEST(RtChain, VerifyFailsAThreadOnACpuOutsideTheDeclaration)
+{
+  const auto allowed = flux::rt::current().cpus;
+  if (allowed.size() < 2) GTEST_SKIP() << "flux-cap:two-cpus needs a cpu outside the declaration";
+  const std::uint32_t declared = allowed[0];
+  const std::uint32_t outside = allowed[1];
+
+  SpecFile file(
+    "chains:\n  outside:\n    target: soft\n    stages:\n      - node: /rtchain_outside\n"
+    "        group: worker\n        policy: other\n        cpus: [" +
+    std::to_string(declared) + "]\n");
+  const auto spec = flux::ros::RtSpec::load(file.path());
+  const flux::ros::RtStage * st = spec.find("/rtchain_outside", "worker");
+  ASSERT_NE(st, nullptr);
+
+  std::atomic<int> tid{0};
+  std::atomic<bool> ready{false};
+  std::atomic<bool> stop{false};
+  std::thread worker([&] {
+    flux::ros::apply_checked(*st);
+    tid.store(flux::rt::this_tid());
+    ready.store(true);
+    while (!stop.load()) std::this_thread::sleep_for(1ms);
+  });
+  while (!ready.load()) std::this_thread::sleep_for(1ms);
+
+  cpu_set_t other;
+  CPU_ZERO(&other);
+  CPU_SET(static_cast<int>(outside), &other);
+  ASSERT_EQ(::sched_setaffinity(tid.load(), sizeof other, &other), 0);
+  const flux::rt::Report moved = flux::ros::verify(*st, tid.load());
+  stop.store(true);
+  worker.join();
+
+  ASSERT_NE(moved.find("observed-cpus"), nullptr);
+  EXPECT_EQ(moved.find("observed-cpus")->verdict, flux::rt::Verdict::Fail) << moved.to_string();
+  EXPECT_FALSE(moved.ok());
+}
+
 // The only thing flux ever does for a thread it does not own. The file records what the stage
 // should already be running at; without this it records it to nobody.
 TEST(RtChain, AnExternalStageIsCheckedNotAssumed)

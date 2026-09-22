@@ -534,12 +534,12 @@ for (const flux::ros::RtStage * e : spec.external()) {   // stages flux does not
 - `stages` is the order in which data flows. RT priority must increase in that direction. An upstream stage that preempts a downstream one starves it. Non-RT stages such as `policy: other` are outside this rule.
 - `control_priority` is derived by the file. The last RT priority in the chain is control, and that stage itself gets 0.
 - Unknown keys are refused. There is no version field.
-- One stage appearing in two chains is normal. If the two chains declare it differently, it is refused.
+- One stage appearing in two chains is normal. If the two chains declare it differently, it is refused. Its `strict` is the strictest of those chains: a stage on a hard chain is hard whichever chain the file lists first.
 - A hard chain gives each RT stage its own core. If two are pinned to the same core, it is refused. `SCHED_FIFO` has no timeslice, so one blocks the other completely. A soft chain allows it.
-- An `external` stage carries only `expect_priority`. It cannot have `policy`/`priority`/`cpus`, and passing it to `schedule` is refused.
+- An `external` stage carries only `expect_priority`, 1..99 or 0 for undeclared. It cannot have `policy`/`priority`/`cpus`, and passing it to `schedule` is refused.
 - If the file is absent or `FLUX_RT_SPEC` is empty, the spec is empty. This is the same no-op as declaring nothing today.
 - Looking up a label not in the file with `stage()` throws.
-- `verify(stage, tid)` applies nothing and only compares the declaration with reality. The findings are three: `observed-policy`, `observed-priority`, and `observed-cpus`. Items the file does not claim are `Unknown`. A thread that cannot be read is an `observed-thread` Fail. The caller supplies `tid`.
+- `verify(stage, tid)` applies nothing and only compares the declaration with reality. The findings are three: `observed-policy`, `observed-priority`, and `observed-cpus`. Items the file does not claim are `Unknown`. `observed-cpus` is Ok while the thread runs within the declared cpus, the same reading `apply_checked` confirms, so a cpuset that narrows the mask passes and a cpu outside the declaration fails. A thread that cannot be read is an `observed-thread` Fail. The caller supplies `tid`.
 - There are two ways to apply to a thread. A callback group uses `schedule(group, stage)`, and a thread you created yourself calls `apply_checked(stage)` from inside it. Both take the whole stage. Unpacking `strict` and `control_priority` into fields loses them. An `external` stage is refused by both.
 
 ### rt (thread scheduling)
@@ -590,7 +590,7 @@ const flux::rt::Finding * one = rep.find("cpu-online");   // nullptr if not chec
 | `priority-order` | opts.priority vs `control_priority` | Fail: transport is at or above control. Transport must never preempt control |
 | `cpu-online` | `/sys/devices/system/cpu/online` | Fail: nonexistent core. `apply` throws with EINVAL |
 | `cpu-isolation` | `/sys/devices/system/cpu/isolated`·`nohz_full` | Warn: pinning only removes migration. A core without isolation is shared with others |
-| `rcu-offload` | `rcu_nocbs` + `nohz_full` in `/proc/cmdline` | Warn: deferred kernel frees run on the RT core. Neither timing nor duration is bounded |
+| `rcu-offload` | `rcu_nocbs` in `/proc/cmdline` + `/sys/devices/system/cpu/nohz_full` | Warn: deferred kernel frees run on the RT core. Neither timing nor duration is bounded |
 | `irq-affinity` | `/proc/irq/*/effective_affinity_list` | Warn: handlers preempt every task on that core regardless of RT priority |
 | `cpu-governor` | `cpufreq/scaling_governor` | Warn: the DVFS ramp lengthens wakeup latency. RT cores use performance |
 | `kernel-preemption` | `/sys/kernel/realtime`·`/proc/version` | Warn: not PREEMPT_RT. No latency bound for in-kernel sections |

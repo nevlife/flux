@@ -106,6 +106,11 @@ RtStage parse_stage(const YAML::Node & n, const std::string & chain)
         "it. Use expect_priority to record what it should already be running at");
     }
     if (n["expect_priority"]) st.expect_priority = n["expect_priority"].as<int>();
+    if (st.expect_priority < 0 || st.expect_priority > 99) {
+      fail(
+        "external stage " + where + ": expect_priority " + std::to_string(st.expect_priority) +
+        " is outside 1..99 (0 = not declared)");
+    }
     return st;
   }
 
@@ -232,8 +237,10 @@ RtSpec RtSpec::load(const std::string & path)
     }
 
     for (auto & st : chain_stages) {
-      const RtStage * dup = spec.find(st.node, st.group);
-      if (dup != nullptr) {
+      auto dup = std::find_if(spec.stages_.begin(), spec.stages_.end(), [&](const RtStage & s) {
+        return s.node == st.node && s.group == st.group;
+      });
+      if (dup != spec.stages_.end()) {
         // A stage legitimately sits on more than one chain (a camera feeding both control and
         // logging). Two chains asking it to run differently is the conflict, and only a file
         // holding both can see it.
@@ -244,7 +251,11 @@ RtSpec RtSpec::load(const std::string & path)
           fail(
             "stage " + detail::stage_name(st.node, st.group) + " is declared differently by chains " + dup->chain + " and " + st.chain);
         }
-        continue;  // same declaration on both chains: keep the first
+        // Same declaration on both chains: keep the first, but the reading of a Warn belongs to
+        // the strictest chain the stage sits on. A camera feeding a hard control chain is a hard
+        // stage no matter which chain the file lists first.
+        if (st.strict == rt::Strictness::Hard) dup->strict = rt::Strictness::Hard;
+        continue;
       }
       spec.stages_.push_back(std::move(st));
     }
@@ -403,13 +414,18 @@ rt::Report verify(const RtStage & stage, int tid)
 
   // Affinity is checked only where flux set it. An external stage's cpus are not in the file at
   // all, and a stage that asked for no pin is free to run anywhere by its own declaration.
+  // The claim is observed within declared, the same reading rt::apply_checked confirms: a cpuset
+  // may narrow the mask, and a thread on fewer of its declared cpus has left none of them.
   if (stage.external || stage.opts.cpus.empty()) {
     add(
       rep, "observed-cpus", rt::Verdict::Unknown,
       "stage " + where + " pins no cpu; its thread may run on " + cpu_list(st.cpus));
   } else {
+    const bool within = !st.cpus.empty() && std::all_of(st.cpus.begin(), st.cpus.end(), [&](auto c) {
+      return std::find(stage.opts.cpus.begin(), stage.opts.cpus.end(), c) != stage.opts.cpus.end();
+    });
     add(
-      rep, "observed-cpus", stage.opts.cpus == st.cpus ? rt::Verdict::Ok : rt::Verdict::Fail,
+      rep, "observed-cpus", within ? rt::Verdict::Ok : rt::Verdict::Fail,
       "stage " + where + " declares cpus " + cpu_list(stage.opts.cpus) +
         " and its thread may run on " + cpu_list(st.cpus));
   }
