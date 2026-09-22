@@ -943,10 +943,17 @@ namespace
 class HookLessWaitable : public rclcpp::Waitable
 {
 public:
+#if defined(RCLCPP_VERSION_MAJOR) && RCLCPP_VERSION_MAJOR >= 28
   void add_to_wait_set(rcl_wait_set_t &) override {}
   bool is_ready(const rcl_wait_set_t &) override { return false; }
   std::shared_ptr<void> take_data() override { return nullptr; }
   void execute(const std::shared_ptr<void> &) override {}
+#else  // Humble's Waitable takes the wait set by pointer and the data by non-const reference
+  void add_to_wait_set(rcl_wait_set_t *) override {}
+  bool is_ready(rcl_wait_set_t *) override { return false; }
+  std::shared_ptr<void> take_data() override { return nullptr; }
+  void execute(std::shared_ptr<void> &) override {}
+#endif
 };
 
 }  // namespace
