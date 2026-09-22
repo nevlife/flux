@@ -484,6 +484,14 @@ MappedSeg map_wait_validate(
   if (
     expect != nullptr &&
     (expect->slot_size != ctrl->slot_size || expect->slot_count != ctrl->slot_count)) {
+    // Identical publishers should never disagree here; this fired once and never reproduced, with
+    // the values seen unrecorded. Log them at the throw (off the hot path) to catch a recurrence.
+    std::fprintf(
+      stderr,
+      "flux: config mismatch on '%s' -- header(slot_size=%u slot_count=%u) "
+      "expected(slot_size=%u slot_count=%u) [mapping=%zu init_state=%u]\n",
+      name.c_str(), ctrl->slot_size, ctrl->slot_count, expect->slot_size, expect->slot_count,
+      bytes, ctrl->init_state.load(std::memory_order_relaxed));
     reject("publisher config mismatch on shared segment");
   }
   check_payload_compat(ctrl, device, reject);
