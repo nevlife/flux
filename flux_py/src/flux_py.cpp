@@ -607,6 +607,10 @@ public:
       n = *nbytes;
     }
     revoke_issued();
+    // commit() fences the declared stream (cuStreamSynchronize), which can take the whole kernel
+    // time. Held under the GIL it stalls every other Python thread for that long, including the
+    // other partitions of a PartitionedExecutor and the rclpy spin thread.
+    nb::gil_scoped_release unlocked;
     return nbytes ? ws_.commit(n) : ws_.commit();
   }
 
@@ -744,7 +748,10 @@ public:
       released_ = true;
       // A scoped borrow ends here whatever holds it: its release fences the declared stream and
       // that must land where the caller put it. A host borrow ends when the last share dies.
-      if (scoped()) held_->view.release();
+      if (scoped()) {
+        nb::gil_scoped_release unlocked;  // the release fence, same reason as Loan::commit
+        held_->view.release();
+      }
       held_.reset();
     }
     return false;
@@ -892,6 +899,9 @@ public:
     // Same flux::Published flux_cpp returns. The checks above raise instead, because they are
     // about the argument and the message can name the path that does work (docs/en/contracts.en.md
     // 3); what is left is the channel's own answer and it is reported, not collapsed.
+    // The copy into the slot is up to slot_size bytes; `arr` is held by the caller's argument
+    // for the whole call, so nothing Python-side is touched without the GIL.
+    nb::gil_scoped_release unlocked;
     return ch_.publish(arr.data(), flux_from_dl(arr.dtype()), dims.data(), dims.size());
   }
 
