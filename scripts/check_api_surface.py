@@ -26,7 +26,7 @@ from doc_symbols import documented_symbols  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 # The C++ user surface is documented across three files: api.md is the .msg path, raw_api.md the
-# path without one, core_api.md flux_core with no ROS. A name documented in any of them counts.
+# path without one, core_api.md the engine layer under both. A name documented in any of them counts.
 USER_DOCS = [
     ROOT / "docs" / "en" / "api.en.md",
     ROOT / "docs" / "en" / "raw_api.en.md",
@@ -40,11 +40,9 @@ SURFACE = [
     ("flux_cpp/include/flux/ros/subscription.hpp", None),
     ("flux_cpp/include/flux/ros/executor.hpp", None),
     ("flux_cpp/include/flux/ros/partitioned_executor.hpp", None),
-    ("flux_cpp/include/flux/ros/rt_spec.hpp", None),
     ("flux_cpp/include/flux/ros/message_filters/subscriber.hpp", None),
     ("flux_core/include/flux/memory.hpp", None),
     ("flux_core/include/flux/qos.hpp", None),
-    ("flux_core/include/flux/rt.hpp", None),
     ("flux_core/include/flux/discovery.hpp", "SegmentMismatch"),
     ("flux_core/include/flux/channel.hpp", "FrameView"),
     ("flux_core/include/flux/channel.hpp", "WriteSlot"),
@@ -62,7 +60,7 @@ UNDOCUMENTED = {
     "attach": "driver hook: flux::ros::Executor calls it, a node never does",
     "deliver": "driver hook: flux::ros::Executor calls it, a node never does",
     "channel": "driver hook: hands the executor the engine object behind the subscription",
-    "validate": "QoS::validate and rt::Options::validate run inside the constructors that take them",
+    "validate": "QoS::validate runs inside the constructors that take it",
     "reserved0": "FrameMeta padding, reserved for a future field",
 }
 

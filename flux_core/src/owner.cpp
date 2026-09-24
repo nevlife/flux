@@ -100,10 +100,8 @@ bool g_atexit_registered = false;
 bool g_atfork_registered = false;
 
 // Identity is constant for the life of a process, and every borrow needs it (holder stamping).
-// Reading it through the mutex meant a getpid() syscall and a lock with no
-// priority inheritance on the borrow path -- an unbounded inversion once callbacks run on threads
-// at different RT priorities. So cache it per thread and invalidate on the one
-// event that changes it.
+// Reading it through the mutex meant a getpid() syscall and a shared lock on every borrow, so
+// cache it per thread and invalidate on the one event that changes it.
 //
 // The invalidation is a generation, not a flag: fork gives the child its own copy of this memory,
 // so bumping it in the child's atfork handler retires every thread's cache there while the

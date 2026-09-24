@@ -1,6 +1,6 @@
 # flux raw path API
 
-This is the surface used without a `.msg`. The default path is [api.md](api.en.md). This document covers only the cases that path cannot handle. The surface for using the engine without ROS is [core_api.md](core_api.en.md).
+This is the surface used without a `.msg`. The default path is [api.md](api.en.md). This document covers only the cases that path cannot handle. The engine layer both paths are built on is [core_api.md](core_api.en.md).
 
 ## 1. When to use this
 

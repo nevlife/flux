@@ -229,7 +229,7 @@ def test_publish_refuses_a_device_array_by_name():
 def test_publish_of_a_host_array_into_a_device_channel_is_refused():
     """The Python half of S-001: the same refusal the C++ engine reports as an enum value.
 
-    flux_core returns Published::WrongDevice because publish() is noexcept for the hard-RT path.
+    flux_core returns Published::WrongDevice because publish() is noexcept.
     The binding raises instead, so a Python caller cannot ignore a return value it never has to
     look at.
     """

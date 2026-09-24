@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-// The RT claim: the borrow path does not enter the kernel while frames are flowing.
+// The claim: the borrow path does not enter the kernel while frames are flowing.
 // Counting at the call sites we know about could only confirm what we already believe -- what
 // this guards against is a syscall appearing somewhere nobody thought to instrument. ptrace
 // counts what the process actually did, so any such addition shows up here.

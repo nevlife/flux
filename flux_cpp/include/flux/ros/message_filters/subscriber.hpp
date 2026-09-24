@@ -62,13 +62,13 @@ struct HasHeaderStamp<View, std::void_t<decltype(std::declval<const View &>().he
 // holding their own std::mutex (approximate_time.h:212 -> :509), and std::mutex has no priority
 // inheritance. Every input of one synchronizer must therefore be serviced by the same thread:
 // flux::ros::Executor satisfies it by construction, and under PartitionedExecutor every
-// input must be assigned to the same callback group. Two groups feeding one synchronizer couple
-// their priorities through that lock, which is the isolation that executor exists to provide.
+// input must be assigned to the same callback group. Two groups feeding one synchronizer would
+// make one wait on the other through that lock, which is the isolation that executor provides.
 //
 //
 // The filter path allocates. The policy queues are std::deque and std::map, and each frame needs
 // two shared_ptr control blocks (see StampedFrame). Plain flux delivery has no allocation; this
-// path is not that path and does not belong in a hard-RT chain.
+// path does.
 template <typename Adapter>
 class Subscriber : public ::message_filters::SimpleFilter<StampedFrame<Adapter>>,
                    public flux::Source

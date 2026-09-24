@@ -14,7 +14,7 @@ ROS 2 노드에서 쓰는 표면 전부다.
 
 **전달은 best-effort다.** 발행자는 느린 구독자를 기다리지 않는다.
 
-산 발행자와 `slot_size`/`slot_count`가 어긋나면 attach가 `flux::SegmentMismatch`(Python은 `flux.SegmentMismatch`)를 던진다. 재시도로 안 고쳐지므로 잡지 않는다.
+산 발행자와 `slot_size`/`slot_count`가 어긋나면 attach가 `std::runtime_error`인 `flux::SegmentMismatch`(Python은 `RuntimeError`인 `flux.SegmentMismatch`)를 던진다. 재시도로 안 고쳐지므로 잡지 않는다.
 
 ## 2. 타입 붙이기 (`.msg` -> adapter)
 
@@ -438,7 +438,7 @@ ex.spin();
 - `forwarded()`가 필터로 내보낸 수, `unreadable()`이 스키마에 안 맞아 버린 수다. synchronizer는 짝을 못 찾은 메시지를 조용히 버리므로, `forwarded()`를 사용자 콜백 횟수와 diff하는 것이 그 손실을 보는 방법이다.
 - `queue_size`(위의 `Policy(10)`)만큼을 입력마다 쥐므로 `max_borrow`가 그 곱을 덮어야 한다. 안 덮으면 소비자가 자기 lease를 다 써서 더 못 가져온다.
 
-**한 synchronizer의 모든 입력은 같은 스레드에서 서비스돼야 한다.** 스타일 규칙이 아니다. 동기화 정책은 짝이 맞은 콜백을 자기 `std::mutex`를 쥔 채로 돌리고 그 뮤텍스에는 priority inheritance가 없다. 입력이 두 스레드에 걸치면 그 둘의 우선순위가 락 하나로 묶인다. `flux::ros::Executor`는 flux와 ROS를 한 스레드에서 돌리므로 자동으로 만족한다. `PartitionedExecutor`에서는 그 synchronizer의 입력을 전부 같은 콜백 그룹에 배정한다.
+**한 synchronizer의 모든 입력은 같은 스레드에서 서비스돼야 한다.** 스타일 규칙이 아니다. 동기화 정책은 짝이 맞은 콜백을 자기 `std::mutex`를 쥔 채로 돌린다. 입력이 두 스레드에 걸치면 한 스레드가 그 락에서 다른 스레드를 기다리게 되어 둘이 더는 격리되지 않는다. `flux::ros::Executor`는 flux와 ROS를 한 스레드에서 돌리므로 자동으로 만족한다. `PartitionedExecutor`에서는 그 synchronizer의 입력을 전부 같은 콜백 그룹에 배정한다.
 
 `PartitionedExecutor`에서는 그 배정을 선언하면 spin이 검사한다. synchronizer는 자기 입력이 무엇인지 아무에게도 말하지 않으므로 집합을 밖에서 대야 한다.
 
@@ -453,7 +453,7 @@ ex.spin();                            // 둘이 다른 그룹이면 여기서 �
 - 자리를 정할 수 없는 입력은 판정하지 않고 `unplaced_sync_inputs()`가 센다. 체인 중간 필터, 그리고 `add_ros_node()`에 안 넘긴 노드의 구독이 그것이다. 0이면 선언한 입력이 전부 판정됐다는 뜻이다.
 - 선언하지 않으면 검사도 없다. 지금까지와 같다.
 
-필터 경로는 할당이 있는 경로다. 정책의 큐가 `std::deque`·`std::map`이고 프레임마다 `shared_ptr` control block 둘이 붙는다. 필터 없는 flux 배달에는 할당이 없다 -- hard RT 체인에는 필터를 놓지 않는다.
+필터 경로는 할당이 있는 경로다. 정책의 큐가 `std::deque`·`std::map`이고 프레임마다 `shared_ptr` control block 둘이 붙는다. 필터 없는 flux 배달에는 할당이 없다.
 
 ### PartitionedExecutor
 
@@ -465,7 +465,7 @@ ex.spin();                            // 둘이 다른 그룹이면 여기서 �
 flux::ros::PartitionedExecutor ex;
 ex.add(flux_sub, group);   // 그룹에 배정. 같은 그룹 = 같은 스레드
 ex.add_ros_node(node);     // 노드의 콜백 그룹마다 자식이 붙는다
-ex.schedule(group, {flux::rt::Policy::Fifo, 90, {3}});  // 그룹 스레드의 스케줄링 선언 (opt-in)
+ex.on_thread_start(group, [] { set_up_this_thread(); });  // 그룹 스레드에서 첫 콜백 전에 실행
 ex.spin();                 // tick_ns 기본값 100 ms
 ex.stop();                 // spin과 자식 전부를 끝낸다
 ex.interrupt();            // 부모의 스캔 대기만 깬다
@@ -473,128 +473,15 @@ ex.interrupt();            // 부모의 스캔 대기만 깬다
 
 - `add`의 그룹은 `add_ros_node`로 등록된 노드의 것이어야 한다. 아니면 spin이 throw.
 - `add`의 그룹은 ROS entity를 가져도 된다. 그 그룹의 ROS 콜백도 같은 자식이 서비스한다. 한 pass 안에서 flux 콜백과 섞여도 ROS entity는 콜백 하나만큼만 뒤로 밀린다.
-- `add(sub, group, priority)`의 셋째 인자는 그 그룹 자신의 pass 안 방문 순서다. 그룹을 넘지 않는다 -- 그룹은 서로 다른 스레드이고 그 사이 순서는 `schedule`이 건 스레드 우선순위가 정한다.
-- 등록은 spin 전에만 한다. spin 중 `add`/`add_ros_node`/`schedule`은 throw.
+- `add(sub, group, priority)`의 셋째 인자는 그 그룹 자신의 pass 안 방문 순서다. 그룹을 넘지 않는다. 그룹은 서로 다른 스레드다.
+- 등록은 spin 전에만 한다. spin 중 `add`/`add_ros_node`/`on_thread_start`는 throw.
 - spin 시작 후 생긴 콜백 그룹은 tick 스캔이 잡아 자식을 붙인다.
 - 자식 `flux::ros::Executor`의 `max_channels`는 그룹에 배정된 flux 구독 수로 자동 산정된다.
-- `schedule`은 그 그룹을 맡은 자식 스레드가 첫 콜백 전에 자기에게 `rt::apply`하는 예약이다. 거부(권한 없음 등)는 spin()의 에러로 올라온다. 그룹당 하나, 어느 자식도 맡지 않는 그룹의 schedule은 spin이 거부한다.
-- `schedule(group, stage)`는 stage가 부르는 이름과 넘긴 그룹을 대조한다. stage가 가리키는 노드의 그룹이어야 하고, 라벨이 비었으면 그 노드의 기본 콜백 그룹이어야 한다. 한 stage를 두 그룹에 주면 그 자리에서 던진다.
-- reentrant 그룹은 거절한다. 그룹당 스레드가 하나라 그 그룹의 콜백은 직렬로 돌고, 동시 실행을 선언한 그룹을 조용히 직렬화하지 않는다. 병렬이 필요하면 mutually exclusive 그룹 여럿으로 쪼갠다 -- 각자 스레드와 우선순위를 갖는다.
+- `on_thread_start(group, fn)`은 그 그룹을 맡은 자식 스레드에서 첫 콜백 전에 `fn`을 실행한다. 그 스레드만 자기에게 할 수 있는 준비 작업을 여기에 둔다. `fn`의 예외는 spin()의 에러로 올라온다. 그룹당 하나, 어느 자식도 맡지 않는 그룹의 hook은 spin이 거부한다.
+- reentrant 그룹은 거절한다. 그룹당 스레드가 하나라 그 그룹의 콜백은 직렬로 돌고, 동시 실행을 선언한 그룹을 조용히 직렬화하지 않는다. 병렬이 필요하면 mutually exclusive 그룹 여럿으로 쪼갠다. 각자 스레드를 갖는다.
 - 노드가 자동 등록으로 만든 그룹은 flux 구독이 없어도 자식이 붙는다. `automatically_add_to_executor_with_node()`가 false인 수동 그룹은 `add(sub, group)`으로 배정된 것만 서비스한다.
 - 그룹이 다르면 콜백은 실제로 동시에 돈다. 그룹 사이에 공유하는 상태는 호출자가 지킨다 -- PartitionedExecutor는 격리를 주지 상호배제를 주지 않는다(6).
 - GPU 채널을 받는 구독은 자기 그룹에 둔다. 해제 fence가 소비 커널이 끝날 때까지 그 스레드를 막으므로, 같은 그룹의 다른 콜백이 그만큼 밀린다.
-
-### RtSpec (체인 선언 파일)
-
-체인 하나의 스케줄링을 파일 하나에 적고 각 노드가 뜰 때 자기 몫을 찾아 적용한다. 노드가 launch로 각각 뜨고 죽어도 성립한다 — 미는 쪽이 없고 각자 읽기 때문이다.
-
-```yaml
-chains:
-  perception_to_control:
-    target: hard                # Warn을 막는다. soft면 기록만
-    stages:
-      - node: /camera_node
-        group: dds_listener
-        external: true          # flux가 안 건다. rmw 리스너 같은 남의 스레드
-        expect_priority: 60
-      - node: /camera_node      # group 생략 = 노드의 기본 콜백 그룹
-        policy: fifo
-        priority: 70
-        cpus: [2]
-      - node: /perception_node
-        group: infer
-        policy: fifo
-        priority: 75
-      - node: /control_node
-        group: loop
-        policy: fifo
-        priority: 90
-```
-
-```cpp doc:rt_spec
-flux::ros::RtSpec spec = flux::ros::RtSpec::load();   // FLUX_RT_SPEC. 없으면 빈 spec
-if (!spec.empty()) {
-  const flux::ros::RtStage & st = spec.stage(*node, "infer");
-  ex.schedule(group, st);              // target과 control_priority가 체인에서 따라온다
-  log(st.chain, st.node);              // 어느 체인의 어느 단계인지
-
-  std::thread worker([&spec, &node] {  // 내가 만든 스레드는 그 스레드가 자기에게 건다
-    flux::ros::apply_checked(spec.stage(*node, "infer_worker"));
-    flux::ros::verify(spec.stage(*node, "infer_worker"), flux::rt::this_tid());
-  });
-  worker.join();
-}
-for (const flux::ros::RtStage * e : spec.external()) {   // flux가 안 거는 단계
-  log(e->node, flux::ros::verify(*e, foreign_tid).to_string());   // 기록만 하지 않고 확인한다
-}
-```
-
-`RtStage`는 파일이 그 단계에 대해 아는 전부를 담는다 — `node`·`group`·`external`·`expect_priority`·`opts`·`strict`·`control_priority`, 그리고 어느 체인이 선언했는지(`chain`). `RtSpec`은 `stages()`로 전부, `find()`로 하나, `external()`로 flux가 안 거는 것만 준다.
-
-- `stages`는 데이터가 흐르는 순서다. RT 우선순위가 그 방향으로 커져야 한다 — 상류가 하류를 선점하면 굶긴다. `policy: other`처럼 RT가 아닌 단계는 이 규칙 밖이다.
-- `control_priority`는 파일이 유도한다 — 체인의 마지막 RT 우선순위가 control이고, 그 단계 자신은 0이다.
-- 모르는 키는 거절한다. 버전 필드는 없다.
-- 한 단계가 체인 둘에 나오는 것은 정상이다. 두 체인이 서로 다르게 선언하면 거절한다. `strict`는 그 단계가 속한 체인 중 가장 엄격한 것이다. hard 체인에 속한 단계는 파일에서 어느 체인이 먼저 나오든 hard다.
-- hard 체인은 RT 단계마다 코어를 따로 준다. 둘이 같은 코어에 핀되면 거절한다 — `SCHED_FIFO`에는 타임슬라이스가 없어 하나가 다른 하나를 완전히 막는다. soft 체인은 허용한다.
-- `external` 단계는 `expect_priority`만 적는다. 1..99이고 0은 미선언이다. `policy`/`priority`/`cpus`는 못 가지고, `schedule`에 넘기면 거절한다.
-- 파일이 없거나 `FLUX_RT_SPEC`이 비면 빈 spec이다. 아무것도 선언 안 한 지금의 no-op 그대로다.
-- 파일에 없는 라벨을 `stage()`로 찾으면 던진다.
-- `verify(stage, tid)`는 아무것도 안 걸고 선언과 실제만 대조한다. finding은 `observed-policy`·`observed-priority`·`observed-cpus` 셋이고, 파일이 주장하지 않는 항목은 `Unknown`이다. `observed-cpus`는 스레드가 선언한 cpu 안에서 돌면 Ok다. `apply_checked`가 되읽는 기준과 같아서, cpuset이 마스크를 좁힌 것은 통과하고 선언 밖 cpu는 Fail이다. 읽을 수 없는 스레드는 `observed-thread` Fail이다. `tid`는 호출자가 댄다.
-- 스레드에 거는 방법이 둘이다. 콜백 그룹은 `schedule(group, stage)`, 직접 만든 스레드는 그 안에서 `apply_checked(stage)`. 둘 다 stage를 통째로 넘긴다 — `strict`와 `control_priority`를 필드로 풀면 흘린다. `external` 단계는 둘 다 거절한다.
-
-### rt (스레드 스케줄링)
-
-hard RT 경로용 opt-in이다. flux_core 소속이라 ROS 없이도 쓴다. QoS와 별개다.
-
-```cpp doc:rt
-#include "flux/rt.hpp"
-
-flux::rt::Options o;
-o.policy = flux::rt::Policy::Fifo;   // Inherit / Other / Fifo / RoundRobin
-o.priority = 80;                     // Fifo/RoundRobin일 때 1..99
-o.cpus = {3};                        // 비우면 affinity를 안 건드린다
-
-flux::rt::Report rep = flux::rt::preflight(o, /*control_priority=*/90);  // 판정만, 변경 없음
-flux::rt::apply(o);                  // 호출한 스레드에 적용. 거부되면 throw
-flux::rt::ThreadState st = flux::rt::current();   // 커널에서 되읽기
-flux::rt::ThreadState other = flux::rt::observe(flux::rt::this_tid());  // 남의 스레드도 같은 값
-
-rep = flux::rt::apply_checked(o, flux::rt::Strictness::Hard, /*control_priority=*/90);
-```
-
-- `apply`는 호출한 스레드 자신에게 건다. all-or-nothing이다 — 커널이 거부하면 되돌리고 `std::system_error`를 던진다. 조용한 다운그레이드는 없다.
-- `preflight`는 아무것도 안 바꾸고 finding 목록(`rep.ok()`, `rep.to_string()`)으로 왜 안 되는지를 보고한다.
-- `apply_checked`는 그 둘을 잇는다. `preflight`를 먼저 돌리고 판정이 막으면 스레드를 건드리기 전에 `std::runtime_error`를 던진다. 커널은 마감을 못 지키는 호스트에서도 요청을 받아주므로, `apply`만 쓰면 "성공"이 "실시간으로 돈다"를 뜻하지 않는다.
-- `Strictness`가 `Warn`을 어떻게 읽을지 정한다. `Soft`는 감수하고 report로 돌려주며, `Hard`는 거절한다. `Fail`은 둘 다 거절한다. 기본은 `Soft`다.
-- 아무것도 요청하지 않는 `Options`는 `apply_checked`에서도 완전한 no-op이다. 판정할 대상이 없다.
-- `current`는 자기 스레드를, `observe(tid)`는 남의 스레드를 커널에서 읽는다. 거는 것은 자기 스레드만 되지만 읽는 것은 프로세스를 넘어서도 된다. `tid`는 `this_tid()`가 준다 — `std::thread::id`는 커널이 아는 이름이 아니다. 읽을 수 없는 스레드는 `std::system_error`다.
-- 자기 스레드는 `apply`나 `apply_checked`를 직접 부른다. PartitionedExecutor가 만드는 그룹 스레드는 `schedule(group, opts, strict, control_priority)`로 선언하면 자식이 `apply_checked`로 스스로 건다(위 PartitionedExecutor 절).
-
-한 줄 요약 대신 항목을 직접 보려면 `rep.findings`를 순회하거나 `rep.find(id)`로 하나를 집는다.
-
-```cpp doc:rt_report
-for (const flux::rt::Finding & f : rep.findings) {
-  if (f.verdict == flux::rt::Verdict::Fail) {
-    log(f.id, f.detail);
-  }
-}
-const flux::rt::Finding * one = rep.find("cpu-online");   // 안 봤으면 nullptr
-```
-
-`Finding`은 셋이다 — `id`(안정 슬러그), `verdict`, `detail`(왜 그 판정인지). `Verdict`는 `Ok`·`Warn`·`Fail`·`Unknown`이고 `ok()`는 "`Fail` 없음"이다. `Unknown`은 커널이 소스를 안 내준 것이지 통과가 아니다. id별 소스와 Fail·Warn의 뜻은 아래 표다.
-
-| finding id | 소스 | Fail/Warn의 뜻 |
-| --- | --- | --- |
-| `policy-permission` | `CapEff`(CAP_SYS_NICE) + `RLIMIT_RTPRIO` | Fail: 권한 없음. `apply`가 EPERM으로 던진다 |
-| `rt-throttle` | `/proc/sys/kernel/sched_rt_runtime_us` | Warn: throttle이 busy RT 스레드를 우선순위와 무관하게 preempt한다 |
-| `priority-order` | opts.priority vs `control_priority` | Fail: transport가 control 이상. transport는 control을 절대 preempt하지 않는다 |
-| `cpu-online` | `/sys/devices/system/cpu/online` | Fail: 없는 코어. `apply`가 EINVAL로 던진다 |
-| `cpu-isolation` | `/sys/devices/system/cpu/isolated`·`nohz_full` | Warn: pinning은 마이그레이션만 없앤다. 격리 없는 코어는 남과 공유된다 |
-| `rcu-offload` | `/proc/cmdline`의 `rcu_nocbs` + `/sys/devices/system/cpu/nohz_full` | Warn: 미뤄둔 커널 해제가 RT 코어에서 돈다. 시각도 길이도 안 묶인다 |
-| `irq-affinity` | `/proc/irq/*/effective_affinity_list` | Warn: 핸들러는 RT 우선순위와 무관하게 그 코어의 모든 태스크를 선점한다 |
-| `cpu-governor` | `cpufreq/scaling_governor` | Warn: DVFS ramp가 wakeup 지연을 늘린다. RT 코어는 performance |
-| `kernel-preemption` | `/sys/kernel/realtime`·`/proc/version` | Warn: PREEMPT_RT 아님. 커널 내부 구간의 지연 상한이 없다 |
-| `memory-lock` | `/proc/self/status`의 `VmLck` | Warn: 잠긴 메모리 없음. page fault는 상한 없는 지연이다 |
 
 ## 4. Python
 
@@ -795,39 +682,26 @@ ex.close()
 - 등록은 spin 전에만 한다. spin 중 `add_flux`/`add_ros_node`는 throw.
 - 자식 스레드의 예외는 모든 자식을 세우고 `spin()`에서 다시 던진다.
 - flux 그룹의 자식은 rclpy 브릿지 없이 `flux.Executor.spin`을 직접 돈다. 그룹에 ROS 엔티티가 없으니 합칠 것이 없다.
-- 자식 스레드의 정책·우선순위·CPU는 `set_thread_scheduling`이 선언한다. C++의 `schedule`과 이름이 다른 이유는 아래 rt 절에 있다.
+- 자식 스레드의 준비 작업은 `on_thread_start`에 둔다(다음 절).
 - 스레드가 늘어도 GIL을 놓는 일만 겹친다. numpy·zlib·디코딩은 겹치고, 순수 Python 바이트코드는 스레드가 몇이든 직렬이다.
 
 flux 채널만 볼 때는 안쪽의 `flux.Executor`를 직접 써도 된다. rclpy가 안 끼는 표면이라 [`core_api.ko.md`](core_api.ko.md) 8절이 그것을 다룬다 -- `spin_once`·`stop`·`is_spinning`과, 다른 이벤트 루프에 끼울 때 쓰는 `wait_for_work`/`dispatch` 분리가 거기 있다.
 
-### rt (Python)
+### on_thread_start (Python)
 
-`flux.rt`는 C++ `flux::rt`를 그대로 묶은 것이다(3절의 rt 절). 적용하는 쪽만 나와 있다 -- `preflight`·`Report`·`Strictness`는 hard RT 판정 장치라 Python 표면에 없다.
+자식 스레드에서 첫 콜백 전에 함수를 실행한다. 그 스레드만 자기에게 할 수 있는 준비 작업을 여기에 둔다.
 
-RT 보장이 아니다. 어떤 우선순위를 걸어도 GIL과 GC는 상한 없는 지연원으로 남는다. 정하는 것은 여러 스레드가 동시에 runnable일 때 커널이 누구를 고르는지와 각자 어느 코어를 쓰는지이고, 그 이상은 아니다. 그래도 정할 값이 있는 이유는 GIL을 놓는 구간에서 스레드가 실제로 병렬로 돌기 때문이다 -- numpy·zlib·디코딩이 그 구간이다.
-
-```python doc:py_rt
+```python doc:py_thread_start
 ex = flux.ros.PartitionedExecutor()
 ex.add_flux(sub, group)
 ex.add_ros_node(node)
-ex.set_thread_scheduling(group, cpus=[4, 5])
-ex.set_thread_scheduling(node, policy=flux.rt.Policy.Fifo, priority=20)
-
-report = flux.rt.apply(cpus=[4])          # 부른 스레드 자신. 자식이 아니다
-state = flux.rt.current()                 # 커널에서 되읽기
-klass, prio, where = state.policy, state.priority, state.cpus
-tid = flux.rt.this_tid()                  # top -H와 /proc이 부르는 번호
+ex.on_thread_start(group, set_up_this_thread)
+ex.on_thread_start(node, set_up_this_thread)
 ```
 
-- `set_thread_scheduling(unit, policy=, priority=, cpus=)`의 `unit`은 `add_flux`에 준 콜백 그룹이거나 `add_ros_node`에 준 노드다. C++은 콜백 그룹 하나지만 여기서는 단위가 둘로 갈려 있다.
-- 자식이 첫 콜백 전에 자기에게 건다. 스레드 정책은 자기 스레드만 바꿀 수 있고, 거절은 `spin()`의 예외가 된다 -- 약한 설정으로 안 내려간다.
-- 한 unit에 두 번 선언하면 그 자리에서 거절한다. 이 executor가 안 돌리는 unit에 건 선언은 `spin()`이 거절한다. 조용히 안 걸리는 선언을 막는 것이 이 표면의 요지다.
-- `policy`는 `flux.rt.Policy`의 `Inherit`(기본, 안 건드림)·`Other`(SCHED_OTHER)·`Fifo`(SCHED_FIFO)·`RoundRobin`(SCHED_RR)이다. `Fifo`·`RoundRobin`은 `priority` 1..99와 `RLIMIT_RTPRIO` 또는 `CAP_SYS_NICE`가 필요하다. affinity만 걸 때는 권한이 필요 없다.
-- `flux.rt.apply`는 부른 스레드에 건다. 건 뒤 커널에서 되읽어 대조하므로, cpuset이 마스크를 좁혀 요청이 그대로 안 앉은 경우가 성공으로 안 지나간다. 커널 거절은 `OSError`, 요청이 이 호스트에서 성립 안 하거나 되읽기가 어긋나면 `RuntimeError`, 값 범위가 틀리면 `ValueError`다. 아무것도 요청 안 하면 아무것도 안 한다.
-- `apply`가 돌려주는 문자열은 호스트 판정 보고다. 사람이 읽으라고 있는 것이고 파싱할 형식이 아니다. 대부분 hard RT 항목이라 Python이 주장하지 않는 것들이고, 요청이 없으면 빈 문자열이다.
-- `flux.rt.current()`는 `flux.rt.ThreadState`를 준다 -- `policy`는 `Policy`가 아니라 raw `SCHED_*` 정수다(`os.SCHED_FIFO`와 비교한다), `priority`는 정수, `cpus`는 코어 번호 목록이다.
-- `flux.rt.this_tid()`는 커널 thread id다. `threading.get_ident()`가 주는 번호와 다르다.
-- `flux.ros.Executor`에는 이 항이 없다. 그 executor는 부른 쪽 스레드에서 도므로 `spin()` 전에 `flux.rt.apply()`를 직접 부른다. C++ `flux::ros::Executor`도 같은 이유로 없다.
+- `on_thread_start(unit, fn)`의 `unit`은 `add_flux`에 준 콜백 그룹이거나 `add_ros_node`에 준 노드다. C++에서는 콜백 그룹 하나지만 여기서는 단위가 둘로 갈린다.
+- `fn`의 예외는 모든 자식을 멈추고 `spin()`에서 다시 던져진다. 스레드가 준비 없이 콜백을 계속 돌지 않는다.
+- 단위당 하나이고, 두 번째는 그 자리에서 거절한다. 이 executor가 돌리지 않는 단위의 hook은 `spin()`이 거절한다.
 
 ### message_filters (Python)
 

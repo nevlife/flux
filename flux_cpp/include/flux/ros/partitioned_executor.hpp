@@ -2,9 +2,7 @@
 #define FLUX_ROS_PARTITIONED_EXECUTOR_HPP
 
 #include "flux/ros/executor.hpp"
-#include "flux/ros/rt_spec.hpp"
 #include "flux/ros/subscription.hpp"
-#include "flux/rt.hpp"
 #include "flux/spin_control.hpp"
 
 #include <rclcpp/callback_group.hpp>
@@ -15,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -81,8 +80,8 @@ public:
 
   // Same, for any flux::Source, such as a message_filters Subscriber
   // (flux/ros/message_filters/subscriber.hpp). Every input of one synchronizer must sit in the
-  // same group: the sync policy runs the matched callback under its own std::mutex, which has no
-  // priority inheritance, so inputs on two group threads would couple those groups' priorities.
+  // same group: the sync policy runs the matched callback under its own std::mutex, so inputs on
+  // two group threads would make one group wait on the other.
   // `priority` orders the visit within the group's own pass and never crosses groups.
   void add(flux::Source & src, const rclcpp::CallbackGroup::SharedPtr & group, int priority = 0);
 
@@ -99,27 +98,17 @@ public:
     declare_sync_group({detail::as_sync_input(inputs)...});
   }
 
-  // Inputs of declared sync groups that spin() could not place on a thread, so the same-thread
-  // rule was not judged for them. Zero means every declared input was placed. Valid after spin()
-  // has started.
+  // Declared sync inputs spin() could not place on a thread, so the same-thread rule was not
+  // judged for them. Zero means every one was placed. Valid after spin() has started.
   std::size_t unplaced_sync_inputs() const noexcept;
 
   // Register a node: every callback group it has (or later creates) is served by its own child.
   // Do not also hand the node or any of its groups to another executor.
   void add_ros_node(const rclcpp::Node::SharedPtr & node);
 
-  // Declare the thread scheduling for the child that will serve `group`. The child applies it to
-  // itself through rt::apply_checked before running any callback; a refusal is the spin() error,
-  // not a downgrade. One per group, and the group must be served here. `strict` decides what a
-  // Warn does. `control_priority` is the consumer's control loop priority, so transport can be
-  // checked to stay below it; left at 0 that check is reported Unknown.
-  void schedule(
-    const rclcpp::CallbackGroup::SharedPtr & group, const rt::Options & sched,
-    rt::Strictness strict = rt::Strictness::Soft, int control_priority = 0);
-
-  // Same, taking a stage the declaration file resolved: strictness and control priority come
-  // from the chain, which no node can derive from its own settings. Rejects an external stage.
-  void schedule(const rclcpp::CallbackGroup::SharedPtr & group, const RtStage & stage);
+  // Run `init` on the child thread serving `group` before its first callback, for setup that only
+  // the thread itself can do. An exception from `init` is the spin() error.
+  void on_thread_start(const rclcpp::CallbackGroup::SharedPtr & group, std::function<void()> init);
 
   // Spawn one child per callback group and block until stop(). Re-scans the registered nodes
   // every `tick_ns` so a group created after spin started gets a child within one tick (negative
@@ -156,7 +145,6 @@ private:
   void spawn_children(std::int64_t tick_ns);
   void record_child_error() noexcept;  // from inside a child thread's catch handler
   void check_sync_groups(const GroupMap & known);
-  void check_schedule_labels(const GroupMap & known) const;
 
   SpinControl ctl_;
   std::atomic<bool> child_run_{false};  // parent-owned: children never see the caller's flag
@@ -167,22 +155,7 @@ private:
     int priority = 0;
   };
   std::vector<std::pair<rclcpp::CallbackGroup::SharedPtr, std::vector<Assigned>>> assigned_;
-  // One declared schedule. `node` and `label` carry the stage's identity when a declaration file
-  // named it, so spin() can check the file's name against the group handed over: an rclcpp
-  // callback group has no name of its own, so that pairing is the only link between the two.
-  struct Sched
-  {
-    rt::Options opts;
-    rt::Strictness strict = rt::Strictness::Soft;
-    int control_priority = 0;
-    std::string node;
-    std::string label;
-    bool from_stage = false;
-  };
-
-  void schedule_impl(const rclcpp::CallbackGroup::SharedPtr & group, Sched sched);
-
-  std::vector<std::pair<rclcpp::CallbackGroup::SharedPtr, Sched>> scheduled_;
+  std::vector<std::pair<rclcpp::CallbackGroup::SharedPtr, std::function<void()>>> thread_init_;
   std::vector<std::vector<detail::SyncInput>> sync_groups_;
   std::atomic<std::size_t> unplaced_sync_{0};
   std::vector<rclcpp::Node::WeakPtr> nodes_;

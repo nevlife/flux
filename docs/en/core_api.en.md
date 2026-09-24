@@ -1,6 +1,8 @@
-# flux_core API (without ROS)
+# flux_core API (engine layer)
 
-`flux_core` knows nothing about ROS. It calls neither rclcpp nor rclpy and builds with standalone cmake. This document is the surface for using flux outside a ROS node. Inside a ROS node, [api.md](api.en.md) is the right document, and using flux without a `.msg` is covered in [raw_api.md](raw_api.en.md).
+`flux_core` is the engine the ROS wrappers are built on. It calls neither rclcpp nor rclpy. This document covers that layer as it is used inside a ROS process, where the wrapper adds nothing: waiting on flux channels alone (sections 6 and 8) and enumeration for tools (section 9). The default path is [api.md](api.en.md), and using flux without a `.msg` is covered in [raw_api.md](raw_api.en.md).
+
+`flux_core` also builds alone with cmake, outside an ament workspace. That build exists to test the engine. It is not a way to deploy flux.
 
 ## 1. What is different
 
@@ -21,7 +23,7 @@ find_package(flux_core REQUIRED)
 target_link_libraries(mytool PRIVATE flux::core)
 ```
 
-Outside an ament workspace, build `flux_core` alone with cmake. The only dependency is pthread. `flux_cpp`, `flux_py`, and `flux_gen` are not needed.
+This layer needs `flux_core` only. `flux_cpp`, `flux_py`, and `flux_gen` are not needed.
 
 ## 3. Building the name
 
@@ -32,7 +34,7 @@ std::string domain = flux::process_domain();
 std::string name = flux::signpost_name("/img", /*fingerprint=*/0, domain);
 ```
 
-`process_domain()` checks `FLUX_DOMAIN` first, then `ROS_DOMAIN_ID` if that is absent. If neither is set, it is `0`. Even without ROS, attaching to a ROS node on the same host requires the same domain that node uses.
+`process_domain()` checks `FLUX_DOMAIN` first, then `ROS_DOMAIN_ID` if that is absent. If neither is set, it is `0`. No node resolves it here, so a process attaching to a channel a ROS node uses must be in that node's domain.
 
 It is decided once on the first call and does not change until the process exits. This is the same as rcl latching `ROS_DOMAIN_ID` at context init. Otherwise the ROS side and the flux side of one process could sit in different partitions. Reading the environment fresh each time is `resolve_domain(var)`. That is a query and is not used to build names.
 
@@ -54,7 +56,7 @@ if (w) {
 
 `create` builds the segment. If a live publisher already exists and `slot_size` or `slot_count` disagrees, it throws `flux::SegmentMismatch`. Retrying does not fix it, so do not catch it.
 
-The meaning of `loan`, `commit`, and `publish` is the same as in the ROS wrapper. dtype and shape are stated once in `loan`, and `commit` takes no arguments. Return value interpretation is in [raw_api.md](raw_api.en.md) section 2. With a `.msg` adapter, `Builder` fills the frame for you. The adapter sits on top of `WriteSlot`, so it works unchanged without ROS.
+The meaning of `loan`, `commit`, and `publish` is the same as in the ROS wrapper. dtype and shape are stated once in `loan`, and `commit` takes no arguments. Return value interpretation is in [raw_api.md](raw_api.en.md) section 2. With a `.msg` adapter, `Builder` fills the frame for you. The adapter sits on top of `WriteSlot`, so it works unchanged on this layer.
 
 ### Page precommit
 
@@ -168,9 +170,9 @@ const int delivered = ex.dispatch();       // delivery only. Does not block
 
 In Python, `flux.Executor` wraps the same class (section 8 below).
 
-## 7. Python (without ROS)
+## 7. Python (engine layer)
 
-Importing only `flux` keeps ROS out. All `flux.ros` does is name resolution and the rclpy executor connection.
+`flux` without `flux.ros` is this layer. What `flux.ros` adds is name resolution and the rclpy executor connection.
 
 ```python doc:core_py_publisher
 pub = flux.Publisher("/img", fingerprint=FP, slot_size=16 << 20, slot_count=16)

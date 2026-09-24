@@ -38,10 +38,10 @@ def documented_paths(text):
     """Every dotted path the document writes as code, and every prefix of each.
 
     documented_symbols answers "is this word written down anywhere", which cannot tell
-    `flux.rt.apply` from the C++ `apply` documented in the section above it -- the two share a
-    last segment, and this document deliberately spells both languages. A path carries the
-    module, so it can. Prefixes are included because writing `flux.rt.Policy.Fifo` documents
-    `flux.rt.Policy` as well.
+    `flux.Publisher` from the C++ `Publisher` documented in the section above it -- the two share
+    a last segment, and this document deliberately spells both languages. A path carries the
+    module, so it can. Prefixes are included because writing `flux.Reliability.BEST_EFFORT`
+    documents `flux.Reliability` as well.
     """
     paths = set()
     for chunk in _code_chunks(text):

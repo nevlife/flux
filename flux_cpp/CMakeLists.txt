@@ -23,24 +23,13 @@ find_package(rclcpp REQUIRED)
 # in the public include directory, and a public header that compiles or not depending on what
 # else is installed is worse than one small dependency.
 find_package(message_filters REQUIRED)
-# Only the chain-declaration reader needs it. flux_core stays standalone; parsing a file is this
-# layer's work.
-find_package(yaml_cpp_vendor REQUIRED)
-find_package(yaml-cpp REQUIRED)  # the vendor package only points at it; the target comes from here
-# Jazzy's yaml-cpp config exports the namespaced target; Humble's (0.7) exports the bare one.
-if(TARGET yaml-cpp::yaml-cpp)
-  set(FLUX_YAML_CPP_TARGET yaml-cpp::yaml-cpp)
-else()
-  set(FLUX_YAML_CPP_TARGET yaml-cpp)
-endif()
 
 add_library(flux_cpp
   src/ros_boundary.cpp
   src/publisher.cpp
   src/subscription.cpp
   src/executor.cpp
-  src/partitioned_executor.cpp
-  src/rt_spec.cpp)
+  src/partitioned_executor.cpp)
 add_library(flux::cpp ALIAS flux_cpp)
 # Static, but linked into shared objects (the rviz2 plugin in flux_tools), same as flux_core.
 set_target_properties(flux_cpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -49,9 +38,6 @@ target_include_directories(flux_cpp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(flux_cpp PUBLIC flux_core rclcpp)
-# Private: yaml-cpp is an implementation detail of the chain-declaration reader. Its types never
-# reach flux/ros/rt_spec.hpp, so a consumer of flux_cpp does not inherit the dependency.
-target_link_libraries(flux_cpp PRIVATE ${FLUX_YAML_CPP_TARGET})
 target_compile_options(flux_cpp PRIVATE -Wall -Wextra -Wpedantic)
 
 # The code fences in docs/en/api.en.md section 3 are the anchored regions of this file. Compiling it
@@ -72,11 +58,7 @@ install(TARGETS flux_cpp
   INCLUDES DESTINATION include)
 ament_export_targets(export_flux_cpp HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
-# flux_cpp is a static library, so even a PRIVATE link lands in the exported interface: a
-# consumer does the final link and needs the archive's dependencies resolvable. Export the two
-# packages that make the target findable -- the vendor sets yaml-cpp_DIR, the config defines the
-# target. Without this a downstream package fails at configure with "target was not found".
-ament_export_dependencies(flux_core message_filters rclcpp yaml_cpp_vendor yaml-cpp)
+ament_export_dependencies(flux_core message_filters rclcpp)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -100,23 +82,12 @@ if(BUILD_TESTING)
     ament_target_dependencies(test_pull_surface rclcpp)
   endif()
 
-  ament_add_gtest(test_rt_spec test/test_rt_spec.cpp)
-  if(TARGET test_rt_spec)
-    target_link_libraries(test_rt_spec flux_cpp)
-    ament_target_dependencies(test_rt_spec rclcpp)
-  endif()
-
   ament_add_gtest(test_partitioned_executor test/test_partitioned_executor.cpp)
   if(TARGET test_partitioned_executor)
     target_link_libraries(test_partitioned_executor flux_cpp)
     ament_target_dependencies(test_partitioned_executor rclcpp std_msgs)
   endif()
 
-  ament_add_gtest(test_rt_chain test/test_rt_chain.cpp)
-  if(TARGET test_rt_chain)
-    target_link_libraries(test_rt_chain flux_cpp)
-    ament_target_dependencies(test_rt_chain rclcpp std_msgs)
-  endif()
 
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
 

@@ -8,7 +8,6 @@
 #include "flux/discovery.hpp"
 #include "flux/executor.hpp"
 #include "flux/owner.hpp"
-#include "flux/rt.hpp"
 #include "flux/segment.hpp"
 #include "flux/segment_layout.hpp"
 
@@ -1740,70 +1739,6 @@ NB_MODULE(_flux, m)
     "`domain_env` if that names a set variable, else \"0\". Pass None to opt out of the "
     "inherited variable entirely. This reads the environment on every call, so it is a query "
     "rather than the answer names are built from; process_domain() is that.");
-
-  // flux::rt, bound rather than rewritten in ctypes. The rollback on a half-applied request and
-  // the read-back that catches an affinity a cpuset narrowed are the parts that are easy to get
-  // wrong and easy to leave out; a second implementation is a second place for them to drift.
-  //
-  // Only the applying half is here. `apply` runs preflight at Soft strictness, so a request the
-  // kernel cannot satisfy is refused with the reason, while a host that merely cannot hold a
-  // deadline is reported and applied. That split is the whole of what Python needs: it is not an
-  // RT target, so the Hard verdicts have nothing to gate here.
-  nb::module_ rt = m.def_submodule(
-    "rt",
-    "OS scheduling for the threads a flux executor runs on. Not a real-time guarantee: GIL and "
-    "GC stay unbounded latency sources whatever policy a thread holds. What this "
-    "settles is which thread the kernel prefers and which cores it may use (docs/en/api.en.md 4).");
-
-  nb::enum_<flux::rt::Policy>(rt, "Policy")
-    .value("Inherit", flux::rt::Policy::Inherit, "Leave the scheduling class alone. The default.")
-    .value("Other", flux::rt::Policy::Other, "SCHED_OTHER: explicit return to the default class.")
-    .value(
-      "Fifo", flux::rt::Policy::Fifo,
-      "SCHED_FIFO: static priority, runs until it blocks or is preempted. Needs RLIMIT_RTPRIO or "
-      "CAP_SYS_NICE; without either this is refused, never downgraded.")
-    .value(
-      "RoundRobin", flux::rt::Policy::RoundRobin,
-      "SCHED_RR: Fifo plus a timeslice among equal priorities. Same permission.");
-
-  nb::class_<flux::rt::ThreadState>(rt, "ThreadState", "What a thread actually runs at.")
-    .def_ro(
-      "policy", &flux::rt::ThreadState::policy,
-      "The raw SCHED_* number, not Policy: a thread may hold a class this enum does not name.")
-    .def_ro("priority", &flux::rt::ThreadState::priority)
-    .def_ro("cpus", &flux::rt::ThreadState::cpus, "The cores this thread may run on.")
-    .def("__repr__", [](const flux::rt::ThreadState & st) {
-      std::string cpus;
-      for (auto c : st.cpus) cpus += (cpus.empty() ? "" : ",") + std::to_string(c);
-      return "<flux.rt.ThreadState policy=" + std::to_string(st.policy) +
-             " priority=" + std::to_string(st.priority) + " cpus=[" + cpus + "]>";
-    });
-
-  rt.def(
-    "apply",
-    [](flux::rt::Policy policy, int priority, std::vector<std::uint32_t> cpus) {
-      flux::rt::Options opts{policy, priority, std::move(cpus)};
-      return flux::rt::apply_checked(opts, flux::rt::Strictness::Soft).to_string();
-    },
-    nb::arg("policy") = flux::rt::Policy::Inherit, nb::arg("priority") = 0,
-    nb::arg("cpus") = std::vector<std::uint32_t>{},
-    "Put the CALLING thread on this policy, priority and cpu set, and confirm by reading back "
-    "what the kernel gave. A thread can only do this to itself, which is why an executor's "
-    "children apply their own.\n\n"
-    "Raises rather than settling for less: OSError when the kernel refuses, RuntimeError when a "
-    "check finds the request cannot take effect on this host or when the read-back disagrees "
-    "with what was asked. Asking for nothing does nothing. Returns a human-readable report of "
-    "what the host was found to be. Diagnostic text, not a format to parse; empty when nothing "
-    "was asked.");
-
-  rt.def(
-    "current", &flux::rt::current,
-    "What the calling thread runs at right now, read from the kernel.");
-
-  rt.def(
-    "this_tid", &flux::rt::this_tid,
-    "The calling thread's kernel thread id, which is what `top -H` and /proc name it by. "
-    "threading.get_ident() is not this number.");
 
   m.def(
     "process_domain", &flux::process_domain,

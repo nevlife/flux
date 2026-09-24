@@ -65,7 +65,6 @@ add_library(flux_core
   src/segment.cpp
   src/discovery.cpp
   src/owner.cpp
-  src/rt.cpp
   src/gpu_platform.cpp
   src/gpu_vmm.cpp
   src/io_uring_waiter.cpp
@@ -111,7 +110,6 @@ set(flux_core_test_srcs
   test/unit/test_spin_control.cpp
   test/unit/test_owner.cpp
   test/unit/test_domain.cpp
-  test/unit/test_rt.cpp
   test/unit/test_gpu_platform.cpp
   test/integration/test_shm.cpp
   test/integration/test_io_uring_waiter.cpp

@@ -8,7 +8,6 @@
 #include "flux/executor.hpp"
 #include "flux/futex.hpp"
 #include "flux/io_uring_waiter.hpp"
-#include "flux/rt.hpp"
 #include "flux/segment.hpp"
 #include "flux/segment_layout.hpp"
 #include "flux/version.hpp"

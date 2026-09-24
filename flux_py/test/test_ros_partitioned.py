@@ -325,3 +325,85 @@ def test_stop_ends_spin_and_close_bars_restart(node):
     ex.close()
     with pytest.raises(RuntimeError, match="closed"):
         ex.spin()
+
+
+# on_thread_start: the hook runs on the thread that serves the unit, before its first callback.
+def test_a_group_hook_runs_on_the_child_before_its_first_callback(node):
+    pub = flux.Publisher("/pytest/part/hook", slot_size=4096, slot_count=8, fingerprint=FP)
+    sub = flux.Subscription("/pytest/part/hook", fingerprint=FP)
+    group = MutuallyExclusiveCallbackGroup()
+    hooked = []
+    seen = []
+
+    ex = flux.ros.PartitionedExecutor()
+    ex.add_flux(sub, group, lambda _v: seen.append((threading.get_ident(), list(hooked))))
+    ex.on_thread_start(group, lambda: hooked.append(threading.get_ident()))
+
+    t = spin_in_thread(ex)
+    try:
+        deadline = time.monotonic() + 5.0
+        while not seen and time.monotonic() < deadline:
+            pub.publish(np.full(8, 1, np.uint8))
+            time.sleep(0.01)
+        assert seen, "the callback never ran"
+        callback_thread, hooked_before = seen[0]
+        assert hooked_before == [callback_thread]
+    finally:
+        ex.stop()
+        t.join(timeout=10.0)
+    del pub
+
+
+def test_a_node_hook_runs_on_the_node_thread(node):
+    hooked = []
+    seen = []
+    node.create_timer(0.01, lambda: seen.append(threading.get_ident()))
+
+    ex = flux.ros.PartitionedExecutor()
+    ex.add_ros_node(node)
+    ex.on_thread_start(node, lambda: hooked.append(threading.get_ident()))
+
+    t = spin_in_thread(ex)
+    try:
+        deadline = time.monotonic() + 5.0
+        while not seen and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert seen, "the timer never fired"
+        assert hooked == [seen[0]]
+    finally:
+        ex.stop()
+        t.join(timeout=10.0)
+
+
+def test_a_hook_for_an_unserved_unit_is_refused(node):
+    ex = flux.ros.PartitionedExecutor()
+    ex.on_thread_start(MutuallyExclusiveCallbackGroup(), lambda: None)
+    with pytest.raises(ValueError, match="does not serve"):
+        ex.spin(20_000_000)
+
+
+def test_a_second_hook_for_one_unit_is_refused():
+    ex = flux.ros.PartitionedExecutor()
+    group = MutuallyExclusiveCallbackGroup()
+    ex.on_thread_start(group, lambda: None)
+    with pytest.raises(ValueError, match="already has an on_thread_start"):
+        ex.on_thread_start(group, lambda: None)
+
+
+def test_a_throwing_hook_ends_the_spin(node):
+    pub = flux.Publisher("/pytest/part/hookfail", slot_size=4096, slot_count=8, fingerprint=FP)
+    sub = flux.Subscription("/pytest/part/hookfail", fingerprint=FP)
+    group = MutuallyExclusiveCallbackGroup()
+    ran = []
+
+    def refuse():
+        raise OSError("refused")
+
+    ex = flux.ros.PartitionedExecutor()
+    ex.add_flux(sub, group, lambda _v: ran.append(1))
+    ex.on_thread_start(group, refuse)
+
+    with pytest.raises(OSError, match="refused"):
+        ex.spin(20_000_000)
+    assert not ran
+    del pub

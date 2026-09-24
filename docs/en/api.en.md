@@ -14,7 +14,7 @@ This is the entire surface used from a ROS 2 node.
 
 **Delivery is best-effort.** The publisher does not wait for slow subscribers.
 
-If `slot_size`/`slot_count` disagree with a live publisher, attach throws `flux::SegmentMismatch` (Python: `flux.SegmentMismatch`). Retrying does not fix it, so do not catch it.
+If `slot_size`/`slot_count` disagree with a live publisher, attach throws `flux::SegmentMismatch`, a `std::runtime_error` (Python: `flux.SegmentMismatch`, a `RuntimeError`). Retrying does not fix it, so do not catch it.
 
 ## 2. Binding a type (`.msg` -> adapter)
 
@@ -438,7 +438,7 @@ What goes into the queue is a `StampedFrame`, not bytes. It holds one borrow and
 - `forwarded()` is the count sent on to the filter, and `unreadable()` is the count discarded for not matching the schema. The synchronizer silently discards messages it cannot pair, so diffing `forwarded()` against the number of user callbacks is how to see that loss.
 - It holds `queue_size` (the `Policy(10)` above) per input, so `max_borrow` must cover that product. Otherwise the consumer uses up its own leases and cannot take more.
 
-**Every input of one synchronizer must be serviced on the same thread.** This is not a style rule. The synchronization policy runs the matched callback while holding its own `std::mutex`, and that mutex has no priority inheritance. If the inputs span two threads, the priorities of the two are tied together by one lock. `flux::ros::Executor` runs flux and ROS on one thread, so it satisfies this automatically. In `PartitionedExecutor`, assign all inputs of that synchronizer to the same callback group.
+**Every input of one synchronizer must be serviced on the same thread.** This is not a style rule. The synchronization policy runs the matched callback while holding its own `std::mutex`. If the inputs span two threads, one thread waits on the other through that lock, and the two are no longer isolated. `flux::ros::Executor` runs flux and ROS on one thread, so it satisfies this automatically. In `PartitionedExecutor`, assign all inputs of that synchronizer to the same callback group.
 
 In `PartitionedExecutor`, declare that assignment and spin checks it. A synchronizer tells nobody what its inputs are, so the set has to be supplied from outside.
 
@@ -453,7 +453,7 @@ ex.spin();                            // throws here if they are in different gr
 - Inputs whose place cannot be determined are not judged, and `unplaced_sync_inputs()` counts them. These are filters in the middle of a chain, and subscriptions of a node not passed to `add_ros_node()`. 0 means every declared input was judged.
 - Without a declaration there is no check. Same as before.
 
-The filter path is a path with allocation. The policy's queues are `std::deque` and `std::map`, and every frame carries two `shared_ptr` control blocks. flux delivery without filters has no allocation. Do not put a filter in a hard RT chain.
+The filter path is a path with allocation. The policy's queues are `std::deque` and `std::map`, and every frame carries two `shared_ptr` control blocks. flux delivery without filters has no allocation.
 
 ### PartitionedExecutor
 
@@ -465,7 +465,7 @@ The one-thread-per-group arrangement was informed by autowarefoundation/callback
 flux::ros::PartitionedExecutor ex;
 ex.add(flux_sub, group);   // assign to a group. same group = same thread
 ex.add_ros_node(node);     // a child is attached to each of the node's callback groups
-ex.schedule(group, {flux::rt::Policy::Fifo, 90, {3}});  // scheduling declaration for the group thread (opt-in)
+ex.on_thread_start(group, [] { set_up_this_thread(); });  // runs on the group thread before its first callback
 ex.spin();                 // tick_ns defaults to 100 ms
 ex.stop();                 // ends spin and every child
 ex.interrupt();            // wakes only the parent's scan wait
@@ -473,128 +473,15 @@ ex.interrupt();            // wakes only the parent's scan wait
 
 - The group given to `add` must belong to a node registered with `add_ros_node`. Otherwise spin throws.
 - The group given to `add` may have ROS entities. That group's ROS callbacks are serviced by the same child. Even when mixed with flux callbacks in one pass, a ROS entity is pushed back by at most one callback.
-- The third argument of `add(sub, group, priority)` is the visiting order within that group's own pass. It does not cross groups. Groups are separate threads, and the order between them is decided by the thread priorities that `schedule` sets.
-- Registration happens only before spin. `add`/`add_ros_node`/`schedule` during spin throw.
+- The third argument of `add(sub, group, priority)` is the visiting order within that group's own pass. It does not cross groups. Groups are separate threads.
+- Registration happens only before spin. `add`/`add_ros_node`/`on_thread_start` during spin throw.
 - A callback group created after spin started is picked up by the tick scan and gets a child.
 - The `max_channels` of a child `flux::ros::Executor` is computed automatically from the number of flux subscriptions assigned to the group.
-- `schedule` is a reservation that the child thread for that group calls `rt::apply` on itself before its first callback. Refusal (no permission, etc.) surfaces as an error from spin(). One per group. spin refuses a schedule for a group no child handles.
-- `schedule(group, stage)` checks the name the stage refers to against the group passed. It must be the group of the node the stage points to, and if the label is empty, it must be that node's default callback group. Giving one stage to two groups throws on the spot.
-- Reentrant groups are refused. There is one thread per group, so that group's callbacks run serially, and a group that declared concurrent execution is not silently serialized. If parallelism is needed, split into several mutually exclusive groups. Each gets its own thread and priority.
+- `on_thread_start(group, fn)` runs `fn` on the child thread for that group before its first callback, for setup only that thread can do for itself. An exception from `fn` surfaces as an error from spin(). One per group. spin refuses a hook for a group no child handles.
+- Reentrant groups are refused. There is one thread per group, so that group's callbacks run serially, and a group that declared concurrent execution is not silently serialized. If parallelism is needed, split into several mutually exclusive groups. Each gets its own thread.
 - Groups a node created through automatic registration get a child even without flux subscriptions. Manual groups with `automatically_add_to_executor_with_node()` false are serviced only when assigned with `add(sub, group)`.
 - Callbacks in different groups actually run concurrently. State shared between groups is protected by the caller. PartitionedExecutor provides isolation, not mutual exclusion (6).
 - Put a subscription receiving a GPU channel in its own group. The release fence blocks that thread until the consuming kernel finishes, so other callbacks in the same group are delayed by that much.
-
-### RtSpec (chain declaration file)
-
-Write the scheduling of one chain in one file, and each node finds and applies its own part when it starts. It holds even when nodes are started and killed individually by launch. Nothing pushes, and each reads on its own.
-
-```yaml
-chains:
-  perception_to_control:
-    target: hard                # blocks Warn. soft only records it
-    stages:
-      - node: /camera_node
-        group: dds_listener
-        external: true          # flux does not apply it. someone else's thread, such as an rmw listener
-        expect_priority: 60
-      - node: /camera_node      # group omitted = the node's default callback group
-        policy: fifo
-        priority: 70
-        cpus: [2]
-      - node: /perception_node
-        group: infer
-        policy: fifo
-        priority: 75
-      - node: /control_node
-        group: loop
-        policy: fifo
-        priority: 90
-```
-
-```cpp doc:rt_spec
-flux::ros::RtSpec spec = flux::ros::RtSpec::load();   // FLUX_RT_SPEC. empty spec if absent
-if (!spec.empty()) {
-  const flux::ros::RtStage & st = spec.stage(*node, "infer");
-  ex.schedule(group, st);              // target and control_priority follow from the chain
-  log(st.chain, st.node);              // which stage of which chain
-
-  std::thread worker([&spec, &node] {  // a thread I created applies it to itself
-    flux::ros::apply_checked(spec.stage(*node, "infer_worker"));
-    flux::ros::verify(spec.stage(*node, "infer_worker"), flux::rt::this_tid());
-  });
-  worker.join();
-}
-for (const flux::ros::RtStage * e : spec.external()) {   // stages flux does not apply
-  log(e->node, flux::ros::verify(*e, foreign_tid).to_string());   // verify, not only record
-}
-```
-
-`RtStage` holds everything the file knows about that stage: `node`, `group`, `external`, `expect_priority`, `opts`, `strict`, `control_priority`, and which chain declared it (`chain`). `RtSpec` gives all of them with `stages()`, one with `find()`, and only the ones flux does not apply with `external()`.
-
-- `stages` is the order in which data flows. RT priority must increase in that direction. An upstream stage that preempts a downstream one starves it. Non-RT stages such as `policy: other` are outside this rule.
-- `control_priority` is derived by the file. The last RT priority in the chain is control, and that stage itself gets 0.
-- Unknown keys are refused. There is no version field.
-- One stage appearing in two chains is normal. If the two chains declare it differently, it is refused. Its `strict` is the strictest of those chains: a stage on a hard chain is hard whichever chain the file lists first.
-- A hard chain gives each RT stage its own core. If two are pinned to the same core, it is refused. `SCHED_FIFO` has no timeslice, so one blocks the other completely. A soft chain allows it.
-- An `external` stage carries only `expect_priority`, 1..99 or 0 for undeclared. It cannot have `policy`/`priority`/`cpus`, and passing it to `schedule` is refused.
-- If the file is absent or `FLUX_RT_SPEC` is empty, the spec is empty. This is the same no-op as declaring nothing today.
-- Looking up a label not in the file with `stage()` throws.
-- `verify(stage, tid)` applies nothing and only compares the declaration with reality. The findings are three: `observed-policy`, `observed-priority`, and `observed-cpus`. Items the file does not claim are `Unknown`. `observed-cpus` is Ok while the thread runs within the declared cpus, the same reading `apply_checked` confirms, so a cpuset that narrows the mask passes and a cpu outside the declaration fails. A thread that cannot be read is an `observed-thread` Fail. The caller supplies `tid`.
-- There are two ways to apply to a thread. A callback group uses `schedule(group, stage)`, and a thread you created yourself calls `apply_checked(stage)` from inside it. Both take the whole stage. Unpacking `strict` and `control_priority` into fields loses them. An `external` stage is refused by both.
-
-### rt (thread scheduling)
-
-Opt-in for the hard RT path. It belongs to flux_core, so it works without ROS. It is separate from QoS.
-
-```cpp doc:rt
-#include "flux/rt.hpp"
-
-flux::rt::Options o;
-o.policy = flux::rt::Policy::Fifo;   // Inherit / Other / Fifo / RoundRobin
-o.priority = 80;                     // 1..99 for Fifo/RoundRobin
-o.cpus = {3};                        // leave empty to keep affinity untouched
-
-flux::rt::Report rep = flux::rt::preflight(o, /*control_priority=*/90);  // judgment only, no change
-flux::rt::apply(o);                  // applies to the calling thread. throws if refused
-flux::rt::ThreadState st = flux::rt::current();   // read back from the kernel
-flux::rt::ThreadState other = flux::rt::observe(flux::rt::this_tid());  // the same values for another thread
-
-rep = flux::rt::apply_checked(o, flux::rt::Strictness::Hard, /*control_priority=*/90);
-```
-
-- `apply` applies to the calling thread itself. It is all-or-nothing. If the kernel refuses, it reverts and throws `std::system_error`. There is no silent downgrade.
-- `preflight` changes nothing and reports why it would not work as a list of findings (`rep.ok()`, `rep.to_string()`).
-- `apply_checked` joins the two. It runs `preflight` first, and if the judgment blocks, it throws `std::runtime_error` before touching the thread. The kernel accepts the request even on a host that cannot meet deadlines, so with `apply` alone, "success" does not mean "runs in real time".
-- `Strictness` decides how `Warn` is read. `Soft` accepts it and returns it in the report. `Hard` refuses it. `Fail` is refused by both. The default is `Soft`.
-- An `Options` that requests nothing is a complete no-op even in `apply_checked`. There is nothing to judge.
-- `current` reads your own thread from the kernel and `observe(tid)` reads another thread. Applying works only on your own thread, but reading works even across processes. `tid` comes from `this_tid()`. `std::thread::id` is not a name the kernel knows. A thread that cannot be read is a `std::system_error`.
-- Your own thread calls `apply` or `apply_checked` directly. For the group threads PartitionedExecutor creates, declare with `schedule(group, opts, strict, control_priority)` and the child applies it to itself with `apply_checked` (PartitionedExecutor section above).
-
-To look at the items directly instead of the one-line summary, iterate `rep.findings` or pick one with `rep.find(id)`.
-
-```cpp doc:rt_report
-for (const flux::rt::Finding & f : rep.findings) {
-  if (f.verdict == flux::rt::Verdict::Fail) {
-    log(f.id, f.detail);
-  }
-}
-const flux::rt::Finding * one = rep.find("cpu-online");   // nullptr if not checked
-```
-
-`Finding` has three parts: `id` (a stable slug), `verdict`, and `detail` (why that verdict). `Verdict` is `Ok`, `Warn`, `Fail`, or `Unknown`, and `ok()` means "no `Fail`". `Unknown` means the kernel did not expose the source, not a pass. The source per id and the meaning of Fail and Warn are in the table below.
-
-| finding id | Source | Meaning of Fail/Warn |
-| --- | --- | --- |
-| `policy-permission` | `CapEff`(CAP_SYS_NICE) + `RLIMIT_RTPRIO` | Fail: no permission. `apply` throws with EPERM |
-| `rt-throttle` | `/proc/sys/kernel/sched_rt_runtime_us` | Warn: the throttle preempts a busy RT thread regardless of priority |
-| `priority-order` | opts.priority vs `control_priority` | Fail: transport is at or above control. Transport must never preempt control |
-| `cpu-online` | `/sys/devices/system/cpu/online` | Fail: nonexistent core. `apply` throws with EINVAL |
-| `cpu-isolation` | `/sys/devices/system/cpu/isolated`·`nohz_full` | Warn: pinning only removes migration. A core without isolation is shared with others |
-| `rcu-offload` | `rcu_nocbs` in `/proc/cmdline` + `/sys/devices/system/cpu/nohz_full` | Warn: deferred kernel frees run on the RT core. Neither timing nor duration is bounded |
-| `irq-affinity` | `/proc/irq/*/effective_affinity_list` | Warn: handlers preempt every task on that core regardless of RT priority |
-| `cpu-governor` | `cpufreq/scaling_governor` | Warn: the DVFS ramp lengthens wakeup latency. RT cores use performance |
-| `kernel-preemption` | `/sys/kernel/realtime`·`/proc/version` | Warn: not PREEMPT_RT. No latency bound for in-kernel sections |
-| `memory-lock` | `VmLck` in `/proc/self/status` | Warn: no locked memory. A page fault is an unbounded delay |
 
 ## 4. Python
 
@@ -795,39 +682,26 @@ ex.close()
 - Registration happens only before spin. `add_flux`/`add_ros_node` during spin throw.
 - An exception in a child thread stops every child and is rethrown from `spin()`.
 - The child for a flux group runs `flux.Executor.spin` directly, without the rclpy bridge. The group has no ROS entities, so there is nothing to merge.
-- The policy, priority, and CPUs of a child thread are declared with `set_thread_scheduling`. The reason the name differs from C++ `schedule` is in the rt section below.
+- A child thread's setup goes in `on_thread_start` (next section).
 - With more threads, only the parts that release the GIL overlap. numpy, zlib, and decoding overlap. Pure Python bytecode is serial no matter how many threads there are.
 
 When looking only at flux channels, the inner `flux.Executor` may be used directly. It is a surface without rclpy, so section 8 of [`core_api.en.md`](core_api.en.md) covers it. `spin_once`, `stop`, `is_spinning`, and the `wait_for_work`/`dispatch` split used when embedding into another event loop are there.
 
-### rt (Python)
+### on_thread_start (Python)
 
-`flux.rt` is a direct binding of C++ `flux::rt` (the rt section in section 3). Only the applying side is exposed. `preflight`, `Report`, and `Strictness` are the hard RT judgment machinery and are not in the Python surface.
+Runs a function on a child thread before its first callback, for setup only that thread can do for itself.
 
-It is not an RT guarantee. Whatever priority is set, the GIL and GC remain unbounded sources of delay. What it decides is which thread the kernel picks when several are runnable at once, and which core each uses, and nothing more. There is still a value to set because threads actually run in parallel in sections that release the GIL. numpy, zlib, and decoding are those sections.
-
-```python doc:py_rt
+```python doc:py_thread_start
 ex = flux.ros.PartitionedExecutor()
 ex.add_flux(sub, group)
 ex.add_ros_node(node)
-ex.set_thread_scheduling(group, cpus=[4, 5])
-ex.set_thread_scheduling(node, policy=flux.rt.Policy.Fifo, priority=20)
-
-report = flux.rt.apply(cpus=[4])          # the calling thread itself. not a child
-state = flux.rt.current()                 # read back from the kernel
-klass, prio, where = state.policy, state.priority, state.cpus
-tid = flux.rt.this_tid()                  # the number top -H and /proc use
+ex.on_thread_start(group, set_up_this_thread)
+ex.on_thread_start(node, set_up_this_thread)
 ```
 
-- The `unit` of `set_thread_scheduling(unit, policy=, priority=, cpus=)` is either a callback group given to `add_flux` or a node given to `add_ros_node`. In C++ it is one callback group, but here the unit splits in two.
-- The child applies it to itself before its first callback. A thread policy can only be changed by the thread itself, and refusal becomes an exception from `spin()`. It does not fall back to a weaker setting.
-- Declaring twice for one unit is refused on the spot. A declaration for a unit this executor does not run is refused by `spin()`. Preventing declarations that silently do not apply is the point of this surface.
-- `policy` is one of `flux.rt.Policy`: `Inherit` (default, untouched), `Other` (SCHED_OTHER), `Fifo` (SCHED_FIFO), `RoundRobin` (SCHED_RR). `Fifo` and `RoundRobin` require `priority` 1..99 and `RLIMIT_RTPRIO` or `CAP_SYS_NICE`. Setting only affinity needs no permission.
-- `flux.rt.apply` applies to the calling thread. After applying, it reads back from the kernel and compares, so a request that did not land as is because a cpuset narrowed the mask does not pass as success. Kernel refusal is `OSError`, a request that does not hold on this host or a mismatched read-back is `RuntimeError`, and an out-of-range value is `ValueError`. If nothing is requested, nothing is done.
-- The string `apply` returns is the host judgment report. It is meant for people to read, not a format to parse. Most items are hard RT items that Python does not claim, and it is an empty string when nothing was requested.
-- `flux.rt.current()` returns a `flux.rt.ThreadState`. `policy` is a raw `SCHED_*` integer, not a `Policy` (compare with `os.SCHED_FIFO`), `priority` is an integer, and `cpus` is a list of core numbers.
-- `flux.rt.this_tid()` is the kernel thread id. It differs from the number `threading.get_ident()` gives.
-- `flux.ros.Executor` does not have this item. That executor runs on the calling thread, so call `flux.rt.apply()` directly before `spin()`. C++ `flux::ros::Executor` does not have it either, for the same reason.
+- The `unit` of `on_thread_start(unit, fn)` is either a callback group given to `add_flux` or a node given to `add_ros_node`. In C++ it is one callback group, but here the unit splits in two.
+- An exception from `fn` stops every child and is re-raised from `spin()`. The thread does not go on to run its callbacks without the setup.
+- One per unit, refused on the spot. A hook for a unit this executor does not run is refused by `spin()`.
 
 ### message_filters (Python)
 

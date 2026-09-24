@@ -79,7 +79,7 @@ public:
 
   // False when this channel's slots are GPU memory (a discrete GPU). publish() copies from host
   // memory and so always fails there; loan() plus a kernel is the publish path. Asked rather
-  // than thrown, because publish() is noexcept for the hard-RT path. flux_py, which has no such
+  // than thrown, because publish() is noexcept. flux_py, which has no such
   // constraint and no header to read, raises instead (docs/en/contracts.en.md 3).
   bool host_addressable() const noexcept { return ch_.host_addressable(); }
 

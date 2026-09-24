@@ -1,6 +1,6 @@
 # flux 원시 경로 API
 
-`.msg` 없이 쓰는 표면이다. 기본 경로는 [api.md](api.ko.md)이고 이 문서는 그것으로 안 되는 경우만 다룬다. ROS 없이 엔진만 쓰는 표면은 [core_api.md](core_api.ko.md).
+`.msg` 없이 쓰는 표면이다. 기본 경로는 [api.md](api.ko.md)이고 이 문서는 그것으로 안 되는 경우만 다룬다. 두 경로가 얹히는 엔진 층은 [core_api.md](core_api.ko.md)다.
 
 ## 1. 언제 이걸 쓰나
 

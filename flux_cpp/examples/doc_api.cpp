@@ -10,7 +10,6 @@
 #include "flux/ros/partitioned_executor.hpp"
 #include "flux/ros/publisher.hpp"
 #include "flux/ros/subscription.hpp"
-#include "flux/rt.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -26,6 +25,9 @@ namespace flux::doc_examples
 {
 
 void render_into(void *, std::size_t)
+{
+}
+void set_up_this_thread()
 {
 }
 void render_into(void *, std::size_t, flux::gpu::Stream)
@@ -196,69 +198,11 @@ void doc_partitioned(
   flux::ros::PartitionedExecutor ex;
   ex.add(flux_sub, group);
   ex.add_ros_node(node);
-  ex.schedule(group, {flux::rt::Policy::Fifo, 90, {3}});
+  ex.on_thread_start(group, [] { set_up_this_thread(); });
   ex.spin();
   ex.stop();
   ex.interrupt();
   // [doc:/partitioned]
-}
-
-void doc_rt()
-{
-  // [doc:rt]
-  flux::rt::Options o;
-  o.policy = flux::rt::Policy::Fifo;
-  o.priority = 80;
-  o.cpus = {3};
-
-  flux::rt::Report rep = flux::rt::preflight(o, /*control_priority=*/90);
-  flux::rt::apply(o);
-  flux::rt::ThreadState st = flux::rt::current();
-  flux::rt::ThreadState other = flux::rt::observe(flux::rt::this_tid());
-
-  rep = flux::rt::apply_checked(o, flux::rt::Strictness::Hard, /*control_priority=*/90);
-  // [doc:/rt]
-  sink(rep.ok(), st.policy, other.priority);
-}
-
-void doc_rt_spec(
-  const rclcpp::Node::SharedPtr & node, flux::ros::PartitionedExecutor & ex,
-  const rclcpp::CallbackGroup::SharedPtr & group, int foreign_tid)
-{
-  // [doc:rt_spec]
-  flux::ros::RtSpec spec = flux::ros::RtSpec::load();  // FLUX_RT_SPEC; empty spec when unset
-  if (!spec.empty()) {
-    const flux::ros::RtStage & st = spec.stage(*node, "infer");
-    ex.schedule(group, st);  // target and control_priority ride along with the chain
-    log(st.chain, st.node);  // which stage of which chain
-
-    std::thread worker([&spec, &node] {  // a thread flux does not own applies its own stage
-      flux::ros::apply_checked(spec.stage(*node, "infer_worker"));
-      flux::ros::verify(spec.stage(*node, "infer_worker"), flux::rt::this_tid());
-    });
-    worker.join();
-  }
-  for (const flux::ros::RtStage * e : spec.external()) {  // the stages flux does not set
-    log(e->node, flux::ros::verify(*e, foreign_tid).to_string());
-  }
-  // [doc:/rt_spec]
-  sink(
-    spec.stages().size(), spec.find("/control_node", "loop"), spec.stages()[0].group,
-    spec.stages()[0].external, spec.stages()[0].opts.priority, spec.stages()[0].strict,
-    spec.stages()[0].control_priority);
-}
-
-void doc_rt_report(const flux::rt::Report & rep)
-{
-  // [doc:rt_report]
-  for (const flux::rt::Finding & f : rep.findings) {
-    if (f.verdict == flux::rt::Verdict::Fail) {
-      log(f.id, f.detail);
-    }
-  }
-  const flux::rt::Finding * one = rep.find("cpu-online");
-  // [doc:/rt_report]
-  sink(one, flux::rt::Verdict::Ok, flux::rt::Verdict::Warn, flux::rt::Verdict::Unknown);
 }
 
 }  // namespace flux::doc_examples

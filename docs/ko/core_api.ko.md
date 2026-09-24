@@ -1,6 +1,8 @@
-# flux_core API (ROS 없이)
+# flux_core API (엔진 층)
 
-`flux_core`는 ROS를 모른다. rclcpp도 rclpy도 안 부르고, 단독 cmake로 빌드된다. 이 문서는 ROS 노드 밖에서 flux를 쓰는 표면이다. ROS 노드 안이면 [api.md](api.ko.md)가 맞고, `.msg` 없이 쓰는 얘기는 [raw_api.md](raw_api.ko.md)다.
+`flux_core`는 ROS 래퍼가 얹히는 엔진이다. rclcpp도 rclpy도 안 부른다. 이 문서는 ROS 프로세스 안에서 래퍼가 보탤 것이 없는 자리에 쓰는 이 층을 다룬다. flux 채널만 기다리는 경우(6절·8절)와 도구용 열거(9절)다. 기본 경로는 [api.md](api.ko.md)이고, `.msg` 없이 쓰는 얘기는 [raw_api.md](raw_api.ko.md)다.
+
+`flux_core`는 ament 워크스페이스 밖에서 cmake 단독으로도 빌드된다. 그 빌드는 엔진을 테스트하기 위한 것이다. flux를 배포하는 방법이 아니다.
 
 ## 1. 무엇이 다른가
 
@@ -21,7 +23,7 @@ find_package(flux_core REQUIRED)
 target_link_libraries(mytool PRIVATE flux::core)
 ```
 
-ament 워크스페이스 밖이면 `flux_core`만 따로 cmake로 세운다. 의존은 pthread뿐이다. `flux_cpp`·`flux_py`·`flux_gen`은 필요 없다.
+이 층에는 `flux_core`만 필요하다. `flux_cpp`·`flux_py`·`flux_gen`은 필요 없다.
 
 ## 3. 이름 만들기
 
@@ -32,7 +34,7 @@ std::string domain = flux::process_domain();
 std::string name = flux::signpost_name("/img", /*fingerprint=*/0, domain);
 ```
 
-`process_domain()`는 `FLUX_DOMAIN`을 먼저 보고 없으면 `ROS_DOMAIN_ID`를 본다. 둘 다 없으면 `0`이다. ROS를 안 쓰더라도 같은 호스트의 ROS 노드와 붙으려면 그 노드가 쓰는 domain과 같아야 한다.
+`process_domain()`는 `FLUX_DOMAIN`을 먼저 보고 없으면 `ROS_DOMAIN_ID`를 본다. 둘 다 없으면 `0`이다. 여기서는 노드가 domain을 풀어 주지 않는다. ROS 노드가 쓰는 채널에 붙으려면 프로세스가 그 노드와 같은 domain에 있어야 한다.
 
 첫 호출에서 한 번 정하고 프로세스가 끝날 때까지 안 바뀐다. rcl이 `ROS_DOMAIN_ID`를 context init에서 래치하는 것과 같다 — 그래야 한 프로세스의 ROS 쪽과 flux 쪽이 다른 구획에 앉지 않는다. 환경을 그때그때 읽어보는 것은 `resolve_domain(var)`이고, 그쪽은 질의라 이름을 만드는 데 쓰지 않는다.
 
@@ -54,7 +56,7 @@ if (w) {
 
 `create`가 세그먼트를 만든다. 이미 산 발행자가 있고 `slot_size`나 `slot_count`가 어긋나면 `flux::SegmentMismatch`를 던진다. 재시도로 안 고쳐지므로 잡지 않는다.
 
-`loan`·`commit`·`publish`의 의미는 ROS 래퍼와 같다. dtype과 shape은 `loan`에서 한 번 말하고 `commit`은 인자를 받지 않는다. 반환값 해석은 [raw_api.md](raw_api.ko.md) 2절이고, `.msg` 어댑터를 쓰면 `Builder`가 프레임을 대신 채운다 -- 어댑터는 `WriteSlot` 위에 얹히므로 ROS 없이도 그대로 쓴다.
+`loan`·`commit`·`publish`의 의미는 ROS 래퍼와 같다. dtype과 shape은 `loan`에서 한 번 말하고 `commit`은 인자를 받지 않는다. 반환값 해석은 [raw_api.md](raw_api.ko.md) 2절이고, `.msg` 어댑터를 쓰면 `Builder`가 프레임을 대신 채운다 -- 어댑터는 `WriteSlot` 위에 얹히므로 이 층에서도 그대로 쓴다.
 
 ### 페이지 사전 커밋
 
@@ -168,9 +170,9 @@ const int delivered = ex.dispatch();       // 전달만 한다. 블록하지 않
 
 Python은 `flux.Executor`가 같은 클래스를 감싼 것이다(아래 8절).
 
-## 7. Python (ROS 없이)
+## 7. Python (엔진 층)
 
-`flux`만 import하면 ROS가 안 끼어든다. `flux.ros`가 하는 일은 이름 해석과 rclpy executor 연결뿐이다.
+`flux.ros` 없이 `flux`만 쓰면 이 층이다. `flux.ros`가 보태는 것은 이름 해석과 rclpy executor 연결이다.
 
 ```python doc:core_py_publisher
 pub = flux.Publisher("/img", fingerprint=FP, slot_size=16 << 20, slot_count=16)

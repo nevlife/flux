@@ -98,6 +98,6 @@ flux::ros::Executor fex;
 fex.add(node->flux_subscription());
 ```
 
-The parallelism is the same as PartitionedExecutor, the arrangement differs. `MultiThreadedExecutor` picks a free thread from the pool, PartitionedExecutor pins a thread per group. Only the latter can take an RT priority. Which callback runs on which thread must be fixed before a policy can be applied to that thread.
+The parallelism is the same as PartitionedExecutor, the arrangement differs. `MultiThreadedExecutor` picks a free thread from the pool, PartitionedExecutor pins a thread per group.
 
 In Python the partition unit is not one. rclpy has no `add_callback_group`, so there is no way to hand a callback group to a child. The unit is the group for flux subscriptions and the node for ROS callbacks. The group passed to `add_flux` must hold no ROS entity at all. rclpy cannot move it to this thread, so the group's mutual exclusivity quietly breaks.

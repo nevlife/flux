@@ -53,7 +53,7 @@ A row holds only the name of the divergence and the tests on both sides. The rea
 | S-001 | `publish` of host bytes into a device channel | `GpuVmmChannel.PublishOfAHostBufferIsRefused` | `test_publish_of_a_host_array_into_a_device_channel_is_refused` |
 | S-002 | Relative topic names | `-` | `test_relative_topic_rejected` |
 | S-003 | A synchronizer mixing flux inputs and DDS inputs under `PartitionedExecutor` | `SyncGroup.AMixedGraphInOneGroupIsAccepted` | `test_partitioned_refuses_a_mixed_flux_and_dds_synchronizer` |
-| S-004 | The name and arguments of `PartitionedExecutor` child thread scheduling | `PartitionedExecutor.ScheduleReachesTheChildThread` | `test_a_group_child_runs_where_it_was_declared` |
+| S-004 | The unit of a `PartitionedExecutor` `on_thread_start` hook | `PartitionedExecutor.OnThreadStartRunsOnTheChildBeforeItsFirstCallback` | `test_a_node_hook_runs_on_the_node_thread` |
 
 S-001 comes from dGPU slots being VRAM. Accepting a host array would require an H2D copy, and `flux_core` has no copy primitive, so both sides refuse. What diverges is the form of the refusal. C++ returns `Published` and Python raises.
 
@@ -61,6 +61,6 @@ S-002 comes from core not interpreting the channel key as a ROS topic. `flux_cpp
 
 S-003 comes from rclpy not exposing `add_callback_group`. C++ can put flux subscriptions and ROS subscriptions together in that group and place it on one thread. Python has no means to move ROS entities as a group, so DDS inputs stay on the node thread. So the same graph passes in C++ and is refused in Python. The place to run that graph in Python is `flux.ros.Executor`. There, X-022 holds.
 
-S-004 diverges only in name and arguments. Both sides agree that the child applies it to itself before its first callback, that a refusal becomes an exception from `spin()`, and that a declaration that can never apply is refused. What diverges is that C++ `schedule(group, opts, strict, control_priority)` takes `Strictness` and a control loop priority and attaches to a chain declaration via `RtStage`, while Python `set_thread_scheduling(unit, policy=, priority=, cpus=)` takes none of those three. Python also accepting a node as the declaration unit comes from the same partition as S-003 (flux by group, ROS by node).
+S-004 diverges in the hook's unit. Both sides run the hook on the unit's child before its first callback, turn an exception from it into the `spin()` error, and refuse a second hook for one unit and a hook for a unit no child serves. C++ takes a callback group. Python also takes a node, from the same partition as S-003 (flux by group, ROS by node).
 
 The C++ `-` in S-002 is not a missing check. The argument of `Channel::create`/`open` is a channel key, not a ROS topic, and core stands without ROS. The refusal lives where `flux::ros::Publisher`/`Subscription` resolve through the node.

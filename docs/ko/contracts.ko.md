@@ -53,7 +53,7 @@ C++과 Python은 같은 엔진(`flux_core`)을 부르지만 서로 다른 코드
 | S-001 | device 채널에 host 바이트를 `publish` | `GpuVmmChannel.PublishOfAHostBufferIsRefused` | `test_publish_of_a_host_array_into_a_device_channel_is_refused` |
 | S-002 | 상대 토픽 이름 | `-` | `test_relative_topic_rejected` |
 | S-003 | `PartitionedExecutor`에서 flux 입력과 DDS 입력을 섞은 synchronizer | `SyncGroup.AMixedGraphInOneGroupIsAccepted` | `test_partitioned_refuses_a_mixed_flux_and_dds_synchronizer` |
-| S-004 | `PartitionedExecutor` 자식 스레드 스케줄링의 이름과 인자 | `PartitionedExecutor.ScheduleReachesTheChildThread` | `test_a_group_child_runs_where_it_was_declared` |
+| S-004 | `PartitionedExecutor` `on_thread_start` hook의 단위 | `PartitionedExecutor.OnThreadStartRunsOnTheChildBeforeItsFirstCallback` | `test_a_node_hook_runs_on_the_node_thread` |
 
 S-001은 dGPU 슬롯이 VRAM인 데서 온다. host 배열을 받으면 H2D 복사가 필요한데 `flux_core`는 복사 primitive를 두지 않으므로 양쪽 다 거절한다. 갈린 것은 거절의 형태다. C++은 `Published`로 돌려주고 Python은 던진다.
 
@@ -61,6 +61,6 @@ S-002는 core가 채널 키를 ROS 토픽으로 해석하지 않는 데서 온�
 
 S-003은 rclpy가 `add_callback_group`을 안 내주는 데서 온다. C++은 그 그룹에 flux 구독과 ROS 구독을 같이 담아 한 스레드에 놓을 수 있고, Python은 ROS entity를 그룹째 옮길 수단이 없어 DDS 입력이 노드 스레드에 남는다. 그래서 같은 그래프가 C++에서는 통과하고 Python에서는 거절된다. Python에서 그 그래프를 돌리는 자리는 `flux.ros.Executor`다 -- 거기서는 X-022가 성립한다.
 
-S-004는 이름과 인자만 갈린다. 자식이 첫 콜백 전에 자기에게 적용하는 것, 거절이 `spin()`의 예외가 되는 것, 적용될 리 없는 선언을 거절하는 것은 양쪽이 같다. 갈린 것은 C++ `schedule(group, opts, strict, control_priority)`이 `Strictness`와 control loop 우선순위를 받고 `RtStage`로 체인 선언에 붙는다는 점이고, Python `set_thread_scheduling(unit, policy=, priority=, cpus=)`은 그 셋을 안 든다. Python이 선언 단위로 노드도 받는 것은 S-003과 같은 분할(flux는 그룹, ROS는 노드)에서 온다.
+S-004는 hook의 단위가 갈린다. hook을 그 단위의 자식에서 첫 콜백 전에 실행하는 것, hook의 예외를 `spin()`의 오류로 올리는 것, 한 단위에 두 번째 hook과 자식이 없는 단위의 hook을 거절하는 것은 양쪽이 같다. C++은 콜백 그룹을 받는다. Python은 노드도 받는데, S-003과 같은 분할(flux는 그룹, ROS는 노드)에서 온다.
 
 S-002의 C++이 `-`인 것은 검사를 빠뜨린 것이 아니다. `Channel::create`/`open`의 인자는 ROS 토픽이 아니라 채널 키이고 core는 ROS 없이 선다. 거절은 `flux::ros::Publisher`/`Subscription`이 노드로 resolve하는 자리에 있다.

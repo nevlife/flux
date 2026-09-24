@@ -277,11 +277,8 @@ class PartitionedExecutor:
     nothing said. Refusing is the same discipline the C++ side applies to a Reentrant group.
     A group that genuinely needs both transports on one thread is what `flux.ros.Executor` is.
 
-    `set_thread_scheduling` settles which of those threads the kernel prefers and which cores it
-    may use. Deliberately not named `schedule` like the C++ method: that one takes a Strictness
-    and a control-loop priority and is part of a hard-RT chain declaration, and none of that
-    carries here. The Python path is not an RT target. GIL and GC are unbounded latency sources,
-    and a priority is not a bound.
+    `on_thread_start` runs a function on a unit's thread before its first callback, for setup
+    only that thread can do for itself.
 
     What the extra threads buy is real but conditional: they overlap only work that releases the
     GIL (numpy, zlib, decode, memcpy in an extension). Callbacks that are pure Python bytecode
@@ -293,7 +290,7 @@ class PartitionedExecutor:
         self._assigned = []  # [(group, [(sub, callback, priority), ...])], insertion ordered
         self._sync_groups = []  # [[filter, ...]], declared synchronizer input sets
         self._unplaced_sync_inputs = 0
-        self._sched = []  # [(unit, {policy, priority, cpus})], unit is a group or a node
+        self._thread_init = []  # [(unit, init)], unit is a group or a node
         self._nodes = []
         self._children = []
         self._spinning = False
@@ -399,53 +396,32 @@ class PartitionedExecutor:
                 return
         self._nodes.append(node)
 
-    def set_thread_scheduling(self, unit, *, policy=None, priority=0, cpus=()):
-        """Declare the OS scheduling for the thread that will serve `unit`.
+    def on_thread_start(self, unit, init):
+        """Run `init()` on the thread that will serve `unit`, before its first callback.
 
         `unit` is a partition of this executor: a callback group handed to `add_flux`, or a node
-        handed to `add_ros_node`. Both, because rclpy splits the unit in two here and a
-        node's thread is as worth prioritizing as a group's.
+        handed to `add_ros_node`. Both, because rclpy splits the unit in two here.
 
-            control = MutuallyExclusiveCallbackGroup()
-            ex.add_flux(front_camera, control)
-            ex.set_thread_scheduling(control, cpus=[4, 5])
-            ex.set_thread_scheduling(logging_node, cpus=[0])
+            ex.on_thread_start(control, set_up_this_thread)
 
-        The child applies this to itself before running any callback, because a thread is the
-        only one that can put itself on a policy. A refusal ends the spin with that error; it is
-        never downgraded to a weaker setting.
+        An exception from `init` ends the spin with that error rather than leaving the thread to
+        run its callbacks without the setup.
 
-        This is not a real-time guarantee and does not become one at any priority: the GIL and
-        the GC stay unbounded latency sources. What it settles is which thread the
-        kernel prefers when several are runnable, and which cores each may use. That decides
-        something real whenever the callbacks release the GIL, and nothing at all when they do
-        not. `flux.rt.Policy.Fifo` needs RLIMIT_RTPRIO or CAP_SYS_NICE; affinity alone needs
-        neither.
-
-        One declaration per unit, and the unit must actually be served here: a second call for
-        the same unit and a unit this executor never spawns are both refused, the first now and
-        the second at spin(). A declaration that silently never applies is the failure this
-        argues against everywhere else.
+        One per unit, and the unit must actually be served here: a second call for the same unit
+        and a unit this executor never spawns are both refused, the first now and the second at
+        spin().
         """
-        from .. import rt
-
         if self._spinning:
-            raise RuntimeError("flux: set_thread_scheduling() must be called before spin()")
+            raise RuntimeError("flux: on_thread_start() must be called before spin()")
         if self._closed:
             raise RuntimeError("flux: this PartitionedExecutor is closed")
-        for declared, _opts in self._sched:
+        for declared, _init in self._thread_init:
             if declared is unit:
                 raise ValueError(
-                    "flux: this unit already has a thread scheduling declaration. One per unit, "
-                    "so which one won is never a question of call order"
+                    "flux: this unit already has an on_thread_start() hook. One per unit, so "
+                    "which one ran is never a question of call order"
                 )
-        self._sched.append(
-            (unit, {
-                "policy": rt.Policy.Inherit if policy is None else policy,
-                "priority": priority,
-                "cpus": list(cpus),
-            }),
-        )
+        self._thread_init.append((unit, init))
 
     # ---- spin ----
 
@@ -471,7 +447,7 @@ class PartitionedExecutor:
         scan_error = None
         try:
             self._check_sync_groups()
-            self._check_scheduling()
+            self._check_thread_init()
             self._spawn(tick_ns)
             while self._running and self._child_run:
                 if self._wake.wait(timeout=tick_sec):
@@ -560,27 +536,27 @@ class PartitionedExecutor:
                 "come from one node, since each node gets its own thread here."
             )
 
-    def _check_scheduling(self):
-        """Refuse a declaration for a unit no child will serve.
+    def _check_thread_init(self):
+        """Refuse a hook for a unit no child will serve.
 
-        Such a declaration reads as applied and never runs, which is the silent downgrade the
-        whole rt surface exists to prevent. A typo in the group variable is the usual way in.
+        Such a hook reads as registered and never runs. A typo in the group variable is the usual
+        way in.
         """
-        for unit, _opts in self._sched:
+        for unit, _init in self._thread_init:
             if any(group is unit for group, _subs in self._assigned):
                 continue
             if any(node is unit for node in self._nodes):
                 continue
             raise ValueError(
-                "flux: set_thread_scheduling() was given a unit this executor does not serve, so "
-                "no thread would ever apply it. Pass the callback group you handed to add_flux() "
-                "or the node you handed to add_ros_node()"
+                "flux: on_thread_start() was given a unit this executor does not serve, so no "
+                "thread would ever run it. Pass the callback group you handed to add_flux() or "
+                "the node you handed to add_ros_node()"
             )
 
-    def _sched_for(self, unit):
-        for declared, opts in self._sched:
+    def _init_for(self, unit):
+        for declared, init in self._thread_init:
             if declared is unit:
-                return opts
+                return init
         return None
 
     def _spawn(self, tick_ns):
@@ -593,7 +569,7 @@ class PartitionedExecutor:
                 flux_ex.add(subscription, callback, priority)
             name = f"flux-part-g{index}"
             self._start(
-                _FluxChild(flux_ex, tick_ns, self._fail, name, self._sched_for(group)), name
+                _FluxChild(flux_ex, tick_ns, self._fail, name, self._init_for(group)), name
             )
 
         for index, node in enumerate(self._nodes):
@@ -607,7 +583,7 @@ class PartitionedExecutor:
             self._start(
                 _RosChild(
                     ros_ex, node, tick_ns, self._fail, self._child_running, self._shutdown_seen,
-                    name, self._sched_for(node),
+                    name, self._init_for(node),
                 ),
                 name,
             )
@@ -637,18 +613,19 @@ class _FluxChild:
     """A group's thread: one flux.Executor, spun directly. No rclpy bridge, because the group
     holds no ROS entity, so there is nothing on this thread to merge with."""
 
-    def __init__(self, flux_ex, tick_ns, on_error, label, sched=None):
+    def __init__(self, flux_ex, tick_ns, on_error, label, init=None):
         self._flux = flux_ex
         self._tick_ns = tick_ns
         self._on_error = on_error
         self._label = label
-        self._sched = sched
+        self._init = init
         self.thread = None
 
     def run(self):
         _name_this_thread(self._label)
         try:
-            _apply_scheduling(self._sched)
+            if self._init is not None:
+                self._init()
             self._flux.spin(self._tick_ns if self._tick_ns >= 0 else 100_000_000)
         except BaseException as exc:  # noqa: BLE001 - carried to the parent's spin()
             self._on_error(exc)
@@ -663,7 +640,7 @@ class _FluxChild:
 class _RosChild:
     """A node's thread: a stock rclpy SingleThreadedExecutor, ticked so stopping is finite."""
 
-    def __init__(self, ros_ex, node, tick_ns, on_error, running, on_shutdown, label, sched=None):
+    def __init__(self, ros_ex, node, tick_ns, on_error, running, on_shutdown, label, init=None):
         self._exec = ros_ex
         self._node = node
         self._tick_sec = 0.1 if tick_ns < 0 else max(tick_ns, 1_000_000) / 1e9
@@ -671,7 +648,7 @@ class _RosChild:
         self._running = running
         self._on_shutdown = on_shutdown
         self._label = label
-        self._sched = sched
+        self._init = init
         self.thread = None
 
     def run(self):
@@ -679,7 +656,8 @@ class _RosChild:
         from rclpy.executors import ExternalShutdownException, ShutdownException
 
         try:
-            _apply_scheduling(self._sched)
+            if self._init is not None:
+                self._init()
             while self._running():
                 self._exec.spin_once(timeout_sec=self._tick_sec)
         except (ExternalShutdownException, ShutdownException):
@@ -741,20 +719,6 @@ def _require_flux_only(group):
 _prctl = ctypes.CDLL(None, use_errno=True).prctl
 _prctl.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
 _prctl.restype = ctypes.c_int
-
-
-def _apply_scheduling(sched):
-    """Put the calling child on its declared policy and cpus, before its first callback.
-
-    Called on the child thread rather than by the parent because a thread is the only one that
-    can set its own policy, and because a refusal has to reach the parent's spin() as an error
-    rather than as a thread quietly running at the wrong priority.
-    """
-    if sched is None:
-        return
-    from .. import rt
-
-    rt.apply(policy=sched["policy"], priority=sched["priority"], cpus=sched["cpus"])
 
 
 def _name_this_thread(name):

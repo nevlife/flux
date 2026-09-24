@@ -20,8 +20,7 @@
 // The split works for the same reason split_sub does -- a flux subscription is in no callback
 // group, so the two executors never contend. What differs from split_sub is only which executor
 // the ROS side gets, and that choice is the point: a MultiThreadedExecutor runs callbacks on
-// whichever pool thread is free, while PartitionedExecutor pins a group to one thread. Only
-// the second can carry an RT priority, because only there is it known which thread runs what.
+// whichever pool thread is free, while PartitionedExecutor pins a group to one thread.
 class MultiSubscriber : public rclcpp::Node
 {
 public:

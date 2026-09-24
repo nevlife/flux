@@ -17,11 +17,10 @@ import sys
 
 import flux
 import flux.ros
-import flux.rt
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 # One example file per user document, and the union of the three is the documented surface:
-# api.md is the .msg path, raw_api.md the path without one, core_api.md flux without ROS.
+# api.md is the .msg path, raw_api.md the path without one, core_api.md the engine layer under both.
 EXAMPLES = [
     ROOT / "flux_py" / "examples" / "doc_api.py",
     ROOT / "flux_py" / "examples" / "doc_api_raw.py",
@@ -92,15 +91,12 @@ def _exported():
     """Every name the modules export, plus each exported class's public members.
 
     Three entries per name: the dotted path, the last segment, and whether the path is the
-    spelling a user writes. It is for a module-level name (`flux.rt.apply` is how the document
-    has to spell it) and not for a class member, which the document reaches through a variable
+    spelling a user writes. It is for a module-level name (`flux.enumerate_topics` is how the
+    document has to spell it) and not for a class member, which the document reaches through a variable
     (`pub.loan()`, never `flux.Publisher.loan`). test_every_exported_name_is_in_the_document
     asks for the stricter form wherever it is the real one.
-
-    flux.rt is walked as well as flux and flux.ros: it is an extension submodule, so its names
-    are not in any package __all__ and without this line everything inside it is unchecked.
     """
-    modules = (("flux", flux), ("flux.ros", flux.ros), ("flux.rt", flux.rt))
+    modules = (("flux", flux), ("flux.ros", flux.ros))
     for mod_name, mod in modules:
         names = getattr(mod, "__all__", None)
         if names is None:
@@ -141,9 +137,9 @@ def test_every_exported_name_is_in_the_document():
 
     The bare-word form is what a member gets, because the documents reach a member through a
     variable and no stricter form exists to ask for. A module-level name has one, and asking for
-    the word alone made whole modules unfalsifiable: flux.rt mirrors flux::rt, so every name in
-    it already occurred in the C++ sections and the Python section could have been deleted whole
-    without failing this.
+    the word alone made whole modules unfalsifiable: a Python module that mirrors a C++ namespace
+    has every name already occurring in the C++ sections, so its Python section could have been
+    deleted whole without failing this.
     """
     documented, paths = set(), set()
     for doc in USER_DOCS:

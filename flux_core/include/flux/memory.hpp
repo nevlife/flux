@@ -1,10 +1,9 @@
 #ifndef FLUX_MEMORY_HPP
 #define FLUX_MEMORY_HPP
 
-// Page residency for a segment mapping. Deliberately separate from QoS and
-// rt::Options: QoS says what a consumer receives, rt says how a thread runs, and this says what
-// the kernel has already done for the pages that thread will touch. Everything here is opt-in and
-// a default-constructed MemoryPolicy is a full no-op.
+// Page residency for a segment mapping. Deliberately separate from QoS: QoS says what a consumer
+// receives, and this says what the kernel has already done for the pages a thread will touch.
+// Everything here is opt-in and a default-constructed MemoryPolicy is a full no-op.
 
 namespace flux
 {

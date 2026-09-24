@@ -11,10 +11,9 @@ Each package shows one axis. The default message is `sensor_msgs/Image`; another
 | [`flux_example_executor`](flux_example_executor/) | Five executor arrangements | `Image` |
 | [`flux_example_qos`](flux_example_qos/) | depth · durability · max_borrow | `Image` |
 | [`flux_example_lidar`](flux_example_lidar/) | Size changes every frame | `PointCloud2` |
-| [`flux_example_rt`](flux_example_rt/) | preflight and the chain declaration file | `Image` |
 | [`flux_example_gpu`](flux_example_gpu/) | A slot that kernels write and read | none |
 
-Each package has a C++ node and a Python node as a pair. `flux_example_rt` is C++ only. Python is not an RT target. `multi_sub` in `flux_example_executor` is also C++ only. rclpy has no corresponding arrangement.
+Each package has a C++ node and a Python node as a pair. `multi_sub` in `flux_example_executor` is C++ only. rclpy has no corresponding arrangement.
 
 ## Common rules
 
@@ -28,7 +27,7 @@ The subscriber may start first. When there is no publisher it waits quietly and 
 
 | Topic | Packages using it |
 | --- | --- |
-| `image` | `loan` · `publish` · `executor` · `qos` · `rt` |
+| `image` | `loan` · `publish` · `executor` · `qos` |
 | `image_raw` | `raw` |
 | `image_gpu` | `gpu` |
 | `cloud` | `lidar` |

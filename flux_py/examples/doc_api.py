@@ -21,6 +21,10 @@ def _sink(*_args):
     pass
 
 
+def set_up_this_thread():
+    pass
+
+
 def doc_publisher(node):
     # [doc:py_publisher]
     pub = flux.ros.Publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
@@ -98,20 +102,14 @@ def doc_partitioned(node, sub_a, sub_b):
     # [doc:/py_partitioned]
 
 
-def doc_rt(node, sub, group):
-    # [doc:py_rt]
+def doc_thread_start(node, sub, group):
+    # [doc:py_thread_start]
     ex = flux.ros.PartitionedExecutor()
     ex.add_flux(sub, group)
     ex.add_ros_node(node)
-    ex.set_thread_scheduling(group, cpus=[4, 5])
-    ex.set_thread_scheduling(node, policy=flux.rt.Policy.Fifo, priority=20)
-
-    report = flux.rt.apply(cpus=[4])          # the CALLING thread, not a child
-    state = flux.rt.current()                 # read back from the kernel
-    klass, prio, where = state.policy, state.priority, state.cpus
-    tid = flux.rt.this_tid()                  # what top -H and /proc name it by
-    # [doc:/py_rt]
-    _sink(report, klass, prio, where, tid)
+    ex.on_thread_start(group, set_up_this_thread)
+    ex.on_thread_start(node, set_up_this_thread)
+    # [doc:/py_thread_start]
 
 
 
