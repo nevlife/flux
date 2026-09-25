@@ -2,6 +2,7 @@
 
 #include "flux/futex.hpp"
 
+#include <atomic>
 #include <cerrno>
 #include <climits>
 #include <cstdint>
@@ -16,6 +17,12 @@
 
 namespace flux
 {
+
+std::uint32_t detail::next_attach_generation() noexcept
+{
+  static std::atomic<std::uint32_t> next{0};
+  return next.fetch_add(1, std::memory_order_relaxed);
+}
 
 namespace
 {
@@ -102,13 +109,11 @@ std::int64_t monotonic_ns() noexcept
 
 namespace
 {
-// A frame whose meta contradicts itself is rejected at publish, not reinterpreted later: a
-// consumer sizes its view from dtype, so an itemsize that disagrees makes that view overrun the
-// frame. ndim is here too because a consumer that rejects it on read never advances its cursor,
+// Rejected at publish because a consumer that rejects the rank on read never advances its cursor,
 // which would wedge take() on that slot instead of skipping it.
 bool meta_is_sane(const FrameMeta & m) noexcept
 {
-  return m.ndim <= kMaxDims && m.itemsize == dtype_size(m.dtype);
+  return m.ndim <= kMaxDims;
 }
 
 // The one place a FrameMeta is built on the publish side. itemsize follows from dtype and ndim
@@ -130,7 +135,7 @@ FrameMeta meta_from(DType dt, const std::uint64_t * shape, std::size_t ndim) noe
     }
     n *= shape[i];
   }
-  m.nbytes = ndim == 0 ? 0 : n;
+  m.nbytes = n;
   return m;
 }
 
@@ -265,7 +270,7 @@ void Channel::position_cursor() noexcept
 {
   const std::uint64_t l = sh_->ctrl->latest.load(std::memory_order_acquire);
   const std::uint64_t newest = (l == 0) ? 0 : latest_ticket(l);
-  const std::uint64_t back = qos_.durability.replay;
+  const std::uint64_t back = qos_.durability().replay;
   cursor_ = (newest > back) ? (newest - back) : 0;
 }
 
@@ -321,15 +326,13 @@ void ChannelShared::register_host_payload()
 
 void ChannelShared::end_borrow(SlotHolder * holder, SlotHeader * sl) noexcept
 {
-  if (holder != nullptr) {  // count-- before refcount--; the last release frees the entry, or
-    std::uint64_t o = holder->owner.load(std::memory_order_acquire);  // it leaks until reinit
-    while (holder_count(o) != 0) {
-      const std::uint32_t c = holder_count(o);
-      const std::uint64_t next = (c == 1) ? 0u : pack_holder(holder_pid(o), c - 1);
-      if (holder->owner.compare_exchange_weak(
-            o, next, std::memory_order_acq_rel, std::memory_order_acquire)) {
-        break;
-      }
+  std::uint64_t o = holder->owner.load(std::memory_order_acquire);
+  while (holder_count(o) != 0) {
+    const std::uint32_t c = holder_count(o);
+    const std::uint64_t next = (c == 1) ? 0u : pack_holder(holder_pid(o), c - 1);
+    if (holder->owner.compare_exchange_weak(
+          o, next, std::memory_order_acq_rel, std::memory_order_acquire)) {
+      break;
     }
   }
   sl->refcount.fetch_sub(1, std::memory_order_release);
@@ -368,19 +371,17 @@ bool Channel::reclaim_dead() noexcept
   return reclaimed;
 }
 
-void Channel::stamp_writer(SlotHeader * sl, std::uint64_t odd) noexcept
+bool Channel::stamp_writer(SlotHeader * sl, std::uint64_t odd) noexcept
 {
-  if (!writer_ready_) {
-    try {
-      OwnerFile::ensure();  // this publisher must be probeable for a peer to recover its slots
-      writer_id_ = OwnerFile::self();
-    } catch (...) {
-      writer_id_ = OwnerId{};  // no owner file -> writer_pid stays 0 -> not recoverable
-    }
-    writer_ready_ = true;
+  // Asked each claim, not cached here: OwnerFile's own cache is what a fork invalidates.
+  try {
+    OwnerFile::ensure();  // this publisher must be probeable for a peer to recover its slots
+    store_writer_identity(sl, OwnerFile::self());
+  } catch (const std::exception &) {
+    return false;
   }
-  store_writer_identity(sl, writer_id_);
   sl->writer_stamp.store(odd, std::memory_order_release);  // publishes the identity for this claim
+  return true;
 }
 
 bool Channel::recover_stuck_writes() noexcept
@@ -445,19 +446,12 @@ Published Channel::publish(
   return publish_meta(data, meta_from(dt, shape, ndim));
 }
 
-Published Channel::publish(
-  const void * data, DType dt, std::initializer_list<std::uint64_t> shape) noexcept
-{
-  return publish(data, dt, shape.begin(), shape.size());
-}
-
 Published Channel::publish_meta(const void * data, const FrameMeta & meta) noexcept
 {
   const std::size_t nbytes = static_cast<std::size_t>(meta.nbytes);
   // A device-backed slot is GPU memory. The memcpy below would store through a device
   // pointer, so this is a memory-safety gate, not only a policy one.
   if (sh_->device_payload) return Published::WrongDevice;
-  // meta_from derives itemsize from dtype, so only a rank above kMaxDims fails here.
   if (meta.nbytes > sh_->layout.slot_size || !meta_is_sane(meta)) return Published::TooLarge;
   // The source is the caller's buffer, but the stream declared on this channel is the caller's
   // statement about where its frames come from, so the same fence applies before reading it.
@@ -500,8 +494,11 @@ SlotHeader * Channel::claim_slot(std::uint32_t & s, std::uint64_t & even) noexce
         sl->seq.store(even + 2, std::memory_order_seq_cst);     // borrowed under us: revert
         continue;                                               // reselect
       }
-      stamp_writer(sl, even + 1);  // record identity (seq is odd = even+1) for crash recovery
-      return sl;
+      if (stamp_writer(sl, even + 1)) return sl;  // identity recorded for crash recovery
+      // No identity to recover a crash by: give the claim back and drop, not lose the slot.
+      sl->seq.store(even + 2, std::memory_order_seq_cst);
+      sh_->dropped.fetch_add(1, std::memory_order_relaxed);
+      return nullptr;
     }
 
     if (pass == 0) {  // starved: recover dead borrowers' and dead writers' slots, then retry
@@ -548,11 +545,6 @@ WriteSlot Channel::loan() noexcept
   // The whole slot as one u8 run. A generated adapter takes this and commits the prefix it built.
   const std::uint64_t whole = sh_->layout.slot_size;
   return loan(DType::U8, &whole, 1);
-}
-
-WriteSlot Channel::loan(DType dt, std::initializer_list<std::uint64_t> shape) noexcept
-{
-  return loan(dt, shape.begin(), shape.size());
 }
 
 WriteSlot Channel::loan(DType dt, const std::uint64_t * shape, std::size_t ndim) noexcept
@@ -693,7 +685,7 @@ void WriteSlot::abort() noexcept
 
 bool Channel::can_borrow() const noexcept
 {
-  return sh_->outstanding.load(std::memory_order_acquire) < qos_.max_borrow;
+  return sh_->outstanding.load(std::memory_order_acquire) < qos_.max_borrow();
 }
 
 std::uint32_t ChannelShared::wake_seq() const noexcept
@@ -780,11 +772,11 @@ FrameView Channel::take_blocking(std::int64_t timeout_ns) noexcept
 bool Channel::begin_borrow() noexcept
 {
   maybe_reattach();  // stalled? the segment may have been unlinked and recreated by a restart
-  if (sh_->outstanding.fetch_add(1, std::memory_order_acq_rel) >= qos_.max_borrow) {
+  if (sh_->outstanding.fetch_add(1, std::memory_order_acq_rel) >= qos_.max_borrow()) {
     sh_->outstanding.fetch_sub(1, std::memory_order_release);
     // A leaked lease is never returned, so once leaks alone fill the budget the caller cannot
     // recover by releasing anything. Reporting that as max_borrow points at the wrong knob.
-    if (sh_->leases_leaked.load(std::memory_order_acquire) >= qos_.max_borrow) {
+    if (sh_->leases_leaked.load(std::memory_order_acquire) >= qos_.max_borrow()) {
       ++refused_.fence;
     } else {
       ++refused_.max_borrow;
@@ -809,10 +801,6 @@ FrameView Channel::peek() noexcept
   constexpr int kMaxRetries = 64;
   int attempt = 0;
   for (; attempt < kMaxRetries; ++attempt) {
-    if (sh_->ctrl->init_state.load(std::memory_order_acquire) != kInitReady) {
-      ++refused_.not_ready;
-      break;
-    }
     const std::uint64_t l = sh_->ctrl->latest.load(std::memory_order_acquire);  // newest
     if (l == 0) break;  // nothing published yet
     const std::uint32_t s = latest_slot(l);
@@ -930,7 +918,7 @@ bool Channel::reattach_if_replaced() noexcept
   position_cursor();  // the new stream restarts its tickets
   lost_ = 0;          // and its own loss count
   orphaned_ = false;  // attached to a live current again
-  ++attach_gen_;
+  attach_gen_ = detail::next_attach_generation();
   return true;
 }
 
@@ -972,7 +960,6 @@ void Channel::maybe_reattach() noexcept
 
 bool Channel::ready() const noexcept
 {
-  if (sh_->ctrl->init_state.load(std::memory_order_acquire) != kInitReady) return false;
   const std::uint64_t l = sh_->ctrl->latest.load(std::memory_order_acquire);
   return l != 0 && latest_ticket(l) > cursor_;
 }
@@ -985,14 +972,10 @@ FrameView Channel::take() noexcept
   constexpr int kMaxRetries = 64;
   int attempt = 0;
   for (; attempt < kMaxRetries; ++attempt) {
-    if (sh_->ctrl->init_state.load(std::memory_order_acquire) != kInitReady) {
-      ++refused_.not_ready;
-      break;
-    }
     const std::uint64_t latest_now = sh_->ctrl->latest.load(std::memory_order_acquire);
     if (latest_now == 0) break;  // nothing published yet
     const std::uint64_t newest = latest_ticket(latest_now);
-    const std::uint64_t floor = (newest > qos_.depth) ? (newest - qos_.depth) : 0;
+    const std::uint64_t floor = (newest > qos_.depth()) ? (newest - qos_.depth()) : 0;
     if (cursor_ < floor) {
       // Count the skip HERE, not on the delivery path: this take may still return nothing (no
       // candidate, retries exhausted, holder table full), and the frames the window dropped

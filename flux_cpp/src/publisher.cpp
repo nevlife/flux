@@ -27,19 +27,14 @@ Published Publisher::publish(const void * data, std::size_t nbytes) noexcept
 }
 
 Published Publisher::publish(
-  const void * data, DType dt, std::initializer_list<std::uint64_t> shape) noexcept
+  const void * data, DType dt, const std::uint64_t * shape, std::size_t ndim) noexcept
 {
-  return ch_.publish(data, dt, shape);
+  return ch_.publish(data, dt, shape, ndim);
 }
 
 WriteSlot Publisher::loan() noexcept
 {
   return ch_.loan();
-}
-
-WriteSlot Publisher::loan(DType dt, std::initializer_list<std::uint64_t> shape) noexcept
-{
-  return ch_.loan(dt, shape);
 }
 
 WriteSlot Publisher::loan(DType dt, const std::uint64_t * shape, std::size_t ndim) noexcept

@@ -25,7 +25,9 @@ class SplitSubscriber : public rclcpp::Node
 public:
   SplitSubscriber()
   : Node("flux_split_sub"),
-    flux_sub_(*this, kTopic, Image::kFingerprint, [this](const flux::FrameView & f) { on_flux(f); })
+    flux_sub_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
+      on_flux(f);
+    })
   {
     ros_sub_ = create_subscription<sensor_msgs::msg::Image>(
       kTopic, rclcpp::QoS(rclcpp::KeepLast(kDepth)).best_effort(),
@@ -87,8 +89,6 @@ int main(int argc, char ** argv)
   // nothing else -- handing the node to both is what would throw.
   flux::ros::Executor fex;
   fex.add(node->flux_subscription());
-
-  rclcpp::on_shutdown([&fex]() { fex.stop(); });
 
   std::thread ros_thread([node]() { rclcpp::spin(node); });
   fex.spin();

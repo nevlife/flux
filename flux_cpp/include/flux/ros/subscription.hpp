@@ -39,7 +39,7 @@ public:
   // re-attach. A publisher that committed its pages says nothing about this mapping.
   Subscription(
     rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
-    Callback cb = {}, const QoS & qos = QoS{}, Device device = Device::Cpu,
+    const QoS & qos = QoS{}, Callback cb = {}, Device device = Device::Cpu,
     const MemoryPolicy & mem = {});
   ~Subscription() override;
 
@@ -52,7 +52,7 @@ public:
   // published; invalid only if nothing ever was. Attaches on the way in.
   FrameView peek();
 
-  // The next frame in publish order, consumed. Invalid once caught up. qos().depth bounds how
+  // The next frame in publish order, consumed. Invalid once caught up. qos().depth() bounds how
   // far behind this may fall; frames dropped by that window or lapped by the ring count in lost().
   FrameView take();
 
@@ -76,6 +76,8 @@ public:
   // Frames never delivered to this subscription: lapped by the ring, or dropped by the depth
   // window. Cumulative.
   std::uint64_t lost() const noexcept { return ch_ ? ch_->lost() : 0; }
+  // Changes on every re-attach, where lost() restarts at 0: diff lost() only within one value.
+  std::uint32_t attach_generation() const noexcept { return ch_ ? ch_->attach_generation() : 0; }
 
   // False once max_borrow views are held. An empty frame with can_borrow() false is this
   // subscription holding its own leases, not an idle stream, and no publish can clear it.

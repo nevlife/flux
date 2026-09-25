@@ -355,12 +355,9 @@ void ImageDisplay::subscribe()
   }
   // depth 1: the newest frame only, the same policy a viewer wants. max_borrow 1: update() holds
   // one view and drops it before returning, so a second lease is never needed.
-  flux::QoS qos;
-  qos.depth = 1;
-  qos.max_borrow = 1;
+  const auto qos = flux::QoS(1).max_borrow(1);
   try {
-    sub_ = std::make_unique<flux::ros::Subscription>(
-      *node_, topic, Image::kFingerprint, flux::ros::Subscription::Callback{}, qos);
+    sub_ = std::make_unique<flux::ros::Subscription>(*node_, topic, Image::kFingerprint, qos);
   } catch (const std::exception & e) {
     setStatus(StatusProperty::Error, "Topic", QString("Subscribe failed: ") + e.what());
     return;
@@ -491,9 +488,9 @@ void ImageDisplay::update(float, float)
       float lo = min_property_->getFloat();
       float hi = max_property_->getFloat();
       if (normalize_property_->getBool()) {
-        std::tie(lo, hi) = format == Ogre::PF_L16 ?
-          scan_range<std::uint16_t>(data.data(), width, height, step) :
-          scan_range<float>(data.data(), width, height, step);
+        std::tie(lo, hi) = format == Ogre::PF_L16
+                             ? scan_range<std::uint16_t>(data.data(), width, height, step)
+                             : scan_range<float>(data.data(), width, height, step);
       }
       const float unit = format == Ogre::PF_L16 ? 1.0f / 65535.0f : 1.0f;
       setRange(lo * unit, hi * unit);

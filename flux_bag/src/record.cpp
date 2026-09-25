@@ -99,7 +99,7 @@ class ChannelRecorder
 {
 public:
   ChannelRecorder(
-    rclcpp::Node & node, const flux::TopicView & topic, std::shared_ptr<rosbag2_cpp::Writer> writer)
+    rclcpp::Node & node, const flux::Topic & topic, std::shared_ptr<rosbag2_cpp::Writer> writer)
   : node_(node),
     writer_(std::move(writer)),
     flux_topic_(topic.key),
@@ -191,7 +191,7 @@ private:
 
 std::atomic<bool> g_stop{false};
 
-bool live_publisher(const flux::TopicView & t)
+bool live_publisher(const flux::Topic & t)
 {
   for (const auto & ep : t.endpoints) {
     if (ep.publisher) return true;
@@ -229,9 +229,9 @@ int main(int argc, char ** argv)
   const std::string & domain = flux::process_domain();
   while (!g_stop) {
     std::map<std::string, std::vector<std::string>> candidates;
-    std::map<std::string, const flux::TopicView *> live;
-    const std::vector<flux::TopicView> topics = flux::enumerate_topics();
-    for (const flux::TopicView & t : topics) {
+    std::map<std::string, const flux::Topic *> live;
+    const std::vector<flux::Topic> topics = flux::enumerate_topics();
+    for (const flux::Topic & t : topics) {
       if (t.domain != domain || !t.key_exact || !live_publisher(t)) continue;
       if (channels.count(t.key)) continue;
       candidates[t.key] = {kFrameType};

@@ -19,7 +19,6 @@ Both also return empty in further cases, regardless of whether a frame exists. `
 | --- | --- | --- |
 | `max_borrow` exhausted | `max_borrow` | Calling again without releasing a held view |
 | Slot holder table full | `holder_table` | `kMaxHolders` (10) processes already hold the slot |
-| Segment not ready yet | `not_ready` | `init_state != ready`. The creator is still bootstrapping |
 | Lost the race to acquire the borrow | `contended` | seqlock validation keeps failing up to the retry limit (64) |
 | meta outside the slot range | `bad_frame` | A corrupted frame is not handed out as a view |
 | No frame in the slot | `bad_frame` | `commit_ticket == 0`. The state left by an aborted loan or a reclaimed claim. Even if `latest` still points at that slot, there is no frame to hand out |
@@ -63,7 +62,7 @@ The join point is attach, not the first take. If the segment already exists when
 
 `max_borrow` (default 2) has no ROS 2 counterpart. It bounds the number of views held at the same time. A held view keeps its slot byte-locked, so the publisher cannot use that slot.
 
-`reliability` accepts only `best_effort`. Passing `reliable` is refused.
+There is no `reliability` setting. Delivery is always best-effort (§6). Asking for reliable is a compile error in C++ and a `TypeError` in Python.
 
 ## 3. Three depths, kept apart (easy to confuse)
 
@@ -80,24 +79,22 @@ The subscriber stores nothing. The bytes exist in one copy in the publisher ring
 
 ## 4. Rejected combinations
 
-Nothing is silently changed to another value. `QoS::validate()` throws.
+Nothing is silently changed to another value. In C++ a value wrong on its own throws from the setter that writes it (`QoS(0)`, `keep_last(0)`, `max_borrow(0)`), so no `flux::QoS` ever holds one. `n > depth` needs two fields, so `QoS::validate()` throws it where the QoS is used. Python `flux.QoS(...)` takes every field at once and raises all three as `ValueError`.
 
 | Combination | Why |
 | --- | --- |
 | `TransientLocal(n)` with `n > depth` | Replayed frames enter the same lag window. You cannot receive more than you are allowed to fall behind |
 | `depth == 0` | Newest-only is `depth = 1` |
 | `max_borrow == 0` | If no view can be held, take cannot work |
-| `reliability = reliable` | Not implemented (§6) |
 
 QoS deeper than the ring is not an error. The ring belongs to a publisher that may not exist yet. It is truncated to what is stored, and the frames not received are counted in `lost`.
 
 ## 5. Usage
 
+C++ chains setters as `rclcpp::QoS` does. Python takes keywords as rclpy's `QoSProfile` does.
+
 ```cpp
-flux::QoS q;                                        // depth 1, volatile
-q.depth = 10;
-q.durability = flux::Durability::TransientLocal(5);
-ch.qos(q);
+ch.qos(flux::QoS(10).transient_local(5));
 while (flux::FrameView v = ch.take()) { use(v); }
 ```
 

@@ -6,7 +6,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <initializer_list>
 #include <string>
 
 namespace rclcpp
@@ -54,14 +53,23 @@ public:
   // Same, for a frame that is not a flat byte run. The byte count follows from the shape and the
   // dtype, so the descriptor a consumer sizes its view from cannot disagree with the payload.
   Published publish(
-    const void * data, DType dt, std::initializer_list<std::uint64_t> shape) noexcept;
+    const void * data, DType dt, const std::uint64_t * shape, std::size_t ndim) noexcept;
+  template <std::size_t N>
+  Published publish(const void * data, DType dt, const std::uint64_t (&shape)[N]) noexcept
+  {
+    return ch_.publish(data, dt, shape);
+  }
 
   // 0-copy publish (docs/en/copy_model.en.md): write the frame straight into WriteSlot::data(),
   // then commit(). The slot is out of the ring until the handle is committed or destroyed. Returns
   // an invalid handle (and counts a drop) when every slot is borrowed.
   WriteSlot loan() noexcept;
-  WriteSlot loan(DType dt, std::initializer_list<std::uint64_t> shape) noexcept;
   WriteSlot loan(DType dt, const std::uint64_t * shape, std::size_t ndim) noexcept;
+  template <std::size_t N>
+  WriteSlot loan(DType dt, const std::uint64_t (&shape)[N]) noexcept
+  {
+    return ch_.loan(dt, shape);
+  }
 
   std::uint64_t dropped() const noexcept;
 

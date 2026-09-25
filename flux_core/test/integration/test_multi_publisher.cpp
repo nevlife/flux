@@ -124,7 +124,7 @@ TEST(MultiPublisher, ConcurrentTwoPublishersCoherent)
     for (std::uint64_t f = 1; f <= frames && !stop.load(std::memory_order_relaxed); ++f) {
       const std::uint8_t id = static_cast<std::uint8_t>(band | (f & 0x3F));  // per-publisher band
       std::memset(payload.data(), id, payload.size());
-      publish_id(pub, payload.data(), payload.size(), id);
+      (void)publish_id(pub, payload.data(), payload.size(), id);
     }
   };
 

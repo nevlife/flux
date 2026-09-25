@@ -42,13 +42,13 @@ Fields that could disagree with each other are not among the arguments, so a sel
 
 The result of a publish is `flux::Published`.
 
-| Value | Meaning | Counter |
-| --- | --- | --- |
-| `Ok` | Committed | -- |
-| `Backpressure` | Every slot is borrowed. Transient | `dropped`++ |
-| `TooLarge` | The payload exceeds `slot_size` or the rank exceeds 8. Committing an already used handle again also yields this value | -- |
-| `WrongDevice` | A host publish was made into a device slot | -- |
-| `FenceFailed` | The declared stream could not be waited on | `fence_failed`++ |
+| C++ | Python | Meaning | Counter |
+| --- | --- | --- | --- |
+| `Ok` | `OK` | Committed | -- |
+| `Backpressure` | `BACKPRESSURE` | Every slot is borrowed. Or a forked child ran out of fds and could not register its identity (a slot claimed without one could never be recovered if the child died, and would be lost for good). Transient | `dropped`++ |
+| `TooLarge` | `TOO_LARGE` | The payload exceeds `slot_size` or the rank exceeds 8. Committing an already used handle again also yields this value | -- |
+| `WrongDevice` | `WRONG_DEVICE` | A host publish was made into a device slot | -- |
+| `FenceFailed` | `FENCE_FAILED` | The declared stream could not be waited on | `fence_failed`++ |
 
 Only `Backpressure` clears by waiting. The others are wiring mistakes or faults, so they are not counted and are reported on the spot. When `dropped` rises, it means exactly one backpressure event.
 
@@ -68,9 +68,9 @@ if flux.faulted(p):
 
 `faulted` is false for `Ok` and `Backpressure`, and true for the other three. Every example publisher uses this shape.
 
-Python returns the same `flux.Published`. It is not collapsed to a bool because the caller must be able to tell `Backpressure` (a frame dropped under best-effort) apart from `FenceFailed` (a fault that leaks the slot permanently). It is truthy only for `Ok`, so `if not loan.commit():` also reads as intended.
+Python returns the same `flux.Published`, its values spelled in upper case as rclpy spells its enums. It is not collapsed to a bool because the caller must be able to tell `Backpressure` (a frame dropped under best-effort) apart from `FenceFailed` (a fault that leaks the slot permanently). It is truthy only for `OK`, so `if not loan.commit():` also reads as intended.
 
-Anything that can be seen from the arguments alone is an exception in Python. Oversize, a device array, or a relative topic name raises `ValueError` before the channel is touched, because that is the place where the failing path can be named (`contracts.en.md` 3).
+Anything that can be seen from the arguments alone is an exception in Python. Oversize, a device array, or a relative topic name raises `ValueError` before the channel is touched, because that is the place where the failing path can be named (`contracts.en.md` 3, S-001, S-002, S-007).
 
 `DType::BF16` is a type the engine only carries and never computes on. The slot is still a plain byte range, and `dtype_size` returning 2 is all there is. C++17 has no bf16 scalar type, so the consumer interprets the bytes as its own type.
 
@@ -87,7 +87,7 @@ if (const flux::Published p = pub.publish(data, flux::DType::U8, {480, 640, 3});
 }
 ```
 
-`publish` does not truncate on overflow. It refuses with `TooLarge`. A rank above 8 gives the same value. If the consumer rejected at read time, the cursor would not advance and `take()` would stall on that slot.
+`publish` does not truncate on overflow. It refuses with `TooLarge`. A rank above 8 gives the same value; in C++ a literal shape (`{480, 640, 3}`) longer than 8 does not compile, so only the pointer form `(shape, ndim)` reaches it. If the consumer rejected at read time, the cursor would not advance and `take()` would stall on that slot. A 0-d array (shape `()`) is one element, as numpy, torch and DLPack count it, and both `publish` and `loan` accept it. In C++ it goes through the pointer form with `ndim` 0.
 
 The byte count is not an argument. It is the product of `shape`. A frame whose `shape` exceeds `nbytes` cannot be built, so a consumer never crashes while building a view from that shape.
 
@@ -99,7 +99,7 @@ For a flat byte string, use `publish(data, nbytes)`. It is stamped as `u8[nbytes
 flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
 if (w) {
   render_into(w.data(), w.capacity());
-  w.commit();
+  if (const flux::Published p = w.commit(); flux::faulted(p)) report(flux::to_string(p));
 }
 ```
 
@@ -113,9 +113,11 @@ w.abort();
 
 A claimed slot leaves the ring until commit or abort. Holding it for a long time reduces the free slots and raises `dropped`. Like `FrameView`, it is move-only.
 
+After `commit()` the slot belongs to the subscribers. Do not write through a pointer taken from `data()` after that. flux does not detect such a write, and the frame changes under a subscriber that is reading it. Finish every write before `commit()`.
+
 The slot returned by `loan()` is not an empty cell. It may still hold a frame nobody has taken yet, and `data()` points at those bytes as they are. Writing there destroys that frame, so `abort` cannot bring it back. It only skips the publish. The destroyed frame shows up in the `lost` counter of a subscriber that fell behind.
 
-Since dtype and shape were stated once in `loan`, `commit()` takes no arguments. `commit(nbytes)` publishes only the first nbytes of a one-dimensional loan and recomputes `shape[0]`. There is no place where shape is stated twice. Passing it to a loan that is not one-dimensional, or a value larger than the loan, yields `TooLarge`.
+Since dtype and shape were stated once in `loan`, `commit()` takes no arguments. `commit(nbytes)` publishes only the first nbytes of a one-dimensional loan and recomputes `shape[0]`. There is no place where shape is stated twice. Passing it to a loan that is not one-dimensional, or a value larger than the loan, yields `TooLarge` in C++ and raises `ValueError` in Python (`contracts.en.md` S-007).
 
 `commit` performs the same checks as `publish` and rolls back the claim when a check fails. `dropped` does not rise, though. The slot was already received, so this is not backpressure. The previous frame that slot held disappears with it.
 
@@ -123,14 +125,12 @@ Since dtype and shape were stated once in `loan`, `commit()` takes no arguments.
 
 ```cpp doc:raw_subscribe
 flux::ros::Subscription sub(
-  *node, "img", flux::kNoSchema,
-  [](const flux::FrameView & v) {
+  *node, "img", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & v) {
     const flux::FrameMeta & m = v.meta();
     if (m.ndim == 3 && m.dtype == flux::DType::U8) {
       use(v.data(), v.size());
     }
-  },
-  flux::QoS{});
+  });
 ```
 
 What `meta()` returns was written by another process. If it was written by the same version of flux, the product of `shape` equals `nbytes`. The publish path derives it that way. When dealing with a different implementation or a corrupted segment, check those values before sizing a view from them.
@@ -167,6 +167,8 @@ loan.abort()
 ```
 
 `pub.loan(...)` returns a `flux.Loan`. It corresponds to C++ `flux::WriteSlot` and stays alive while holding the slot. `commit()` or `abort()` releases it. When no free slot exists it returns something falsy, so `if loan:` is the test.
+
+After `commit()` the slot belongs to the subscribers. `loan.array` turns read-only, so writing through it raises `ValueError`, and asking for it again raises `RuntimeError`. A slice, `memoryview` or DLPack tensor taken before `commit()` is not covered. Writing through one changes the frame under a subscriber that is reading it, with no error. Finish every write before `commit()`, the same rule as a C++ pointer taken from `data()`.
 
 `commit(nbytes=n)` publishes only the first n bytes of a one-dimensional loan. `shape[0]` is recomputed as `n / itemsize`, so shape is not restated. The generated adapter uses this. It borrows the whole slot and commits only as much as it actually filled.
 
@@ -228,9 +230,9 @@ Both sides separate the two. Only the representation differs.
 | Wrong type | `TypeError` | (not representable) |
 | slot_size exceeded | `ValueError` | `TooLarge` |
 | Host publish into a GPU slot | `ValueError` | `WrongDevice` |
-| Stream wait failure | `Published.FenceFailed` | `FenceFailed`, `fence_failed`++ |
+| Stream wait failure | `Published.FENCE_FAILED` | `FenceFailed`, `fence_failed`++ |
 | Bad meta | (not representable) | (not representable) |
-| No slot | `Published.Backpressure`. `loan()` returns `None` | `Backpressure`, `dropped`++ |
+| No slot | `Published.BACKPRESSURE`. `loan()` returns `None` | `Backpressure`, `dropped`++ |
 
 There is no `False` in the Python column. `publish()` and `commit()` return the same `flux.Published` as C++, and only `loan()` returns `None` when no free slot exists (section 2).
 

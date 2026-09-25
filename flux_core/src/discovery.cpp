@@ -26,48 +26,53 @@ namespace flux
 
 namespace
 {
-constexpr std::size_t kNameMax = 255;  // NAME_MAX for /dev/shm entries
+constexpr std::size_t kNameMax = 255;          // NAME_MAX for /dev/shm entries
 constexpr struct timespec kNap = {0, 100000};  // 100 us
+
+constexpr std::size_t digits(std::uint64_t v)
+{
+  return v < 10 ? 1 : 1 + digits(v / 10);
+}
+// "/flux.v<version>.s<domain>." key ".<fingerprint>" ".<pid>.<starttime>", each at its widest.
+static_assert(
+  7 + digits(kLayoutVersion) + 2 + digits(UINT32_MAX) + 1 + kMaxKeyLen + 17 + 1 +
+    digits(UINT32_MAX) + 1 + digits(UINT64_MAX) <=
+  kNameMax);
 }  // namespace
 
 std::string canonical_domain(const std::string & raw)
 {
-  if (raw.empty() || raw.size() > kMaxDomainLen) {
-    throw std::invalid_argument(
-      "flux: domain must be 1.." + std::to_string(kMaxDomainLen) + " characters, got '" + raw +
-      "'");
-  }
-  for (char c : raw) {
-    if (!std::isalnum(static_cast<unsigned char>(c))) {
-      throw std::invalid_argument(
-        "flux: domain must be alphanumeric (it names a /dev/shm entry), got '" + raw + "'");
-    }
-  }
-  return raw;
-}
-
-std::string resolve_domain(const char * domain_env)
-{
-  const char * label = std::getenv("FLUX_DOMAIN");
-  if (label != nullptr && *label != '\0') return canonical_domain(label);
-
-  const char * domain = domain_env == nullptr ? nullptr : std::getenv(domain_env);
-  if (domain == nullptr || *domain == '\0') return canonical_domain(kDefaultDomain);
-
   // Rendered from the parsed number, never from the raw text: "007" and "7" are one domain and
   // must not become two domains. Out of range is refused rather than wrapped -- wrapping lands in
   // someone else's domain, which is the failure this axis exists to prevent.
   char * end = nullptr;
   errno = 0;
-  const unsigned long long value = std::strtoull(domain, &end, 10);
-  const bool parsed = end != domain && *end == '\0' && errno == 0 &&
+  const unsigned long long value = std::strtoull(raw.c_str(), &end, 10);
+  const bool parsed = !raw.empty() && std::isdigit(static_cast<unsigned char>(raw[0])) &&
+                      end == raw.c_str() + raw.size() && errno == 0 &&
                       value <= std::numeric_limits<std::uint32_t>::max();
-  if (!parsed || *domain == '-' || *domain == '+') {
+  if (!parsed) {
     throw std::invalid_argument(
-      std::string("flux: ") + domain_env + " must be a plain integer in [0, 2^32), got '" + domain +
-      "' (set FLUX_DOMAIN to name the domain directly)");
+      "flux: domain must be a plain integer in [0, 2^32), got '" + raw + "'");
   }
-  return canonical_domain(std::to_string(value));
+  return std::to_string(value);
+}
+
+std::string resolve_domain(const char * domain_env)
+{
+  const char * var = "FLUX_DOMAIN";
+  const char * value = std::getenv(var);
+  if (value == nullptr || *value == '\0') {
+    var = domain_env;
+    value = domain_env == nullptr ? nullptr : std::getenv(domain_env);
+  }
+  if (value == nullptr || *value == '\0') return kDefaultDomain;
+  try {
+    return canonical_domain(value);
+  } catch (const std::invalid_argument &) {
+    throw std::invalid_argument(
+      std::string("flux: ") + var + " must be a plain integer in [0, 2^32), got '" + value + "'");
+  }
 }
 
 const std::string & process_domain()
@@ -99,9 +104,6 @@ std::string segment_name(
   // are compatibility axes, and an object written under a different one is not ours to read.
   // Scoping the NAME by them means a version bump cannot leave an object that blocks the new
   // build -- there is nothing to recover from, and nothing of another version's to delete.
-  // They lead because the NAME_MAX clamp below cuts the key, and an axis
-  // that a long key could truncate away would let two domains share a name.
-  //
   // canonical_domain runs here, not only at the resolve_domain call sites, so no caller can put an
   // unvalidated domain into a name.
   const std::string prefix =
@@ -109,11 +111,12 @@ std::string segment_name(
   char suffix[24];
   std::snprintf(suffix, sizeof(suffix), ".%016llx", static_cast<unsigned long long>(fingerprint));
 
-  std::string body = flatten_key(key);
-
-  const std::size_t fixed = prefix.size() + std::strlen(suffix);
-  if (fixed + body.size() > kNameMax) body.resize(kNameMax - fixed);
-  return prefix + body + suffix;
+  if (key.size() > kMaxKeyLen) {
+    throw std::invalid_argument(
+      "flux: channel key is " + std::to_string(key.size()) + " characters, past the limit of " +
+      std::to_string(kMaxKeyLen));
+  }
+  return prefix + flatten_key(key) + suffix;
 }
 
 std::string signpost_name(
@@ -126,16 +129,10 @@ std::string signpost_name(
 std::string unique_segment_name(const std::string & signpost, const OwnerId & creator)
 {
   char suffix[40];
-  int n = std::snprintf(
+  std::snprintf(
     suffix, sizeof(suffix), ".%u.%llu", creator.pid,
     static_cast<unsigned long long>(creator.starttime));
-  std::string name = signpost;
-  // Preserve the owner-id suffix; truncate the signpost part.
-  if (n > 0 && name.size() + static_cast<std::size_t>(n) > kNameMax) {
-    name.resize(kNameMax - static_cast<std::size_t>(n));
-  }
-  name += suffix;
-  return name;
+  return signpost + suffix;
 }
 
 bool stat_segment(const std::string & name, SegmentId & out) noexcept
@@ -202,9 +199,9 @@ bool owner_is_alive(const std::string & name) noexcept
 
 }  // namespace
 
-std::vector<TopicView> enumerate_topics() noexcept
+std::vector<Topic> enumerate_topics() noexcept
 {
-  std::vector<TopicView> topics;
+  std::vector<Topic> topics;
   std::vector<std::string> owner_names;
 
   DIR * dir = ::opendir("/dev/shm");
@@ -218,8 +215,9 @@ std::vector<TopicView> enumerate_topics() noexcept
       owner_names.push_back(std::string("/") + n);
       continue;
     }
-    TopicView t;
+    Topic t;
     if (!parse_signpost(n, t.domain, t.key, t.fingerprint)) continue;  // a segment, not a signpost
+    if (::faccessat(::dirfd(dir), n, R_OK, 0) != 0) continue;          // another user's channel
     t.signpost = std::string("/") + n;
     topics.push_back(std::move(t));
   }
@@ -237,13 +235,13 @@ std::vector<TopicView> enumerate_topics() noexcept
       continue;
     }
     for (const ManifestEntry & e : OwnerFile::read_manifest(owner)) {
-      for (TopicView & t : topics) {
+      for (Topic & t : topics) {
         if (t.signpost != e.signpost) continue;
         if (!e.key.empty()) {
           t.key = e.key;  // a live participant knows the key the name could only approximate
           t.key_exact = true;
         }
-        EndpointView ep;
+        Endpoint ep;
         ep.owner = id;
         ep.label = e.label;
         ep.publisher = e.publisher;
@@ -424,7 +422,6 @@ MappedSeg map_wait_validate(
   int fd, const std::string & name, std::uint64_t fingerprint, const SegmentLayout * expect,
   int kSpins, Device device = Device::Cpu)
 {
-
   struct stat st
   {
   };
@@ -490,8 +487,8 @@ MappedSeg map_wait_validate(
       stderr,
       "flux: config mismatch on '%s' -- header(slot_size=%u slot_count=%u) "
       "expected(slot_size=%u slot_count=%u) [mapping=%zu init_state=%u]\n",
-      name.c_str(), ctrl->slot_size, ctrl->slot_count, expect->slot_size, expect->slot_count,
-      bytes, ctrl->init_state.load(std::memory_order_relaxed));
+      name.c_str(), ctrl->slot_size, ctrl->slot_count, expect->slot_size, expect->slot_count, bytes,
+      ctrl->init_state.load(std::memory_order_relaxed));
     reject("publisher config mismatch on shared segment");
   }
   check_payload_compat(ctrl, device, reject);
@@ -765,10 +762,7 @@ Segment open_publisher_segment(
     cur2.starttime = msp.sp->cur_starttime;
     const std::uint32_t cur_epoch = msp.sp->epoch;
     if (cur2.pid != 0) {
-      if (Segment joined = try_join(cur2); joined.valid()) {
-        sp_unlock(msp.fd);
-        return joined;
-      }
+      if (Segment joined = try_join(cur2); joined.valid()) return joined;
     }
 
     // Create a fresh unique segment. Take our owner file first (liveness + our owner-id).
@@ -794,14 +788,12 @@ Segment open_publisher_segment(
     if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
       int e = errno;
       ::close(fd);
-      sp_unlock(msp.fd);
       fail("ftruncate", seg, e);
     }
     void * p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (p == MAP_FAILED) {
       int e = errno;
       ::close(fd);
-      sp_unlock(msp.fd);
       fail("mmap create", seg, e);
     }
     auto * base = static_cast<std::byte *>(p);
@@ -815,20 +807,15 @@ Segment open_publisher_segment(
     // Allocate and start serving BEFORE the signpost advertises this segment. Advertising first
     // would publish a segment whose endpoint nobody answers, and every subscriber that raced in
     // would fail an import that was never going to work.
+    // A throw here unlinks s and drops the msp lock: nothing was ever advertised.
     if (dgpu) {
-      try {
-        gpu::DeviceAlloc alloc = gpu::DeviceAlloc::create(
-          gpu::device_endpoint(s.id()), layout.payload_bytes(), dgpu_device);
-        s.attach_device(alloc.keepalive(), alloc.base());
-      } catch (...) {
-        sp_unlock(msp.fd);
-        throw;  // s unlinks the segment on the way out: nothing was ever advertised
-      }
+      gpu::DeviceAlloc alloc =
+        gpu::DeviceAlloc::create(gpu::device_endpoint(s.id()), layout.payload_bytes(), dgpu_device);
+      s.attach_device(alloc.keepalive(), alloc.base());
     }
     // Advertise the new segment and rotate the epoch, then downgrade to a read lock (liveness).
     signpost_write(msp.sp, self, cur_epoch + 1);
     Segment::lock_read(fd);  // downgrade so other publishers can join
-    sp_unlock(msp.fd);
     return s;
   }
   throw std::runtime_error("flux: segment bootstrap failed '" + name + "'");
@@ -917,26 +904,41 @@ bool segment_publishers_dead(const std::string & segment) noexcept
   return dead;
 }
 
-ChannelStats read_channel_stats(const std::string & signpost) noexcept
+ChannelStats read_channel_stats(const std::string & signpost)
 {
   ChannelStats out;
   OwnerId cur{};
   std::uint32_t epoch = 0;
-  try {
-    MappedSp msp = signpost_map(signpost);
-    const bool ok = signpost_read(msp.sp, cur, epoch);
-    if (!ok || cur.pid == 0) return out;
-  } catch (...) {
-    return out;  // no signpost, or nothing bootstrapped in it yet
+  int fd = ::shm_open(signpost.c_str(), O_RDONLY, 0);
+  if (fd < 0) {
+    if (errno == ENOENT) return out;
+    fail("signpost shm_open", signpost, errno);
   }
+  if (!signpost_object_sized(fd)) {
+    ::close(fd);
+    return out;
+  }
+  void * p = ::mmap(nullptr, kSignpostBytes, PROT_READ, MAP_SHARED, fd, 0);
+  const int map_err = errno;
+  ::close(fd);
+  if (p == MAP_FAILED) fail("signpost mmap", signpost, map_err);
+  const auto * sp = static_cast<const Signpost *>(p);
+  const bool ok = sp->init_state.load(std::memory_order_acquire) == kInitReady &&
+                  sp->magic == kSignpostMagic && signpost_read(sp, cur, epoch);
+  ::munmap(p, kSignpostBytes);
+  if (!ok || cur.pid == 0) return out;
   out.epoch = epoch;
 
   const std::string seg = unique_segment_name(signpost, cur);
-  int fd = ::shm_open(seg.c_str(), O_RDONLY, 0600);
-  if (fd < 0) return out;  // advertised but already unlinked: the group left under us
-  void * p = ::mmap(nullptr, sizeof(ControlHeader), PROT_READ, MAP_SHARED, fd, 0);
+  fd = ::shm_open(seg.c_str(), O_RDONLY, 0);
+  if (fd < 0) {
+    if (errno == ENOENT) return out;  // the group left under us
+    fail("segment shm_open", seg, errno);
+  }
+  p = ::mmap(nullptr, sizeof(ControlHeader), PROT_READ, MAP_SHARED, fd, 0);
+  const int seg_map_err = errno;
   ::close(fd);
-  if (p == MAP_FAILED) return out;
+  if (p == MAP_FAILED) fail("segment mmap", seg, seg_map_err);
 
   const auto * ctrl = static_cast<const ControlHeader *>(p);
   if (

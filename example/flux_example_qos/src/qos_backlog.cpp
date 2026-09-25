@@ -18,9 +18,9 @@ class BacklogSubscriber : public rclcpp::Node
 public:
   BacklogSubscriber()
   : Node("flux_qos_backlog"),
-    sub_(
-      *this, kTopic, Image::kFingerprint, [this](const flux::FrameView & f) { on_frame(f); },
-      backlog_qos())
+    sub_(*this, kTopic, Image::kFingerprint, backlog_qos(), [this](const flux::FrameView & f) {
+      on_frame(f);
+    })
   {
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
@@ -33,14 +33,7 @@ private:
   static constexpr const char * kTopic = "image";
   static constexpr std::chrono::milliseconds kWork{50};
 
-  static flux::QoS backlog_qos()
-  {
-    flux::QoS q;
-    q.depth = 8;
-    q.durability = flux::Durability::TransientLocal(4);
-    q.max_borrow = 4;
-    return q;
-  }
+  static flux::QoS backlog_qos() { return flux::QoS(8).transient_local(4).max_borrow(4); }
 
   void on_frame(const flux::FrameView & f)
   {
@@ -73,7 +66,6 @@ int main(int argc, char ** argv)
   ex.add(node->subscription());
   ex.add_ros_node(node);
 
-  rclcpp::on_shutdown([&ex]() { ex.stop(); });
   ex.spin();
   rclcpp::shutdown();
   return 0;

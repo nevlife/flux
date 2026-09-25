@@ -62,8 +62,8 @@ def test_blocked_group_does_not_stall_others(node):
         release.wait(timeout=10.0)
 
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(slow_sub, MutuallyExclusiveCallbackGroup(), slow)
-    ex.add_flux(fast_sub, MutuallyExclusiveCallbackGroup(), lambda v: fast_seen.append(int(v[0])))
+    ex.add(slow_sub, MutuallyExclusiveCallbackGroup(), slow)
+    ex.add(fast_sub, MutuallyExclusiveCallbackGroup(), lambda v: fast_seen.append(int(v[0])))
 
     t = spin_in_thread(ex)
     stop = threading.Event()
@@ -112,7 +112,7 @@ def test_each_group_gets_its_own_thread(node):
 
     ex = flux.ros.PartitionedExecutor()
     for i, sub in enumerate(subs):
-        ex.add_flux(sub, MutuallyExclusiveCallbackGroup(), record(i))
+        ex.add(sub, MutuallyExclusiveCallbackGroup(), record(i))
 
     t = spin_in_thread(ex)
     try:
@@ -178,7 +178,7 @@ def test_ros_node_and_flux_group_do_not_share_a_thread(node):
 
     ex = flux.ros.PartitionedExecutor()
     ex.add_ros_node(node)
-    ex.add_flux(sub, MutuallyExclusiveCallbackGroup(), on_flux)
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), on_flux)
 
     t = spin_in_thread(ex)
     try:
@@ -201,7 +201,7 @@ def test_reentrant_group_is_refused(node):
     sub = flux.Subscription("/pytest/part/reent", fingerprint=FP)
     ex = flux.ros.PartitionedExecutor()
     with pytest.raises(ValueError, match="Reentrant"):
-        ex.add_flux(sub, ReentrantCallbackGroup(), lambda v: None)
+        ex.add(sub, ReentrantCallbackGroup(), lambda v: None)
 
 
 # rclpy cannot hand a callback group to a child executor, so a group holding ROS entities would
@@ -214,7 +214,7 @@ def test_group_holding_ros_entities_is_refused(node):
 
     sub = flux.Subscription("/pytest/part/occupied_flux", fingerprint=FP)
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(sub, group, lambda v: None)  # entities are checked at spin, not at add
+    ex.add(sub, group, lambda v: None)  # entities are checked at spin, not at add
     with pytest.raises(ValueError, match="no ROS entities"):
         ex.spin(20_000_000)
 
@@ -226,7 +226,7 @@ def test_group_that_grows_a_ros_entity_after_spin_raises(node):
     sub = flux.Subscription("/pytest/part/grows", fingerprint=FP)
     ex = flux.ros.PartitionedExecutor()
     ex.add_ros_node(node)
-    ex.add_flux(sub, group, lambda v: None)
+    ex.add(sub, group, lambda v: None)
 
     error = []
 
@@ -251,14 +251,14 @@ def test_add_after_spin_raises(node):
     sub = flux.Subscription("/pytest/part/late", fingerprint=FP)
     other = flux.Subscription("/pytest/part/late2", fingerprint=FP)
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
     t = spin_in_thread(ex)
     try:
         deadline = time.monotonic() + 2.0
         while not ex._spinning and time.monotonic() < deadline:
             time.sleep(0.01)
         with pytest.raises(RuntimeError, match="before spin"):
-            ex.add_flux(other, MutuallyExclusiveCallbackGroup(), lambda v: None)
+            ex.add(other, MutuallyExclusiveCallbackGroup(), lambda v: None)
         with pytest.raises(RuntimeError, match="before spin"):
             ex.add_ros_node(node)
         with pytest.raises(RuntimeError, match="already spinning"):
@@ -271,16 +271,16 @@ def test_add_after_spin_raises(node):
 def test_rejects_a_subscription_assigned_twice(node):
     sub = flux.Subscription("/pytest/part/dup", fingerprint=FP)
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
     with pytest.raises(ValueError, match="already assigned"):
-        ex.add_flux(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
+        ex.add(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
 
 
 def test_rejects_a_non_group_token(node):
     sub = flux.Subscription("/pytest/part/token", fingerprint=FP)
     ex = flux.ros.PartitionedExecutor()
     with pytest.raises(TypeError, match="callback group"):
-        ex.add_flux(sub, "cam0", lambda v: None)
+        ex.add(sub, "cam0", lambda v: None)
 
 
 # An exception on a child thread stops every child and surfaces at the parent's spin().
@@ -292,7 +292,7 @@ def test_child_exception_reaches_spin(node):
         raise RuntimeError("callback exploded")
 
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(sub, MutuallyExclusiveCallbackGroup(), explode)
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), explode)
 
     error = []
 
@@ -313,18 +313,105 @@ def test_child_exception_reaches_spin(node):
     assert error and "callback exploded" in str(error[0])
 
 
-def test_stop_ends_spin_and_close_bars_restart(node):
+# spin() tears its children down on the way out, so a stopped executor has nothing left to close
+# and spins again, as the C++ one does.
+def test_stop_ends_spin_and_a_stopped_executor_spins_again(node):
     sub = flux.Subscription("/pytest/part/stop", fingerprint=FP)
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
-    t = spin_in_thread(ex)
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
+    for _ in range(2):
+        t = spin_in_thread(ex)
+        time.sleep(0.2)
+        assert t.is_alive()
+        ex.stop()
+        t.join(timeout=5.0)
+        assert not t.is_alive()
+
+
+# Shutting the context down ends the spin with no error. The teardown then wakes a node child
+# whose context is already gone, which rclpy allows.
+def test_a_context_shutdown_ends_a_partitioned_spin_quietly(node):
+    sub = flux.Subscription("/pytest/part/ctx_down", fingerprint=FP)
+    ex = flux.ros.PartitionedExecutor()
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
+    ex.add_ros_node(node)
+    errors = []
+
+    def run():
+        try:
+            ex.spin(20_000_000)
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            errors.append(exc)
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
     time.sleep(0.2)
+    rclpy.shutdown()
+    t.join(timeout=5.0)
+    assert not t.is_alive(), "the spin outlived its context"
+    assert errors == []
+
+
+def test_a_negative_tick_blocks_until_a_frame_and_stop_still_ends_it(node):
+    # tick_ns < 0 waits for an event with no periodic wake, as the C++ flux child does. A frame
+    # still arrives, and stop() still ends the spin.
+    pub = flux.Publisher("/pytest/part/neg_tick", fingerprint=FP, slot_size=64, slot_count=4)
+    sub = flux.Subscription("/pytest/part/neg_tick", fingerprint=FP)
+    got = threading.Event()
+    ex = flux.ros.PartitionedExecutor()
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), lambda v: got.set())
+    t = spin_in_thread(ex, tick_ns=-1)
+    time.sleep(0.2)
+    pub.publish(np.zeros(4, np.uint8))
+    assert got.wait(2.0), "a frame did not wake a child blocked with no tick"
     ex.stop()
     t.join(timeout=5.0)
     assert not t.is_alive()
-    ex.close()
-    with pytest.raises(RuntimeError, match="closed"):
-        ex.spin()
+
+
+def test_a_stop_before_a_partitioned_spin_ends_it_and_is_cleared_on_the_way_out(node):
+    sub = flux.Subscription("/pytest/part/stop_first", fingerprint=FP)
+    ex = flux.ros.PartitionedExecutor()
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
+    ex.add_ros_node(node)
+    ex.stop()
+    t = spin_in_thread(ex)
+    t.join(timeout=5.0)
+    assert not t.is_alive(), "a stop() before spin() was lost"
+    t = spin_in_thread(ex)
+    time.sleep(0.3)
+    assert t.is_alive(), "the stop() outlived the spin it ended"
+    ex.stop()
+    t.join(timeout=5.0)
+    assert not t.is_alive()
+
+
+# A thread that could not start was still joined on the way out. That join raised over the real
+# error, and the spin never cleared, so the executor refused every later spin as re-entrant.
+def test_a_thread_that_cannot_start_reports_why_and_leaves_spin_usable(node, monkeypatch):
+    sub = flux.Subscription("/pytest/part/no_thread", fingerprint=FP)
+    ex = flux.ros.PartitionedExecutor()
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
+    ex.add_ros_node(node)
+
+    real_start = threading.Thread.start
+
+    def start(self):
+        if self.name.startswith("flux-part-n"):
+            raise RuntimeError("can't start new thread")
+        real_start(self)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    with pytest.raises(RuntimeError, match="can't start new thread"):
+        ex.spin(20_000_000)
+    monkeypatch.undo()
+
+    t = spin_in_thread(ex)
+    time.sleep(0.3)
+    assert t.is_alive()
+    ex.stop()
+    t.join(timeout=5.0)
+    assert not t.is_alive()
 
 
 # on_thread_start: the hook runs on the thread that serves the unit, before its first callback.
@@ -336,7 +423,7 @@ def test_a_group_hook_runs_on_the_child_before_its_first_callback(node):
     seen = []
 
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(sub, group, lambda _v: seen.append((threading.get_ident(), list(hooked))))
+    ex.add(sub, group, lambda _v: seen.append((threading.get_ident(), list(hooked))))
     ex.on_thread_start(group, lambda: hooked.append(threading.get_ident()))
 
     t = spin_in_thread(ex)
@@ -382,6 +469,13 @@ def test_a_hook_for_an_unserved_unit_is_refused(node):
         ex.spin(20_000_000)
 
 
+def test_a_hook_for_no_unit_is_refused_at_the_call():
+    # C++ refuses a null group where on_thread_start is called; so does this, rather than at spin.
+    ex = flux.ros.PartitionedExecutor()
+    with pytest.raises(ValueError, match="unit is None"):
+        ex.on_thread_start(None, lambda: None)
+
+
 def test_a_second_hook_for_one_unit_is_refused():
     ex = flux.ros.PartitionedExecutor()
     group = MutuallyExclusiveCallbackGroup()
@@ -400,7 +494,7 @@ def test_a_throwing_hook_ends_the_spin(node):
         raise OSError("refused")
 
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(sub, group, lambda _v: ran.append(1))
+    ex.add(sub, group, lambda _v: ran.append(1))
     ex.on_thread_start(group, refuse)
 
     with pytest.raises(OSError, match="refused"):

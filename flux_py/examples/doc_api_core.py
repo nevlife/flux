@@ -40,7 +40,7 @@ def doc_core_memory_policy():
 
 def doc_core_executor(sub, callback):
     # [doc:py_core_executor]
-    ex = flux.Executor(max_channels=32, poll_tick_ns=2_000_000)
+    ex = flux.Executor(poll_tick_ns=2_000_000)
     ex.add(sub, callback, priority=0)
     ex.spin_once(timeout_ns=-1)
     ex.spin(tick_ns=100_000_000)
@@ -65,7 +65,8 @@ def doc_enumerate():
         name = topic.key if topic.key_exact else topic.signpost
         for ep in topic.endpoints:
             role = "pub" if ep.publisher else "sub"
-            _sink(name, topic.domain, topic.fingerprint, role, ep.pid, ep.starttime, ep.label)
+            _sink(name, topic.domain, topic.fingerprint, role, ep.owner.pid, ep.owner.starttime,
+                  ep.label)
     # [doc:/py_enumerate]
 
 

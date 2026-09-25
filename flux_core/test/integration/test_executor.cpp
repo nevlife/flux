@@ -4,15 +4,20 @@
 #include "flux/io_uring_waiter.hpp"
 #include "support/frame_id.hpp"
 
+#include <dirent.h>
 #include <gtest/gtest.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -27,7 +32,7 @@
 // verified nothing in it. What a Source is is three calls, so a fake one reaches every path here.
 //
 // Both wait paths run: io_uring where the kernel has FUTEX_WAIT, and the parker-thread fallback
-// forced by FLUX_DISABLE_IO_URING, which is what Jetson Orin (5.15) actually runs.
+// forced by FLUX_DISABLE_IO_URING, which is what a kernel below 6.7 actually runs.
 
 namespace
 {
@@ -129,7 +134,7 @@ private:
   {
     ch_ = std::make_unique<flux::Channel>(kSlotSize, kSlotCount);
     flux::QoS q;
-    q.depth = kSlotCount;
+    q.keep_last(kSlotCount);
     ch_->qos(q);
   }
 
@@ -249,8 +254,16 @@ protected:
       return;
     }
     ::unsetenv("FLUX_DISABLE_IO_URING");
-    if (flux::IoUringWaiter::support() == flux::IoUringSupport::NoOpcode) {
-      GTEST_SKIP() << "flux-cap:io-uring kernel lacks io_uring FUTEX_WAIT (needs 6.7+)";
+    switch (flux::IoUringWaiter::support()) {
+      case flux::IoUringSupport::Yes:
+        break;
+      case flux::IoUringSupport::NoOpcode:
+        GTEST_SKIP() << "flux-cap:io-uring kernel lacks io_uring FUTEX_WAIT (needs 6.7+)";
+      case flux::IoUringSupport::Forbidden:
+        FAIL() << "io_uring is forbidden on this host, so the merged path would run on the "
+                  "fallback and go unchecked";
+      case flux::IoUringSupport::RingFailed:
+        break;  // the executor itself throws, which the test reports
     }
   }
   void TearDown() override { ::unsetenv("FLUX_DISABLE_IO_URING"); }
@@ -264,11 +277,10 @@ INSTANTIATE_TEST_SUITE_P(
 
 }  // namespace
 
-TEST_P(ExecutorTest, RejectsZeroCapacityAndNonPositiveTick)
+TEST_P(ExecutorTest, RejectsANonPositiveTick)
 {
-  EXPECT_THROW(flux::Executor(0, 1'000'000), std::invalid_argument);
-  EXPECT_THROW(flux::Executor(1, 0), std::invalid_argument);
-  EXPECT_THROW(flux::Executor(1, -1), std::invalid_argument);
+  EXPECT_THROW(flux::Executor(0), std::invalid_argument);
+  EXPECT_THROW(flux::Executor(-1), std::invalid_argument);
 }
 
 TEST_P(ExecutorTest, DispatchDrainsEveryRegisteredSource)
@@ -290,9 +302,8 @@ TEST_P(ExecutorTest, DispatchDrainsEveryRegisteredSource)
   EXPECT_EQ(ex.dispatch(), 0);  // nothing left, and dispatch never blocks to find that out
 }
 
-// The dispatch order contract: a pass visits sources in add() order, not in
-// publish order and not in whatever order a hash of their addresses would give. It is the only
-// ordering a caller can express, so it has to be the one that holds.
+// The dispatch order contract: equal priorities start in add() order, not in publish order and not
+// in whatever order a hash of their addresses would give, and then take turns.
 TEST_P(ExecutorTest, DispatchVisitsSourcesInRegistrationOrder)
 {
   FakeSource first, second;
@@ -310,7 +321,7 @@ TEST_P(ExecutorTest, DispatchVisitsSourcesInRegistrationOrder)
   first.publish(4);
 
   ASSERT_EQ(ex.dispatch(), 4);
-  EXPECT_EQ(order, (std::vector<int>{1, 1, 2, 2}));
+  EXPECT_EQ(order, (std::vector<int>{1, 2, 1, 2}));
 }
 
 // A higher priority is visited first regardless of when it was registered. Order priority only:
@@ -407,7 +418,7 @@ TEST_P(ExecutorTest, WakesKeepReachingBothEntriesWhenPriorityReversesTheVisit)
       std::thread pub([src, id] {
         std::this_thread::sleep_for(30ms);
         std::vector<std::byte> buf(kSlotSize);
-        publish_id(*src->channel(), buf.data(), buf.size(), id);
+        (void)publish_id(*src->channel(), buf.data(), buf.size(), id);
       });
       const auto t0 = std::chrono::steady_clock::now();
       const int n = ex.spin_once(/*timeout_ns=*/3'000'000'000);
@@ -423,25 +434,44 @@ TEST_P(ExecutorTest, WakesKeepReachingBothEntriesWhenPriorityReversesTheVisit)
   }
 }
 
-// And a source drains fully before the pass moves on, rather than the pass interleaving one frame
-// each. That is what makes the per-pass bound a sum of per-channel terms.
-TEST_P(ExecutorTest, ASourceDrainsBeforeThePassMovesOn)
+// Equal priorities take turns a frame at a time rather than one source draining first:
+// registration order only decides who goes first, so it is not a hidden priority.
+TEST_P(ExecutorTest, EqualPrioritiesTakeTurnsFrameByFrame)
 {
-  FakeSource a, b;
+  FakeSource a, b, c;
   std::vector<int> order;
   a.log_into(order, 1);
   b.log_into(order, 2);
+  c.log_into(order, 3);
 
   flux::Executor ex;
   ex.add(a);
   ex.add(b);
+  ex.add(c);
   for (std::uint8_t i = 1; i <= 3; ++i) {
     a.publish(i);
     b.publish(i);
+    c.publish(i);
   }
 
-  ASSERT_EQ(ex.dispatch(), 6);
-  EXPECT_EQ(order, (std::vector<int>{1, 1, 1, 2, 2, 2}));
+  ASSERT_EQ(ex.dispatch(), 9);
+  EXPECT_EQ(order, (std::vector<int>{1, 2, 3, 1, 2, 3, 1, 2, 3}));
+}
+
+// A source whose publisher outruns its callback always has a frame. Draining first let it hold
+// every pass, and a peer of the same priority registered after it never ran at all.
+TEST_P(ExecutorTest, ASaturatedSourceDoesNotStarveAnEqualPeer)
+{
+  FakeSource a, b;
+  a.on_deliver = [&] { a.publish(9); };
+  flux::Executor ex;
+  ex.add(a);
+  ex.add(b);
+  a.publish(1);
+  b.publish(1);
+
+  ex.dispatch();
+  EXPECT_EQ(b.delivered.load(), 1);
 }
 
 // The point of one frame per visit: a frame that lands on a higher-priority channel while a
@@ -631,7 +661,7 @@ TEST_P(ExecutorTest, APublishFromAnotherThreadEndsTheWait)
   std::thread pub([&] {
     std::this_thread::sleep_for(100ms);
     std::vector<std::byte> buf(kSlotSize);
-    publish_id(*s.channel(), buf.data(), buf.size(), 0x42);
+    (void)publish_id(*s.channel(), buf.data(), buf.size(), 0x42);
   });
 
   const auto t0 = std::chrono::steady_clock::now();
@@ -711,14 +741,47 @@ TEST_P(ExecutorTest, AWakerPokeDoesNotShortenSpinOnce)
   EXPECT_GE(elapsed, 350) << "a spurious wake cut the bounded wait short";
 }
 
-TEST_P(ExecutorTest, AddRejectsPastMaxChannels)
+// The pass budget bounds callbacks, not the sources looked at. A source probed and found empty
+// ran no callback, so it cannot spend the budget that a later source's frame needs.
+TEST_P(ExecutorTest, APassBudgetBelowTheChannelCountStarvesNoChannel)
 {
-  FakeSource a, b, c;
-  flux::Executor ex(/*max_channels=*/2);
-  ex.add(a);
-  ex.add(b);
-  EXPECT_THROW(ex.add(c), std::length_error);
-  EXPECT_EQ(ex.size(), 2u);
+  constexpr int kChannels = 20;
+  std::vector<std::unique_ptr<FakeSource>> sources;
+  flux::Executor ex;
+  ex.set_pass_budget(16);
+  for (int i = 0; i < kChannels; ++i) {
+    sources.push_back(std::make_unique<FakeSource>());
+    ex.add(*sources.back());
+  }
+  ex.dispatch();
+  sources[kChannels - 1]->publish(0x42);
+  int delivered = 0;
+  for (int pass = 0; pass < 8 && delivered == 0; ++pass) delivered += ex.dispatch();
+  EXPECT_EQ(delivered, 1);
+  EXPECT_EQ(sources[kChannels - 1]->last_id.load(), 0x42u);
+}
+
+// More channels than the ring holds waits: arming flushes the ring as it fills, so no channel's
+// wait is dropped and there is no registration limit to size in advance. Each publish must end the
+// wait by waking it, not by the timeout.
+TEST_P(ExecutorTest, EveryChannelWakesPastTheRingSize)
+{
+  if (fallback()) GTEST_SKIP() << "the ring is the io_uring path's; parkers have no ring to fill";
+  constexpr int kChannels = 150;  // past the submission ring and past twice it, the completion ring
+  std::vector<std::unique_ptr<FakeSource>> sources;
+  flux::Executor ex;
+  for (int i = 0; i < kChannels; ++i) {
+    sources.push_back(std::make_unique<FakeSource>());
+    ex.add(*sources.back());
+  }
+  ex.dispatch();
+  for (const int i : {0, 63, 64, 127, 128, kChannels - 1}) {
+    sources[i]->publish(static_cast<std::uint8_t>(i));
+    const auto t0 = std::chrono::steady_clock::now();
+    EXPECT_EQ(ex.spin_once(/*timeout_ns=*/5'000'000'000), 1) << "channel " << i;
+    EXPECT_LT(ms_since(t0), 3000) << "channel " << i << " was never woken";
+    EXPECT_EQ(sources[i]->last_id.load(), static_cast<std::uint8_t>(i));
+  }
 }
 
 // Registration is pre-spin only: the spin thread walks the entry vector without a lock, so a
@@ -947,7 +1010,7 @@ TEST_P(ExecutorTest, DeliverySurvivesAPublisherRestart)
   // delivery resumed has to be newer than that re-attach: keep publishing while dispatching.
   bool recovered = false;
   for (int i = 0; i < 400 && !recovered; ++i) {
-    publish_id(*pub2, buf.data(), buf.size(), 2);
+    (void)publish_id(*pub2, buf.data(), buf.size(), 2);
     if (ex.dispatch() > 0 && s.last_id.load() == 2u) recovered = true;
   }
   EXPECT_TRUE(recovered) << "the executor stopped delivering across a publisher restart";
@@ -958,7 +1021,7 @@ TEST_P(ExecutorTest, DeliverySurvivesAPublisherRestart)
   // NEW word too, so a publish alone -- no tick, no further dispatch -- ends the wait.
   std::thread pub([&] {
     std::this_thread::sleep_for(100ms);
-    publish_id(*pub2, buf.data(), buf.size(), 3);
+    (void)publish_id(*pub2, buf.data(), buf.size(), 3);
   });
   const auto t0 = std::chrono::steady_clock::now();
   const int woke = ex.spin_once(/*timeout_ns=*/5'000'000'000);
@@ -968,6 +1031,74 @@ TEST_P(ExecutorTest, DeliverySurvivesAPublisherRestart)
   EXPECT_LT(elapsed, 3000) << "the wait was still armed on the replaced segment's word";
 
   pub2.reset();
+  ::shm_unlink(name.c_str());
+}
+
+// A restart must swap the kernel's wait on the old word for exactly one on the new word. The
+// cancel's own completion and the cancelled wait's both came back under the entry's tag and
+// cleared `pending` for the wait just armed, so the next dispatch armed a second one: one wait
+// per restart was left in the kernel for the life of the ring.
+TEST(ExecutorRestart, ARestartLeavesNoExtraWaitInTheKernel)
+{
+  const auto io_uring_fds = [] {
+    std::vector<int> fds;
+    DIR * d = ::opendir("/proc/self/fd");
+    while (dirent * e = ::readdir(d)) {
+      char target[256];
+      const std::string link = std::string("/proc/self/fd/") + e->d_name;
+      const ssize_t n = ::readlink(link.c_str(), target, sizeof(target) - 1);
+      if (n <= 0) continue;
+      target[n] = '\0';
+      if (std::strstr(target, "io_uring") != nullptr) fds.push_back(std::atoi(e->d_name));
+    }
+    ::closedir(d);
+    return fds;
+  };
+  // Operations the kernel still holds: submitted and not yet completed.
+  const auto in_flight = [](int fd) {
+    std::ifstream f("/proc/self/fdinfo/" + std::to_string(fd));
+    long sq_head = 0;
+    long cq_tail = 0;
+    for (std::string l; std::getline(f, l);) {
+      std::sscanf(l.c_str(), "SqHead:\t%ld", &sq_head);
+      std::sscanf(l.c_str(), "CqTail:\t%ld", &cq_tail);
+    }
+    return sq_head - cq_tail;
+  };
+
+  const std::uint64_t fp = 0xE1E1E1u;
+  const std::string name = flux::segment_name(uniq("/flux_exec_restart_leak"), fp);
+  ::shm_unlink(name.c_str());
+  std::vector<std::byte> buf(128);
+  std::optional<flux::Channel> pub;
+  pub.emplace(flux::open_publisher_segment(name, 128, 4, fp));
+
+  const std::vector<int> before = io_uring_fds();
+  ShmSource s(name, fp);
+  flux::Executor ex;
+  if (!ex.uses_io_uring()) GTEST_SKIP() << "no io_uring on this kernel";
+  ex.add(s);
+  ex.dispatch();
+  int ring = -1;
+  for (int fd : io_uring_fds()) {
+    if (std::find(before.begin(), before.end(), fd) == before.end()) ring = fd;
+  }
+  ASSERT_GE(ring, 0);
+  for (int i = 0; i < 3; ++i) ex.spin_once(10'000'000);
+  const long steady = in_flight(ring);
+
+  for (int round = 0; round < 3; ++round) {
+    const std::uint32_t gen = s.channel()->attach_generation();
+    pub.reset();
+    pub.emplace(flux::open_publisher_segment(name, 128, 4, fp));
+    for (int i = 0; i < 500 && s.channel()->attach_generation() == gen; ++i) {
+      ex.spin_once(2'000'000);
+    }
+    ASSERT_NE(s.channel()->attach_generation(), gen) << "no re-attach; the test proved nothing";
+    for (int i = 0; i < 5; ++i) ex.spin_once(10'000'000);
+  }
+  EXPECT_EQ(in_flight(ring), steady) << "each restart left a wait behind in the kernel";
+  pub.reset();
   ::shm_unlink(name.c_str());
 }
 

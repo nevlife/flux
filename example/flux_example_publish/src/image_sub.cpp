@@ -15,7 +15,9 @@ class ImageSubscriber : public rclcpp::Node
 public:
   ImageSubscriber()
   : Node("flux_publish_image_sub"),
-    sub_(*this, kTopic, Image::kFingerprint, [this](const flux::FrameView & f) { on_frame(f); })
+    sub_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
+      on_frame(f);
+    })
   {
   }
 
@@ -60,7 +62,6 @@ int main(int argc, char ** argv)
   ex.add(node->subscription());
   ex.add_ros_node(node);
 
-  rclcpp::on_shutdown([&ex]() { ex.stop(); });
   ex.spin();
   rclcpp::shutdown();
   return 0;

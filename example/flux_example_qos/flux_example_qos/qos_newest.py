@@ -34,7 +34,7 @@ class NewestSubscriber(Node):
         r = self.subscription.refused
         self.get_logger().info(
             f"seen {self.seen}  lost {self.subscription.lost}  "
-            f"refused {r.total} (max_borrow {r.max_borrow}, not_ready {r.not_ready})"
+            f"refused {r.total} (max_borrow {r.max_borrow})"
         )
 
 
@@ -42,7 +42,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = NewestSubscriber()
     executor = flux.ros.Executor()
-    executor.add_flux(node.subscription)
+    executor.add(node.subscription)
     executor.add_ros_node(node)
     try:
         executor.spin()

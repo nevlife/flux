@@ -94,8 +94,8 @@ def cmd_info(args):
         print("endpoints    none")
         return 0
     rows = [
-        ["pub" if e.publisher else "sub", str(e.pid), e.label or "-"]
-        for e in sorted(t.endpoints, key=lambda e: (not e.publisher, e.pid))
+        ["pub" if e.publisher else "sub", str(e.owner.pid), e.label or "-"]
+        for e in sorted(t.endpoints, key=lambda e: (not e.publisher, e.owner.pid))
     ]
     print("endpoints")
     for line in table(rows, ["ROLE", "PID", "LABEL"]):
@@ -216,9 +216,15 @@ def main(argv=None):
     # `flux topic list | head` closes the pipe early. Without this Python raises BrokenPipeError
     # out of print() and prints a traceback where a reporting tool should just stop.
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if getattr(args, "domain", None) is None:
         # Resolved the same way a node resolves it, so `flux topic list` and the nodes on this
         # host agree about which domain "here" means without the user restating it.
         args.domain = flux.process_domain()
+    else:
+        try:
+            args.domain = flux.canonical_domain(args.domain)
+        except ValueError as e:
+            parser.error(str(e).removeprefix("flux: "))  # argparse already prints "flux: error:"
     return args.func(args)

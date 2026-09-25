@@ -55,7 +55,7 @@ def main(args=None):
         rclpy.try_shutdown()
         return
     executor = flux.ros.Executor()
-    executor.add_flux(node.subscription)
+    executor.add(node.subscription)
     executor.add_ros_node(node)
     try:
         executor.spin()

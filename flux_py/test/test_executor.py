@@ -27,7 +27,7 @@ def test_dispatches_a_frame():
     assert len(ex) == 1
 
     a = np.arange(64, dtype=np.uint8)
-    assert pub.publish(a) == flux.Published.Ok
+    assert pub.publish(a) == flux.Published.OK
 
     assert ex.spin_once(timeout_ns=500_000_000) == 1
     np.testing.assert_array_equal(seen[0], a)
@@ -56,8 +56,8 @@ def test_two_channels_share_one_wait():
     ex.add(sub_a, lambda v: got.__setitem__("a", got["a"] + 1))
     ex.add(sub_b, lambda v: got.__setitem__("b", got["b"] + 1))
 
-    assert pub_a.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.Ok
-    assert pub_b.publish(np.ones(16, dtype=np.uint8)) == flux.Published.Ok
+    assert pub_a.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.OK
+    assert pub_b.publish(np.ones(16, dtype=np.uint8)) == flux.Published.OK
 
     dispatched = 0
     for _ in range(10):
@@ -82,8 +82,8 @@ def test_priority_orders_the_pass():
     ex.add(sub_lo, lambda v: order.append("lo"))
     ex.add(sub_hi, lambda v: order.append("hi"), priority=10)
 
-    assert pub_lo.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.Ok
-    assert pub_hi.publish(np.ones(16, dtype=np.uint8)) == flux.Published.Ok
+    assert pub_lo.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.OK
+    assert pub_hi.publish(np.ones(16, dtype=np.uint8)) == flux.Published.OK
 
     for _ in range(10):
         ex.spin_once(timeout_ns=200_000_000)
@@ -103,7 +103,7 @@ def test_depth_preserves_publish_order():
     ex.add(sub, lambda v: seen.append(int(v[0])))
 
     for i in range(5):
-        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.Ok
+        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.OK
 
     for _ in range(10):
         ex.spin_once(timeout_ns=200_000_000)
@@ -123,7 +123,7 @@ def test_depth_one_collapses_a_burst():
     ex.add(sub, lambda v: seen.append(int(v[0])))
 
     for i in range(5):
-        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.Ok
+        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.OK
 
     assert ex.spin_once(timeout_ns=200_000_000) == 1
     assert seen == [4]
@@ -145,7 +145,7 @@ def test_late_publisher_is_picked_up():
     assert ex.spin_once(timeout_ns=20_000_000) == 0  # nothing to attach to yet
 
     pub = flux.Publisher("/pytest/ex/late", slot_size=4096, slot_count=4, fingerprint=FP)
-    assert pub.publish(np.full(4, 42, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.full(4, 42, dtype=np.uint8)) == flux.Published.OK
 
     for _ in range(20):
         if ex.spin_once(timeout_ns=100_000_000):
@@ -164,7 +164,7 @@ def test_publisher_restart_keeps_delivering():
     ex = flux.Executor()
     ex.add(sub, lambda v: seen.append(int(v[0])))
 
-    assert pub.publish(np.full(4, 1, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.full(4, 1, dtype=np.uint8)) == flux.Published.OK
     for _ in range(10):
         if ex.spin_once(timeout_ns=200_000_000):
             break
@@ -194,7 +194,7 @@ def test_spin_stops_from_callback():
         ex.stop()
 
     ex.add(sub, cb)
-    assert pub.publish(np.full(4, 9, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.full(4, 9, dtype=np.uint8)) == flux.Published.OK
 
     done = threading.Event()
 
@@ -260,22 +260,17 @@ def test_self_referencing_callback_is_collectable():
     assert finalized, "the Executor <-> callback cycle was not collected"
 
 
-def test_capacity_is_enforced():
-    ex = flux.Executor(max_channels=1)
-    ex.add(flux.Subscription("/pytest/ex/cap1", fingerprint=FP), lambda v: None)
-    try:
-        # std::length_error on the C++ side, which is what flux_cpp's test asserts too: one
-        # refusal, spelled the way each language spells a bad argument.
-        ex.add(flux.Subscription("/pytest/ex/cap2", fingerprint=FP), lambda v: None)
-    except ValueError as e:
-        assert "max_channels" in str(e)
-    else:
-        raise AssertionError("expected the executor to reject a channel past max_channels")
+def test_there_is_no_channel_limit_to_size_in_advance():
+    ex = flux.Executor()
+    subs = [flux.Subscription(f"/pytest/ex/many{i}", fingerprint=FP) for i in range(100)]
+    for sub in subs:
+        ex.add(sub, lambda v: None)
+    assert len(ex) == 100
 
 
 def test_add_rejects_a_non_subscription_with_type_error():
     # nb::cast raises std::bad_cast, which nanobind maps to RuntimeError -- an unhelpful message
-    # for the common `ex.add(ros_sub, cb)` mistake. flux.ros.Executor.add_flux already raised
+    # for the common `ex.add(ros_sub, cb)` mistake. flux.ros.Executor.add already raised
     # TypeError, so the two surfaces disagreed.
     ex = flux.Executor()
     try:
@@ -419,7 +414,7 @@ def test_waiter_gate_balances_across_a_self_reattach():
 # nobody asks a second time.
 def test_stop_before_spin_is_not_erased():
     sub = flux.Subscription("/pytest/exec/stop_first", fingerprint=0)
-    ex = flux._flux.Executor(max_channels=1)
+    ex = flux._flux.Executor()
     ex.add(sub, lambda v: None)
 
     ex.stop()
@@ -433,7 +428,7 @@ def test_stop_before_spin_is_not_erased():
 # Consuming the request on the way out is what keeps the executor reusable.
 def test_the_same_executor_spins_again_after_stop():
     sub = flux.Subscription("/pytest/exec/reuse", fingerprint=0)
-    ex = flux._flux.Executor(max_channels=1)
+    ex = flux._flux.Executor()
     ex.add(sub, lambda v: None)
 
     for _ in range(2):
@@ -450,7 +445,7 @@ def test_the_same_executor_spins_again_after_stop():
 
 def test_concurrent_spin_is_refused():
     sub = flux.Subscription("/pytest/exec/reentry", fingerprint=0)
-    ex = flux._flux.Executor(max_channels=1)
+    ex = flux._flux.Executor()
     ex.add(sub, lambda v: None)
 
     done = threading.Event()

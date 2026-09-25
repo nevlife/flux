@@ -12,10 +12,16 @@ from flux_cli.format import display_name, endpoint_summary, human_bytes, storage
 from flux_cli.main import build_parser
 
 
+class FakeOwner:
+    def __init__(self, pid):
+        self.pid = pid
+        self.starttime = 0
+
+
 class FakeEndpoint:
     def __init__(self, publisher, pid=1, label=""):
         self.publisher = publisher
-        self.pid = pid
+        self.owner = FakeOwner(pid)
         self.label = label
 
 
@@ -170,3 +176,23 @@ def test_domain_list_names_the_split_when_there_is_more_than_one(monkeypatch, ca
     assert "7 (here)" in out
     assert "\n0 " in out and "(here)" not in out.split("\n0 ")[1].split("\n")[0]
     assert "more than one domain" in out
+
+
+# A domain is an integer, rendered the way a node renders it, so `--domain 007` looks where a
+# node with ROS_DOMAIN_ID=007 publishes. Anything else is refused rather than reported as empty.
+def test_domain_flag_takes_the_canonical_integer(monkeypatch, capsys):
+    topics = [FakeTopic("/a", domain="7"), FakeTopic("/b", domain="0")]
+    monkeypatch.setattr(main_module.flux, "enumerate_topics", lambda: topics)
+    monkeypatch.setattr(
+        main_module.flux, "read_channel_stats", lambda _signpost: FakeStats(live=True))
+    assert main_module.main(["topic", "list", "--domain", "007"]) == 0
+    out = capsys.readouterr().out
+    assert "/a" in out and "/b" not in out
+
+
+@pytest.mark.parametrize("bad", ["lab", "a/b", "", "-1"])
+def test_domain_flag_refuses_what_is_not_a_domain(bad, capsys):
+    with pytest.raises(SystemExit) as e:
+        main_module.main(["topic", "list", "--domain", bad])
+    assert e.value.code == 2
+    assert "plain integer" in capsys.readouterr().err

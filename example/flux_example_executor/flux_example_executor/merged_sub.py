@@ -53,7 +53,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = MergedSubscriber()
     executor = flux.ros.Executor()
-    executor.add_flux(node.flux_sub)
+    executor.add(node.flux_sub)
     executor.add_ros_node(node)
     node.get_logger().info(f"merged wait: io_uring={executor.uses_io_uring}")
     try:

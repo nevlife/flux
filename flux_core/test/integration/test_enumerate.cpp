@@ -5,11 +5,14 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -24,10 +27,10 @@ std::string uniq(const char * stem)
   return std::string(stem) + std::to_string(::getpid());
 }
 
-const flux::TopicView * find(const std::vector<flux::TopicView> & all, const std::string & signpost)
+const flux::Topic * find(const std::vector<flux::Topic> & all, const std::string & signpost)
 {
   const auto it = std::find_if(
-    all.begin(), all.end(), [&](const flux::TopicView & t) { return t.signpost == signpost; });
+    all.begin(), all.end(), [&](const flux::Topic & t) { return t.signpost == signpost; });
   return it == all.end() ? nullptr : &*it;
 }
 
@@ -52,7 +55,7 @@ TEST(Enumerate, AnnouncedEndpointsComeBackWithTheirKeyAndLabel)
   ::close(fd);
 
   const auto all = flux::enumerate_topics();
-  const flux::TopicView * t = find(all, sp);
+  const flux::Topic * t = find(all, sp);
   ASSERT_NE(t, nullptr);
   EXPECT_EQ(t->domain, "0");
   EXPECT_EQ(t->key, key);
@@ -77,7 +80,7 @@ TEST(Enumerate, AChannelWithNoLiveParticipantReportsAnInexactKey)
   ::close(fd);
 
   const auto all = flux::enumerate_topics();
-  const flux::TopicView * t = find(all, sp);
+  const flux::Topic * t = find(all, sp);
   ASSERT_NE(t, nullptr);
   EXPECT_TRUE(t->endpoints.empty());
   EXPECT_FALSE(t->key_exact);
@@ -113,7 +116,7 @@ TEST(Enumerate, AnUnlockedOwnerFilesManifestIsIgnoredAndLeftAlone)
   EXPECT_EQ(flux::OwnerFile::read_manifest(ghost).size(), 1u);
 
   const auto all = flux::enumerate_topics();
-  const flux::TopicView * t = find(all, sp);
+  const flux::Topic * t = find(all, sp);
   ASSERT_NE(t, nullptr);
   EXPECT_TRUE(t->endpoints.empty());
 
@@ -168,4 +171,40 @@ TEST(Enumerate, SweepUnlinksADeadOwnerFileWhoseManifestLooksLikeASignpost)
     ::close(gone);
     ::shm_unlink(ghost.c_str());
   }
+}
+
+// Reading stats is observation: a name nobody created stays uncreated.
+TEST(ChannelStats, ReadingAnAbsentChannelCreatesNothing)
+{
+  const std::string sp = flux::signpost_name("/" + uniq("stats/absent"), 0xabc, "0");
+  EXPECT_FALSE(flux::read_channel_stats(sp).live);
+  EXPECT_LT(::shm_open(sp.c_str(), O_RDONLY, 0), 0);
+  EXPECT_EQ(errno, ENOENT);
+}
+
+// Absent is the one failure that means "no publisher yet". Anything else no retry fixes, so it
+// is reported rather than read as not live.
+TEST(ChannelStats, AChannelThatCannotBeOpenedThrows)
+{
+  EXPECT_THROW(flux::read_channel_stats("/flux.not/a.name"), std::runtime_error);
+  if (::geteuid() == 0) GTEST_SKIP() << "root reads a mode-0 file anyway";
+  const std::string sp = flux::signpost_name("/" + uniq("stats/unreadable"), 0xabc, "0");
+  int fd = ::shm_open(sp.c_str(), O_CREAT | O_RDWR, 0);
+  ASSERT_GE(fd, 0);
+  ::close(fd);
+  EXPECT_THROW(flux::read_channel_stats(sp), std::runtime_error);
+  ::shm_unlink(sp.c_str());
+}
+
+// Another user's channel is listed by name in /dev/shm but cannot be read here. Enumeration lists
+// what this process can read, so a tool looping over it never meets that error.
+TEST(Enumerate, AChannelThisProcessCannotReadIsNotListed)
+{
+  if (::geteuid() == 0) GTEST_SKIP() << "root reads a mode-0 file anyway";
+  const std::string sp = flux::signpost_name("/" + uniq("enum/unreadable"), 0xabc, "0");
+  int fd = ::shm_open(sp.c_str(), O_CREAT | O_RDWR, 0);
+  ASSERT_GE(fd, 0);
+  ::close(fd);
+  EXPECT_EQ(find(flux::enumerate_topics(), sp), nullptr);
+  ::shm_unlink(sp.c_str());
 }

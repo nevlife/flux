@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -35,10 +36,14 @@ namespace
       break;                                                                             \
     case flux::IoUringSupport::NoOpcode:                                                 \
       GTEST_SKIP() << "flux-cap:io-uring kernel lacks io_uring FUTEX_WAIT (needs 6.7+)"; \
+    case flux::IoUringSupport::Forbidden:                                                \
+      FAIL() << "io_uring is forbidden on this host (container seccomp profile, "        \
+                "kernel.io_uring_disabled), not missing from this kernel. The merged "   \
+                "wait layer went unchecked.";                                            \
     case flux::IoUringSupport::RingFailed:                                               \
       FAIL() << "io_uring is denied on this host, not missing from this kernel: the "    \
-                "ring could not be created (container seccomp profile, RLIMIT_NOFILE, "  \
-                "RLIMIT_MEMLOCK). The merged wait layer went unchecked.";                \
+                "ring could not be created (RLIMIT_NOFILE, RLIMIT_MEMLOCK). The merged " \
+                "wait layer went unchecked.";                                            \
   }
 
 constexpr std::uint64_t kFingerprint = 0xE9EC0Full;
@@ -76,7 +81,7 @@ TEST(FluxExecutor, MergesFluxAndRosInOneRing)
 
   // No poll period: nothing drives this subscription until the executor does.
   flux::ros::Subscription flux_sub(
-    *sub_node, "/exec/bulk", kFingerprint, [&](const flux::FrameView & v) {
+    *sub_node, "/exec/bulk", kFingerprint, flux::QoS{}, [&](const flux::FrameView & v) {
       const auto * p = static_cast<const std::uint8_t *>(v.data());
       const auto tag = frame_tag(v);
       for (std::size_t i = 0; i < v.size(); ++i) {
@@ -104,7 +109,7 @@ TEST(FluxExecutor, MergesFluxAndRosInOneRing)
     while (run.load() && seq < 500) {
       ++seq;
       std::memset(buf.data(), static_cast<int>(seq & 0xFF), buf.size());
-      flux_pub.publish(buf.data(), buf.size());
+      (void)flux_pub.publish(buf.data(), buf.size());
       std_msgs::msg::UInt64 m;
       m.data = seq;
       ros_pub->publish(m);
@@ -143,7 +148,8 @@ TEST(FluxExecutor, KeepsDeliveringAcrossPublisherRestart)
 
   std::atomic<int> got{0};
   flux::ros::Subscription sub(
-    *sub_node, "/exec/restart", kFingerprint, [&](const flux::FrameView &) { got.fetch_add(1); });
+    *sub_node, "/exec/restart", kFingerprint, flux::QoS{},
+    [&](const flux::FrameView &) { got.fetch_add(1); });
 
   flux::ros::Executor exec;
   exec.add(sub);
@@ -157,7 +163,7 @@ TEST(FluxExecutor, KeepsDeliveringAcrossPublisherRestart)
     flux::ros::Publisher first(*pub_node, "/exec/restart", kFingerprint, kSlotSize, kSlots);
     const auto deadline = std::chrono::steady_clock::now() + 5s;
     while (got.load() == 0 && std::chrono::steady_clock::now() < deadline) {
-      first.publish(buf.data(), buf.size());
+      (void)first.publish(buf.data(), buf.size());
       std::this_thread::sleep_for(2ms);
     }
     before = got.load();
@@ -166,7 +172,7 @@ TEST(FluxExecutor, KeepsDeliveringAcrossPublisherRestart)
   flux::ros::Publisher second(*pub_node, "/exec/restart", kFingerprint, kSlotSize, kSlots);
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   while (got.load() <= before && std::chrono::steady_clock::now() < deadline) {
-    second.publish(buf.data(), buf.size());
+    (void)second.publish(buf.data(), buf.size());
     std::this_thread::sleep_for(2ms);
   }
   const int after = got.load();
@@ -195,12 +201,12 @@ TEST(FluxExecutor, DeliverStopsAtTheDrainCeiling)
   static_assert(kPublished > flux::kMaxDrain, "the ceiling has to be what stops this drain");
 
   flux::QoS qos;
-  qos.depth = kDeepSlots;  // deeper than the ceiling, so depth is not what stops it
+  qos.keep_last(kDeepSlots);  // deeper than the ceiling, so depth is not what stops it
 
   int calls = 0;
   flux::ros::Publisher pub(*node, "/exec/drain_cap", kFingerprint, 256, kDeepSlots);
   flux::ros::Subscription sub(
-    *node, "/exec/drain_cap", kFingerprint, [&](const flux::FrameView &) { ++calls; }, qos);
+    *node, "/exec/drain_cap", kFingerprint, qos, [&](const flux::FrameView &) { ++calls; });
   ASSERT_TRUE(sub.attach());  // joins the stream before anything is published
 
   std::vector<std::byte> buf(256);
@@ -229,7 +235,7 @@ TEST(FluxExecutor, MemoryPolicyReachesBothWrappers)
 
   flux::ros::Publisher pub(*node, "/exec/mem", kFingerprint, 4096, 8, flux::Device::Cpu, mem);
   flux::ros::Subscription sub(
-    *node, "/exec/mem", kFingerprint, [](const flux::FrameView &) {}, flux::QoS{},
+    *node, "/exec/mem", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {},
     flux::Device::Cpu, mem);
 
   EXPECT_TRUE(pub.pages_committed());
@@ -247,6 +253,52 @@ TEST(FluxExecutor, MemoryPolicyReachesBothWrappers)
 // The priority argument reaches flux::Executor::add through this wrapper. The ordering itself is
 // flux_core's contract and is tested there; what can break here is the argument being dropped on
 // the way through, which would leave every source at the default and look like nothing at all.
+// A node belongs to one executor, and handing it over twice is refused the way rclcpp refuses it.
+// rclpy returns quietly instead, and flux.ros.Executor follows rclpy (contracts S-008).
+TEST(FluxExecutor, AddingTheSameNodeTwiceThrowsAsRclcppDoes)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("fx_twice");
+  flux::ros::Executor ex;
+  ex.add_ros_node(node);
+  EXPECT_THROW(ex.add_ros_node(node), std::runtime_error);
+  rclcpp::shutdown();
+}
+
+// A subscription built without a callback is a pull surface; an executor has nothing to run for
+// it and says so at add() rather than delivering into nothing (contracts S-009).
+TEST(FluxExecutor, AddingASubscriptionWithNoCallbackIsRefused)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("fx_no_cb");
+  flux::ros::Subscription sub(*node, "/exec/no_cb", kFingerprint);
+  flux::ros::Executor ex;
+  EXPECT_THROW(ex.add(sub), std::invalid_argument);
+  rclcpp::shutdown();
+}
+
+// rclcpp::shutdown() (what SIGINT does after rclcpp::init) ends spin(), as it ends an rclcpp
+// executor's. Without it a node's main never returns from spin() on Ctrl-C.
+TEST(FluxExecutor, AContextShutdownEndsSpin)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("fx_ctx_down");
+  flux::ros::Executor ex;
+  ex.add_ros_node(node);
+  std::promise<void> done;
+  std::thread t([&] {
+    ex.spin(20'000'000);
+    done.set_value();
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  rclcpp::shutdown();
+  const bool ended =
+    done.get_future().wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  if (!ended) ex.stop();
+  t.join();
+  EXPECT_TRUE(ended) << "spin() outlived rclcpp::shutdown()";
+}
+
 TEST(FluxExecutor, PriorityReachesTheCore)
 {
   rclcpp::init(0, nullptr);
@@ -256,9 +308,11 @@ TEST(FluxExecutor, PriorityReachesTheCore)
   flux::ros::Publisher pub_lo(*node, "/exec/prio_lo", kFingerprint, 256, 8);
   flux::ros::Publisher pub_hi(*node, "/exec/prio_hi", kFingerprint, 256, 8);
   flux::ros::Subscription lo(
-    *node, "/exec/prio_lo", kFingerprint, [&](const flux::FrameView &) { order.push_back(1); });
+    *node, "/exec/prio_lo", kFingerprint, flux::QoS{},
+    [&](const flux::FrameView &) { order.push_back(1); });
   flux::ros::Subscription hi(
-    *node, "/exec/prio_hi", kFingerprint, [&](const flux::FrameView &) { order.push_back(2); });
+    *node, "/exec/prio_hi", kFingerprint, flux::QoS{},
+    [&](const flux::FrameView &) { order.push_back(2); });
 
   flux::ros::Executor ex;
   ex.add(lo);  // registered first, default priority
@@ -271,29 +325,6 @@ TEST(FluxExecutor, PriorityReachesTheCore)
 
   EXPECT_EQ(ex.dispatch(), 2);
   EXPECT_EQ(order, (std::vector<int>{2, 1}));
-
-  rclcpp::shutdown();
-}
-
-// The io_uring is sized for max_channels + 1, so registering past it would have to overwrite an
-// unsubmitted entry. Reject instead, the way flux_py's Executor already does -- silently dropping
-// an arm leaves that one channel served only by the tick, with no error anywhere.
-TEST(FluxExecutor, AddRejectsPastMaxChannels)
-{
-  FLUX_REQUIRE_IO_URING();
-  rclcpp::init(0, nullptr);
-  auto node = std::make_shared<rclcpp::Node>("flux_cap_node");
-
-  std::vector<std::unique_ptr<flux::ros::Subscription>> subs;
-  for (int i = 0; i < 3; ++i) {
-    subs.push_back(std::make_unique<flux::ros::Subscription>(
-      *node, "/exec/cap" + std::to_string(i), kFingerprint, [](const flux::FrameView &) {}));
-  }
-
-  flux::ros::Executor ex(/*max_channels=*/2);
-  ex.add(*subs[0]);
-  ex.add(*subs[1]);
-  EXPECT_THROW(ex.add(*subs[2]), std::length_error);
 
   rclcpp::shutdown();
 }
@@ -430,7 +461,7 @@ TEST(FluxExecutor, BridgesASubscriptionCreatedAfterAdd)
   EXPECT_GT(delivered, 0) << "a subscription created after add_ros_node was never bridged";
 }
 
-// The fallback the kernel selects on Jetson Orin (5.15, no io_uring FUTEX_WAIT). It cannot be
+// The fallback the kernel selects below 6.7 (no io_uring FUTEX_WAIT). It cannot be
 // reached on a 6.7+ machine unless it is forced, which is why it went untested until now: one
 // thread per channel parks in the kernel and pokes the same eventfd the ROS bridge uses.
 TEST(FluxExecutor, FallbackDeliversWithoutIoUring)
@@ -448,7 +479,7 @@ TEST(FluxExecutor, FallbackDeliversWithoutIoUring)
   std::atomic<int> torn{0};
 
   flux::ros::Subscription flux_sub(
-    *sub_node, "/exec/fb_bulk", kFingerprint, [&](const flux::FrameView & v) {
+    *sub_node, "/exec/fb_bulk", kFingerprint, flux::QoS{}, [&](const flux::FrameView & v) {
       const auto * p = static_cast<const std::uint8_t *>(v.data());
       const auto tag = frame_tag(v);
       for (std::size_t i = 0; i < v.size(); ++i) {
@@ -476,7 +507,7 @@ TEST(FluxExecutor, FallbackDeliversWithoutIoUring)
   for (std::uint64_t seq = 1; std::chrono::steady_clock::now() < deadline; ++seq) {
     if (flux_count.load() >= 20 && ros_count.load() >= 20) break;
     std::memset(buf.data(), static_cast<int>(seq & 0xFF), buf.size());
-    flux_pub.publish(buf.data(), buf.size());
+    (void)flux_pub.publish(buf.data(), buf.size());
     std_msgs::msg::UInt64 m;
     m.data = seq;
     ros_pub->publish(m);
@@ -535,11 +566,12 @@ TEST(FluxExecutor, RosTimerKeepsItsPeriodUnderASaturatedFluxChannel)
 
   flux::ros::Publisher pub(*node, "/flux/timer_sat", kFingerprint, 4096, 16);
   // Each callback burns real CPU: this is the WCET term the bound is written in.
-  flux::ros::Subscription sub(*node, "/flux/timer_sat", kFingerprint, [](const flux::FrameView &) {
-    const auto until = std::chrono::steady_clock::now() + 1ms;
-    while (std::chrono::steady_clock::now() < until) {
-    }
-  });
+  flux::ros::Subscription sub(
+    *node, "/flux/timer_sat", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {
+      const auto until = std::chrono::steady_clock::now() + 1ms;
+      while (std::chrono::steady_clock::now() < until) {
+      }
+    });
 
   flux::ros::Executor exec;  // default pass_budget: the shape that measured 128 ms
   exec.add(sub);
@@ -549,7 +581,7 @@ TEST(FluxExecutor, RosTimerKeepsItsPeriodUnderASaturatedFluxChannel)
   std::thread flood([&] {
     const std::uint8_t payload[64] = {};
     while (flooding.load(std::memory_order_relaxed)) {
-      pub.publish(payload, sizeof(payload));
+      (void)pub.publish(payload, sizeof(payload));
       std::this_thread::sleep_for(100us);
     }
   });
@@ -603,9 +635,9 @@ TEST(FluxExecutor, RegistrationDuringSpinThrows)
   auto node = std::make_shared<rclcpp::Node>("flux_exec_addguard");
   flux::ros::Publisher pub(*node, "/exec/addguard", kFingerprint, kSlotSize, kSlots);
   flux::ros::Subscription sub(
-    *node, "/exec/addguard", kFingerprint, [](const flux::FrameView &) {});
+    *node, "/exec/addguard", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
   flux::ros::Subscription late(
-    *node, "/exec/addguard_late", kFingerprint, [](const flux::FrameView &) {});
+    *node, "/exec/addguard_late", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
 
   flux::ros::Executor exec;
   exec.add(sub);
@@ -675,7 +707,7 @@ TEST(FluxExecutor, TheInheritedSpinAndCancelDriveThisExecutor)
   rclcpp::init(0, nullptr);
   auto node = std::make_shared<rclcpp::Node>("flux_cancel_node");
 
-  flux::ros::Executor ex(/*max_channels=*/1);
+  flux::ros::Executor ex;
   ex.add_ros_node(node);
   rclcpp::Executor & base = ex;  // the way a generic rclcpp caller holds it
 
@@ -715,7 +747,7 @@ TEST(FluxExecutor, TheInheritedSpinAndCancelDriveThisExecutor)
 TEST(FluxExecutor, TheSpinVariantsWithADurationBudgetAreRefused)
 {
   rclcpp::init(0, nullptr);
-  flux::ros::Executor ex(/*max_channels=*/1);
+  flux::ros::Executor ex;
   rclcpp::Executor & base = ex;
   EXPECT_THROW(base.spin_some(std::chrono::nanoseconds(0)), std::runtime_error);
   EXPECT_THROW(base.spin_all(std::chrono::nanoseconds(1'000'000)), std::runtime_error);
@@ -731,8 +763,8 @@ TEST(FluxExecutor, AClearedRunFlagIsHonouredEvenIfItLandsBeforeSpinEntry)
   auto node = std::make_shared<rclcpp::Node>("flux_run_flag_node");
 
   flux::ros::Subscription sub(
-    *node, "/exec/run_flag", kFingerprint, [](const flux::FrameView &) {});
-  flux::ros::Executor ex(/*max_channels=*/1);
+    *node, "/exec/run_flag", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
+  flux::ros::Executor ex;
   ex.add(sub);
 
   std::atomic<bool> run{false};  // cleared before the thread is even started
@@ -761,7 +793,7 @@ TEST(FluxExecutor, TheInheritedSpinOnceServicesRosEntities)
     "/exec/spin_once", 10, [&](std_msgs::msg::UInt64::SharedPtr) { got.fetch_add(1); });
   auto pub = node->create_publisher<std_msgs::msg::UInt64>("/exec/spin_once", 10);
 
-  flux::ros::Executor ex(/*max_channels=*/1);
+  flux::ros::Executor ex;
   ex.add_ros_node(node);
   rclcpp::Executor & base = ex;
 
@@ -800,7 +832,7 @@ TEST(FluxExecutor, SpinNodeOnceServicesTheNodeItIsGiven)
     "/exec/spin_node_once", 10, [&](std_msgs::msg::UInt64::SharedPtr) { got.fetch_add(1); });
   auto pub = node->create_publisher<std_msgs::msg::UInt64>("/exec/spin_node_once", 10);
 
-  flux::ros::Executor ex(/*max_channels=*/1);
+  flux::ros::Executor ex;
   rclcpp::Executor & base = ex;
 
   std_msgs::msg::UInt64 m;
@@ -832,8 +864,8 @@ TEST(FluxExecutor, TheInheritedAddNodeBridgesRatherThanJustRegistering)
   // at once, the loop spins hot, and every pass would deliver whether anything was bridged or
   // not -- the tick would never be the only thing left.
   flux::ros::Subscription flux_sub(
-    *node, "/exec/add_node_flux", kFingerprint, [](const flux::FrameView &) {});
-  flux::ros::Executor ex(/*max_channels=*/1);
+    *node, "/exec/add_node_flux", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
+  flux::ros::Executor ex;
   ex.add(flux_sub);
   rclcpp::Executor & base = ex;
   base.add_node(node);  // not add_ros_node
@@ -873,7 +905,7 @@ TEST(FluxExecutor, RemoveNodeClearsTheHooksItInstalled)
     "/exec/remove_node", 10, [&](std_msgs::msg::UInt64::SharedPtr) { got.fetch_add(1); });
   auto pub = node->create_publisher<std_msgs::msg::UInt64>("/exec/remove_node", 10);
 
-  flux::ros::Executor ex(/*max_channels=*/1);
+  flux::ros::Executor ex;
   rclcpp::Executor & base = ex;
   base.add_node(node);
 
@@ -896,18 +928,111 @@ TEST(FluxExecutor, RemoveNodeClearsTheHooksItInstalled)
   rclcpp::shutdown();
 }
 
-// The two meanings that used to share one flag. A spin_once() from another thread raises
-// rclcpp's gate for its pass; that must not read as a second spin, and must not clear the gate
-// the running spin() is holding up.
-TEST(FluxExecutor, ASpinOnceDuringASpinNeitherThrowsNorEndsTheSpin)
+TEST(FluxExecutor, AStopBeforeSpinEndsItAndIsClearedOnTheWayOut)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_stop_first_node");
+  flux::ros::Executor ex;
+  ex.add_ros_node(node);
+
+  ex.stop();
+  auto first = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+  ASSERT_EQ(first.wait_for(5s), std::future_status::ready) << "a stop() before spin() was lost";
+  first.get();
+
+  auto second = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+  EXPECT_EQ(second.wait_for(300ms), std::future_status::timeout)
+    << "the stop() outlived the spin it ended";
+  ex.stop();
+  ASSERT_EQ(second.wait_for(5s), std::future_status::ready);
+  second.get();
+  rclcpp::shutdown();
+}
+
+// spin_once(t) waits for the first work of either transport, not for the one the core happens to
+// watch: a ROS message that arrives inside the wait ends it, as a flux frame does.
+TEST(FluxExecutor, ASpinOnceReturnsOnTheFirstWorkOfEitherTransport)
+{
+  FLUX_REQUIRE_IO_URING();
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_first_work_node");
+  std::atomic<int> ros_got{0};
+  std::atomic<int> flux_got{0};
+  auto ros_pub = node->create_publisher<std_msgs::msg::UInt64>("/exec/first_work", 10);
+  auto ros_sub = node->create_subscription<std_msgs::msg::UInt64>(
+    "/exec/first_work", 10, [&](std_msgs::msg::UInt64::ConstSharedPtr) { ros_got.fetch_add(1); });
+  flux::ros::Publisher flux_pub(*node, "/exec/first_work_flux", kFingerprint, kSlotSize, kSlots);
+  flux::ros::Subscription sub(
+    *node, "/exec/first_work_flux", kFingerprint, flux::QoS{},
+    [&](const flux::FrameView &) { flux_got.fetch_add(1); });
+  flux::ros::Executor ex;
+  ex.add(sub);
+  ex.add_ros_node(node);
+  ex.spin_once(std::int64_t{0});  // attach and arm before timing anything
+
+  auto timed = [&](auto send) {
+    const auto t0 = std::chrono::steady_clock::now();
+    std::thread sender([&] {
+      std::this_thread::sleep_for(100ms);
+      send();
+    });
+    ex.spin_once(std::int64_t{2'000'000'000});
+    sender.join();
+    return std::chrono::steady_clock::now() - t0;
+  };
+  const auto ros_wait = timed([&] { ros_pub->publish(std_msgs::msg::UInt64{}); });
+  EXPECT_LT(ros_wait, 1s) << "a ROS message did not end the wait";
+  EXPECT_EQ(ros_got.load(), 1);
+  const std::uint64_t word = 7;
+  const auto flux_wait = timed([&] { (void)flux_pub.publish(&word, sizeof(word)); });
+  EXPECT_LT(flux_wait, 1s) << "a flux frame did not end the wait";
+  EXPECT_EQ(flux_got.load(), 1);
+  rclcpp::shutdown();
+}
+
+// An interrupt() or stop() ends one wait and leaves nothing behind. A later spin_once() still waits
+// out its whole timeout through the early wakes the fallback takes to retry an absent publisher.
+TEST(FluxExecutor, AnInterruptThatEndedASpinDoesNotShortenALaterSpinOnce)
+{
+  ::setenv("FLUX_DISABLE_IO_URING", "1", 1);  // the fallback's attach tick is the early wake
+  struct Unset
+  {
+    ~Unset() { ::unsetenv("FLUX_DISABLE_IO_URING"); }
+  } unset;
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_stale_interrupt_node");
+  flux::ros::Subscription sub(
+    *node, "/exec/stale_interrupt", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
+  flux::ros::Executor ex;
+  ex.add(sub);
+  ex.add_ros_node(node);
+
+  auto spinning = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+  std::this_thread::sleep_for(100ms);
+  ex.interrupt();
+  ex.stop();
+  ASSERT_EQ(spinning.wait_for(5s), std::future_status::ready);
+  spinning.get();
+
+  const auto t0 = std::chrono::steady_clock::now();
+  ex.spin_once(std::int64_t{300'000'000});
+  EXPECT_GE(std::chrono::steady_clock::now() - t0, 250ms)
+    << "an interrupt consumed by nothing ended an unrelated wait";
+  rclcpp::shutdown();
+}
+
+// A spin_once() from another thread would drive the same ring and entry lists as the running
+// spin() with no lock between them, so it is refused. The refusal must leave the running spin()
+// and the gate it holds up alone.
+TEST(FluxExecutor, ASpinOnceDuringASpinIsRefusedAndLeavesTheSpinRunning)
 {
   FLUX_REQUIRE_IO_URING();
   rclcpp::init(0, nullptr);
   auto node = std::make_shared<rclcpp::Node>("flux_concurrent_pass_node");
 
   flux::ros::Subscription sub(
-    *node, "/exec/concurrent", kFingerprint, [](const flux::FrameView &) {});
-  flux::ros::Executor ex(/*max_channels=*/1);
+    *node, "/exec/concurrent", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
+  flux::ros::Executor ex;
   ex.add(sub);
 
   std::atomic<bool> run{true};
@@ -919,13 +1044,12 @@ TEST(FluxExecutor, ASpinOnceDuringASpinNeitherThrowsNorEndsTheSpin)
   std::this_thread::sleep_for(200ms);
   ASSERT_TRUE(ex.is_spinning());
 
-  EXPECT_NO_THROW(ex.spin_once(1'000'000));
-  std::this_thread::sleep_for(100ms);
-  EXPECT_FALSE(returned.load()) << "a concurrent pass ended the spin";
-  EXPECT_TRUE(ex.is_spinning()) << "a concurrent pass cleared the gate the spin was holding";
-
-  // A second spin() is still refused: that guard is its own flag now.
+  EXPECT_THROW(ex.spin_once(1'000'000), std::logic_error);
+  EXPECT_THROW(ex.spin_once(std::chrono::milliseconds(1)), std::logic_error);
   EXPECT_THROW(ex.spin(20'000'000), std::logic_error);
+  std::this_thread::sleep_for(100ms);
+  EXPECT_FALSE(returned.load()) << "a refused pass ended the spin";
+  EXPECT_TRUE(ex.is_spinning()) << "a refused pass cleared the gate the spin was holding";
 
   run.store(false);
   ex.stop();

@@ -55,14 +55,14 @@ def test_precommit_reaches_the_mapping():
         memory=flux.MemoryPolicy(precommit=True),
     )
     assert _resident_kb(_needle(topic)) >= PAYLOAD_KB
-    assert pub.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.OK
 
 
 def test_without_it_the_segment_stays_sparse():
     topic = "/pytest/mem/sparse"
     pub = flux.Publisher(topic, fingerprint=FP, slot_size=SLOT, slot_count=SLOTS)
     assert _resident_kb(_needle(topic)) < PAYLOAD_KB // 2
-    assert pub.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.OK
 
 
 def test_a_subscriber_declares_its_own():
@@ -74,7 +74,7 @@ def test_a_subscriber_declares_its_own():
     resident = _resident_kb(_needle(topic))
     assert resident >= PAYLOAD_KB, "the subscriber's mapping was not committed"
     assert resident < PAYLOAD_KB + PAYLOAD_KB // 2, "the publisher's mapping was committed too"
-    assert pub.publish(np.full(8, 5, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.full(8, 5, dtype=np.uint8)) == flux.Published.OK
     assert int(sub.take()[0]) == 5
 
 
@@ -93,3 +93,22 @@ def test_a_refused_lock_raises_rather_than_downgrading():
             )
     finally:
         resource.setrlimit(resource.RLIMIT_MEMLOCK, (soft, hard))
+
+
+def test_a_refused_lock_on_a_subscription_raises_rather_than_looking_unattached():
+    # The subscriber's own mapping is refused. That must come back as the error, not as a
+    # subscription that looks unattached and retries against a publisher that is already up.
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_MEMLOCK)
+    if soft == resource.RLIM_INFINITY and os.geteuid() == 0:
+        pytest.skip("running as root with no memlock limit: nothing is refused")
+    topic = "/pytest/mem/refuse_sub"
+    pub = flux.Publisher(topic, fingerprint=FP, slot_size=SLOT, slot_count=SLOTS)
+    resource.setrlimit(resource.RLIMIT_MEMLOCK, (4096, hard))
+    try:
+        with pytest.raises(OSError):
+            flux.Subscription(topic, fingerprint=FP, memory=flux.MemoryPolicy(lock=True))
+    finally:
+        resource.setrlimit(resource.RLIMIT_MEMLOCK, (soft, hard))
+    del pub

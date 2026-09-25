@@ -84,7 +84,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t * data, std::size_t siz
         (void)r.desc(off);
         break;
       case 6:
-        (void)r.len(off);
+        (void)r.len(off, c.u32() % 64 + 1, 1);
         break;
       case 7:
         touch(r.span<std::uint8_t>(off));

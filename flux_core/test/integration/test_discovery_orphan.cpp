@@ -9,9 +9,11 @@
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -57,6 +59,18 @@ void unlink_signpost_and_disarm(const std::string & name, int)
 {
   ::shm_unlink(name.c_str());
   flux::detail::g_signpost_after_open = nullptr;
+}
+
+// Shrink the file size limit so the create path's ftruncate fails with EFBIG while this process
+// holds the signpost write lock, then disarm.
+rlimit g_saved_fsize{};
+void cap_file_size_and_disarm(const std::string &, int)
+{
+  ::getrlimit(RLIMIT_FSIZE, &g_saved_fsize);
+  rlimit tiny = g_saved_fsize;
+  tiny.rlim_cur = 1;
+  ::setrlimit(RLIMIT_FSIZE, &tiny);
+  flux::detail::g_bootstrap_after_open = nullptr;
 }
 
 }  // namespace
@@ -219,4 +233,33 @@ TEST(DiscoveryOrphan, TakeFlagsOrphanWhenThePublisherGroupDies)
   EXPECT_TRUE(sub.orphaned());
 
   ::shm_unlink(name.c_str());
+}
+
+// A create that throws while holding the signpost write lock must not keep it: the next publisher
+// on the topic would find it held on every attempt and fail its bootstrap.
+TEST(DiscoveryOrphan, ACreateThatThrowsReleasesTheSignpostLock)
+{
+  reset_seam();
+  ::shm_unlink(kName.c_str());
+  auto * const old_xfsz = std::signal(SIGXFSZ, SIG_IGN);
+
+  flux::detail::g_bootstrap_after_open = &cap_file_size_and_disarm;
+  std::string what;
+  try {
+    flux::open_publisher_segment(kName, kSlotSize, kSlotCount, kFp);
+  } catch (const std::runtime_error & e) {
+    what = e.what();
+  }
+  ::setrlimit(RLIMIT_FSIZE, &g_saved_fsize);
+  std::signal(SIGXFSZ, old_xfsz);
+  EXPECT_EQ(flux::detail::g_bootstrap_after_open, nullptr) << "seam never fired";
+  EXPECT_NE(what.find("ftruncate"), std::string::npos)
+    << "the create did not fail where aimed: " << what;
+
+  flux::Segment seg = flux::open_publisher_segment(kName, kSlotSize, kSlotCount, kFp);
+  EXPECT_NE(flux::signpost_epoch(kName), 0u);
+
+  seg = flux::Segment{};
+  reset_seam();
+  ::shm_unlink(kName.c_str());
 }

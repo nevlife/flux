@@ -89,11 +89,10 @@ public:
   // they may be re-attached to a replacement segment.
   bool holds_liveness_lock() const noexcept { return fd_ >= 0; }
 
-  // Drop this mapping's payload region to PROT_READ (subscriber hardening; the headers a
-  // subscriber writes stay writable). Returns false without side effects when the mapping is
-  // not shm-backed, the runtime page size does not divide kPayloadAlign, or mprotect is
-  // refused -- the attach stands either way, and payload_readonly() reports the outcome.
-  bool protect_payload() noexcept;
+  // Drop this mapping's payload region to PROT_READ; the headers a subscriber writes stay writable.
+  // Skipped when there is no payload here (dGPU), the page size does not divide kPayloadAlign, or
+  // mprotect refuses. payload_readonly() reports the outcome.
+  void protect_payload() noexcept;
   bool payload_readonly() const noexcept { return payload_readonly_; }
 
   // Fault in every page of this mapping, so no page fault is left on the publish or the take.

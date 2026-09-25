@@ -147,6 +147,7 @@ private:
   void check_sync_groups(const GroupMap & known);
 
   SpinControl ctl_;
+  rclcpp::OnShutdownCallbackHandle on_shutdown_;  // context shutdown ends spin(), as in rclcpp
   std::atomic<bool> child_run_{false};  // parent-owned: children never see the caller's flag
 
   struct Assigned

@@ -115,12 +115,11 @@ DepthCloudDisplay::DepthCloudDisplay()
   min_range_property_ = new rviz_common::properties::FloatProperty(
     "Min Range", 0.0f, "Points nearer than this, in meters, are dropped.", this);
   max_range_property_ = new rviz_common::properties::FloatProperty(
-    "Max Range", 0.0f, "Points farther than this, in meters, are dropped. 0 means no limit.",
-    this);
+    "Max Range", 0.0f, "Points farther than this, in meters, are dropped. 0 means no limit.", this);
   point_size_property_ = new rviz_common::properties::IntProperty(
     "Point Size (Pixels)", 3, "Size of each point on screen.", this);
-  alpha_property_ = new rviz_common::properties::FloatProperty(
-    "Alpha", 1.0f, "Opacity of the points.", this);
+  alpha_property_ =
+    new rviz_common::properties::FloatProperty("Alpha", 1.0f, "Opacity of the points.", this);
   min_range_property_->setMin(0.0f);
   max_range_property_->setMin(0.0f);
   point_size_property_->setMin(1);
@@ -190,8 +189,8 @@ bool DepthCloudDisplay::ensureTexture(
     texture_.reset();
   }
   texture_ = tm.createManual(
-    "FluxDepthCloudTexture" + std::to_string(next_id()), material_->getGroup(),
-    Ogre::TEX_TYPE_2D, width, height, 0, format, Ogre::TU_DYNAMIC_WRITE_ONLY_DISCARDABLE);
+    "FluxDepthCloudTexture" + std::to_string(next_id()), material_->getGroup(), Ogre::TEX_TYPE_2D,
+    width, height, 0, format, Ogre::TU_DYNAMIC_WRITE_ONLY_DISCARDABLE);
   if (!texture_) {
     return false;
   }
@@ -292,12 +291,9 @@ void DepthCloudDisplay::subscribe()
     setStatus(StatusProperty::Error, "Topic", "No topic set");
     return;
   }
-  flux::QoS qos;
-  qos.depth = 1;
-  qos.max_borrow = 1;
+  const auto qos = flux::QoS(1).max_borrow(1);
   try {
-    sub_ = std::make_unique<flux::ros::Subscription>(
-      *node_, topic, Image::kFingerprint, flux::ros::Subscription::Callback{}, qos);
+    sub_ = std::make_unique<flux::ros::Subscription>(*node_, topic, Image::kFingerprint, qos);
   } catch (const std::exception & e) {
     setStatus(StatusProperty::Error, "Topic", QString("Subscribe failed: ") + e.what());
     return;
@@ -320,8 +316,7 @@ void DepthCloudDisplay::subscribeCameraInfo()
   // Best effort matches both a best effort and a reliable publisher; reliable matches only one.
   try {
     info_sub_ = node_->create_subscription<sensor_msgs::msg::CameraInfo>(
-      topic, rclcpp::SensorDataQoS(),
-      [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr msg) {
+      topic, rclcpp::SensorDataQoS(), [this](sensor_msgs::msg::CameraInfo::ConstSharedPtr msg) {
         std::lock_guard<std::mutex> lock(info_mutex_);
         info_ = std::move(msg);
       });
@@ -382,9 +377,9 @@ void DepthCloudDisplay::update(float, float)
         .arg(QString::fromUtf8(encoding.data(), static_cast<int>(encoding.size()))));
     return;
   }
-  if (w == 0 || h == 0 || step < std::size_t{w} * fmt.pixel_bytes ||
-    data.size() < std::size_t{step} * h)
-  {
+  if (
+    w == 0 || h == 0 || step < std::size_t{w} * fmt.pixel_bytes ||
+    data.size() < std::size_t{step} * h) {
     setStatus(StatusProperty::Error, "Message", "Frame shorter than height x step");
     return;
   }
@@ -398,7 +393,10 @@ void DepthCloudDisplay::update(float, float)
     setStatus(
       StatusProperty::Error, "Camera Info",
       QString("Frame is %1 x %2, CameraInfo describes %3 x %4")
-        .arg(w).arg(h).arg(roi_w / bx).arg(roi_h / by));
+        .arg(w)
+        .arg(h)
+        .arg(roi_w / bx)
+        .arg(roi_h / by));
     return;
   }
   if (info->p[0] == 0.0 || info->p[5] == 0.0) {
@@ -427,18 +425,16 @@ void DepthCloudDisplay::update(float, float)
     "range",
     Ogre::Vector4(lo, hi, fmt.to_meters, static_cast<float>(point_size_property_->getInt())));
   params->setNamedConstant(
-    "extent",
-    Ogre::Vector4(
-      1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h), alpha_property_->getFloat(),
-      hi > lo ? hi : lo + kColorSpanMeters));
+    "extent", Ogre::Vector4(
+                1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h),
+                alpha_property_->getFloat(), hi > lo ? hi : lo + kColorSpanMeters));
 
   const std::string frame_id(view.header__frame_id());
   Ogre::Vector3 position;
   Ogre::Quaternion orientation;
   if (!context_->getFrameManager()->getTransform(
-      frame_id, rclcpp::Time(view.header__sec(), view.header__nanosec(), RCL_ROS_TIME),
-      position, orientation))
-  {
+        frame_id, rclcpp::Time(view.header__sec(), view.header__nanosec(), RCL_ROS_TIME), position,
+        orientation)) {
     setMissingTransformToFixedFrame(frame_id);
     return;
   }

@@ -19,8 +19,6 @@ Platform none(const char * why)
   return p;
 }
 
-#if defined(__linux__)
-
 using detail::DevicePtr;
 using detail::driver;
 using detail::Driver;
@@ -46,13 +44,10 @@ Route select(const Platform & p)
   return Route::None;
 }
 
-#endif  // __linux__
-
 }  // namespace
 
 Platform probe(int device)
 {
-#if defined(__linux__)
   const Driver & drv = driver();
   if (!drv.ok()) return none(drv.error);
 
@@ -77,15 +72,10 @@ Platform probe(int device)
     p.reason = "device shares no memory route: not integrated and no fd export";
   }
   return p;
-#else
-  (void)device;
-  return none("not Linux");
-#endif
 }
 
 HostRegistration HostRegistration::create(void * base, std::size_t bytes, bool read_only)
 {
-#if defined(__linux__)
   const Driver & drv = driver();
   if (!drv.ok()) throw std::invalid_argument(std::string("flux: ") + drv.error);
   if (!drv.host_reg_ok()) throw std::invalid_argument(std::string("flux: ") + drv.host_reg_error);
@@ -111,17 +101,10 @@ HostRegistration HostRegistration::create(void * base, std::size_t bytes, bool r
   reg.owner_ = std::shared_ptr<void>(base, [unregister](void * p) { unregister(p); });
   reg.device_base_ = reinterpret_cast<void *>(static_cast<std::uintptr_t>(device));
   return reg;
-#else
-  (void)base;
-  (void)bytes;
-  (void)read_only;
-  throw std::runtime_error("flux: host registration is Linux-only");
-#endif
 }
 
 Stream Stream::create()
 {
-#if defined(__linux__)
   const Driver & drv = driver();
   if (!drv.ok()) throw std::runtime_error(std::string("flux: ") + drv.error);
   if (!ensure_context(drv)) {
@@ -137,9 +120,6 @@ Stream Stream::create()
   auto * destroy = drv.stream_destroy;
   s.owner_ = std::shared_ptr<void>(handle, [destroy](void * h) { destroy(h); });
   return s;
-#else
-  throw std::runtime_error("flux: GPU streams are Linux-only");
-#endif
 }
 
 void require_route()
@@ -178,13 +158,9 @@ Stream stream_for(Device device)
 bool Stream::wait() const noexcept
 {
   if (!declared_) return true;
-#if defined(__linux__)
   const Driver & drv = driver();
   if (!drv.ok()) return false;
   return drv.stream_synchronize(native_) == kSuccess;
-#else
-  return false;
-#endif
 }
 
 const char * to_string(Route route)
@@ -199,7 +175,7 @@ const char * to_string(Route route)
     case Route::DeviceHandle:
       return "DeviceHandle";
   }
-  return "None";
+  return "Unknown";
 }
 
 }  // namespace flux::gpu

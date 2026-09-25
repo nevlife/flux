@@ -55,10 +55,11 @@ class Subscriber(SimpleFilter):
 
     The synchronization key is the message's header stamp. A schema with no `std_msgs/Header`
     cannot go here: `FrameMeta` carries no time of its own, so there is no key. C++ stops at
-    compile time; here the first frame raises.
+    compile time; here the constructor raises TypeError.
 
-    Hand this to an executor directly; `ex.add_flux(sub)` reads the flux Subscription out of
-    it. `.subscription` is that Subscription, for the pull surface and the QoS counters.
+    Hand this to an executor directly; `ex.add(sub)` reads the flux Subscription out of
+    it. `.sub` is that Subscription, as upstream names its rclpy subscription, for the pull surface
+    and the QoS counters.
     """
 
     def __init__(self, node, adapter, topic, **kwargs):
@@ -69,11 +70,17 @@ class Subscriber(SimpleFilter):
                 "adapter module as its second argument, e.g. "
                 "`from sensor_msgs_flux.image import Image`"
             )
+        if not hasattr(adapter.View, "header__stamp"):
+            raise TypeError(
+                f"flux: {adapter.TYPE_NAME__} has no std_msgs/Header, so there is no stamp "
+                "to synchronize on. message_filters keys on the header stamp and FrameMeta "
+                "carries no time of its own."
+            )
         self.adapter = adapter
         self.topic = topic
         self.forwarded = 0
         self.unreadable = 0
-        self.subscription = Subscription(
+        self.sub = Subscription(
             node, topic, callback=self._forward, fingerprint=adapter.FINGERPRINT__, **kwargs
         )
 
@@ -85,12 +92,6 @@ class Subscriber(SimpleFilter):
 
         try:
             sec, nanosec = self.adapter.View(frame).header__stamp
-        except AttributeError as exc:
-            raise TypeError(
-                f"flux: {self.adapter.TYPE_NAME__} has no std_msgs/Header, so there is no stamp "
-                "to synchronize on. message_filters keys on the header stamp and FrameMeta "
-                "carries no time of its own."
-            ) from exc
         except WireError:
             # A frame that disagrees with the descriptor is a wrong message, not a late one:
             # nothing is forwarded and the synchronizer never sees it.

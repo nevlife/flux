@@ -12,7 +12,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <initializer_list>
 #include <memory>
 #include <string>
 
@@ -21,13 +20,18 @@ namespace flux
 
 class Channel;
 
+namespace detail
+{
+std::uint32_t next_attach_generation() noexcept;
+}  // namespace detail
+
 // Outcome of a publish. Backpressure is the only transient one and the only one that bumps
 // dropped(); the rest are wiring mistakes or a fault, and a caller that treats them as a rate
 // never finds them. The publish path derives dtype and shape from its arguments, so a
 // self-contradicting descriptor is not among the outcomes. It cannot be built.
-enum class Published : std::uint8_t {
+enum class [[nodiscard]] Published : std::uint8_t {
   Ok,
-  Backpressure,  // every slot is borrowed; dropped()++
+  Backpressure,  // every slot is borrowed, or no writer identity to claim under; dropped()++
   TooLarge,      // the frame does not fit the slot or kMaxDims, or this handle was already spent
   WrongDevice,   // a host publish into a device-backed channel; loan() is the path there
   FenceFailed,   // the declared stream could not be waited on; fence_failed()++
@@ -377,8 +381,13 @@ public:
   // which is the one inconsistency a caller-supplied FrameMeta could express.
   Published publish(
     const void * data, DType dt, const std::uint64_t * shape, std::size_t ndim) noexcept;
-  Published publish(
-    const void * data, DType dt, std::initializer_list<std::uint64_t> shape) noexcept;
+  // A literal shape ({480, 640, 3}) has its rank fixed at compile time, so it is checked there.
+  template <std::size_t N>
+  Published publish(const void * data, DType dt, const std::uint64_t (&shape)[N]) noexcept
+  {
+    static_assert(N <= kMaxDims, "flux: a frame has at most kMaxDims (8) dimensions");
+    return publish(data, dt, shape, N);
+  }
 
   // Publisher 0-copy (split): reserve+claim a free slot the same way publish()
   // selects one and hand back a
@@ -390,7 +399,12 @@ public:
   // takes no arguments at all.
   WriteSlot loan() noexcept;
   WriteSlot loan(DType dt, const std::uint64_t * shape, std::size_t ndim) noexcept;
-  WriteSlot loan(DType dt, std::initializer_list<std::uint64_t> shape) noexcept;
+  template <std::size_t N>
+  WriteSlot loan(DType dt, const std::uint64_t (&shape)[N]) noexcept
+  {
+    static_assert(N <= kMaxDims, "flux: a frame has at most kMaxDims (8) dimensions");
+    return loan(dt, shape, N);
+  }
 
   // Subscriber. peek() reads the newest frame and leaves the cursor alone, so it
   // hands out the same frame until a new one is published; take() consumes the next frame in
@@ -408,7 +422,7 @@ public:
   FrameView take_blocking(std::int64_t timeout_ns = -1) noexcept;
 
   // Frames never delivered to this consumer since it joined the stream: lapped by the ring, or
-  // dropped by qos().depth. Cumulative, like the DDS sample-lost status. Diff it to get a rate.
+  // dropped by qos().depth(). Cumulative, like the DDS sample-lost status. Diff it to get a rate.
   //
   // "Since it joined the stream" is literal: a re-attach joins a NEW stream with its own tickets,
   // so this restarts at 0 there while refused() carries over (that one counts this consumer's
@@ -468,20 +482,17 @@ public:
   // without it a held lease and an idle stream look identical. Cumulative, like lost().
   struct Refused
   {
-    std::uint64_t max_borrow = 0;     // this consumer already holds qos().max_borrow views
+    std::uint64_t max_borrow = 0;     // this consumer already holds qos().max_borrow() views
     std::uint64_t holder_table = 0;   // kMaxHolders processes already hold that slot
-    std::uint64_t not_ready = 0;      // segment still initializing
     std::uint64_t contended = 0;      // seqlock validation lost its whole retry budget
     std::uint64_t bad_frame = 0;      // meta outside the slot, or no committed frame in it
     std::uint64_t no_owner_file = 0;  // this process could not take its owner file
-    // Failed release fences leaked max_borrow leases: this consumer is permanently finished.
-    // Split from max_borrow because the answers are opposites --
-    // max_borrow is undone by releasing a view, and nothing undoes this one.
+    // max_borrow leases leaked by failed release fences; unlike max_borrow, nothing undoes it.
     std::uint64_t fence = 0;
 
     std::uint64_t total() const noexcept
     {
-      return max_borrow + holder_table + not_ready + contended + bad_frame + no_owner_file + fence;
+      return max_borrow + holder_table + contended + bad_frame + no_owner_file + fence;
     }
   };
   // Cumulative for this consumer's whole life, re-attaches included, unlike lost(), which
@@ -511,8 +522,8 @@ public:
   // this Channel re-attaches or is destroyed; compare attach_generation() to notice the swap.
   std::shared_ptr<ChannelShared> wait_handle() const noexcept { return sh_; }
 
-  // Bumped per re-attach. A counter rather than the wake_word() address,
-  // which a fresh mapping can reuse.
+  // Changes on every re-attach and is unique within the process, so a Channel built in place of
+  // another never repeats a value. Not the wake_word() address: a fresh mapping can reuse it.
   std::uint32_t attach_generation() const noexcept { return attach_gen_; }
 
   // A starved re-attach probe found the attached segment's publisher group dead while the
@@ -611,9 +622,10 @@ private:
   // mapping and carries none of the old one's residency.
   void apply_memory_policy();
 
-  // Stamp this publisher's identity into a freshly claimed slot (seq == odd), so a peer can
-  // recover the slot if this publisher crashes before commit/abort.
-  void stamp_writer(SlotHeader * sl, std::uint64_t odd) noexcept;
+  // Stamp this process's identity into a freshly claimed slot (seq == odd), so a peer can
+  // recover the slot if this publisher crashes before commit/abort. False when the identity
+  // cannot be set up; the caller must not keep the claim then.
+  bool stamp_writer(SlotHeader * sl, std::uint64_t odd) noexcept;
 
   // Recover slots left claimed (seq odd) by a crashed publisher: for each odd slot whose stamped
   // writer is dead (OFD probe), CAS the seq back to its pre-claim even generation. Run by the
@@ -622,19 +634,17 @@ private:
 
   std::shared_ptr<ChannelShared> sh_;
   QoS qos_{};
-  MemoryPolicy mem_{};                  // page residency, re-applied on every attach
-  std::uint64_t cursor_ = 0;            // last ticket take() returned
-  std::uint64_t lost_ = 0;              // frames never delivered (cumulative)
-  std::uint32_t stalled_polls_ = 0;     // takes with no new frame since the last probe
-  std::uint32_t attach_gen_ = 0;        // bumped per re-attach; see attach_generation()
+  MemoryPolicy mem_{};               // page residency, re-applied on every attach
+  std::uint64_t cursor_ = 0;         // last ticket take() returned
+  std::uint64_t lost_ = 0;           // frames never delivered (cumulative)
+  std::uint32_t stalled_polls_ = 0;  // takes with no new frame since the last probe
+  std::uint32_t attach_gen_ = detail::next_attach_generation();  // see attach_generation()
   std::string signpost_name_;           // subscriber: fixed signpost name, for re-attach probes
   SignpostView signpost_;               // held mapping of it, so rotation checks cost no syscall
   std::uint32_t signpost_epoch_ = 0;    // signpost epoch attached at; a change means a rotation
   bool orphaned_ = false;               // publisher group dead, no rotation coming; see orphaned()
   std::uint64_t last_seen_ticket_ = 0;  // ticket of the last frame take() handed out
   Refused refused_{};                   // see refused(); plain members, only touched on refusal
-  OwnerId writer_id_{};                 // this publisher's identity, stamped on claim
-  bool writer_ready_ = false;           // owner file ensured + writer_id_ cached
 };
 
 }  // namespace flux

@@ -16,9 +16,9 @@ class NewestSubscriber : public rclcpp::Node
 public:
   NewestSubscriber()
   : Node("flux_qos_newest"),
-    sub_(
-      *this, kTopic, Image::kFingerprint, [this](const flux::FrameView & f) { on_frame(f); },
-      newest_qos())
+    sub_(*this, kTopic, Image::kFingerprint, newest_qos(), [this](const flux::FrameView & f) {
+      on_frame(f);
+    })
   {
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
@@ -30,13 +30,7 @@ private:
 
   static constexpr const char * kTopic = "image";
 
-  static flux::QoS newest_qos()
-  {
-    flux::QoS q;
-    q.depth = 1;
-    q.max_borrow = 1;
-    return q;
-  }
+  static flux::QoS newest_qos() { return flux::QoS(1).max_borrow(1); }
 
   void on_frame(const flux::FrameView & f)
   {
@@ -50,8 +44,8 @@ private:
   {
     const flux::Channel::Refused r = sub_.refused();
     RCLCPP_INFO(
-      get_logger(), "seen %lu  lost %lu  refused %lu (max_borrow %lu, not_ready %lu)", seen_,
-      sub_.lost(), r.total(), r.max_borrow, r.not_ready);
+      get_logger(), "seen %lu  lost %lu  refused %lu (max_borrow %lu)", seen_, sub_.lost(),
+      r.total(), r.max_borrow);
   }
 
   flux::ros::Subscription sub_;
@@ -68,7 +62,6 @@ int main(int argc, char ** argv)
   ex.add(node->subscription());
   ex.add_ros_node(node);
 
-  rclcpp::on_shutdown([&ex]() { ex.stop(); });
   ex.spin();
   rclcpp::shutdown();
   return 0;

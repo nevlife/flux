@@ -19,33 +19,47 @@ struct Durability
   constexpr bool is_volatile() const { return replay == 0; }
 };
 
-enum class Reliability : std::uint8_t {
-  BestEffort = 0,
-  Reliable = 1,  // not implemented (docs/en/qos.en.md 2)
-};
-
-struct QoS
+// Built like rclcpp::QoS. A setter refuses a value wrong on its own; validate() is the one check
+// that needs two fields, so it runs where the QoS is used.
+class QoS
 {
-  std::uint32_t depth = 1;  // frames this consumer may fall behind the newest
-  Durability durability = Durability::Volatile();
-  std::uint32_t max_borrow = 2;  // views held at once; a held view keeps its slot byte-locked
-  Reliability reliability = Reliability::BestEffort;
+public:
+  QoS() = default;
+  QoS(std::uint32_t depth) { keep_last(depth); }  // NOLINT(runtime/explicit): QoS(10) as rclcpp
 
-  // Rejects instead of reinterpreting. Silently redefining a value is how one integer ended up
-  // meaning both start position and delivery mode.
+  // Frames this consumer may fall behind the newest.
+  QoS & keep_last(std::uint32_t depth)
+  {
+    if (depth == 0) fail("depth must be >= 1; depth=1 means the newest frame only");
+    depth_ = depth;
+    return *this;
+  }
+  QoS & durability_volatile()
+  {
+    durability_ = Durability::Volatile();
+    return *this;
+  }
+  QoS & transient_local(std::uint32_t n)
+  {
+    durability_ = Durability::TransientLocal(n);
+    return *this;
+  }
+  // Views held at once; a held view keeps its slot byte-locked.
+  QoS & max_borrow(std::uint32_t n)
+  {
+    if (n == 0)
+      fail("max_borrow must be >= 1: a consumer that may hold no view can never take one");
+    max_borrow_ = n;
+    return *this;
+  }
+
+  std::uint32_t depth() const noexcept { return depth_; }
+  Durability durability() const noexcept { return durability_; }
+  std::uint32_t max_borrow() const noexcept { return max_borrow_; }
+
   void validate() const
   {
-    if (reliability == Reliability::Reliable) {
-      fail(
-        "reliability=reliable is not implemented; delivery is best-effort (docs/en/qos.en.md 2)");
-    }
-    if (depth == 0) {
-      fail("depth must be >= 1; depth=1 means the newest frame only");
-    }
-    if (max_borrow == 0) {
-      fail("max_borrow must be >= 1: a consumer that may hold no view can never take one");
-    }
-    if (durability.replay > depth) {
+    if (durability_.replay > depth_) {
       fail(
         "durability=transient_local(n) needs n <= depth: replayed frames arrive through the same "
         "lag window, so a consumer cannot receive more of them than it may fall behind");
@@ -57,6 +71,10 @@ private:
   {
     throw std::invalid_argument(std::string("flux: ") + why);
   }
+
+  std::uint32_t depth_ = 1;
+  Durability durability_ = Durability::Volatile();
+  std::uint32_t max_borrow_ = 2;
 };
 
 }  // namespace flux

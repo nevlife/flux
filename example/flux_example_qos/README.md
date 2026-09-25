@@ -16,9 +16,7 @@ Both nodes log `seen`, `lost`, and `refused` every second.
 On every wakeup, the single newest frame. Whatever passed in between is not queued and is counted as `lost`. A consumer that needs only the current state uses this.
 
 ```cpp
-flux::QoS q;
-q.depth = 1;
-q.max_borrow = 1;
+auto q = flux::QoS(1).max_borrow(1);
 ```
 
 ## qos_backlog, depth 8, transient_local(4)
@@ -26,10 +24,7 @@ q.max_borrow = 1;
 On every wakeup, up to eight frames in publish order. On attach it replays four of what remains in the ring and then follows real time. The callback sleeps 50 ms, so it is slower than the publisher, and that is why `lost` actually moves.
 
 ```cpp
-flux::QoS q;
-q.depth = 8;
-q.durability = flux::Durability::TransientLocal(4);
-q.max_borrow = 4;
+auto q = flux::QoS(8).transient_local(4).max_borrow(4);
 ```
 
 `replay` must be at most `depth`. Replayed frames pass through the same lag window, so you cannot receive more than you are allowed to fall behind.
@@ -46,4 +41,4 @@ When `can_borrow` is false and an empty frame arrives, the stream is not idle. T
 
 `refused` separates why the empty frame came. Folding a normal absence and a refusal into one value makes the latter impossible to find.
 
-`reliability` is `BEST_EFFORT` only. Passing `RELIABLE` makes the constructor throw. flux delivery is best-effort.
+There is no `reliability` setting. flux delivery is always best-effort.

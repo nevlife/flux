@@ -32,6 +32,9 @@ struct Lidar
   void read_into(float *, std::size_t) {}
 };
 
+void report(const char *)
+{
+}
 void use(float)
 {
 }
@@ -50,10 +53,10 @@ void doc_adapter_publish(const rclcpp::Node::SharedPtr & node, Lidar & lidar, st
   Cloud::Builder b = Cloud::build__(pub);
   if (b) {
     auto xs = b.alloc__x(n);
-    lidar.read_into(xs.data(), n);
+    lidar.read_into(xs.data(), xs.size());
     b.set__width(static_cast<std::uint32_t>(n));
     b.set__label("front");
-    b.commit__();
+    if (const flux::Published p = b.commit__(); flux::faulted(p)) report(flux::to_string(p));
   }
   // [doc:/adapter_cpp_pub]
 }
@@ -63,15 +66,16 @@ void doc_adapter_subscribe(const rclcpp::Node::SharedPtr & node)
   // [doc:adapter_cpp_sub]
   using my_pkg::flux_msg::Cloud;
 
-  flux::ros::Subscription sub(*node, "cloud", Cloud::kFingerprint, [](const flux::FrameView & f) {
-    Cloud::View c(f);
-    for (float x : c.x()) {
-      use(x);
-    }
-    if (!c.ok__()) {
-      return;
-    }
-  });
+  flux::ros::Subscription sub(
+    *node, "cloud", Cloud::kFingerprint, flux::QoS{}, [](const flux::FrameView & f) {
+      Cloud::View c(f);
+      for (float x : c.x()) {
+        use(x);
+      }
+      if (!c.ok__()) {
+        return;
+      }
+    });
   // [doc:/adapter_cpp_sub]
 }
 
@@ -83,7 +87,7 @@ void doc_adapter_bridge(
 
   Image::Builder b(w);
   msg_to_frame(img, b);
-  b.commit__();
+  if (const flux::Published p = b.commit__(); flux::faulted(p)) report(flux::to_string(p));
 
   sensor_msgs::msg::Image back = frame_to_msg(Image::View(f));
   // [doc:/adapter_cpp_bridge]
@@ -97,9 +101,8 @@ void doc_message_filters(rclcpp::Node & node)
   using sensor_msgs::flux_msg::Image;
   using Frame = flux::ros::message_filters::StampedFrame<Image>;
 
-  flux::QoS qos;
-  qos.depth = 4;
-  qos.max_borrow = 16;  // inputs x queue_size: a filter holds every frame until its partner lands
+  // max_borrow = inputs x queue_size: a filter holds every frame until its partner lands.
+  const auto qos = flux::QoS(4).max_borrow(16);
 
   flux::ros::message_filters::Subscriber<Image> left(node, "cam/left", qos);
   flux::ros::message_filters::Subscriber<Image> right(node, "cam/right", qos);

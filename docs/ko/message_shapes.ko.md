@@ -185,8 +185,8 @@ include/<pkg>/flux/<snake>_ros.hpp   msg_to_frame · frame_to_msg  (ROS 메시�
 
 adapter는 host payload 전용이다. `View`·`Builder`가 `FrameView::data()`·`WriteSlot::data()`를 그대로 `wire` 런타임에 넘기고 그 위에서 host load·store를 하므로, 슬롯이 device 할당인 dGPU 채널에서는 쓸 수 없다. 그 채널에서 `data()`는 `nullptr`이라 `View`·`Builder`가 `ok__() == false`가 되고 `commit()`이 거부한다 -- 조용히 GPU 메모리에 host store를 하는 대신이다. dGPU에서 발행하고 받는 길은 `device_ptr()`과 `stream()`이다(`api.ko.md` GPU 절). iGPU(`ShmDirect`)는 슬롯이 host 메모리이기도 해서 adapter가 그대로 돈다.
 
-수신 쪽은 프레임을 다른 프로세스가 썼다고 보고 descriptor를 하나도 안 믿는다. 범위와 정렬을 다 검사하고, 어긋나면 C++은 `ok__()`가 false로 래치되고 Python은 `WireError`를 던진다. 프레임 밖을 가리키는 포인터를 내주는 경로는 없다.
+수신 쪽은 프레임을 다른 프로세스가 썼다고 보고 descriptor를 하나도 안 믿는다. 범위와 정렬을 다 검사하고, 어긋나면 C++은 `ok__()`가 false로 래치되고 Python은 `WireError`를 던진다. 프레임 밖을 가리키는 포인터를 내주는 경로는 없다. 문자열 바이트의 UTF-8 여부는 C++에서 검사하지 않는다. rclcpp가 `std::string`에 바이트를 그대로 두듯 문자열은 그 바이트의 `std::string_view`다. Python은 디코드해야 하므로 UTF-8이 아닌 문자열은 다른 읽을 수 없는 프레임처럼 `WireError`를 던진다.
 
-`frame_to_msg`에서 프레임이 든 배열 길이가 스키마의 `T[N]`과 다르면 두 언어 모두 명시 에러다 — C++은 `std::length_error`, Python은 `ValueError`. 길이는 프레임이 들고 온 데이터고 N은 스키마다. 잘라 맞춘 복사는 조용히 틀린 메시지가 된다.
+`frame_to_msg`에서 프레임이 든 배열 길이가 스키마의 `T[N]`과 다르면 두 언어 모두 명시 에러다 — C++은 `std::length_error`, Python은 `ValueError`. 길이는 프레임이 들고 온 데이터고 N은 스키마다. 잘라 맞춘 복사는 조용히 틀린 메시지가 된다. 같은 이유로 descriptor가 프레임에 안 맞는 프레임은 C++ `frame_to_msg`가 `std::runtime_error`를 던지고, Python은 `WireError`를 던진다.
 
-쓰기 쪽도 같은 길이를 강제한다. `Builder`에 `T[N]` 필드를 N 아닌 길이로 쓰면 Python은 `ValueError`를 던지고 C++은 writer를 poison해 `ok__()`가 false로 래치되어 `commit()`이 거부한다 — 틀린 프레임은 만들어지지 않는다. `frame_to_msg`의 검사는 남의(외부·구버전) writer가 만든 프레임을 막는 마지막 방어선이다.
+쓰기 쪽도 같은 길이를 강제한다. 고정 `T[N]`인 문자열 배열(C++)과 레코드 배열(두 언어)은 개수 인자가 없는 `alloc__x()`로 잡으므로 틀린 개수를 쓸 수 없다. C++은 컴파일 에러, Python은 `TypeError`다. Python에서 `T[N]` 필드에 길이가 다른 문자열 리스트를 대입하면 `ValueError`다. writer가 던지기 전에 래치하므로, 호출자가 에러를 잡아도 `commit__()`은 `TooLarge`를 돌려준다. 슬롯에 안 들어가는 쓰기도 같다. 틀린 프레임은 만들어지지 않는다. `frame_to_msg`의 검사는 남의(외부·구버전) writer가 만든 프레임을 막는 마지막 방어선이다.

@@ -1,16 +1,34 @@
 #include "flux/ros/partitioned_executor.hpp"
 
 #include <poll.h>
+#include <pthread.h>
 
 #include <chrono>
+#include <ctime>
 #include <stdexcept>
 #include <string>
 
 namespace flux::ros
 {
 
-PartitionedExecutor::PartitionedExecutor() = default;
-PartitionedExecutor::~PartitionedExecutor() = default;
+namespace
+{
+constexpr const char * kReentrantRefusal =
+  "flux: a Reentrant callback group cannot be served here -- PartitionedExecutor gives each "
+  "group exactly one thread, so its callbacks would serialize; split them into separate "
+  "MutuallyExclusive groups";
+}  // namespace
+
+PartitionedExecutor::PartitionedExecutor()
+{
+  on_shutdown_ =
+    rclcpp::contexts::get_global_default_context()->add_on_shutdown_callback([this] { stop(); });
+}
+
+PartitionedExecutor::~PartitionedExecutor()
+{
+  rclcpp::contexts::get_global_default_context()->remove_on_shutdown_callback(on_shutdown_);
+}
 
 void PartitionedExecutor::interrupt() noexcept
 {
@@ -38,6 +56,9 @@ void PartitionedExecutor::add(
   }
   if (!group) {
     throw std::invalid_argument("flux: add(src, group): group is null");
+  }
+  if (group->type() == rclcpp::CallbackGroupType::Reentrant) {
+    throw std::invalid_argument(kReentrantRefusal);
   }
   for (auto & [g, sources] : assigned_) {
     for (const Assigned & a : sources) {
@@ -193,18 +214,10 @@ void PartitionedExecutor::spawn_children(std::int64_t tick_ns)
                  const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node_base,
                  const std::vector<Assigned> & subs) {
     if (claimed_.count(group.get()) != 0) return;
-    if (group->get_associated_with_executor_atomic().load()) {
-      throw std::runtime_error(
-        "flux: a callback group is already associated with another executor; every group of a "
-        "node handed to add_ros_node() must be served here");
-    }
     // Serializing a Reentrant group on its one thread is a silent downgrade, and a service
     // callback waiting on a sibling in the same group would deadlock rather than run slower.
     if (group->type() == rclcpp::CallbackGroupType::Reentrant) {
-      throw std::invalid_argument(
-        "flux: a Reentrant callback group cannot be served here -- PartitionedExecutor gives "
-        "each group exactly one thread, so its callbacks would serialize; split them into "
-        "separate MutuallyExclusive groups");
+      throw std::invalid_argument(kReentrantRefusal);
     }
     std::function<void()> init;
     for (auto & [g, f] : thread_init_) {
@@ -215,6 +228,8 @@ void PartitionedExecutor::spawn_children(std::int64_t tick_ns)
     }
     Child c;
     c.group = group;
+    // On the OS thread, where top -H, perf and gdb read it; the same scheme flux_py uses.
+    const std::string name = "flux-part-g" + std::to_string(children_.size());
     if (subs.empty()) {
       c.ros_ex = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
       c.ros_ex->add_callback_group(group, node_base);
@@ -223,7 +238,8 @@ void PartitionedExecutor::spawn_children(std::int64_t tick_ns)
       // lost and the join would hang. A tick-bounded spin_once loop re-checks the run flag the
       // same way the flux children do, which makes shutdown finite without the race.
       const std::int64_t ros_tick = tick_ns < 0 ? 100'000'000 : tick_ns;
-      c.thread = std::thread([this, ex, ros_tick, init] {
+      c.thread = std::thread([this, ex, ros_tick, init, name] {
+        ::pthread_setname_np(::pthread_self(), name.c_str());
         try {
           if (init) init();
           while (child_run_.load(std::memory_order_relaxed)) {
@@ -234,11 +250,12 @@ void PartitionedExecutor::spawn_children(std::int64_t tick_ns)
         }
       });
     } else {
-      c.flux_ex = std::make_unique<Executor>(static_cast<unsigned>(subs.size()));
+      c.flux_ex = std::make_unique<Executor>();
       for (const Assigned & a : subs) c.flux_ex->add(*a.src, a.priority);
       c.flux_ex->add_ros_callback_group(group, node_base);
       Executor * ex = c.flux_ex.get();
-      c.thread = std::thread([this, ex, tick_ns, init] {
+      c.thread = std::thread([this, ex, tick_ns, init, name] {
+        ::pthread_setname_np(::pthread_self(), name.c_str());
         try {
           if (init) init();
           ex->spin(child_run_, tick_ns);
@@ -287,17 +304,20 @@ void PartitionedExecutor::spin(std::atomic<bool> & run, std::int64_t tick_ns)
     child_error_ = nullptr;
   }
 
-  const int tick_ms = tick_ns < 0 ? -1 : static_cast<int>(tick_ns / 1'000'000);
+  // ppoll, not poll: whole milliseconds would turn a sub-millisecond tick into a busy loop.
+  struct timespec tick;
+  tick.tv_sec = static_cast<time_t>(tick_ns / 1'000'000'000);
+  tick.tv_nsec = static_cast<long>(tick_ns % 1'000'000'000);
   std::exception_ptr scan_error;
   try {
     while (run.load(std::memory_order_relaxed) && !failed_.load(std::memory_order_relaxed) &&
-           !ctl_.stop_requested()) {
+           !ctl_.stop_requested() && rclcpp::ok()) {
       spawn_children(tick_ns);
       struct pollfd p;
       p.fd = ctl_.fd();
       p.events = POLLIN;
       p.revents = 0;
-      ::poll(&p, 1, tick_ms);
+      ::ppoll(&p, 1, tick_ns < 0 ? nullptr : &tick, nullptr);
       if (p.revents & POLLIN) ctl_.drain();
     }
   } catch (...) {

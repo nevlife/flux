@@ -25,7 +25,7 @@ class PartitionedSubscriber(Node):
         self.slow_seen = 0
 
         # Partition tokens only. rclpy cannot move a ROS entity onto a child executor's thread,
-        # so a group handed to add_flux must hold none.
+        # so a group handed to add must hold none.
         self.fast_group = MutuallyExclusiveCallbackGroup()
         self.slow_group = MutuallyExclusiveCallbackGroup()
 
@@ -54,15 +54,14 @@ def main(args=None):
     node = PartitionedSubscriber()
     executor = flux.ros.PartitionedExecutor()
     executor.add_ros_node(node)
-    executor.add_flux(node.fast_sub, node.fast_group)
-    executor.add_flux(node.slow_sub, node.slow_group)
+    executor.add(node.fast_sub, node.fast_group)
+    executor.add(node.slow_sub, node.slow_group)
     try:
         executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         executor.stop()
-        executor.close()
         node.destroy_node()
         rclpy.try_shutdown()
 

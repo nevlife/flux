@@ -120,7 +120,7 @@ private:
 void doc_core_executor(Sink & a, Sink & b)
 {
   // [doc:core_executor]
-  flux::Executor ex(32);
+  flux::Executor ex;
   ex.add(a);
   ex.add(b, 10);           // priority: b goes first whenever it has a frame
   ex.set_pass_budget(16);  // callbacks one dispatch() may run over all channels together
@@ -133,6 +133,27 @@ void doc_core_executor(Sink & a, Sink & b)
   const int delivered = ex.dispatch();       // delivers only; never blocks
   // [doc:/core_executor_split]
   sink(delivered, ex.uses_io_uring(), ex.size(), ex.spin_once(0));
+}
+
+void doc_core_enumerate(const std::string & signpost)
+{
+  // [doc:core_enumerate]
+  for (const flux::Topic & topic : flux::enumerate_topics()) {
+    const std::string & name = topic.key_exact ? topic.key : topic.signpost;
+    for (const flux::Endpoint & ep : topic.endpoints) {
+      const char * role = ep.publisher ? "pub" : "sub";
+      sink(name, topic.domain, topic.fingerprint, role, ep.owner.pid, ep.owner.starttime, ep.label);
+    }
+  }
+  // [doc:/core_enumerate]
+
+  // [doc:core_channel_stats]
+  const flux::ChannelStats stats = flux::read_channel_stats(signpost);
+  if (stats.live) {
+    sink(stats.slot_count, stats.slot_size, stats.storage_kind, stats.fingerprint);
+    sink(stats.publish_seq, stats.epoch, stats.waiters);
+  }
+  // [doc:/core_channel_stats]
 }
 
 }  // namespace flux::doc_core_examples

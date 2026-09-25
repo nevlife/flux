@@ -9,13 +9,14 @@
 namespace flux::ros
 {
 
-Executor::Executor(unsigned max_channels)
-: rclcpp::Executor(rclcpp::ExecutorOptions()), core_(max_channels)
+Executor::Executor() : rclcpp::Executor(rclcpp::ExecutorOptions())
 {
+  on_shutdown_ = context_->add_on_shutdown_callback([this] { stop(); });
 }
 
 Executor::~Executor()
 {
+  context_->remove_on_shutdown_callback(on_shutdown_);
   // Stop new pokes before the wake fd goes.
   for (auto & [ptr, weak] : ros_subs_) {
     if (auto s = weak.lock()) {
@@ -374,8 +375,14 @@ void Executor::set_ros_budget(int n)
 
 int Executor::spin_once(std::int64_t timeout_ns)
 {
+  if (reentry_.load()) {
+    throw std::logic_error("flux: spin_once() called while spin() is running");
+  }
   rebridge_ros();
-  const int n = core_.spin_once(next_ros_timeout(timeout_ns));
+  const auto ros_ready = [r = ros_ready_] { return r->load(std::memory_order_acquire); };
+  const std::int64_t wait = ros_backlog_ || ros_ready() ? 0 : next_ros_timeout(timeout_ns);
+  const int n = core_.spin_once(wait, ros_ready);
+  take_ros_ready();
   ros_backlog_ = pump_ros(ros_budget_) == ros_budget_;
   return n;
 }
@@ -383,8 +390,7 @@ int Executor::spin_once(std::int64_t timeout_ns)
 void Executor::spin(std::atomic<bool> & run, std::int64_t tick_ns)
 {
   // Two spins would race the entry lists. The guard is reentry_ rather than rclcpp's `spinning`
-  // because that flag means "not cancelled" there and every ROS pass has to raise it, so a
-  // spin_once() during a spin() would read as a second spin.
+  // because that flag means "not cancelled" there and every ROS pass has to raise it.
   if (reentry_.exchange(true)) {
     throw std::logic_error("flux: spin() called while already spinning");
   }
@@ -397,13 +403,15 @@ void Executor::spin(std::atomic<bool> & run, std::int64_t tick_ns)
     ~SpinGuard()
     {
       ex.stop_requested_.store(false, std::memory_order_relaxed);
+      ex.core_.clear_interrupt();  // unread by this loop; left set, it ends a later spin_once()
       ex.spinning.store(false);
       ex.reentry_.store(false);
     }
   } guard{*this};
 
   bool flux_pending = false;
-  while (run.load(std::memory_order_relaxed) && !stop_requested_.load(std::memory_order_relaxed)) {
+  while (run.load(std::memory_order_relaxed) && !stop_requested_.load(std::memory_order_relaxed) &&
+         rclcpp::ok(context_)) {
     rebridge_ros();
     const std::int64_t due = next_ros_timeout(tick_ns);  // 0 means a timer is due now
     const bool ready = flux_pending || ros_backlog_;

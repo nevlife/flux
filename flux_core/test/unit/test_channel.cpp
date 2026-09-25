@@ -51,7 +51,7 @@ TEST(Channel, LatestWins)
   std::vector<std::byte> buf(64);
   for (int f = 1; f <= 3; ++f) {
     std::memset(buf.data(), f, buf.size());
-    publish_id(ch, buf.data(), buf.size(), static_cast<std::uint64_t>(f));
+    (void)publish_id(ch, buf.data(), buf.size(), static_cast<std::uint64_t>(f));
   }
   flux::FrameView v = ch.peek();
   ASSERT_TRUE(v);
@@ -90,7 +90,7 @@ TEST(Channel, HeldFrameNotOverwritten)
   ASSERT_EQ(frame_id(v), 0xAAu);
 
   for (int f = 2; f <= 20; ++f) {
-    publish_id(ch, buf.data(), buf.size(), static_cast<std::uint8_t>(f));
+    (void)publish_id(ch, buf.data(), buf.size(), static_cast<std::uint8_t>(f));
   }
 
   const auto * p = static_cast<const std::uint8_t *>(v.data());
@@ -102,7 +102,7 @@ TEST(Channel, BorrowRefcountBalances)
 {
   flux::Channel ch(64, 2);
   std::vector<std::byte> buf(64, std::byte{7});
-  publish_id(ch, buf.data(), buf.size(), 1);
+  (void)publish_id(ch, buf.data(), buf.size(), 1);
   {
     flux::FrameView v = ch.peek();
     ASSERT_TRUE(v);
@@ -119,7 +119,7 @@ TEST(Channel, MaxBorrowCapsConcurrentViews)
 {
   flux::Channel ch(64, 4);
   std::vector<std::byte> buf(64, std::byte{7});
-  publish_id(ch, buf.data(), buf.size(), 1);
+  (void)publish_id(ch, buf.data(), buf.size(), 1);
 
   flux::FrameView a = ch.peek();
   flux::FrameView b = ch.peek();
@@ -137,7 +137,7 @@ TEST(Channel, ExhaustedMaxBorrowIsCountedNotSilent)
   // lost() nor dropped() records it -- refused() is the only place it appears.
   flux::Channel ch(64, 4);
   std::vector<std::byte> buf(64, std::byte{7});
-  publish_id(ch, buf.data(), buf.size(), 1);
+  (void)publish_id(ch, buf.data(), buf.size(), 1);
 
   flux::FrameView a = ch.peek();
   flux::FrameView b = ch.peek();
@@ -167,7 +167,7 @@ TEST(Channel, AnEmptyStreamIsNotARefusal)
   EXPECT_FALSE(ch.take());
 
   std::vector<std::byte> buf(64, std::byte{3});
-  publish_id(ch, buf.data(), buf.size(), 1);
+  (void)publish_id(ch, buf.data(), buf.size(), 1);
   {
     flux::FrameView v = ch.take();
     ASSERT_TRUE(v);
@@ -181,7 +181,7 @@ TEST(Channel, ViewIsMoveOnly)
 {
   flux::Channel ch(64, 2);
   std::vector<std::byte> buf(64);
-  publish_id(ch, buf.data(), buf.size(), 9);
+  (void)publish_id(ch, buf.data(), buf.size(), 9);
 
   flux::FrameView a = ch.peek();
   ASSERT_TRUE(a);
@@ -255,7 +255,7 @@ TEST(Channel, ConcurrentCoherence)
   std::vector<std::byte> payload(kSlotSize);
   for (std::uint64_t f = 1; f <= frames; ++f) {
     std::memset(payload.data(), static_cast<int>(f & 0xFF), payload.size());
-    publish_id(ch, payload.data(), payload.size(), f);
+    (void)publish_id(ch, payload.data(), payload.size(), f);
   }
   stop.store(true, std::memory_order_relaxed);
   for (auto & t : subs) t.join();
@@ -291,7 +291,7 @@ TEST(Channel, LoanAbortDoesNotPublishOrResurrectTheOverwrittenFrame)
   flux::Channel ch(128, 4);
   ch.qos([] {
     flux::QoS q;
-    q.depth = 8;  // lag behind, so the frames below are still pending when the loan lands
+    q.keep_last(8);  // lag behind, so the frames below are still pending when the loan lands
     return q;
   }());
 
@@ -392,7 +392,7 @@ TEST(Channel, DepthOneDeliversNewestOnly)
     ASSERT_EQ(
       publish_id(ch, buf.data(), buf.size(), static_cast<std::uint64_t>(f)), flux::Published::Ok);
   }
-  EXPECT_EQ(ch.qos().depth, 1u);
+  EXPECT_EQ(ch.qos().depth(), 1u);
 
   {
     flux::FrameView v = ch.take();
@@ -415,7 +415,7 @@ TEST(Channel, DepthNCatchesUpInOrder)
 {
   flux::Channel ch(64, 8);
   flux::QoS q;
-  q.depth = 8;
+  q.keep_last(8);
   ch.qos(q);
 
   std::vector<std::byte> buf(64);
@@ -441,7 +441,7 @@ TEST(Channel, DepthPullsCursorForwardAndReportsLost)
 {
   flux::Channel ch(64, 8);
   flux::QoS q;
-  q.depth = 2;
+  q.keep_last(2);
   ch.qos(q);
 
   std::vector<std::byte> buf(64);
@@ -472,7 +472,7 @@ TEST(Channel, RingCapsDepth)
 {
   flux::Channel ch(64, 2);  // ring depth 2
   flux::QoS q;
-  q.depth = 8;
+  q.keep_last(8);
   ch.qos(q);
 
   std::vector<std::byte> buf(64);
@@ -504,7 +504,7 @@ TEST(Channel, ALappedRingRetainsTheNewestSlotCountFrames)
   constexpr std::uint32_t kSlots = 8;
   flux::Channel ch(64, kSlots);
   flux::QoS q;
-  q.depth = kSlots;
+  q.keep_last(kSlots);
   ch.qos(q);
 
   std::vector<std::byte> buf(64);
@@ -535,7 +535,7 @@ TEST(Channel, VolatileSkipsBacklog)
   }
 
   flux::QoS q;
-  q.depth = 8;
+  q.keep_last(8);
   ch.qos(q);                // joins here
   EXPECT_FALSE(ch.take());  // backlog ignored
   EXPECT_TRUE(ch.peek());   // but current state is still readable
@@ -559,8 +559,8 @@ TEST(Channel, TransientLocalReplaysBacklog)
   }
 
   flux::QoS q;
-  q.depth = 8;
-  q.durability = flux::Durability::TransientLocal(3);
+  q.keep_last(8);
+  q.transient_local(3);
   ch.qos(q);
 
   for (std::uint64_t expect = 3; expect <= 5; ++expect) {
@@ -590,8 +590,8 @@ TEST(Channel, TransientLocalCappedByRing)
   }
 
   flux::QoS q;
-  q.depth = 8;
-  q.durability = flux::Durability::TransientLocal(8);
+  q.keep_last(8);
+  q.transient_local(8);
   ch.qos(q);
 
   flux::FrameView v = ch.take();
@@ -604,9 +604,9 @@ TEST(Channel, QosDefaults)
 {
   flux::Channel ch(64, 8);
   EXPECT_EQ(ch.slot_count(), 8u);  // the ring, chosen by the publisher
-  EXPECT_EQ(ch.qos().depth, 1u);
-  EXPECT_TRUE(ch.qos().durability.is_volatile());
-  EXPECT_EQ(ch.qos().max_borrow, 2u);
+  EXPECT_EQ(ch.qos().depth(), 1u);
+  EXPECT_TRUE(ch.qos().durability().is_volatile());
+  EXPECT_EQ(ch.qos().max_borrow(), 2u);
 }
 
 // A QoS flux cannot honour is rejected, never reinterpreted.
@@ -615,26 +615,22 @@ TEST(Channel, QosRejectsUnhonourableCombinations)
   flux::Channel ch(64, 8);
   {
     flux::QoS q;
-    q.depth = 2;
-    q.durability = flux::Durability::TransientLocal(3);  // replay deeper than the lag window
+    q.keep_last(2);
+    q.transient_local(3);  // replay deeper than the lag window
     EXPECT_THROW(ch.qos(q), std::invalid_argument);
   }
-  {
-    flux::QoS q;
-    q.depth = 0;
-    EXPECT_THROW(ch.qos(q), std::invalid_argument);
-  }
-  {
-    flux::QoS q;
-    q.max_borrow = 0;
-    EXPECT_THROW(ch.qos(q), std::invalid_argument);
-  }
-  {
-    flux::QoS q;
-    q.reliability = flux::Reliability::Reliable;
-    EXPECT_THROW(ch.qos(q), std::invalid_argument);
-  }
-  EXPECT_EQ(ch.qos().depth, 1u);  // a rejected setting never took effect
+  EXPECT_EQ(ch.qos().depth(), 1u);  // a rejected setting never took effect
+}
+
+// A value wrong on its own is refused where it is written, so no QoS ever holds one.
+TEST(Channel, QosSetterRejectsAValueWrongOnItsOwn)
+{
+  EXPECT_THROW(flux::QoS(0), std::invalid_argument);
+  flux::QoS q(4);
+  EXPECT_THROW(q.keep_last(0), std::invalid_argument);
+  EXPECT_THROW(q.max_borrow(0), std::invalid_argument);
+  EXPECT_EQ(q.depth(), 4u);
+  EXPECT_EQ(q.max_borrow(), 2u);
 }
 
 // A frame's itemsize cannot contradict its dtype: publish derives it rather than taking it. A
@@ -684,7 +680,7 @@ TEST(Channel, LostAccountsForFramesSkippedByATakeThatDeliversNothing)
 {
   flux::Channel ch(64, 3);
   flux::QoS q;
-  q.depth = 1;
+  q.keep_last(1);
   ch.qos(q);
 
   int published = 0;
@@ -832,4 +828,20 @@ TEST(Channel, AnAbortedClaimLeavesLatestPointingAtNoFrameAndIsCounted)
   EXPECT_EQ(ch.refused().bad_frame, 1u);
   EXPECT_EQ(ch.refused().max_borrow, 0u) << "nothing is held; the frame is what is missing";
   EXPECT_EQ(ch.lost(), 0u) << "an aborted claim is not a lapped frame";
+}
+
+// A 0-d frame holds one element, as numpy, torch and DLPack count it; it was sent as 0 bytes.
+TEST(Channel, AZeroDimensionalFrameCarriesOneElement)
+{
+  flux::Channel ch(64, 2);
+  const double v = 3.5;
+  ASSERT_EQ(ch.publish(&v, flux::DType::F64, nullptr, 0), flux::Published::Ok);
+  flux::FrameView f = ch.peek();
+  ASSERT_TRUE(f);
+  EXPECT_EQ(f.meta().ndim, 0u);
+  EXPECT_EQ(f.meta().nbytes, sizeof(double));
+  ASSERT_EQ(f.size(), sizeof(double));
+  double got = 0;
+  std::memcpy(&got, f.data(), sizeof got);
+  EXPECT_EQ(got, 3.5);
 }

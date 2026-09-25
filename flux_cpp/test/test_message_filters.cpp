@@ -84,8 +84,8 @@ TEST(MessageFilters, SynchronizesTwoFluxTopics)
   const std::string right_topic = uniq("/mf/right");
 
   flux::QoS qos;
-  qos.depth = 4;
-  qos.max_borrow = 16;  // inputs x queue_size, plus the one being delivered
+  qos.keep_last(4);
+  qos.max_borrow(16);  // inputs x queue_size, plus the one being delivered
 
   fmf::Subscriber<Image> left(*node, left_topic, qos);
   fmf::Subscriber<Image> right(*node, right_topic, qos);
@@ -143,8 +143,8 @@ TEST(MessageFilters, SynchronizesAFluxTopicWithARosTopic)
   const std::string ros_topic = uniq("/mf/mixed_ros");
 
   flux::QoS qos;
-  qos.depth = 4;
-  qos.max_borrow = 16;
+  qos.keep_last(4);
+  qos.max_borrow(16);
 
   fmf::Subscriber<Image> flux_in(*node, flux_topic, qos);
   mf::Subscriber<sensor_msgs::msg::Image> ros_in(node, ros_topic);
@@ -200,15 +200,24 @@ TEST(MessageFilters, SubscribesLate)
 
   fmf::Subscriber<Image> sub;
   EXPECT_FALSE(sub.subscribed());
+  EXPECT_EQ(sub.getSubscriber(), nullptr);
   EXPECT_FALSE(sub.attach()) << "an unsubscribed source must not claim to be attached";
   EXPECT_EQ(sub.deliver(), 0);
   EXPECT_EQ(sub.channel(), nullptr);
 
   sub.subscribe(*node, topic);
   EXPECT_TRUE(sub.subscribed());
+  // The upstream accessors, as upstream spells them.
+  EXPECT_EQ(sub.getTopic(), topic);
+  ASSERT_NE(sub.getSubscriber(), nullptr);
 
   std::atomic<int> got{0};
-  sub.registerCallback([&](const std::shared_ptr<const Frame> &) { got.fetch_add(1); });
+  std::atomic<std::int32_t> stamp_sec{-1};
+  sub.registerCallback([&](const std::shared_ptr<const Frame> & f) {
+    // The stamp sits where upstream's default TimeStamp trait reads it, as in Python.
+    stamp_sec.store(f->header.stamp.sec);
+    got.fetch_add(1);
+  });
 
   flux::ros::Publisher pub(*node, topic, Image::kFingerprint, kSlotSize, kSlots);
   flux::ros::Executor ex;
@@ -231,6 +240,48 @@ TEST(MessageFilters, SubscribesLate)
 
   EXPECT_TRUE(ok);
   EXPECT_GT(sub.forwarded(), 0u);
+  EXPECT_GE(stamp_sec.load(), 1);
+}
+
+// Re-subscribing moves the Subscriber onto a new channel. The executor must wait on that channel,
+// as rclcpp's does when a node gains a subscription. It used to keep waiting on the old one, so a
+// frame on the new topic sat unseen until something else woke the spin (never, with no tick).
+TEST(MessageFilters, AResubscribeUnderARunningExecutorIsWaitedOn)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_mf_resub");
+  const std::string first = uniq("/mf/resub_a");
+  const std::string second = uniq("/mf/resub_b");
+  flux::ros::Publisher pub(*node, second, Image::kFingerprint, kSlotSize, kSlots);
+
+  fmf::Subscriber<Image> sub(*node, first);
+  std::atomic<int> got{0};
+  sub.registerCallback([&](const std::shared_ptr<const Frame> &) { got.fetch_add(1); });
+
+  flux::ros::Executor ex;
+  ex.add(sub);
+  ex.add_ros_node(node);
+  // On the spin thread, where re-subscribing is allowed. Cancelled once it has run, so the only
+  // thing left to wake the spin is the frame itself.
+  std::atomic<bool> moved{false};
+  rclcpp::TimerBase::SharedPtr timer;
+  timer = node->create_wall_timer(50ms, [&] {
+    sub.subscribe(*node, second);
+    timer->cancel();
+    moved.store(true);
+  });
+  std::atomic<bool> run{true};
+  std::thread spinner([&] { ex.spin(run, -1); });
+
+  ASSERT_TRUE(wait_until([&] { return moved.load(); }));
+  std::this_thread::sleep_for(100ms);
+  publish_at(pub, 1, 0xE1);
+  const bool ok = wait_until([&] { return got.load() > 0; }, 1s);
+
+  ex.stop();
+  spinner.join();
+  rclcpp::shutdown();
+  EXPECT_TRUE(ok) << "a frame on the re-subscribed topic did not wake the executor";
 }
 
 // ---- the same-thread rule, checked rather than documented ----

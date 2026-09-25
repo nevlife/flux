@@ -8,6 +8,7 @@
 #include "rviz_default_plugins/displays/pointcloud/point_cloud_common.hpp"
 
 #include <rclcpp/node.hpp>
+
 #include <sensor_msgs/msg/point_cloud2.hpp>
 
 #include <cstdint>

@@ -75,7 +75,7 @@ void doc_gpu_publisher(
   flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
   if (w) {
     render_into(w.device_ptr(), w.capacity(), w.stream());
-    w.commit();
+    if (const flux::Published p = w.commit(); flux::faulted(p)) log("img", flux::to_string(p));
   }
   pub.fence_failed();
   pub.fence_wait();
@@ -86,8 +86,8 @@ void doc_gpu_subscription(const rclcpp::Node::SharedPtr & node, std::uint64_t fi
 {
   // [doc:gpu_subscription]
   flux::ros::Subscription sub(
-    *node, "img", fingerprint,
-    [](const flux::FrameView & v) { use(v.device_ptr(), v.size(), v.stream()); }, flux::QoS{},
+    *node, "img", fingerprint, flux::QoS{},
+    [](const flux::FrameView & v) { use(v.device_ptr(), v.size(), v.stream()); },
     flux::Device::Cuda);
 
   sub.fence_failed();
@@ -99,7 +99,7 @@ void doc_subscription(const rclcpp::Node::SharedPtr & node, std::uint64_t finger
 {
   // [doc:subscription]
   flux::ros::Subscription sub(
-    *node, "img", fingerprint, [](const flux::FrameView & v) { handle(v); }, flux::QoS{});
+    *node, "img", fingerprint, flux::QoS{}, [](const flux::FrameView & v) { handle(v); });
   // [doc:/subscription]
   sink(sub.attached());
 }
@@ -115,7 +115,7 @@ void doc_subscription_api(flux::ros::Subscription & sub)
   flux::Channel::Refused refused = sub.refused();
   const std::string & domain = sub.domain();
   // [doc:/subscription_api]
-  sink(attached, driven, qos.depth, lost, can_borrow, refused.total(), domain);
+  sink(attached, driven, qos.depth(), lost, can_borrow, refused.total(), domain);
 }
 
 void doc_subscription_pull(const rclcpp::Node::SharedPtr & node, std::uint64_t fingerprint)
@@ -152,7 +152,7 @@ void doc_memory_policy(const rclcpp::Node::SharedPtr & node, std::uint64_t finge
 
   flux::ros::Publisher pub(
     *node, "img", fingerprint, slot_size, slot_count, flux::Device::Cpu, mem);
-  flux::ros::Subscription sub(*node, "img", fingerprint, {}, flux::QoS{}, flux::Device::Cpu, mem);
+  flux::ros::Subscription sub(*node, "img", fingerprint, flux::QoS{}, {}, flux::Device::Cpu, mem);
 
   bool committed = pub.pages_committed();
   bool locked = pub.pages_locked();
@@ -165,7 +165,7 @@ void doc_executor(
   flux::ros::Subscription & control_sub)
 {
   // [doc:executor]
-  flux::ros::Executor ex(32);
+  flux::ros::Executor ex;
   ex.add(flux_sub);
   ex.add(control_sub, 10);  // priority: visited first within a pass. default 0
   ex.add_ros_node(node);

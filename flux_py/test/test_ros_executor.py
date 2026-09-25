@@ -44,7 +44,7 @@ def test_flux_frame_reaches_a_callback(node):
     seen = []
     ex = flux.ros.Executor()
     ex.add_ros_node(node)
-    ex.add_flux(sub, lambda v: seen.append(int(v[0])))
+    ex.add(sub, lambda v: seen.append(int(v[0])))
 
     t = spin_in_thread(ex)
     try:
@@ -76,7 +76,7 @@ def test_ros_and_flux_share_one_loop(node):
         got["ros"] += 1
         got["threads"].add(threading.get_ident())
 
-    ex.add_flux(sub, on_flux)
+    ex.add(sub, on_flux)
     node.create_subscription(Int32, "/pytest/rosex/ros_topic", on_ros, 10)
     ros_pub = node.create_publisher(Int32, "/pytest/rosex/ros_topic", 10)
 
@@ -107,12 +107,12 @@ def test_flux_wakes_a_parked_loop(node):
     arrived = threading.Event()
     ex = flux.ros.Executor()
     ex.add_ros_node(node)
-    ex.add_flux(sub, lambda v: arrived.set())
+    ex.add(sub, lambda v: arrived.set())
 
     t = spin_in_thread(ex)
     try:
         time.sleep(0.3)  # let the loop settle into its parked state
-        assert pub.publish(np.full(8, 5, dtype=np.uint8)) == flux.Published.Ok
+        assert pub.publish(np.full(8, 5, dtype=np.uint8)) == flux.Published.OK
         assert arrived.wait(timeout=5.0), "a published frame never woke the parked loop"
     finally:
         ex.stop()
@@ -123,7 +123,7 @@ def test_stop_ends_spin(node):
     sub = flux.Subscription("/pytest/rosex/idle", fingerprint=FP)
     ex = flux.ros.Executor()
     ex.add_ros_node(node)
-    ex.add_flux(sub, lambda v: None)
+    ex.add(sub, lambda v: None)
 
     done = threading.Event()
 
@@ -147,6 +147,15 @@ def test_add_ros_node_is_idempotent(node):
     ex.add_ros_node(node)
     ex.add_ros_node(node)
     assert node.executor is not None
+    ex.close()
+
+
+def test_adding_a_subscription_with_no_callback_is_refused(node):
+    # A bare Subscription is a pull surface; with no callback to run, add() refuses it
+    # (contracts S-009). TypeError, as Python reports a missing callable.
+    ex = flux.ros.Executor()
+    with pytest.raises(TypeError):
+        ex.add(flux.Subscription("/pytest/rosex/no_cb", fingerprint=FP))
     ex.close()
 
 
@@ -184,7 +193,7 @@ def test_topic_is_resolved_against_the_node_namespace():
             # Same resolved name on both ends -> same segment -> they meet.
             assert pub.segment_name == sub.segment_name
             # And a namespace-less node would NOT meet it.
-            assert pub.publish(np.full(4, 3, dtype=np.uint8)) == flux.Published.Ok
+            assert pub.publish(np.full(4, 3, dtype=np.uint8)) == flux.Published.OK
             v = sub.take()
             assert v is not None and int(v[0]) == 3
         finally:
@@ -216,6 +225,85 @@ def test_spin_once_rejected_while_spinning(node):
     assert not t.is_alive()
 
 
+def test_spin_once_blocks_by_default_and_returns_the_flux_callbacks_run(node):
+    # As flux::ros::Executor::spin_once(timeout_ns): no timeout means wait for work, and the
+    # result is the number of flux callbacks that pass ran.
+    pub = flux.Publisher("/pytest/rosex/count", slot_size=64, slot_count=4, fingerprint=FP)
+    sub = flux.Subscription("/pytest/rosex/count", fingerprint=FP)
+    ex = flux.ros.Executor()
+    ex.add_ros_node(node)
+    ex.add(sub, lambda v: None)
+    assert ex.spin_once(timeout_ns=0) == 0
+    threading.Timer(0.3, lambda: pub.publish(np.zeros(4, np.uint8))).start()
+    ran = 0
+    deadline = time.monotonic() + 5.0
+    while ran == 0 and time.monotonic() < deadline:
+        ran = ex.spin_once()
+    assert ran == 1
+    ex.close()
+
+
+def test_spin_once_returns_on_the_first_work_of_either_transport(node):
+    # spin_once(t) waits for whichever transport has work first. A flux frame arriving inside
+    # the rclpy wait must end it, as a ROS message does.
+    from std_msgs.msg import Int32
+
+    pub = flux.Publisher("/pytest/rosex/first", slot_size=4096, slot_count=4, fingerprint=FP)
+    sub = flux.Subscription("/pytest/rosex/first", fingerprint=FP)
+    got = {"flux": 0, "ros": 0}
+    ros_pub = node.create_publisher(Int32, "/pytest/rosex/first_ros", 10)
+    node.create_subscription(
+        Int32, "/pytest/rosex/first_ros", lambda m: got.__setitem__("ros", got["ros"] + 1), 10)
+    ex = flux.ros.Executor()
+    ex.add_ros_node(node)
+    ex.add(sub, lambda v: got.__setitem__("flux", got["flux"] + 1))
+    deadline = time.monotonic() + 5.0
+    while ros_pub.get_subscription_count() == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    for _ in range(20):  # attach, arm, and serve the startup events before timing anything
+        ex.spin_once(timeout_ns=10_000_000)
+
+    def timed(send, key):
+        # Repeated because a stray startup event can end a pass first. Only a wake on the sent
+        # message keeps the total under one 2 s pass.
+        want = got[key] + 1
+        sender = threading.Timer(0.1, send)
+        t0 = time.monotonic()
+        sender.start()
+        while got[key] < want and time.monotonic() - t0 < 5.0:
+            ex.spin_once(timeout_ns=2_000_000_000)
+        sender.join()
+        return time.monotonic() - t0
+
+    try:
+        ros_wait = timed(lambda: ros_pub.publish(Int32()), "ros")
+        assert ros_wait < 1.0, "a ROS message did not end the wait"
+        assert got["ros"] == 1
+        flux_wait = timed(lambda: pub.publish(np.full(8, 7, dtype=np.uint8)), "flux")
+        assert flux_wait < 1.0, "a flux frame did not end the wait"
+        assert got["flux"] == 1
+    finally:
+        ex.close()
+
+
+def test_a_stop_before_spin_ends_it_and_is_cleared_on_the_way_out(node):
+    # A stop() that lands before spin() starts is the one a caller on another thread sends when
+    # it cannot know the spin has begun. Losing it leaves a spin nobody will end.
+    ex = flux.ros.Executor()
+    ex.add_ros_node(node)
+    ex.stop()
+    t = spin_in_thread(ex)
+    t.join(timeout=5.0)
+    assert not t.is_alive(), "a stop() before spin() was lost"
+    t = spin_in_thread(ex)
+    time.sleep(0.3)
+    assert t.is_alive(), "the stop() outlived the spin it ended"
+    ex.stop()
+    t.join(timeout=5.0)
+    assert not t.is_alive()
+    ex.close()
+
+
 def test_frames_arrive_under_the_events_executor(node):
     """The bridge must run on any rclpy executor, not just the wait-set one.
 
@@ -230,7 +318,7 @@ def test_frames_arrive_under_the_events_executor(node):
     seen = []
     ex = flux.ros.Executor(rclpy_executor=events.EventsExecutor())
     ex.add_ros_node(node)
-    ex.add_flux(sub, lambda v: seen.append(int(v[0])))
+    ex.add(sub, lambda v: seen.append(int(v[0])))
 
     t = spin_in_thread(ex)
     try:

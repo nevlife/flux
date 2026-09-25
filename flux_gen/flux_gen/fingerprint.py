@@ -40,16 +40,13 @@ def _leaf_token(leaf):
     return f"{leaf.kind.value}:{dt}:{leaf.count}{rec}"
 
 
-def canonical(leaves, type_name=None):
-    """`type_name` is the outermost `pkg/Msg`. Omitting it digests the layout alone, for a
-    caller carrying raw arrays rather than a .msg, which has no type to name."""
-    head = f"v{FINGERPRINT_SCHEMA_VERSION}"
-    if type_name is not None:
-        head += "#" + type_name  # '#' cannot occur in a ROS type name or in a leaf token
+def canonical(leaves, type_name):
+    """`type_name` is the outermost `pkg/Msg`: two types that flatten alike stay apart."""
+    head = f"v{FINGERPRINT_SCHEMA_VERSION}#{type_name}"  # '#' is in no type name or leaf token
     return ";".join([head] + [_leaf_token(l) for l in leaves])
 
 
-def fingerprint(leaves, type_name=None):
+def fingerprint(leaves, type_name):
     digest = hashlib.blake2b(
         canonical(leaves, type_name).encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "little")

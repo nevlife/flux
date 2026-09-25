@@ -14,7 +14,9 @@ class ImageRawSubscriber : public rclcpp::Node
 public:
   ImageRawSubscriber()
   : Node("flux_raw_image_sub"),
-    sub_(*this, kTopic, flux::kNoSchema, [this](const flux::FrameView & f) { on_frame(f); })
+    sub_(*this, kTopic, flux::kNoSchema, flux::QoS{}, [this](const flux::FrameView & f) {
+      on_frame(f);
+    })
   {
   }
 
@@ -54,7 +56,6 @@ int main(int argc, char ** argv)
   ex.add(node->subscription());
   ex.add_ros_node(node);
 
-  rclcpp::on_shutdown([&ex]() { ex.stop(); });
   ex.spin();
   rclcpp::shutdown();
   return 0;

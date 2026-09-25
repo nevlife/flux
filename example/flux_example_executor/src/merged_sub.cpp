@@ -17,7 +17,9 @@ class MergedSubscriber : public rclcpp::Node
 public:
   MergedSubscriber()
   : Node("flux_merged_sub"),
-    flux_sub_(*this, kTopic, Image::kFingerprint, [this](const flux::FrameView & f) { on_flux(f); })
+    flux_sub_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
+      on_flux(f);
+    })
   {
     ros_sub_ = create_subscription<sensor_msgs::msg::Image>(
       kTopic, rclcpp::QoS(rclcpp::KeepLast(kDepth)).best_effort(),
@@ -70,11 +72,9 @@ int main(int argc, char ** argv)
   rclcpp::init(argc, argv);
   auto node = std::make_shared<MergedSubscriber>();
 
-  flux::ros::Executor ex(4);
+  flux::ros::Executor ex;
   ex.add(node->flux_subscription());
   ex.add_ros_node(node);
-
-  rclcpp::on_shutdown([&ex]() { ex.stop(); });
 
   RCLCPP_INFO(node->get_logger(), "merged wait: io_uring=%d", ex.uses_io_uring());
   ex.spin();

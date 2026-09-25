@@ -71,7 +71,7 @@ fex.spin();
 
 Callbacks run concurrently on two threads. The mutual exclusion `merged_sub` gave for free is gone, so state both touch is locked by hand. The `std::mutex` in this example is that cost.
 
-Python has the same shape. Only `add_flux` on `flux.ros.Executor`, no `add_ros_node`. `rclpy.spin` already owns that node. An executor that received no node runs flux only.
+Python has the same shape. Only `add` on `flux.ros.Executor`, no `add_ros_node`. `rclpy.spin` already owns that node. An executor that received no node runs flux only.
 
 ## service_sub, services also wake on arrival
 
@@ -100,4 +100,4 @@ fex.add(node->flux_subscription());
 
 The parallelism is the same as PartitionedExecutor, the arrangement differs. `MultiThreadedExecutor` picks a free thread from the pool, PartitionedExecutor pins a thread per group.
 
-In Python the partition unit is not one. rclpy has no `add_callback_group`, so there is no way to hand a callback group to a child. The unit is the group for flux subscriptions and the node for ROS callbacks. The group passed to `add_flux` must hold no ROS entity at all. rclpy cannot move it to this thread, so the group's mutual exclusivity quietly breaks.
+In Python the partition unit is not one. rclpy has no `add_callback_group`, so there is no way to hand a callback group to a child. The unit is the group for flux subscriptions and the node for ROS callbacks. The group passed to `add` must hold no ROS entity at all. rclpy cannot move it to this thread, so the group's mutual exclusivity quietly breaks.

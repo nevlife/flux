@@ -42,13 +42,13 @@ std::uint64_t rows = m.shape[0];
 
 발행 결과는 `flux::Published`다.
 
-| 값 | 뜻 | 카운터 |
-| --- | --- | --- |
-| `Ok` | 커밋됐다 | -- |
-| `Backpressure` | 모든 슬롯이 borrow 중이다. 일시적이다 | `dropped`++ |
-| `TooLarge` | payload가 `slot_size`를 넘거나 rank가 8을 넘는다. 이미 쓴 핸들을 또 commit해도 이 값이다 | -- |
-| `WrongDevice` | device 슬롯에 host 발행을 했다 | -- |
-| `FenceFailed` | 선언한 stream을 기다리지 못했다 | `fence_failed`++ |
+| C++ | Python | 뜻 | 카운터 |
+| --- | --- | --- | --- |
+| `Ok` | `OK` | 커밋됐다 | -- |
+| `Backpressure` | `BACKPRESSURE` | 모든 슬롯이 borrow 중이다. 또는 fork한 자식이 fd가 모자라 자기 신원을 등록하지 못했다(그 신원 없이 슬롯을 잡으면 죽었을 때 회수할 수 없어 영구히 잃는다). 일시적이다 | `dropped`++ |
+| `TooLarge` | `TOO_LARGE` | payload가 `slot_size`를 넘거나 rank가 8을 넘는다. 이미 쓴 핸들을 또 commit해도 이 값이다 | -- |
+| `WrongDevice` | `WRONG_DEVICE` | device 슬롯에 host 발행을 했다 | -- |
+| `FenceFailed` | `FENCE_FAILED` | 선언한 stream을 기다리지 못했다 | `fence_failed`++ |
 
 `Backpressure`만 기다리면 풀린다. 나머지는 배선 실수거나 fault이므로 세지 않고 그 자리에서 알린다. `dropped`가 오르면 그것은 backpressure 하나를 뜻한다.
 
@@ -68,9 +68,9 @@ if flux.faulted(p):
 
 `faulted`는 `Ok`와 `Backpressure`에 false, 나머지 셋에 true다. 예제 publisher 전부가 이 모양을 쓴다.
 
-Python도 같은 `flux.Published`를 돌려준다. bool로 접지 않는 이유는 `Backpressure`(best-effort에서 떨어진 프레임)와 `FenceFailed`(슬롯이 영구히 새는 fault)를 호출자가 구분할 수 있어야 하기 때문이다. `Ok`에만 truthy라 `if not loan.commit():`도 뜻대로 읽힌다.
+Python도 같은 `flux.Published`를 돌려준다. 값 이름은 rclpy enum처럼 대문자다. bool로 접지 않는 이유는 `Backpressure`(best-effort에서 떨어진 프레임)와 `FenceFailed`(슬롯이 영구히 새는 fault)를 호출자가 구분할 수 있어야 하기 때문이다. `OK`에만 truthy라 `if not loan.commit():`도 뜻대로 읽힌다.
 
-인자를 보고 바로 알 수 있는 것은 Python에서 예외다. 크기 초과·device 배열·상대 topic 이름은 채널에 닿기 전에 `ValueError`가 난다 -- 메시지가 되는 경로를 이름 댈 수 있는 자리이기 때문이다(`contracts.ko.md` 3).
+인자를 보고 바로 알 수 있는 것은 Python에서 예외다. 크기 초과·device 배열·상대 topic 이름은 채널에 닿기 전에 `ValueError`가 난다 -- 메시지가 되는 경로를 이름 댈 수 있는 자리이기 때문이다(`contracts.ko.md` 3, S-001, S-002, S-007).
 
 `DType::BF16`은 엔진이 계산하지 않고 나르기만 하는 타입이다. 슬롯은 그대로 바이트 구간이고 `dtype_size`가 2를 돌려주는 것이 전부다. C++17에 bf16 스칼라 타입이 없으므로 소비자가 바이트를 자기 타입으로 해석한다.
 
@@ -87,7 +87,7 @@ if (const flux::Published p = pub.publish(data, flux::DType::U8, {480, 640, 3});
 }
 ```
 
-`publish`는 크기를 초과하면 잘라 담지 않고 `TooLarge`로 거절한다. rank가 8을 넘는 것도 같은 값이다. 소비자가 읽기 단계에서 거부하면 커서가 안 움직여 그 슬롯에서 `take()`가 멎기 때문이다.
+`publish`는 크기를 초과하면 잘라 담지 않고 `TooLarge`로 거절한다. rank가 8을 넘는 것도 같은 값이다. C++에서 리터럴 모양(`{480, 640, 3}`)이 8개를 넘으면 컴파일되지 않으므로, 이 값은 포인터 형식 `(shape, ndim)`에서만 나온다. 소비자가 읽기 단계에서 거부하면 커서가 안 움직여 그 슬롯에서 `take()`가 멎기 때문이다. 0차원 배열(shape `()`)은 numpy·torch·DLPack과 같이 원소 하나이고, `publish`와 `loan` 모두 받는다. C++에서는 `ndim` 0인 포인터 형식으로 넘긴다.
 
 바이트 수는 인자가 아니라 `shape`의 곱이다. `shape`이 `nbytes`보다 큰 프레임은 만들 수 없으므로, 소비자가 그 shape으로 view를 만들다 터지는 경우도 없다.
 
@@ -99,7 +99,7 @@ if (const flux::Published p = pub.publish(data, flux::DType::U8, {480, 640, 3});
 flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
 if (w) {
   render_into(w.data(), w.capacity());
-  w.commit();
+  if (const flux::Published p = w.commit(); flux::faulted(p)) report(flux::to_string(p));
 }
 ```
 
@@ -113,9 +113,11 @@ w.abort();
 
 찜한 슬롯은 commit·abort 전까지 ring에서 빠진다. 오래 쥐고 있으면 free 슬롯이 줄어 `dropped`가 오른다. `FrameView`와 마찬가지로 move-only다.
 
+`commit()` 뒤에 슬롯은 구독자의 것이다. 그 뒤로 `data()`에서 얻은 포인터로 쓰지 않는다. flux는 그런 쓰기를 감지하지 못하고, 구독자가 읽는 중인 frame이 바뀐다. 모든 쓰기는 `commit()` 전에 끝낸다.
+
 `loan()`이 주는 슬롯은 빈 칸이 아니다. 아직 아무도 안 가져간 프레임이 들어 있을 수 있고 `data()`는 그 바이트를 그대로 가리킨다. 거기 쓰는 순간 그 프레임은 사라지므로 `abort`는 되살리지 못한다 -- 발행을 안 할 뿐이다. 사라진 프레임은 뒤처진 소비자의 `lost`에 잡힌다.
 
-`loan`에서 dtype과 shape을 한 번 말했으므로 `commit()`은 인자를 받지 않는다. `commit(nbytes)`는 1차원 loan의 앞 nbytes만 발행하고 `shape[0]`을 다시 계산한다 -- shape을 두 번 말하는 자리는 없다. 1차원이 아닌 loan에 넘기거나 loan보다 크면 `TooLarge`다.
+`loan`에서 dtype과 shape을 한 번 말했으므로 `commit()`은 인자를 받지 않는다. `commit(nbytes)`는 1차원 loan의 앞 nbytes만 발행하고 `shape[0]`을 다시 계산한다 -- shape을 두 번 말하는 자리는 없다. 1차원이 아닌 loan에 넘기거나 loan보다 크면 C++은 `TooLarge`, Python은 `ValueError`다(`contracts.ko.md` S-007).
 
 `commit`은 `publish`와 같은 검사를 하고, 걸리면 claim을 되돌린다. 다만 `dropped`는 안 오른다 -- 이미 슬롯을 받은 뒤라 backpressure가 아니기 때문이다. 그 슬롯이 들고 있던 이전 프레임은 함께 사라진다.
 
@@ -123,14 +125,12 @@ w.abort();
 
 ```cpp doc:raw_subscribe
 flux::ros::Subscription sub(
-  *node, "img", flux::kNoSchema,
-  [](const flux::FrameView & v) {
+  *node, "img", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & v) {
     const flux::FrameMeta & m = v.meta();
     if (m.ndim == 3 && m.dtype == flux::DType::U8) {
       use(v.data(), v.size());
     }
-  },
-  flux::QoS{});
+  });
 ```
 
 `meta()`가 돌려주는 것은 다른 프로세스가 쓴 값이다. 같은 버전의 flux가 쓴 것이라면 `shape`의 곱은 `nbytes`와 같다 -- 발행 경로가 그렇게 유도한다. 다른 구현이나 손상된 세그먼트를 상대할 때는 그 값으로 view의 크기를 정하기 전에 검사한다.
@@ -167,6 +167,8 @@ loan.abort()
 ```
 
 `pub.loan(...)`이 돌려주는 것은 `flux.Loan`이다. C++의 `flux::WriteSlot`에 대응하고, 슬롯을 쥔 채로 살아 있다 -- `commit()`이나 `abort()`가 그것을 놓는다. 빈 슬롯이 없으면 falsy한 것을 돌려주므로 `if loan:`이 그 판정이다.
+
+`commit()` 뒤에 슬롯은 구독자의 것이다. `loan.array`는 읽기 전용이 되어 쓰면 `ValueError`, 다시 받으려 하면 `RuntimeError`가 난다. `commit()` 전에 만든 슬라이스·`memoryview`·DLPack tensor는 여기에 해당하지 않는다. 그것으로 쓰면 구독자가 읽는 중인 frame이 에러 없이 바뀐다. 모든 쓰기는 `commit()` 전에 끝낸다. C++에서 `data()`로 얻은 포인터와 같은 규칙이다.
 
 `commit(nbytes=n)`은 1차원 loan의 앞 n바이트만 발행한다. `shape[0]`은 `n / itemsize`로 다시 계산되므로 shape을 다시 말하지 않는다. 생성된 어댑터가 이걸 쓴다 -- 슬롯 전체를 빌리고 실제로 채운 만큼만 커밋한다.
 
@@ -228,9 +230,9 @@ if loan:
 | 잘못된 타입 | `TypeError` | (표현 불가) |
 | slot_size 초과 | `ValueError` | `TooLarge` |
 | GPU 슬롯에 host 발행 | `ValueError` | `WrongDevice` |
-| stream 기다리기 실패 | `Published.FenceFailed` | `FenceFailed`, `fence_failed`++ |
+| stream 기다리기 실패 | `Published.FENCE_FAILED` | `FenceFailed`, `fence_failed`++ |
 | meta 불량 | (표현 불가) | (표현 불가) |
-| 슬롯 없음 | `Published.Backpressure`. `loan()`은 `None` | `Backpressure`, `dropped`++ |
+| 슬롯 없음 | `Published.BACKPRESSURE`. `loan()`은 `None` | `Backpressure`, `dropped`++ |
 
 Python 열에 `False`는 없다. `publish()`와 `commit()`이 돌려주는 것은 C++과 같은 `flux.Published`이고, 빈 슬롯이 없을 때 `loan()`만 `None`을 돌려준다(2절).
 

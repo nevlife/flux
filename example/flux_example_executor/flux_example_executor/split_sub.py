@@ -69,7 +69,7 @@ def main(args=None):
     # No add_ros_node here: rclpy.spin below has the node, and handing it to both is the mistake
     # this shape exists to avoid.
     flux_executor = flux.ros.Executor()
-    flux_executor.add_flux(node.flux_sub)
+    flux_executor.add(node.flux_sub)
     flux_thread = threading.Thread(target=flux_executor.spin, daemon=True, name="flux-spin")
     flux_thread.start()
     try:

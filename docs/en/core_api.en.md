@@ -34,9 +34,9 @@ std::string domain = flux::process_domain();
 std::string name = flux::signpost_name("/img", /*fingerprint=*/0, domain);
 ```
 
-`process_domain()` checks `FLUX_DOMAIN` first, then `ROS_DOMAIN_ID` if that is absent. If neither is set, it is `0`. No node resolves it here, so a process attaching to a channel a ROS node uses must be in that node's domain.
+`process_domain()` checks `FLUX_DOMAIN` first, then `ROS_DOMAIN_ID` if that is absent. If neither is set, it is `0`. Both hold a plain integer, and `canonical_domain(raw)` (`flux.canonical_domain` in Python) renders one without leading zeros (`007` is `7`) or throws. No node resolves it here, so a process attaching to a channel a ROS node uses must be in that node's domain.
 
-It is decided once on the first call and does not change until the process exits. This is the same as rcl latching `ROS_DOMAIN_ID` at context init. Otherwise the ROS side and the flux side of one process could sit in different partitions. Reading the environment fresh each time is `resolve_domain(var)`. That is a query and is not used to build names.
+It is decided once on the first call and does not change until the process exits. This is the same as rcl latching `ROS_DOMAIN_ID` at context init. Otherwise the ROS side and the flux side of one process could sit in different partitions. Reading the environment fresh each time is `resolve_domain()`. It reads `ROS_DOMAIN_ID` unless another variable is named, and `resolve_domain(nullptr)` (Python `None`) reads `FLUX_DOMAIN` only. That is a query and is not used to build names.
 
 When attaching to the ROS wrapper, the topic name must be the post-remap one. If the node resolved `img` to `/robot1/img`, give `/robot1/img` here as well.
 
@@ -147,7 +147,7 @@ private:
 `attach()` is idempotent and returns false if the publisher segment does not exist yet. `deliver_one()` handles exactly one frame and returns 1, or 0 if there is none. It is one at a time because the executor re-selects which channel to run next between callbacks. To pull several at once from the owner's side, use `deliver(max)`. That is not virtual and is not the path the executor uses.
 
 ```cpp doc:core_executor
-flux::Executor ex(32);
+flux::Executor ex;
 ex.add(a);
 ex.add(b, 10);  // priority: b goes first whenever it has a frame
 ex.set_pass_budget(16);  // callbacks one dispatch() may run over all channels together
@@ -155,9 +155,9 @@ ex.spin(100'000'000);  // until stop()
 ex.stop();
 ```
 
-Registration happens only before spin. The second argument of `add` is the priority. Larger goes first, and ties go in registration order. The default is 0 and negative values are allowed. The selection is repeated per callback. If a frame arrives on a higher channel while a lower channel's callback is running, it runs before the lower channel's next frame. This is not preemptive priority. A callback already running is not displaced.
+Registration happens only before spin. The second argument of `add` is the priority. Larger goes first. Ties take turns a frame at a time, starting in registration order, so a source whose publisher outruns its callback cannot keep an equal peer from running. The default is 0 and negative values are allowed. The selection is repeated per callback. If a frame arrives on a higher channel while a lower channel's callback is running, it runs before the lower channel's next frame. This is not preemptive priority. A callback already running is not displaced.
 
-`set_pass_budget()` is the upper bound on the number of callbacks one `dispatch()` runs. It is a single budget for all channels together, not per channel, and the default is `flux::kMaxDrain` (64). Call it only before spin. It bounds the pass length, not the throughput. Whatever the budget cut off is picked up by the next pass without blocking. Lowering it shortens the time a high-priority channel waits behind a low one. Raising it spreads the per-pass arm cost over more frames. If `uses_io_uring()` is false, the kernel is older than Linux 6.7 and it runs on the per-channel parker thread fallback. The waiting thread still blocks only once.
+`set_pass_budget()` is the upper bound on the number of callbacks one `dispatch()` runs. It is a single budget for all channels together, not per channel, and the default is `flux::kMaxDrain` (64). Call it only before spin. It bounds the pass length, not the throughput. Whatever the budget cut off is picked up by the next pass without blocking. Lowering it shortens the time a high-priority channel waits behind a low one. Raising it spreads the per-pass arm cost over more frames. If `uses_io_uring()` is false, the kernel is older than Linux 6.7 or the host forbids io_uring, and it runs on the per-channel parker thread fallback. The waiting thread still blocks only once.
 
 When placing it on someone else's event loop, use the two halves separately. They share the ring, so they must not run concurrently.
 
@@ -167,6 +167,8 @@ const int delivered = ex.dispatch();       // delivery only. Does not block
 ```
 
 `has_more()` says whether the previous `dispatch()` stopped at the budget with frames remaining. Nobody knocks on the ring again for frames that already arrived, so blocking in this state sleeps one tick on top of work the caller already holds. `spin()` makes the same decision from the return value of `dispatch()`, so it does not use this flag.
+
+`spin_once(timeout_ns)` re-waits until its deadline when a wake finds nothing ready. Only `interrupt()` and `stop()` end it early. An embedder whose own readiness pokes `waker()` passes `spin_once(timeout_ns, woken)`, and a true `woken()` also ends the wait. A loop built on the two halves never reads the `interrupt()` flag, so it calls `clear_interrupt()` on the way out. Left set, the flag ends a later `spin_once()` that nobody interrupted.
 
 In Python, `flux.Executor` wraps the same class (section 8 below).
 
@@ -203,7 +205,7 @@ sub = flux.Subscription("/img", fingerprint=FP, memory=mem)
 This class wraps the `flux::Executor` of section 6 as is. The names and arguments are the same as C++, and the code that decides the wait order is the same single one.
 
 ```python doc:py_core_executor
-ex = flux.Executor(max_channels=32, poll_tick_ns=2_000_000)
+ex = flux.Executor(poll_tick_ns=2_000_000)
 ex.add(sub, callback, priority=0)
 ex.spin_once(timeout_ns=-1)
 ex.spin(tick_ns=100_000_000)
@@ -213,9 +215,9 @@ merged = ex.uses_io_uring
 busy = ex.is_spinning
 ```
 
-If `uses_io_uring` is false, the kernel is older than Linux 6.7 and it runs on the per-channel thread fallback.
+If `uses_io_uring` is false, the kernel is older than Linux 6.7 or the host forbids io_uring (a seccomp profile, `kernel.io_uring_disabled`), and it runs on the per-channel thread fallback. The forbidden case prints one line to stderr per process. Any other io_uring setup failure makes the constructor throw.
 
-`priority` is the same value as in C++. It sets the visit order within a pass. Larger goes first, and ties go in registration order.
+`priority` is the same value as in C++. It sets the visit order within a pass. Larger goes first, and ties take turns a frame at a time.
 
 `stop()` is a request and `is_spinning` is a state. They are not merged into one flag, so a `stop()` that arrives before `spin()` is not lost. Code that stops a thread right after starting it does not fall into that window. The request is cleared by the `spin()` that observed it as it exits, so the same executor can be spun again. Calling `spin()` on an executor that is already spinning raises.
 
@@ -230,14 +232,25 @@ delivered = ex.dispatch()
 
 ## 9. Enumeration (for tools)
 
-This reads which flux channels exist on this host right now and who is attached. `flux.enumerate_topics()` returns a list of `flux.Topic`, and each topic holds a list of `flux.Endpoint`. It is daemonless and has no registry. It is a snapshot built on the spot from the `/dev/shm` names and the manifests of processes that still hold the owner lock. `flux_cli` sits on top of this surface ([cli.md](cli.en.md)).
+This reads which flux channels exist on this host right now and who is attached. `flux::enumerate_topics()` (Python `flux.enumerate_topics()`) returns a list of `flux::Topic` (`flux.Topic`), and each topic holds a list of `flux::Endpoint` (`flux.Endpoint`). An endpoint names its process with `owner`, a `flux::OwnerId` (`flux.OwnerId`) of `pid` and `starttime`. The two languages use the same names and fields. It is daemonless and has no registry. It is a snapshot built on the spot from the `/dev/shm` names and the manifests of processes that still hold the owner lock. `flux_cli` sits on top of this surface ([cli.md](cli.en.md)).
+
+```cpp doc:core_enumerate
+for (const flux::Topic & topic : flux::enumerate_topics()) {
+  const std::string & name = topic.key_exact ? topic.key : topic.signpost;
+  for (const flux::Endpoint & ep : topic.endpoints) {
+    const char * role = ep.publisher ? "pub" : "sub";
+    sink(name, topic.domain, topic.fingerprint, role, ep.owner.pid, ep.owner.starttime, ep.label);
+  }
+}
+```
 
 ```python doc:py_enumerate
 for topic in flux.enumerate_topics():
     name = topic.key if topic.key_exact else topic.signpost
     for ep in topic.endpoints:
         role = "pub" if ep.publisher else "sub"
-        _sink(name, topic.domain, topic.fingerprint, role, ep.pid, ep.starttime, ep.label)
+        _sink(name, topic.domain, topic.fingerprint, role, ep.owner.pid, ep.owner.starttime,
+              ep.label)
 ```
 
 If `key_exact` is False, `key` was read back from the name, not from a live participant. The name replaces every non-alphanumeric character with `.`, so `/a/b` and `.a.b` are one name. What is visible then is the spelling of the name, not the key the peers actually agreed on. A channel with no participants at all is that case (the signpost is permanent, so only the name remains).
@@ -250,7 +263,15 @@ Dead participants do not appear. If the OFD lock on the owner file is released, 
 
 Each name costs one open. Use it in tools, not in loops.
 
-To look at one channel without attaching, `flux.read_channel_stats()` returns a `flux.ChannelStats`. It takes neither a lock nor a borrow.
+To look at one channel without attaching, `read_channel_stats()` returns a `flux::ChannelStats` (`flux.ChannelStats`). It takes neither a lock nor a borrow.
+
+```cpp doc:core_channel_stats
+const flux::ChannelStats stats = flux::read_channel_stats(signpost);
+if (stats.live) {
+  sink(stats.slot_count, stats.slot_size, stats.storage_kind, stats.fingerprint);
+  sink(stats.publish_seq, stats.epoch, stats.waiters);
+}
+```
 
 ```python doc:py_channel_stats
 domain = flux.process_domain()
@@ -265,4 +286,4 @@ if stats.live:
 
 `process_domain()` decides the domain with the same rules and the same timing convention as a node. Since the rule exists once in core, a tool does not derive the same answer twice. To reread the environment now, use `flux.resolve_domain("ROS_DOMAIN_ID")`, and to ignore the domain variables entirely, use `flux.resolve_domain(None)`.
 
-`read_channel_stats` does not attach as a subscriber. It reads only the header, so it touches neither `max_borrow` nor the holder table. Observation does not disturb the target.
+`read_channel_stats` does not attach as a subscriber. It reads only the header, so it touches neither `max_borrow` nor the holder table. Observation does not disturb the target. It creates nothing either: a name nobody has created yet reads as not `live`. A name that exists but cannot be read, such as another user's channel or a malformed name, raises `RuntimeError` (`std::runtime_error` in C++), because no retry would make it readable. `enumerate_topics()` leaves out channels this process cannot read, so a tool that loops over its result does not meet that error.

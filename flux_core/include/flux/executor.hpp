@@ -53,9 +53,8 @@ public:
 };
 
 // Blocks on ONE io_uring for every registered Source's wake word, so N channels cost one syscall
-// per wait rather than one thread each. Requires Linux 6.7+ for io_uring
-// FUTEX_WAIT; on an older kernel it falls back to one parker thread per channel, all poking the
-// same wake fd, so the waiting thread still blocks exactly once.
+// per wait rather than one thread each. Without io_uring FUTEX_WAIT it falls back to one parker
+// thread per channel, all poking one wake fd, so the waiting thread still blocks exactly once.
 //
 // This knows nothing about ROS. Merging foreign readiness into the same wait is what waker()
 // is for: flux_cpp hands that callable to rclcpp's readiness hooks, and the ring then wakes on
@@ -63,20 +62,18 @@ public:
 class Executor
 {
 public:
-  // `max_channels` bounds registration; the ring is sized for that many plus the wake fd, so one
-  // pass arms every wait in a single syscall. `poll_tick_ns` bounds the fallback path's wait
-  // while some channel still has no publisher, so a late attach is noticed promptly.
-  explicit Executor(unsigned max_channels = 32, std::int64_t poll_tick_ns = 2'000'000);
+  // Any number of channels: arming flushes the ring as it fills. `poll_tick_ns` bounds the
+  // fallback path's wait while some channel still has no publisher, so a late attach is noticed.
+  explicit Executor(std::int64_t poll_tick_ns = 2'000'000);
   virtual ~Executor();
   Executor(const Executor &) = delete;
   Executor & operator=(const Executor &) = delete;
 
   // Registration is pre-spin only: the spin thread walks this list without a lock.
   //
-  // `priority` picks the next callback: the highest-priority channel with a frame ready goes,
-  // and the choice is remade between callbacks, so a frame landing on a control channel during a
-  // logging callback is served before the next logging frame. Ties keep registration order. Not
-  // preemptive. A running callback is never displaced.
+  // `priority` picks the next callback, remade between callbacks: a frame landing on a control
+  // channel during a logging callback goes before the next logging frame. Ties take turns a frame
+  // at a time. Not preemptive: a running callback is never displaced.
   void add(Source & src, int priority = 0);
   std::size_t size() const noexcept { return entries_.size(); }
 
@@ -107,9 +104,10 @@ public:
   int pass_budget() const noexcept { return pass_budget_; }
 
   // Block until a channel is woken, the wake fd is poked, or `timeout_ns` elapses (negative =
-  // forever). Delivers nothing. Split from dispatch() so an embedder can run the blocking half
-  // on one thread and the callback half on another; the two must never overlap, because both
-  // submit to the same ring.
+  // forever). Delivers nothing. Returns at once if a Source moved to another channel since the
+  // last dispatch(), so the next dispatch() waits on the new one. Split from dispatch() so an
+  // embedder can run the blocking half on one thread and the callback half on another; the two must
+  // never overlap, because both submit to the same ring.
   //
   // Virtual for the one embedder that must wrap the blocking syscall: flux_py drops the GIL
   // around it. Nothing here touches the embedder's runtime, so an override needs only to call
@@ -118,8 +116,9 @@ public:
 
   // dispatch(), then wait and dispatch again if nothing was ready. Returns callbacks run. A
   // bounded wait that wakes with nothing ready re-waits until the deadline, so the timeout means
-  // what it says on both paths; only interrupt() and stop() end it early.
-  int spin_once(std::int64_t timeout_ns);
+  // what it says on both paths; only interrupt(), stop() and a true `woken()` end it early.
+  // `woken` is for an embedder whose own readiness pokes waker(): it says the poke was real.
+  int spin_once(std::int64_t timeout_ns, const std::function<bool()> & woken = {});
 
   // Loop spin_once until `run` is cleared or stop() is called. `tick_ns` bounds each wait so both
   // are noticed and late publishers are picked up; it is a wait bound, not a poll interval.
@@ -133,6 +132,9 @@ public:
   // End the current wait without ending the loop. Safe from another thread. Not called `wake`:
   // flux uses that word for the in-segment futex wake generation.
   void interrupt() noexcept;
+
+  // Drop an interrupt() no call consumed, for a loop built on wait_for_work()/dispatch().
+  void clear_interrupt() noexcept { interrupted_.store(false, std::memory_order_release); }
 
   bool is_spinning() const noexcept { return ctl_.is_spinning(); }
 
@@ -179,6 +181,7 @@ private:
   // true if it moved.
   std::size_t ready_entry() const;
   bool sync_channel(Entry & e, Channel * ch, std::uint64_t tag) noexcept;
+  bool a_source_moved() const noexcept;
   void detach_entry(Entry & e, std::uint64_t tag) noexcept;
   bool rebind_parker(Entry & e, Channel & ch);
   void start_parker(Entry & e, Channel & ch);
@@ -186,7 +189,6 @@ private:
   void release_waiters() noexcept;
   void rebuild_order();
 
-  unsigned max_channels_;
   std::int64_t poll_tick_ns_;
   int pass_budget_ = kMaxDrain;
   SpinControl ctl_;  // wake fd, the spin/stop flag pair, and the reentry guard

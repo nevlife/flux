@@ -93,11 +93,11 @@ TEST(Wake, NoLostWakeupUnderRace)
 
   std::vector<std::byte> buf(4096, std::byte{0x24});
   for (int i = 0; i < 500; ++i) {
-    publish_id(ch, buf.data(), buf.size(), static_cast<std::uint8_t>(i));
+    (void)publish_id(ch, buf.data(), buf.size(), static_cast<std::uint8_t>(i));
     std::this_thread::sleep_for(std::chrono::microseconds(200));
   }
   stop.store(true);
-  publish_id(ch, buf.data(), buf.size(), 0xFF);  // unblock a final park
+  (void)publish_id(ch, buf.data(), buf.size(), 0xFF);  // unblock a final park
   sub.join();
 
   EXPECT_EQ(lost_wakeups.load(), 0);  // no publish went undelivered while the subscriber blocked

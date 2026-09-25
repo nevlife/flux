@@ -58,9 +58,7 @@ def doc_subscription(node):
 
 def doc_qos(n):
     # [doc:py_qos]
-    qos = flux.QoS(
-        depth=1, durability=flux.Volatile(), max_borrow=2, reliability=flux.Reliability.BEST_EFFORT
-    )
+    qos = flux.QoS(depth=1, durability=flux.Volatile(), max_borrow=2)
 
     volatile = flux.Volatile()
     transient = flux.TransientLocal(n)
@@ -75,7 +73,7 @@ def doc_qos(n):
 def doc_ros_executor(node, sub):
     # [doc:py_ros_executor]
     ex = flux.ros.Executor()
-    ex.add_flux(sub)                  # the subscription carries the callback
+    ex.add(sub)                  # the subscription carries the callback
     ex.add_ros_node(node)             # the whole node, same as add_ros_node in C++
     ex.spin()                         # runs until stop(); tick_ns defaults to 100 ms
     ex.spin_once(timeout_ns=100_000_000)
@@ -94,18 +92,17 @@ def doc_partitioned(node, sub_a, sub_b):
     # [doc:py_partitioned]
     ex = flux.ros.PartitionedExecutor()
     ex.add_ros_node(node)
-    ex.add_flux(sub_a, MutuallyExclusiveCallbackGroup())
-    ex.add_flux(sub_b, MutuallyExclusiveCallbackGroup(), priority=10)
+    ex.add(sub_a, MutuallyExclusiveCallbackGroup())
+    ex.add(sub_b, MutuallyExclusiveCallbackGroup(), priority=10)
     ex.spin(tick_ns=100_000_000)
     ex.stop()
-    ex.close()
     # [doc:/py_partitioned]
 
 
 def doc_thread_start(node, sub, group):
     # [doc:py_thread_start]
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(sub, group)
+    ex.add(sub, group)
     ex.add_ros_node(node)
     ex.on_thread_start(group, set_up_this_thread)
     ex.on_thread_start(node, set_up_this_thread)

@@ -6,15 +6,12 @@
 #include <cstdint>
 #include <vector>
 
-// Merged event wait over many channels' in-segment wake words using io_uring FUTEX_WAIT.
-// One io_uring_enter blocks until any armed channel is woken, so an
-// executor waits on N channels with a single syscall instead of one thread per channel.
-// Raw io_uring, no liburing: only two opcodes are used. Requires Linux 6.7+.
+// Merged wait over many channels' wake words with io_uring FUTEX_WAIT (6.7+): one io_uring_enter
+// blocks until any armed channel is woken. Raw io_uring, no liburing.
 //
-// Waits are persistent: a FUTEX_WAIT stays armed in the kernel until it fires, so a
-// timed-out wait() leaves pending waits in place. Re-arm only the tags wait() returned.
-// This is the bare wait layer. Executor drives it; merging ROS readiness into the ring is
-// flux_cpp, which is why neither this file nor Executor names ROS.
+// Waits are persistent: a FUTEX_WAIT stays armed until it fires, so a timed-out wait() leaves
+// pending waits in place. Re-arm only the tags wait() returned. Executor drives this; merging ROS
+// readiness into the ring is flux_cpp, which is why neither this file nor Executor names ROS.
 
 namespace flux
 {
@@ -31,20 +28,30 @@ struct WakeEvent
 
 // The ring hands tags back as opaque u64s, but an executor arms events of more than one kind
 // (channel wakes, a control/readiness fd). Encoding (kind, index) in the tag lets dispatch
-// switch on the kind instead of reserving magic index values like ~0.
+// switch on the kind instead of reserving magic index values like ~0. The low 24 bits of the
+// channel's attach generation ride along, so a completion from a wait on a replaced mapping is
+// told apart from the wait armed after it.
 enum class EventKind : std::uint32_t {
   channel = 0,
   control = 1,
+  cancel = 2,  // the cancel op's own completion; the canceled wait completes under its own tag
 };
 
-constexpr std::uint64_t make_tag(EventKind kind, std::uint32_t index) noexcept
+constexpr std::uint64_t make_tag(
+  EventKind kind, std::uint32_t index, std::uint32_t gen = 0) noexcept
 {
-  return (static_cast<std::uint64_t>(kind) << 32) | index;
+  return (static_cast<std::uint64_t>(kind) << 56) |
+         (static_cast<std::uint64_t>(gen & 0xFFFFFFu) << 32) | index;
 }
 
 constexpr EventKind tag_kind(std::uint64_t tag) noexcept
 {
-  return static_cast<EventKind>(tag >> 32);
+  return static_cast<EventKind>(tag >> 56);
+}
+
+constexpr std::uint32_t tag_gen(std::uint64_t tag) noexcept
+{
+  return static_cast<std::uint32_t>(tag >> 32) & 0xFFFFFFu;
 }
 
 constexpr std::uint32_t tag_index(std::uint64_t tag) noexcept
@@ -52,14 +59,14 @@ constexpr std::uint32_t tag_index(std::uint64_t tag) noexcept
   return static_cast<std::uint32_t>(tag);
 }
 
-// Why a merged wait is or is not available here. The two negatives are not interchangeable:
-// a kernel without the opcode is the case the parker-thread fallback exists for, while a ring
-// this host refused to create is resource exhaustion, and degrading to threads would hide it.
-//
+// Why a merged wait is or is not available here. A missing opcode or a forbidding host is what the
+// parker-thread fallback is for; a ring that could not be created or run is resource exhaustion,
+// and degrading to threads would hide it.
 enum class IoUringSupport : std::uint8_t {
   Yes,
-  NoOpcode,    // pre-6.7 kernel or UAPI headers: fall back
-  RingFailed,  // the probe ring could not be created: the caller reports, never degrades
+  NoOpcode,    // pre-6.7 kernel or UAPI headers, or no io_uring at all: fall back
+  Forbidden,   // EPERM: a seccomp profile or kernel.io_uring_disabled; fall back, and say so
+  RingFailed,  // the probe ring could not be created or run: the caller reports, never degrades
 };
 
 class IoUringWaiter
@@ -91,8 +98,8 @@ public:
 
   // Cancel the pending wait armed with `tag` (ASYNC_CANCEL by user_data). Without this a wait
   // armed on a word that will never move again -- a re-attached channel's old mapping -- stays
-  // pending in the kernel for the ring's lifetime. Both the canceled wait (-ECANCELED) and the
-  // cancel op itself complete under `tag`; the caller just re-checks that channel.
+  // pending in the kernel for the ring's lifetime. The canceled wait completes under `tag` with
+  // -ECANCELED; the cancel op itself completes under make_tag(EventKind::cancel, 0).
   void cancel(std::uint64_t tag);
 
   // Submit newly armed waits and block until at least one completes, or `timeout_ns`
@@ -105,10 +112,8 @@ private:
   void reset() noexcept;
 
   int ring_fd_ = -1;
-  void * sq_ptr_ = nullptr;
-  std::size_t sq_sz_ = 0;
-  void * cq_ptr_ = nullptr;  // equals sq_ptr_ under IORING_FEAT_SINGLE_MMAP
-  std::size_t cq_sz_ = 0;
+  void * ring_ptr_ = nullptr;  // SQ and CQ rings, one mapping (IORING_FEAT_SINGLE_MMAP)
+  std::size_t ring_sz_ = 0;
   void * sqes_ = nullptr;
   std::size_t sqes_sz_ = 0;
 

@@ -13,11 +13,11 @@ One node, `flux_bridge_<pid>`, started by hand. It is not forked by an applicati
 Every second (`--poll`) the bridge does one pass:
 
 1. `flux.enumerate_topics()`, kept to channels in its domain with a live publisher and an exact key.
-2. For each, the installed adapter for the channel's fingerprint. A channel whose adapter is not installed is logged once and skipped.
+2. For each, the installed adapter for the channel's fingerprint. A channel whose adapter is not installed is logged once and skipped. An adapter module that is installed but fails to import (for example, built against an older `flux_gen`) is skipped with a `flux: skipped adapter module` line on stderr naming the error.
 3. `get_subscriptions_info_by_topic()` on the ROS graph, the bridge's own node excluded. One or more external subscribers means the channel is wanted.
 4. A relay starts for every wanted channel that has none, and stops for every relay whose channel is no longer wanted or no longer live.
 
-A relay is one thread: `take_blocking()` on a `flux.Subscription(depth=1, max_borrow=1)`, `frame_to_msg()` into a ROS message object, `publish()` on an rclpy publisher of the same name. The view is released before the publish. The frame path is therefore flux slot -> one copy -> CDR serialization -> DDS, and that is the cost of using a stock tool on a flux channel. The type comes from the adapter that `flux_gen` generated (`<pkg>_flux.<name>` for the frame, `<pkg>_flux.<name>_ros` for the message object), so the adapter package must be installed where the bridge runs.
+A relay is one thread: `take_blocking()` on a `flux.Subscription(depth=1, max_borrow=1)`, `frame_to_msg()` into a ROS message object, `publish()` on an rclpy publisher of the same name. The view is released before the publish. The frame path is therefore flux slot -> one copy -> CDR serialization -> DDS, and that is the cost of using a stock tool on a flux channel. The type comes from the adapter that `flux_gen` generated (`<pkg>_flux.<name>` for the frame, `<pkg>_flux.<name>_ros` for the message object), so the adapter package must be installed where the bridge runs. A frame that `frame_to_msg()` cannot read against its schema is skipped and counted, and the relay goes on with the next one. The log line written when the relay stops reports that count.
 
 | Item | Value |
 | --- | --- |

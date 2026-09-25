@@ -108,7 +108,9 @@ def _view_accessors(block, base, out, prefix=(), recv="r_.", reader="r_", ind=" 
             out.append(
                 f"{ind}std::string_view {n}() const noexcept {{ return {recv}str({at(o)}); }}")
         elif p.kind == LeafKind.STRING_ARRAY:
-            out.append(f"{ind}std::size_t {n}__size() const noexcept {{ return {recv}len({at(o)}); }}")
+            out.append(
+                f"{ind}std::size_t {n}__size() const noexcept "
+                f"{{ return {recv}len({at(o)}, sizeof(flux::wire::Desc), alignof(flux::wire::Desc)); }}")
             out.append(
                 f"{ind}std::string_view {n}(std::size_t i) const noexcept "
                 f"{{ return {recv}str_at({at(o)}, i); }}")
@@ -131,7 +133,9 @@ def _view_accessors(block, base, out, prefix=(), recv="r_.", reader="r_", ind=" 
                 f"{{ return {recv}str({at(p.frame_id_offset)}); }}")
         else:  # RECORD_COLUMN / JAGGED
             cls = _elem_class(prefix + (p,))
-            out.append(f"{ind}std::size_t {n}__size() const noexcept {{ return {recv}len({at(o)}); }}")
+            out.append(
+                f"{ind}std::size_t {n}__size() const noexcept "
+                f"{{ return {recv}len({at(o)}, {p.elem.stride}, {p.elem.align}); }}")
             out.append(
                 f"{ind}{cls} {n}(std::size_t i) const noexcept "
                 f"{{ return {cls}({reader}, {recv}elem({at(o)}, i, {p.elem.stride}, {p.elem.align})); }}")
@@ -160,11 +164,15 @@ def _builder_accessors(block, base, out, prefix=(), recv="w_.", writer="w_", ind
                 f"{ind}void set__{n}(std::string_view s) noexcept "
                 f"{{ {recv}put_str({at(o)}, s); }}")
         elif p.kind == LeafKind.STRING_ARRAY:
-            guard = (f"if (n != {p.count}) {{ {recv}poison(); return; }} "
-                     if p.count != DYNAMIC_COUNT else "")
-            out.append(
-                f"{ind}void alloc__{n}(std::size_t n) noexcept "
-                f"{{ {guard}{recv}alloc_strs({at(o)}, n); }}")
+            # A fixed T[N] takes no count: N is the schema's, so a wrong one cannot be written.
+            if p.count != DYNAMIC_COUNT:
+                out.append(
+                    f"{ind}void alloc__{n}() noexcept "
+                    f"{{ {recv}alloc_strs({at(o)}, {p.count}); }}")
+            else:
+                out.append(
+                    f"{ind}void alloc__{n}(std::size_t n) noexcept "
+                    f"{{ {recv}alloc_strs({at(o)}, n); }}")
             out.append(
                 f"{ind}void set__{n}(std::size_t i, std::string_view s) noexcept "
                 f"{{ {recv}put_str_at({at(o)}, i, s); }}")
@@ -179,12 +187,12 @@ def _builder_accessors(block, base, out, prefix=(), recv="w_.", writer="w_", ind
                     f"{{ {recv}put_str({at(p.frame_id_offset)}, s); }}")
         else:  # RECORD_COLUMN / JAGGED
             cls = _elem_class(prefix + (p,))
-            guard = (f"if (n != {p.count}) {{ {recv}poison(); return {cls}Array(); }} "
-                     if p.count != DYNAMIC_COUNT else "")
+            fixed = p.count != DYNAMIC_COUNT
+            param, n_arg = ("", str(p.count)) if fixed else ("std::size_t n", "n")
             out.append(
-                f"{ind}{cls}Array alloc__{n}(std::size_t n) noexcept "
-                f"{{ {guard}return {cls}Array({writer}, {recv}alloc_elems("
-                f"{at(o)}, n, {p.elem.stride}, {p.elem.align}), n); }}")
+                f"{ind}{cls}Array alloc__{n}({param}) noexcept "
+                f"{{ return {cls}Array({writer}, {recv}alloc_elems("
+                f"{at(o)}, {n_arg}, {p.elem.stride}, {p.elem.align}), {n_arg}); }}")
 
 
 def _elem_classes(block, out, prefix=()):

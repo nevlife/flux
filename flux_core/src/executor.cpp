@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -13,25 +15,33 @@
 namespace flux
 {
 
-Executor::Executor(unsigned max_channels, std::int64_t poll_tick_ns)
-: max_channels_(max_channels), poll_tick_ns_(poll_tick_ns)
+Executor::Executor(std::int64_t poll_tick_ns) : poll_tick_ns_(poll_tick_ns)
 {
-  if (max_channels == 0) throw std::invalid_argument("flux: Executor max_channels must be >= 1");
   if (poll_tick_ns <= 0) throw std::invalid_argument("flux: Executor poll_tick_ns must be > 0");
-  // The fallback is selected by the kernel, which makes it untestable on a machine that has the
-  // opcode. FLUX_DISABLE_IO_URING forces it, so the path Jetson Orin will run is exercised here.
-  // On a kernel that has the opcode a refused ring setup (fd exhaustion) throws instead of
-  // degrading to parker threads: a silent downgrade would hide the resource leak that caused it.
+  // FLUX_DISABLE_IO_URING forces the fallback, so a 6.7+ machine still tests the pre-6.7 path.
   const bool forced_off = std::getenv("FLUX_DISABLE_IO_URING") != nullptr;
   switch (forced_off ? IoUringSupport::NoOpcode : IoUringWaiter::support()) {
     case IoUringSupport::Yes:
-      waiter_.emplace(max_channels_ + 1);  // +1 for the wake fd
+      waiter_.emplace();
       break;
     case IoUringSupport::NoOpcode:
       break;  // parker threads
+    case IoUringSupport::Forbidden: {
+      static std::once_flag said;
+      std::call_once(said, [] {
+        std::fprintf(
+          stderr,
+          "flux: io_uring is forbidden here (EPERM: a seccomp profile or "
+          "kernel.io_uring_disabled); waiting with one thread per channel instead. Allow "
+          "io_uring to use the merged wait, or set FLUX_DISABLE_IO_URING=1 to choose the "
+          "fallback and silence this.\n");
+      });
+      break;
+    }
     case IoUringSupport::RingFailed:
       throw std::runtime_error(
-        "flux: io_uring is supported here but no ring could be created (fd or memlock limit); "
+        "flux: io_uring is supported here but the probe ring could not be created or run (fd "
+        "or memlock limit, or memory); "
         "raise the limit rather than running on the fallback");
   }
 }
@@ -46,11 +56,6 @@ void Executor::add(Source & src, int priority)
 {
   if (ctl_.is_spinning()) {
     throw std::logic_error("flux: add() must be called before spin()");
-  }
-  if (entries_.size() >= max_channels_) {
-    throw std::length_error(
-      "flux: Executor is full (max_channels=" + std::to_string(max_channels_) +
-      "); construct it with a larger max_channels");
   }
   auto e = std::make_unique<Entry>();
   e->src = &src;
@@ -117,7 +122,7 @@ bool Executor::sync_channel(Entry & e, Channel * ch, std::uint64_t tag) noexcept
     // A wait armed on the old mapping's word would stay pending in the kernel forever;
     // reap it before arming the new generation. The old block's waiter
     // count comes off with it.
-    if (e.pending) waiter_->cancel(tag);
+    if (e.pending) waiter_->cancel(make_tag(EventKind::channel, tag_index(tag), e.gen));
     if (e.counted_on) e.counted_on->remove_waiter();
     ch->add_waiter();  // io_uring parks in the kernel, so hold the gate for the duration
     e.counted_on = ch->wait_handle();
@@ -133,7 +138,7 @@ bool Executor::sync_channel(Entry & e, Channel * ch, std::uint64_t tag) noexcept
 void Executor::detach_entry(Entry & e, std::uint64_t tag) noexcept
 {
   stop_parker(e);
-  if (e.pending && waiter_) waiter_->cancel(tag);
+  if (e.pending && waiter_) waiter_->cancel(make_tag(EventKind::channel, tag_index(tag), e.gen));
   if (e.counted_on) {
     e.counted_on->remove_waiter();
     e.counted_on.reset();
@@ -200,17 +205,17 @@ void Executor::release_waiters() noexcept
 
 std::size_t Executor::ready_entry() const
 {
-  for (const std::size_t i : order_) {
-    Entry & e = *entries_[i];
+  for (std::size_t at = 0; at < order_.size(); ++at) {
+    Entry & e = *entries_[order_[at]];
     if (e.blocked) continue;
     Channel * ch = e.src->channel();
     if (ch == nullptr) continue;
     // An unprobed entry goes without asking: take() is the only thing that notices a segment
     // replaced under a mapping whose own latest has stopped moving.
     if (e.probed && !ch->ready()) continue;
-    return i;
+    return at;
   }
-  return entries_.size();
+  return order_.size();
 }
 
 int Executor::dispatch(const std::function<bool()> & yield)
@@ -241,34 +246,37 @@ int Executor::dispatch(const std::function<bool()> & yield)
     e.seq = ch->wake_seq();
   }
 
+  // The budget counts callbacks; an empty probe is once per source per pass, so the pass ends.
   int dispatched = 0;
   more_ = false;
-  for (int budget = pass_budget_; budget > 0; --budget) {
+  for (;;) {
     // Never before the first: the frame that woke the wait is always delivered.
-    if (dispatched > 0 && yield && yield()) {
-      more_ = ready_entry() != entries_.size();
+    if (dispatched >= pass_budget_ || (dispatched > 0 && yield && yield())) {
+      more_ = ready_entry() != order_.size();
       break;
     }
-    more_ = budget == 1;  // survives the loop only if the budget, not an empty scan, ended it
-    const std::size_t pick = ready_entry();
-    if (pick == entries_.size()) {
-      more_ = false;
-      break;
-    }
+    const std::size_t at = ready_entry();
+    if (at == order_.size()) break;
 
+    const std::size_t pick = order_[at];
     Entry & e = *entries_[pick];
     const std::uint64_t tag = make_tag(EventKind::channel, static_cast<std::uint32_t>(pick));
     e.probed = true;
     const int n = e.src->deliver_one();
     dispatched += n;
+    if (n > 0) {
+      // Equal priorities take turns: the source just served goes behind its peers.
+      std::size_t end = at + 1;
+      while (end < order_.size() && entries_[order_[end]]->priority == e.priority) ++end;
+      std::rotate(order_.begin() + at, order_.begin() + at + 1, order_.begin() + end);
+    }
     Channel * ch = e.src->channel();
     if (ch == nullptr) {  // orphan drop inside the callback: the entry restarts next pass
       detach_entry(e, tag);
       e.blocked = true;
       continue;
     }
-    // Ready but nothing taken means take() refused (max_borrow, holder table). Only the owner
-    // clears that, so retrying here would spend the rest of the budget on the same refusal.
+    // Ready but nothing taken: take() refused (max_borrow, holder table); retrying would spin.
     if (n == 0 && ch->ready()) e.blocked = true;
     // deliver_one() can re-attach, staling the sampled seq and the word it belongs to.
     if (waiter_ ? sync_channel(e, ch, tag) : rebind_parker(e, *ch)) {
@@ -284,14 +292,24 @@ int Executor::dispatch(const std::function<bool()> & yield)
     Channel * ch = e.src->channel();
     if (ch == nullptr) continue;
     waiter_->arm(
-      ch->wake_word(), e.seq, make_tag(EventKind::channel, static_cast<std::uint32_t>(i)));
+      ch->wake_word(), e.seq, make_tag(EventKind::channel, static_cast<std::uint32_t>(i), e.gen));
     e.pending = true;
   }
   return dispatched;
 }
 
+bool Executor::a_source_moved() const noexcept
+{
+  for (const auto & e : entries_) {
+    const Channel * ch = e->src->channel();
+    if (ch == nullptr ? e->gen != kNoAttach : ch->attach_generation() != e->gen) return true;
+  }
+  return false;
+}
+
 void Executor::wait_for_work(std::int64_t timeout_ns)
 {
+  if (a_source_moved()) timeout_ns = 0;
   if (waiter_) {
     if (!ev_pending_) {
       waiter_->arm_poll(ctl_.fd(), make_tag(EventKind::control, 0));
@@ -305,9 +323,13 @@ void Executor::wait_for_work(std::int64_t timeout_ns)
           ctl_.drain();
           break;
         case EventKind::channel:
+          // A canceled wait on a replaced mapping completes too; only the current one counts.
           if (tag_index(w.tag) < entries_.size()) {
-            entries_[tag_index(w.tag)]->pending = false;  // re-armed and drained next dispatch
+            Entry & e = *entries_[tag_index(w.tag)];
+            if (tag_gen(w.tag) == (e.gen & 0xFFFFFFu)) e.pending = false;
           }
+          break;
+        case EventKind::cancel:
           break;
       }
     }
@@ -336,7 +358,7 @@ void Executor::wait_for_work(std::int64_t timeout_ns)
   if (p.revents & POLLIN) ctl_.drain();
 }
 
-int Executor::spin_once(std::int64_t timeout_ns)
+int Executor::spin_once(std::int64_t timeout_ns, const std::function<bool()> & woken)
 {
   // Every exit consumes the interrupt flag, so one interrupt() ends at most one call -- a flag
   // left set would end a later wait nobody asked to end.
@@ -365,7 +387,7 @@ int Executor::spin_once(std::int64_t timeout_ns)
     wait_for_work(left > 0 ? left : 0);
     ready = dispatch();
     const bool interrupted = interrupted_.exchange(false, std::memory_order_acq_rel);
-    if (ready > 0 || interrupted) return ready;
+    if (ready > 0 || interrupted || (woken && woken())) return ready;
     if (elapsed_ns() >= timeout_ns) return 0;
   }
 }

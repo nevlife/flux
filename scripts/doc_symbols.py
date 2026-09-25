@@ -40,8 +40,8 @@ def documented_paths(text):
     documented_symbols answers "is this word written down anywhere", which cannot tell
     `flux.Publisher` from the C++ `Publisher` documented in the section above it -- the two share
     a last segment, and this document deliberately spells both languages. A path carries the
-    module, so it can. Prefixes are included because writing `flux.Reliability.BEST_EFFORT`
-    documents `flux.Reliability` as well.
+    module, so it can. Prefixes are included because writing `flux.Published.OK`
+    documents `flux.Published` as well.
     """
     paths = set()
     for chunk in _code_chunks(text):

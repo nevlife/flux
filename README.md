@@ -21,7 +21,7 @@ colcon test
 
 ## Requirements
 
-- Linux 6.7+ (io_uring futex wait; older kernels fall back to one wait thread per channel)
+- Linux only. 6.7+ for the io_uring futex wait; an older kernel, or a host that forbids io_uring, falls back to one wait thread per channel
 - ROS 2 Jazzy (Humble builds; see the executor note in `docs/en/api.en.md`)
 - C++17
 - Python 3.8+, numpy

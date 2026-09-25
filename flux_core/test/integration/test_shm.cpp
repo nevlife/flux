@@ -155,7 +155,7 @@ TEST(Shm, CrossProcessCoherence)
   std::vector<std::byte> buf(slot_size);
   for (std::uint64_t f = 1; f <= 1000000; ++f) {
     std::memset(buf.data(), static_cast<int>(f & 0xFF), buf.size());
-    publish_id(pub, buf.data(), buf.size(), f);
+    (void)publish_id(pub, buf.data(), buf.size(), f);
   }
 
   int status = 0;

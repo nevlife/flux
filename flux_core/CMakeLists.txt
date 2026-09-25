@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(flux_core VERSION 0.0.0 LANGUAGES CXX)
 
+# futex, OFD locks, io_uring and /dev/shm are the engine itself; no other OS has a path to take.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "flux_core requires Linux (futex, OFD locks, io_uring, /dev/shm)")
+endif()
+
 # flux_core is the pure C++17 shared-memory engine. It builds two ways:
 #   - standalone:  cmake -S . -B build   (ROS-free; exports find_package(flux_core))
 #   - colcon:      built as an ament_cmake package inside a ROS 2 workspace

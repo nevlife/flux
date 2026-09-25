@@ -77,7 +77,8 @@ def discover(paths=None):
     for name in _candidate_modules(sys.path if paths is None else paths):
         try:
             module = importlib.import_module(name)
-        except Exception:
+        except Exception as e:  # noqa: BLE001 - one broken package must not hide the others
+            print(f"flux: skipped adapter module '{name}': {type(e).__name__}: {e}", file=sys.stderr)
             continue
         fingerprint = getattr(module, "FINGERPRINT__", None)
         type_name = getattr(module, "TYPE_NAME__", None)

@@ -15,7 +15,9 @@ class CloudSubscriber : public rclcpp::Node
 public:
   CloudSubscriber()
   : Node("flux_lidar_cloud_sub"),
-    sub_(*this, kTopic, Cloud::kFingerprint, [this](const flux::FrameView & f) { on_frame(f); })
+    sub_(*this, kTopic, Cloud::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
+      on_frame(f);
+    })
   {
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
@@ -66,7 +68,6 @@ int main(int argc, char ** argv)
   ex.add(node->subscription());
   ex.add_ros_node(node);
 
-  rclcpp::on_shutdown([&ex]() { ex.stop(); });
   ex.spin();
   rclcpp::shutdown();
   return 0;

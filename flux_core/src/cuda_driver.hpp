@@ -1,12 +1,10 @@
 #ifndef FLUX_SRC_CUDA_DRIVER_HPP
 #define FLUX_SRC_CUDA_DRIVER_HPP
 
+#include <dlfcn.h>
+
 #include <cstddef>
 #include <cstdint>
-
-#if defined(__linux__)
-#include <dlfcn.h>
-#endif
 
 // The driver API's ABI, spelled out so flux_core needs no CUDA headers and links no CUDA library.
 // These are the values and struct shapes in cuda.h; both are ABI and neither moves between CUDA
@@ -15,8 +13,6 @@
 
 namespace flux::gpu::detail
 {
-
-#if defined(__linux__)
 
 constexpr int kSuccess = 0;
 
@@ -172,21 +168,14 @@ inline const Driver & driver()
     }
     drv.error = nullptr;
 
-    // libcuda exports both the _v2 ABI and the original names. The CUDA headers define the
-    // unsuffixed spelling to the _v2 entry point, so that is the one to bind -- v1
-    // cuMemHostGetDevicePointer returns a 32-bit pointer, and binding it by the short name on a
-    // driver that has both would truncate every device address. The fallback is only for a
-    // driver too old to carry _v2.
-    const auto sym_v2 = [&sym](const char * v2, const char * v1) {
-      void * p = sym(v2);
-      return p != nullptr ? p : sym(v1);
-    };
-    drv.mem_host_register = reinterpret_cast<decltype(drv.mem_host_register)>(
-      sym_v2("cuMemHostRegister_v2", "cuMemHostRegister"));
+    // The _v2 names, as the CUDA headers spell them: v1 cuMemHostGetDevicePointer returns a
+    // 32-bit pointer and would truncate every device address.
+    drv.mem_host_register =
+      reinterpret_cast<decltype(drv.mem_host_register)>(sym("cuMemHostRegister_v2"));
     drv.mem_host_unregister =
       reinterpret_cast<decltype(drv.mem_host_unregister)>(sym("cuMemHostUnregister"));
     drv.mem_host_get_device_pointer = reinterpret_cast<decltype(drv.mem_host_get_device_pointer)>(
-      sym_v2("cuMemHostGetDevicePointer_v2", "cuMemHostGetDevicePointer"));
+      sym("cuMemHostGetDevicePointer_v2"));
     drv.host_reg_error =
       (drv.mem_host_register && drv.mem_host_unregister && drv.mem_host_get_device_pointer)
         ? nullptr
@@ -236,8 +225,6 @@ inline bool ensure_context(const Driver & drv, int device = 0)
   if (drv.primary_ctx_retain(&primary, dev) != kSuccess) return false;
   return drv.ctx_set_current(primary) == kSuccess;
 }
-
-#endif  // __linux__
 
 }  // namespace flux::gpu::detail
 

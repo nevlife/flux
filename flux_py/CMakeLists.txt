@@ -40,6 +40,10 @@ nanobind_add_module(_flux NB_STATIC src/flux_py.cpp)
 # Link the imported target directly (keyword signature, matching nanobind). It carries
 # flux_core's include dirs too. ament_target_dependencies (plain signature) would clash.
 target_link_libraries(_flux PRIVATE flux_core::flux_core)
+# Same warnings as the other flux packages. nanobind's headers are vendored, not ours to fix, so
+# they are included as system headers and only flux_py.cpp is held to them.
+target_include_directories(_flux SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/nanobind/include)
+target_compile_options(_flux PRIVATE -Wall -Wextra -Wpedantic)
 
 # Install the extension and the thin Python package into the ament python path so that
 # `import flux` works after sourcing the workspace.

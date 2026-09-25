@@ -4,8 +4,10 @@ Same frame layout, same offsets, same descriptors -- both ends are generated fro
 the only thing that has to match by hand is this file and its C++ twin. Reads hand back numpy
 views that alias the slot; nothing is copied out.
 
-Where C++ latches a bad() flag (its callers are noexcept), this raises WireError. A frame is
-written by another process, so every descriptor is still bounds-checked before it is followed.
+Where C++ latches a bad() flag (its callers are noexcept), this raises WireError. The Writer also
+latches, so a Builder whose write failed refuses to commit even if the caller caught the error.
+A frame is written by another process, so every descriptor is still bounds-checked before it is
+followed.
 """
 
 import numpy as np
@@ -84,7 +86,10 @@ class Reader:
     def string(self, off):
         at, n = self.desc(off)
         self._region(at, n, 1, 1)
-        return str(self._buf[at:at + n], "utf-8")
+        try:
+            return str(self._buf[at:at + n], "utf-8")
+        except UnicodeDecodeError as e:
+            raise WireError(f"string at {at} is not UTF-8: {e.reason}") from e
 
     def strings(self, off):
         at, n = self.desc(off)
@@ -153,10 +158,41 @@ class ElemArray:
             yield self[i]
 
 
+class NullWriter:
+    """The writer of a Builder whose loan found no free slot, as the C++ Writer with no buffer:
+    bad from the start, and every write goes nowhere. alloc hands back a scratch array of the
+    size asked for, so filling it the usual way does not fail."""
+
+    __slots__ = ()
+    bad = True
+    size = 0
+
+    def poison(self):
+        pass
+
+    def put(self, off, dtype, value):
+        pass
+
+    def block_view(self, off, dtype, count):
+        return np.zeros(count, dtype=dtype)
+
+    def alloc(self, off, n, dtype):
+        return np.empty(n, dtype=dtype)
+
+    def put_str(self, off, s):
+        pass
+
+    def put_strs(self, off, items):
+        pass
+
+    def alloc_elems(self, off, n, stride, align):
+        return 0
+
+
 class Writer:
     """Write side: a bump allocator over a loaned slot."""
 
-    __slots__ = ("_buf", "_cap", "_used")
+    __slots__ = ("_buf", "_cap", "_used", "bad")
 
     def __init__(self, buf, scalar_bytes):
         self._buf = memoryview(buf).cast("B")
@@ -167,6 +203,16 @@ class Writer:
         # be last frame's, and point at bytes this frame does not own.
         self._buf[:scalar_bytes] = b"\0" * scalar_bytes
         self._used = scalar_bytes
+        self.bad = False
+
+    def poison(self):
+        """Latch failure so commit refuses the frame, as the C++ Writer does."""
+        self.bad = True
+
+    def _fail(self, text):
+        # Latched before raising: a caller that catches the error must still not publish.
+        self.bad = True
+        raise WireError(text)
 
     @property
     def size(self):
@@ -176,24 +222,23 @@ class Writer:
     def put(self, off, dtype, value):
         dt = np.dtype(dtype)
         if off + dt.itemsize > self._cap:
-            raise WireError(f"scalar at {off} escapes the slot")
+            self._fail(f"scalar at {off} escapes the slot")
         np.frombuffer(self._buf, dtype=dt, count=1, offset=off)[0] = value
 
     def block_view(self, off, dtype, count):
         dt = np.dtype(dtype)
         if off + count * dt.itemsize > self._cap:
-            raise WireError(f"block at {off} escapes the slot")
+            self._fail(f"block at {off} escapes the slot")
         return np.frombuffer(self._buf, dtype=dt, count=count, offset=off)
 
     def _reserve(self, off, n, esize, align, zero):
         if off + DESC_SIZE > self._cap:
-            raise WireError(f"descriptor at {off} escapes the slot")
+            self._fail(f"descriptor at {off} escapes the slot")
         start = _align_up(self._used, align)
         if start > self._cap or n > (self._cap - start) // esize:
-            raise WireError(
-                f"frame needs {start + n * esize}B but the slot holds {self._cap}B")
+            self._fail(f"frame needs {start + n * esize}B but the slot holds {self._cap}B")
         if start + n * esize > MAX_FRAME_BYTES:
-            raise WireError("frame exceeds the 4 GiB a uint32 descriptor can address")
+            self._fail("frame exceeds the 4 GiB a uint32 descriptor can address")
         np.frombuffer(self._buf, dtype=_DESC, count=1, offset=off)[0] = (start, n)
         self._used = start + n * esize
         if zero:

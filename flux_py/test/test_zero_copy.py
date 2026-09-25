@@ -5,6 +5,7 @@ the view aliases the shared segment and that the borrow is tied to the array's l
 """
 
 import gc
+import os
 import time
 
 import numpy as np
@@ -20,7 +21,7 @@ def test_zero_copy_roundtrip():
     sub = flux.Subscription("/pytest/zc", fingerprint=FP)
 
     a = np.arange(1000, dtype=np.float32).reshape(10, 100)
-    assert pub.publish(a) == flux.Published.Ok
+    assert pub.publish(a) == flux.Published.OK
 
     v = sub.take()
     assert v is not None
@@ -34,7 +35,7 @@ def test_view_is_readonly_and_not_a_copy():
     sub = flux.Subscription("/pytest/ro", fingerprint=FP)
 
     a = np.full(2048, 7, dtype=np.uint8)
-    assert pub.publish(a) == flux.Published.Ok
+    assert pub.publish(a) == flux.Published.OK
 
     v = sub.take()
     assert v is not None
@@ -52,7 +53,7 @@ def test_dtypes_roundtrip():
                              slot_count=2, fingerprint=FP)
         sub = flux.Subscription(f"/pytest/dt_{dt.__name__}", fingerprint=FP)
         a = (np.arange(64) % 17).astype(dt)
-        assert pub.publish(a) == flux.Published.Ok
+        assert pub.publish(a) == flux.Published.OK
         v = sub.take()
         assert v is not None
         assert v.dtype == dt
@@ -71,7 +72,7 @@ def test_view_outlives_subscription():
     # and reading it (or its GC) would crash.
     pub = flux.Publisher("/pytest/outlive", slot_size=4096, slot_count=4, fingerprint=FP)
     a = np.arange(256, dtype=np.uint8)
-    assert pub.publish(a) == flux.Published.Ok
+    assert pub.publish(a) == flux.Published.OK
 
     # The subscription joins after the publish, so volatile take() would skip it; peek() reads
     # current state regardless.
@@ -94,17 +95,17 @@ def test_borrow_blocks_publish_then_releases_on_gc():
     sub = flux.Subscription("/pytest/borrow", fingerprint=FP)
     a = np.zeros(1024, dtype=np.uint8)
 
-    assert pub.publish(a) == flux.Published.Ok
+    assert pub.publish(a) == flux.Published.OK
     v = sub.take()
     assert v is not None
 
-    assert pub.publish(a) == flux.Published.Backpressure  # only slot borrowed -> dropped
+    assert pub.publish(a) == flux.Published.BACKPRESSURE  # only slot borrowed -> dropped
     assert pub.dropped >= 1
 
     del v
     gc.collect()  # releases the borrow (FrameView destructor -> refcount--)
 
-    assert pub.publish(a) == flux.Published.Ok  # slot free again
+    assert pub.publish(a) == flux.Published.OK  # slot free again
 
 
 def test_oversized_publish_rejected():
@@ -115,7 +116,7 @@ def test_oversized_publish_rejected():
     with pytest.raises(ValueError):
         pub.publish(big)
     ok = np.zeros(4096, dtype=np.uint8)  # exactly slot_size still works
-    assert pub.publish(ok) == flux.Published.Ok
+    assert pub.publish(ok) == flux.Published.OK
 
 
 def test_relative_topic_rejected():
@@ -169,7 +170,7 @@ def test_publish_rejects_rank_above_max_dims():
         pub.publish(np.zeros((1,) * 9, dtype=np.uint8))
     assert pub.dropped == before
 
-    assert pub.publish(np.full(8, 3, dtype=np.uint8)) == flux.Published.Ok  # channel still works
+    assert pub.publish(np.full(8, 3, dtype=np.uint8)) == flux.Published.OK  # channel still works
     v = sub.take()
     assert v is not None and int(v[0]) == 3
 
@@ -180,8 +181,8 @@ def test_take_blocking_does_not_park_when_max_borrow_is_held():
     pub = flux.Publisher("/pytest/loan/lease", slot_size=64, slot_count=4, fingerprint=FP)
     sub = flux.Subscription(
         "/pytest/loan/lease", fingerprint=FP, qos=flux.QoS(depth=4, max_borrow=1))
-    assert pub.publish(np.full(8, 1, dtype=np.uint8)) == flux.Published.Ok
-    assert pub.publish(np.full(8, 2, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.full(8, 1, dtype=np.uint8)) == flux.Published.OK
+    assert pub.publish(np.full(8, 2, dtype=np.uint8)) == flux.Published.OK
 
     held = sub.take()
     assert held is not None
@@ -200,7 +201,7 @@ def test_an_exhausted_lease_is_visible_and_counted():
     pub = flux.Publisher("/pytest/loan/refused", slot_size=64, slot_count=4, fingerprint=FP)
     sub = flux.Subscription(
         "/pytest/loan/refused", fingerprint=FP, qos=flux.QoS(depth=4, max_borrow=1))
-    assert pub.publish(np.full(8, 1, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.full(8, 1, dtype=np.uint8)) == flux.Published.OK
 
     assert sub.can_borrow is True
     assert sub.refused.total == 0
@@ -240,7 +241,7 @@ def test_take_blocking_recovers_from_a_publisher_restart():
     topic = "/pytest/loan/restart"
     pub = flux.Publisher(topic, slot_size=64, slot_count=2, fingerprint=FP)
     sub = flux.Subscription(topic, fingerprint=FP)
-    assert pub.publish(np.full(8, 1, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.full(8, 1, dtype=np.uint8)) == flux.Published.OK
     assert sub.take() is not None
 
     del pub
@@ -304,7 +305,7 @@ def test_subscription_drops_a_dead_publisher_mapping():
     pub = flux.Publisher("/pytest/orphan", slot_size=1 << 16, slot_count=4, fingerprint=FP)
     sub.take()  # re-attaches to the new stream; nothing to deliver yet
     assert sub.attached
-    assert pub.publish(np.ones(16, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.ones(16, dtype=np.uint8)) == flux.Published.OK
     assert sub.take() is not None
 
 
@@ -357,6 +358,7 @@ def test_restart_is_picked_up_without_a_stall_run():
     sub = flux.Subscription(topic, fingerprint=1)
     pub.publish(np.array([1], dtype=np.uint8))
     assert sub.take() is not None
+    first_generation = sub.attach_generation
 
     del pub
     gc.collect()
@@ -371,6 +373,8 @@ def test_restart_is_picked_up_without_a_stall_run():
             break
         assert takes < 100, "the subscriber never followed the rotation"
     assert takes <= 5, f"restart took {takes} takes to surface; the cheap rotation check regressed"
+    # lost() restarts with the new stream; the generation is how a rate knows (api.md).
+    assert sub.attach_generation != first_generation
 
 
 # bfloat16: the one dtype flux carries that numpy has no name for. These pin the shape of
@@ -397,7 +401,7 @@ def test_bfloat16_roundtrips_through_bits():
     assert loan.bits.dtype == np.uint16  # equal width, unsigned: the caller supplies the meaning
     assert loan.bits.flags.writeable is True
     loan.bits[:] = _bf16_bits(vals)
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
 
     v = sub.take()
     assert isinstance(v, flux.Frame)  # not a numpy array: numpy cannot name this dtype
@@ -418,7 +422,7 @@ def test_bfloat16_is_reachable_through_dlpack_and_not_through_numpy():
     with pytest.raises(RuntimeError, match="numpy"):
         loan.array  # .array promises numpy, which has no bfloat16
     loan.bits[:] = _bf16_bits([1.0, 2.0])
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
 
     v = sub.take()
     assert v.__dlpack_device__() == (1, 0)
@@ -462,23 +466,23 @@ def test_publish_and_commit_report_the_outcome_not_a_bool():
     sub = flux.Subscription("/pytest/zc/published", fingerprint=FP)
 
     a = np.zeros(8, dtype=np.uint8)
-    assert pub.publish(a) == flux.Published.Ok
-    assert not flux.faulted(flux.Published.Ok)
-    assert bool(flux.Published.Ok) is True
+    assert pub.publish(a) == flux.Published.OK
+    assert not flux.faulted(flux.Published.OK)
+    assert bool(flux.Published.OK) is True
 
     held = sub.take()  # the only slot is borrowed, so the next publish is dropped
     assert held is not None
     dropped = pub.publish(a)
-    assert dropped == flux.Published.Backpressure
+    assert dropped == flux.Published.BACKPRESSURE
     assert not flux.faulted(dropped), "backpressure is a rate, not a fault"
     assert bool(dropped) is False, "only Ok is truthy, so `if not p` reads as written"
     assert pub.dropped == 1
     del held
 
     loan = pub.loan((8,), dtype="uint8")
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
     spent = loan.commit()
-    assert spent == flux.Published.TooLarge, "a spent handle must not report Ok"
+    assert spent == flux.Published.TOO_LARGE, "a spent handle must not report Ok"
     assert flux.faulted(spent)
 
 
@@ -499,7 +503,7 @@ def test_a_loan_array_cannot_write_after_commit():
     loan = pub.loan((8,), dtype="uint8")
     arr = loan.array
     arr[:] = 0xAA
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
 
     v = sub.take()
     assert v is not None
@@ -520,7 +524,7 @@ def test_a_host_frame_view_keeps_its_bytes_after_the_with_block():
 
     loan = pub.loan((4,), dtype="bfloat16")
     loan.bits[:] = _bf16_bits([1.0, 1.0, 1.0, 1.0])
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
 
     frame = sub.take()
     with frame as f:
@@ -537,3 +541,78 @@ def test_a_host_frame_view_keeps_its_bytes_after_the_with_block():
         ln.bits[:] = _bf16_bits([value] * 4)
         ln.commit()
     assert _from_bf16_bits(escaped)[0] == 1.0, "the view read a frame published after its borrow"
+
+
+# A domain is a plain integer rendered without leading zeros, from either variable, so "007" and
+# "7" are one domain. A value that is not one raises rather than joining the default domain.
+def test_a_domain_is_a_canonical_integer(monkeypatch):
+    assert flux.canonical_domain("007") == "7"
+    assert flux.canonical_domain("4294967295") == "4294967295"
+    for bad in ("", "lab", "7x", "-1", "4294967296"):
+        with pytest.raises(ValueError):
+            flux.canonical_domain(bad)
+
+    monkeypatch.setenv("ROS_DOMAIN_ID", "7")
+    monkeypatch.setenv("FLUX_DOMAIN", "012")
+    assert flux.resolve_domain() == "12"
+    monkeypatch.setenv("FLUX_DOMAIN", "lab")
+    with pytest.raises(ValueError):
+        flux.resolve_domain()
+
+
+# A publisher that is up but whose segment this process cannot open is not "not yet": no retry
+# fixes a permission. The constructor raises rather than leaving a subscription that looks
+# unattached forever. A publisher that is simply absent still waits quietly.
+def test_a_segment_that_cannot_be_opened_while_its_publisher_lives_raises():
+    if os.geteuid() == 0:
+        pytest.skip("root opens a read-only file anyway")
+    pub = flux.Publisher("/pytest/unopenable", slot_size=4096, slot_count=2, fingerprint=FP)
+    prefix = pub.segment_name[1:] + "."
+    locked = [n for n in os.listdir("/dev/shm") if n.startswith(prefix)]
+    assert len(locked) == 1
+    os.chmod("/dev/shm/" + locked[0], 0o400)
+    with pytest.raises(RuntimeError):
+        flux.Subscription("/pytest/unopenable", fingerprint=FP)
+    assert not flux.Subscription("/pytest/absent_publisher", fingerprint=FP).attached
+    del pub
+
+
+# The same holds one step earlier, when the signpost itself cannot be read.
+def test_a_signpost_that_cannot_be_read_raises():
+    if os.geteuid() == 0:
+        pytest.skip("root reads a mode-0 file anyway")
+    pub = flux.Publisher("/pytest/unreadable", slot_size=4096, slot_count=2, fingerprint=FP)
+    os.chmod("/dev/shm" + pub.segment_name, 0)
+    try:
+        with pytest.raises(RuntimeError):
+            flux.Subscription("/pytest/unreadable", fingerprint=FP)
+    finally:
+        os.chmod("/dev/shm" + pub.segment_name, 0o600)  # signposts persist across runs
+    del pub
+
+
+# Two schemas on one long key used to meet on one segment name, so the second publisher failed to
+# start; two keys differing only past the cut shared a channel. A key is now refused past the
+# length whose longest name still fits, and every key under it keeps its full name.
+def test_a_key_past_the_name_limit_is_refused():
+    key = "/" + "k" * 184
+    a = flux.Publisher(key, slot_size=4096, slot_count=2, fingerprint=FP)
+    b = flux.Publisher(key, slot_size=4096, slot_count=2, fingerprint=FP ^ 1)
+    with pytest.raises(ValueError):
+        flux.Publisher(key + "k", slot_size=4096, slot_count=2, fingerprint=FP)
+    del a, b
+
+
+# A 0-d array holds one element, as numpy, torch and DLPack count it; it was sent as 0 bytes.
+def test_a_zero_dimensional_array_round_trips():
+    pub = flux.Publisher("/pytest/zero_dim", slot_size=4096, slot_count=4, fingerprint=FP)
+    sub = flux.Subscription("/pytest/zero_dim", fingerprint=FP)
+    assert pub.publish(np.array(3.5)) == flux.Published.OK
+    v = sub.take()
+    assert v.shape == () and float(v) == 3.5
+
+    loan = pub.loan((), dtype="float64")
+    loan.array[()] = 2.5
+    loan.commit()
+    v = sub.take()
+    assert v.shape == () and float(v) == 2.5

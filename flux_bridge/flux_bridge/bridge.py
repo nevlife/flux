@@ -16,6 +16,7 @@ import threading
 import time
 
 import flux
+from flux_gen.wire import WireError
 
 from .adapters import discover
 
@@ -64,6 +65,7 @@ class Relay:
     def __init__(self, node, topic, adapter, qos):
         self.key = topic.key
         self.published = 0
+        self.unreadable = 0
         self._adapter = adapter
         self._sub = flux.Subscription(
             topic.key, fingerprint=topic.fingerprint, qos=flux.QoS(depth=1, max_borrow=1)
@@ -81,8 +83,15 @@ class Relay:
             frame = self._sub.take_blocking(self.WAIT_NS)
             if frame is None:
                 continue
-            msg = to_msg(view_of(frame))
-            frame = None
+            try:
+                msg = to_msg(view_of(frame))
+            except (WireError, ValueError):
+                # A frame that disagrees with its schema is a wrong message, not the end of the
+                # channel: skip it, as the message_filters Subscriber does.
+                self.unreadable += 1
+                continue
+            finally:
+                frame = None
             self._pub.publish(msg)
             self.published += 1
 
@@ -94,11 +103,11 @@ class Relay:
 
 
 class Bridge:
-    def __init__(self, node, adapters, qos, log=None):
+    def __init__(self, node, adapters, qos):
         self._node = node
         self._adapters = adapters
         self._qos = qos
-        self._log = log or (lambda text: None)
+        self._log = node.get_logger().info
         self._relays = {}
         self._unknown = set()
         self._domain = flux.process_domain()
@@ -123,7 +132,8 @@ class Bridge:
         for key in stop:
             relay = self._relays.pop(key)
             relay.stop()
-            self._log(f"{key}: stopped after {relay.published} frames")
+            self._log(
+                f"{key}: stopped after {relay.published} frames, {relay.unreadable} unreadable")
         for key in start:
             topic, adapter = bridgeable[key]
             self._relays[key] = Relay(self._node, topic, adapter, self._qos)
@@ -168,7 +178,7 @@ def main(argv=None):
     logger.info(
         f"{len(adapters)} adapter(s): " + ", ".join(sorted(a.type_name for a in adapters.values()))
     )
-    bridge = Bridge(node, adapters, _ros_qos(), logger.info)
+    bridge = Bridge(node, adapters, _ros_qos())
     try:
         while rclpy.ok():
             bridge.tick()

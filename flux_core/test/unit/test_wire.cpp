@@ -70,7 +70,7 @@ TEST(Wire, WriterReaderRoundTrip)
   EXPECT_EQ(rd[0], 10u);
   EXPECT_EQ(rd[2], 30u);
   EXPECT_EQ(r.str(kLabelOff), "front");
-  EXPECT_EQ(r.len(kNamesOff), 2u);
+  EXPECT_EQ(r.len(kNamesOff, sizeof(Desc), alignof(Desc)), 2u);
   EXPECT_EQ(r.str_at(kNamesOff, 0), "ab");
   EXPECT_EQ(r.str_at(kNamesOff, 1), "cde");
   const std::size_t re0 = r.elem(kItemsOff, 0, kElemStride, alignof(Desc));
@@ -210,6 +210,13 @@ TEST(Wire, ReaderRejectsOverflowingLength)
   Reader r2(buf2.data(), w2.size());
   EXPECT_EQ(r2.str(kLabelOff), "");
   EXPECT_TRUE(r2.bad());
+
+  auto buf3 = dirty_buf(256);
+  Writer w3(buf3.data(), buf3.size(), kScalarBytes);
+  put_desc(buf3, kItemsOff, kScalarBytes, 0xFFFFFFFFu);
+  Reader r3(buf3.data(), w3.size());
+  EXPECT_EQ(r3.len(kItemsOff, kElemStride, alignof(Desc)), 0u);
+  EXPECT_TRUE(r3.bad());
 }
 
 TEST(Wire, ReaderRejectsMisalignedDescriptor)

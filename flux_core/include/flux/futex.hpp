@@ -11,16 +11,12 @@
 // processes. This is only the minimal wake/wait; the multiplexed wait layer (io_uring
 // merging many channels plus a ROS fd) is a flux_cpp/executor concern.
 
-#if defined(__linux__)
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#endif
 
 namespace flux
 {
-
-#if defined(__linux__)
 
 // Block while *word == expected. `timeout` is a RELATIVE deadline, or nullptr = forever.
 // Returns 0 if woken; -1 with errno set otherwise (EAGAIN if *word != expected on entry,
@@ -39,20 +35,6 @@ inline long futex_wake(std::atomic<std::uint32_t> * word, int count) noexcept
   return ::syscall(
     SYS_futex, reinterpret_cast<std::uint32_t *>(word), FUTEX_WAKE, count, nullptr, nullptr, 0);
 }
-
-#else  // No kernel wait off Linux: callers degrade to spinning on take().
-
-inline long futex_wait(
-  std::atomic<std::uint32_t> *, std::uint32_t, const struct timespec *) noexcept
-{
-  return -1;
-}
-inline long futex_wake(std::atomic<std::uint32_t> *, int) noexcept
-{
-  return 0;
-}
-
-#endif
 
 }  // namespace flux
 

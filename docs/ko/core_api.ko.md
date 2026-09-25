@@ -34,9 +34,9 @@ std::string domain = flux::process_domain();
 std::string name = flux::signpost_name("/img", /*fingerprint=*/0, domain);
 ```
 
-`process_domain()`는 `FLUX_DOMAIN`을 먼저 보고 없으면 `ROS_DOMAIN_ID`를 본다. 둘 다 없으면 `0`이다. 여기서는 노드가 domain을 풀어 주지 않는다. ROS 노드가 쓰는 채널에 붙으려면 프로세스가 그 노드와 같은 domain에 있어야 한다.
+`process_domain()`는 `FLUX_DOMAIN`을 먼저 보고 없으면 `ROS_DOMAIN_ID`를 본다. 둘 다 없으면 `0`이다. 두 값 모두 정수이고, `canonical_domain(raw)`(Python은 `flux.canonical_domain`)가 앞자리 0 없이 렌더하거나(`007`은 `7`) 던진다. 여기서는 노드가 domain을 풀어 주지 않는다. ROS 노드가 쓰는 채널에 붙으려면 프로세스가 그 노드와 같은 domain에 있어야 한다.
 
-첫 호출에서 한 번 정하고 프로세스가 끝날 때까지 안 바뀐다. rcl이 `ROS_DOMAIN_ID`를 context init에서 래치하는 것과 같다 — 그래야 한 프로세스의 ROS 쪽과 flux 쪽이 다른 구획에 앉지 않는다. 환경을 그때그때 읽어보는 것은 `resolve_domain(var)`이고, 그쪽은 질의라 이름을 만드는 데 쓰지 않는다.
+첫 호출에서 한 번 정하고 프로세스가 끝날 때까지 안 바뀐다. rcl이 `ROS_DOMAIN_ID`를 context init에서 래치하는 것과 같다 — 그래야 한 프로세스의 ROS 쪽과 flux 쪽이 다른 구획에 앉지 않는다. 환경을 그때그때 읽어보는 것은 `resolve_domain()`이다. 다른 변수를 주지 않으면 `ROS_DOMAIN_ID`를 읽고, `resolve_domain(nullptr)`(Python `None`)은 `FLUX_DOMAIN`만 읽는다. 그쪽은 질의라 이름을 만드는 데 쓰지 않는다.
 
 ROS 래퍼와 붙일 때는 토픽 이름이 remap 이후의 것이어야 한다. 노드가 `img`를 `/robot1/img`로 풀었으면 여기에도 `/robot1/img`를 준다.
 
@@ -147,7 +147,7 @@ private:
 `attach()`는 멱등이고 발행자 세그먼트가 아직 없으면 false를 돌려준다. `deliver_one()`은 프레임 하나만 처리하고 1을, 없으면 0을 돌려준다. 한 번에 하나인 이유는 executor가 콜백 사이마다 다음에 어느 채널을 돌릴지 다시 고르기 때문이다. 여러 개를 소유자가 직접 빼고 싶으면 `deliver(max)`를 쓴다. 이건 virtual이 아니고 executor가 쓰는 경로도 아니다.
 
 ```cpp doc:core_executor
-flux::Executor ex(32);
+flux::Executor ex;
 ex.add(a);
 ex.add(b, 10);  // priority: b goes first whenever it has a frame
 ex.set_pass_budget(16);  // callbacks one dispatch() may run over all channels together
@@ -155,9 +155,9 @@ ex.spin(100'000'000);  // stop()까지
 ex.stop();
 ```
 
-등록은 spin 전에만 한다. `add`의 둘째 인자는 우선순위다. 큰 것이 먼저 가고 같으면 등록순이다. 기본값은 0이고 음수도 쓴다. 선택은 콜백마다 다시 한다 -- 낮은 채널의 콜백이 도는 중에 높은 채널로 프레임이 오면 낮은 채널의 다음 프레임보다 그것이 먼저 돈다. 선점 우선순위는 아니다. 이미 도는 콜백은 밀리지 않는다.
+등록은 spin 전에만 한다. `add`의 둘째 인자는 우선순위다. 큰 것이 먼저 간다. 같으면 등록순으로 시작해 한 프레임씩 번갈아 간다. 그래서 발행이 콜백보다 빠른 소스도 같은 우선순위의 다른 소스를 막지 못한다. 기본값은 0이고 음수도 쓴다. 선택은 콜백마다 다시 한다 -- 낮은 채널의 콜백이 도는 중에 높은 채널로 프레임이 오면 낮은 채널의 다음 프레임보다 그것이 먼저 돈다. 선점 우선순위는 아니다. 이미 도는 콜백은 밀리지 않는다.
 
-`set_pass_budget()`은 `dispatch()` 한 번이 돌릴 콜백 수의 상한이다. 채널마다가 아니라 채널 전체에 대한 하나의 예산이고 기본값은 `flux::kMaxDrain`(64)이다. spin 전에만 부른다. 처리율이 아니라 pass 길이를 묶는다 -- 예산이 자른 나머지는 다음 pass가 블록 없이 이어 받는다. 낮추면 높은 우선순위 채널이 낮은 채널 뒤에서 기다리는 시간이 줄고, 올리면 pass당 arm 비용이 더 많은 프레임에 나뉜다. `uses_io_uring()`이 false면 리눅스 6.7 미만이라 채널당 parker 스레드 폴백으로 돈다 -- 기다리는 스레드는 여전히 한 번만 블록한다.
+`set_pass_budget()`은 `dispatch()` 한 번이 돌릴 콜백 수의 상한이다. 채널마다가 아니라 채널 전체에 대한 하나의 예산이고 기본값은 `flux::kMaxDrain`(64)이다. spin 전에만 부른다. 처리율이 아니라 pass 길이를 묶는다 -- 예산이 자른 나머지는 다음 pass가 블록 없이 이어 받는다. 낮추면 높은 우선순위 채널이 낮은 채널 뒤에서 기다리는 시간이 줄고, 올리면 pass당 arm 비용이 더 많은 프레임에 나뉜다. `uses_io_uring()`이 false면 리눅스 6.7 미만이거나 호스트가 io_uring을 금지한 것이라 채널당 parker 스레드 폴백으로 돈다 -- 기다리는 스레드는 여전히 한 번만 블록한다.
 
 남의 이벤트 루프에 얹을 때는 둘로 나눠 쓴다. 같은 ring을 쓰므로 동시에 돌면 안 된다.
 
@@ -167,6 +167,8 @@ const int delivered = ex.dispatch();       // 전달만 한다. 블록하지 않
 ```
 
 `has_more()`는 직전 `dispatch()`가 프레임이 남은 채로 예산에서 멈췄는지다. 이미 와 있던 프레임에 대해 아무도 ring을 다시 두드리지 않으므로, 이 상태에서 블록하면 tick 하나를 자기가 들고 있는 일감 위에서 잔다. `spin()`은 `dispatch()`의 반환값으로 같은 판단을 하므로 이 플래그를 안 쓴다.
+
+`spin_once(timeout_ns)`는 깨어났는데 준비된 것이 없으면 기한까지 다시 대기한다. 일찍 끝내는 것은 `interrupt()`와 `stop()`뿐이다. 자기 준비 상태로 `waker()`를 두드리는 embedder는 `spin_once(timeout_ns, woken)`을 쓰고, `woken()`이 참이면 그것도 대기를 끝낸다. 두 반쪽으로 만든 루프는 `interrupt()` 플래그를 읽지 않으므로 끝날 때 `clear_interrupt()`를 부른다. 남겨 두면 아무도 interrupt하지 않은 나중의 `spin_once()`가 그 플래그로 끝난다.
 
 Python은 `flux.Executor`가 같은 클래스를 감싼 것이다(아래 8절).
 
@@ -203,7 +205,7 @@ sub = flux.Subscription("/img", fingerprint=FP, memory=mem)
 이 클래스는 6절의 `flux::Executor`를 그대로 감싼 것이다. 이름과 인자가 C++과 같고, 대기 순서를 정하는 코드도 같은 하나다.
 
 ```python doc:py_core_executor
-ex = flux.Executor(max_channels=32, poll_tick_ns=2_000_000)
+ex = flux.Executor(poll_tick_ns=2_000_000)
 ex.add(sub, callback, priority=0)
 ex.spin_once(timeout_ns=-1)
 ex.spin(tick_ns=100_000_000)
@@ -213,9 +215,9 @@ merged = ex.uses_io_uring
 busy = ex.is_spinning
 ```
 
-`uses_io_uring`이 false면 리눅스 6.7 미만이라 채널당 스레드 폴백으로 돈다.
+`uses_io_uring`이 false면 리눅스 6.7 미만이거나 호스트가 io_uring을 금지한 것(seccomp 프로파일, `kernel.io_uring_disabled`)이라 채널당 스레드 폴백으로 돈다. 금지된 경우는 프로세스당 한 번 stderr에 한 줄 찍는다. 그 밖의 io_uring 준비 실패는 생성자가 던진다.
 
-`priority`는 C++과 같은 값이다. pass 안 방문 순서를 정하고, 큰 것이 먼저 가고 같으면 등록순이다.
+`priority`는 C++과 같은 값이다. pass 안 방문 순서를 정하고, 큰 것이 먼저 가고 같으면 한 프레임씩 번갈아 간다.
 
 `stop()`은 요청이고 `is_spinning`은 상태다. 둘을 한 플래그로 합치지 않았으므로 `spin()`보다 먼저 온 `stop()`이 사라지지 않는다 -- 스레드를 띄우자마자 멈추는 코드가 그 창에 걸리지 않는다. 요청은 그것을 본 `spin()`이 나가면서 지우므로 같은 executor를 다시 spin할 수 있다. 이미 도는 executor에 `spin()`을 또 부르면 던진다.
 
@@ -230,14 +232,25 @@ delivered = ex.dispatch()
 
 ## 9. 열거 (도구용)
 
-지금 이 호스트에 무슨 flux 채널이 있고 누가 붙어 있는지 읽는다. `flux.enumerate_topics()`가 `flux.Topic` 목록을 주고, 각 topic이 `flux.Endpoint` 목록을 든다. 데몬리스이고 레지스트리도 없다 -- `/dev/shm` 이름과, owner 락을 아직 쥐고 있는 프로세스의 manifest를 그 자리에서 읽어 만든 스냅샷이다. `flux_cli`가 이 표면 위에 있다([cli.md](cli.ko.md)).
+지금 이 호스트에 무슨 flux 채널이 있고 누가 붙어 있는지 읽는다. `flux::enumerate_topics()`(Python `flux.enumerate_topics()`)가 `flux::Topic`(`flux.Topic`) 목록을 주고, 각 topic이 `flux::Endpoint`(`flux.Endpoint`) 목록을 든다. endpoint는 `owner`로 프로세스를 가리킨다. `owner`는 `pid`와 `starttime`을 담은 `flux::OwnerId`(`flux.OwnerId`)다. 두 언어의 이름과 필드가 같다. 데몬리스이고 레지스트리도 없다 -- `/dev/shm` 이름과, owner 락을 아직 쥐고 있는 프로세스의 manifest를 그 자리에서 읽어 만든 스냅샷이다. `flux_cli`가 이 표면 위에 있다([cli.md](cli.ko.md)).
+
+```cpp doc:core_enumerate
+for (const flux::Topic & topic : flux::enumerate_topics()) {
+  const std::string & name = topic.key_exact ? topic.key : topic.signpost;
+  for (const flux::Endpoint & ep : topic.endpoints) {
+    const char * role = ep.publisher ? "pub" : "sub";
+    sink(name, topic.domain, topic.fingerprint, role, ep.owner.pid, ep.owner.starttime, ep.label);
+  }
+}
+```
 
 ```python doc:py_enumerate
 for topic in flux.enumerate_topics():
     name = topic.key if topic.key_exact else topic.signpost
     for ep in topic.endpoints:
         role = "pub" if ep.publisher else "sub"
-        _sink(name, topic.domain, topic.fingerprint, role, ep.pid, ep.starttime, ep.label)
+        _sink(name, topic.domain, topic.fingerprint, role, ep.owner.pid, ep.owner.starttime,
+              ep.label)
 ```
 
 `key_exact`가 False면 `key`는 산 참가자가 아니라 이름에서 되읽은 것이다. 이름은 alnum이 아닌 문자를 전부 `.`으로 바꾸므로 `/a/b`와 `.a.b`가 한 이름이다. 그때 보이는 것은 peer가 실제로 합의한 key가 아니라 이름의 철자다. 참가자가 하나도 없는 채널이 그 경우다(signpost는 영구라 이름만 남는다).
@@ -250,7 +263,15 @@ for topic in flux.enumerate_topics():
 
 이름 하나당 open 하나가 든다. 도구에서 쓰고 루프에서 쓰지 않는다.
 
-채널 하나를 붙지 않고 들여다볼 때는 `flux.read_channel_stats()`가 `flux.ChannelStats`를 준다. 락도 borrow도 안 잡는다.
+채널 하나를 붙지 않고 들여다볼 때는 `read_channel_stats()`가 `flux::ChannelStats`(`flux.ChannelStats`)를 준다. 락도 borrow도 안 잡는다.
+
+```cpp doc:core_channel_stats
+const flux::ChannelStats stats = flux::read_channel_stats(signpost);
+if (stats.live) {
+  sink(stats.slot_count, stats.slot_size, stats.storage_kind, stats.fingerprint);
+  sink(stats.publish_seq, stats.epoch, stats.waiters);
+}
+```
 
 ```python doc:py_channel_stats
 domain = flux.process_domain()
@@ -265,4 +286,4 @@ if stats.live:
 
 `process_domain()`는 노드가 쓰는 것과 같은 규칙으로, 같은 시점 규약으로 domain을 정한다. 규칙이 core에 한 벌만 있으므로 도구가 같은 답을 두 번 유도하지 않는다. 환경을 지금 다시 읽어보려면 `flux.resolve_domain("ROS_DOMAIN_ID")`이고, domain 변수를 아예 안 보려면 `flux.resolve_domain(None)`이다.
 
-`read_channel_stats`는 구독자로 붙지 않는다. 헤더만 읽으므로 `max_borrow`도 holder 테이블도 안 건드린다. 관측이 대상을 교란하지 않는다.
+`read_channel_stats`는 구독자로 붙지 않는다. 헤더만 읽으므로 `max_borrow`도 holder 테이블도 안 건드린다. 관측이 대상을 교란하지 않는다. 아무것도 만들지도 않는다. 아직 아무도 만들지 않은 이름은 `live`가 아닌 것으로 읽힌다. 이름은 있지만 읽을 수 없으면(다른 사용자의 채널, 잘못된 이름) `RuntimeError`(C++은 `std::runtime_error`)를 던진다. 다시 시도해도 읽을 수 있게 되지 않기 때문이다. `enumerate_topics()`는 이 프로세스가 읽을 수 없는 채널을 빼고 돌려주므로, 그 결과를 도는 도구는 이 에러를 만나지 않는다.

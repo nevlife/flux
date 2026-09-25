@@ -96,6 +96,58 @@ def test_columnar_round_trip(built):
     assert (v.width, v.height) == (3, 1)
 
 
+@pytest.mark.parametrize("name,field,value", [
+    ("PointCloud", "width", 3), ("Labeled", "label", "x"), ("Event", "tags", ["a"])])
+def test_a_builder_field_is_write_only(built, name, field, value):
+    # A Builder has no getter at all, as in C++: reading is Python's own AttributeError.
+    m = module(name)
+    b = m.Builder(bytearray(4096))
+    setattr(b, field, value)
+    assert getattr(m.Builder, field).fget is None
+    with pytest.raises(AttributeError):
+        getattr(b, field)
+
+
+def test_a_builder_with_no_free_slot_is_false_and_harmless(built):
+    # As in C++: build__ on a full ring hands back a false Builder. Writing into it goes nowhere
+    # and commit__() reports BACKPRESSURE, so a caller that skipped the check drops one frame
+    # instead of crashing under load.
+    import flux
+
+    class FullRing:
+        slot_size = 4096
+
+        def loan(self, *args, **kwargs):
+            return None
+
+    m = module("TensorList")
+    b = m.build__(FullRing())
+    assert not b
+    elems = b.alloc__tensors(2)
+    for e in elems:
+        e.alloc__shape(2)[:] = [1, 2]
+    b2 = module("Event").build__(FullRing())
+    b2.tags = ["a"]
+    b2.set__stamp__stamp(1, 2)
+    b2.alloc__values(3)[:] = [1.0, 2.0, 3.0]
+    assert b.commit__() == flux.Published.BACKPRESSURE
+    assert b2.commit__() == flux.Published.BACKPRESSURE
+
+
+def test_a_string_that_is_not_utf8_is_a_wire_error(built):
+    # Bytes another process wrote are not trusted to be UTF-8. A string that does not decode is
+    # an unreadable frame like any other, so it raises the one error a reader already catches.
+    from flux_gen.wire import WireError
+
+    m = module("Labeled")
+    buf = bytearray(4096)
+    b = m.Builder(buf)
+    b.label = b"\xff\xfe"
+    v = m.View(memoryview(buf)[:b.size__])
+    with pytest.raises(WireError):
+        v.label
+
+
 def test_string_and_stamp_round_trip(built):
     m = module("Event")
     buf = bytearray(4096)
@@ -478,6 +530,169 @@ def test_ros_bridge_compiles_against_rosidl_headers(tmp_path):
         check=True, capture_output=True, text=True)
 
 
+def _ros_bridges(tmp_path, keys, py=False):
+    """Generate the adapter and bridge for installed messages; return (cpp_root, py_root)."""
+    from flux_gen.cli import ament_registry, generate
+    reg = ament_registry()
+    cpp, pyroot = str(tmp_path / "inc"), str(tmp_path / "py") if py else None
+    for key in keys:
+        generate(reg[key].path, key.split("/")[0], cpp, pyroot, reg)
+    return cpp, pyroot
+
+
+def _fields_desc_offset():
+    """Where PointCloud2's `fields` descriptor sits in the scalar block."""
+    from flux_gen.cli import ament_registry
+    reg = ament_registry()
+    layout = build_layout(flatten_message(reg["sensor_msgs/PointCloud2"], reg))
+    return next(p.offset for p in layout.root.placed if p.name == "fields")
+
+
+# A descriptor whose elements run past the frame. Small enough that a reader trusting it still
+# only allocates a little, so the failing form of the test fails instead of exhausting memory.
+_BAD_FIELDS_LEN = 1000
+
+
+@needs_link
+@needs_rclpy
+def test_cpp_bridge_writes_nothing_into_a_slot_too_small_for_the_message(tmp_path):
+    # A slot that cannot hold the message makes the Builder hand back empty spans and latch. The
+    # bridge must copy into what it was handed, not the message's length, or it writes through
+    # a null span. Covers a fixed T[N] block (CameraInfo.k) and a variable column (data).
+    cpp, _ = _ros_bridges(tmp_path, ("sensor_msgs/CameraInfo", "sensor_msgs/PointCloud2"))
+    src, exe = tmp_path / "small_slot.cpp", tmp_path / "small_slot"
+    src.write_text(
+        '#include "sensor_msgs/flux/camera_info_ros.hpp"\n'
+        '#include "sensor_msgs/flux/point_cloud2_ros.hpp"\n'
+        "#include <cstdio>\n"
+        "int main()\n"
+        "{\n"
+        "  alignas(8) unsigned char tiny[16];\n"
+        "  sensor_msgs::flux_msg::CameraInfo::Builder cb(tiny, sizeof(tiny));\n"
+        "  sensor_msgs::flux_msg::msg_to_frame(sensor_msgs::msg::CameraInfo{}, cb);\n"
+        '  std::printf("%d\\n", cb.ok__() ? 1 : 0);\n'
+        "  sensor_msgs::msg::PointCloud2 pc;\n"
+        "  pc.data.assign(1 << 16, 7);\n"
+        "  alignas(8) unsigned char small[512];\n"
+        "  sensor_msgs::flux_msg::PointCloud2::Builder pb(small, sizeof(small));\n"
+        "  sensor_msgs::flux_msg::msg_to_frame(pc, pb);\n"
+        '  std::printf("%d\\n", pb.ok__() ? 1 : 0);\n'
+        "  return 0;\n"
+        "}\n")
+    inc = [f"-I{d}" for d in _ros_include_dirs()]
+    if not inc:
+        pytest.skip("flux-cap:ros-headers no ROS include dirs on AMENT_PREFIX_PATH")
+    subprocess.run(
+        ["g++", "-std=c++17", f"-I{cpp}", f"-I{CORE_INCLUDE}", *inc, str(src), CORE_LIB,
+         "-pthread", "-o", str(exe)],
+        check=True, capture_output=True, text=True)
+    proc = subprocess.run([str(exe)], capture_output=True, text=True)
+    assert proc.returncode == 0, f"bridge crashed: {proc.returncode}"
+    assert proc.stdout == "0\n0\n"
+
+
+@needs_link
+@needs_rclpy
+def test_cpp_bridge_refuses_a_descriptor_that_runs_past_the_frame(tmp_path):
+    # The reader trusts no descriptor (message_shapes.md 9). An array length is one too: the
+    # View reports 0 and latches rather than hand a loop a count it cannot walk, and the bridge
+    # throws rather than return a message filled with zeros.
+    cpp, _ = _ros_bridges(tmp_path, ("sensor_msgs/PointCloud2",))
+    src, exe = tmp_path / "bad_desc.cpp", tmp_path / "bad_desc"
+    src.write_text(
+        '#include "sensor_msgs/flux/point_cloud2_ros.hpp"\n'
+        "#include <cstdint>\n"
+        "#include <cstdio>\n"
+        "#include <cstring>\n"
+        "#include <stdexcept>\n"
+        "using sensor_msgs::flux_msg::PointCloud2;\n"
+        "int main()\n"
+        "{\n"
+        "  sensor_msgs::msg::PointCloud2 pc;\n"
+        "  pc.fields.resize(2);\n"
+        "  alignas(8) unsigned char buf[4096];\n"
+        "  PointCloud2::Builder b(buf, sizeof(buf));\n"
+        "  sensor_msgs::flux_msg::msg_to_frame(pc, b);\n"
+        f"  const std::uint32_t bad = {_BAD_FIELDS_LEN};\n"
+        f"  std::memcpy(buf + {_fields_desc_offset()} + 4, &bad, sizeof(bad));\n"
+        "  PointCloud2::View v(buf, b.size__());\n"
+        '  std::printf("%zu\\n", v.fields__size());\n'
+        '  std::printf("%d\\n", v.ok__() ? 1 : 0);\n'
+        "  try {\n"
+        "    sensor_msgs::flux_msg::frame_to_msg(PointCloud2::View(buf, b.size__()));\n"
+        '    std::printf("returned\\n");\n'
+        "  } catch (const std::runtime_error &) {\n"
+        '    std::printf("threw\\n");\n'
+        "  }\n"
+        "  return 0;\n"
+        "}\n")
+    inc = [f"-I{d}" for d in _ros_include_dirs()]
+    if not inc:
+        pytest.skip("flux-cap:ros-headers no ROS include dirs on AMENT_PREFIX_PATH")
+    subprocess.run(
+        ["g++", "-std=c++17", f"-I{cpp}", f"-I{CORE_INCLUDE}", *inc, str(src), CORE_LIB,
+         "-pthread", "-o", str(exe)],
+        check=True, capture_output=True, text=True)
+    proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+    assert proc.stdout == "0\n0\nthrew\n"
+
+
+@needs_rclpy
+def test_py_bridge_refuses_a_slot_too_small_and_a_descriptor_past_the_frame(tmp_path):
+    # The Python half of the two tests above: both conditions raise WireError.
+    from sensor_msgs.msg import PointCloud2, PointField
+
+    from flux_gen.wire import WireError
+    _, py = _ros_bridges(tmp_path, ("sensor_msgs/PointCloud2",), py=True)
+    open(os.path.join(py, "sensor_msgs_flux", "__init__.py"), "a").close()
+    sys.path.insert(0, py)
+    try:
+        import sensor_msgs_flux.point_cloud2_ros as pc2_ros
+
+        pc = PointCloud2()
+        pc.data = bytes(1 << 16)
+        with pytest.raises(WireError):
+            pc2_ros.msg_to_frame(pc, pc2_ros.Builder(bytearray(512)))
+
+        pc = PointCloud2()
+        pc.fields = [PointField(), PointField()]
+        buf = bytearray(4096)
+        b = pc2_ros.Builder(buf)
+        pc2_ros.msg_to_frame(pc, b)
+        at = _fields_desc_offset() + 4
+        buf[at:at + 4] = _BAD_FIELDS_LEN.to_bytes(4, "little")
+        with pytest.raises(WireError):
+            pc2_ros.frame_to_msg(pc2_ros.View(memoryview(buf)[:b.size__]))
+    finally:
+        sys.path.remove(py)
+
+
+def test_py_builder_refuses_to_commit_after_a_failed_write(built):
+    # C++ latches a failed write and commit__() refuses the frame. Python raises at the write and
+    # must refuse the same commit, or a caller that caught the error publishes a torn frame.
+    flux = pytest.importorskip("flux")
+    from flux_gen.wire import WireError
+
+    committed = []
+
+    class Loan:
+        def commit(self, nbytes):
+            committed.append(nbytes)
+            return flux.Published.OK
+
+    b = module("PointCloud").Builder(bytearray(64), Loan())
+    b.width = 3
+    with pytest.raises(WireError):
+        b.alloc__x(1000)
+    assert b.commit__() == flux.Published.TOO_LARGE
+
+    c = module("FixedNames").Builder(bytearray(8192), Loan())
+    with pytest.raises(ValueError):
+        c.names = ["x", "y", "z"]
+    assert c.commit__() == flux.Published.TOO_LARGE
+    assert committed == []
+
+
 def test_py_builder_rejects_a_fixed_length_mismatch(built):
     # message_shapes.md: a length that disagrees with the schema's T[N] is an explicit error at
     # the write too, so the bad frame is never produced.
@@ -485,8 +700,10 @@ def test_py_builder_rejects_a_fixed_length_mismatch(built):
     b = m.Builder(bytearray(8192))
     with pytest.raises(ValueError, match="names expects exactly 2"):
         b.names = ["x", "y", "z"]
-    with pytest.raises(ValueError, match="pair expects exactly 2"):
+    # The count of a fixed record array is the schema's, so there is no argument to get wrong.
+    with pytest.raises(TypeError):
         b.alloc__pair(3)
+    assert len(b.alloc__pair()) == 2
     b.names = ["x", "y"]
 
 
@@ -531,27 +748,34 @@ def test_cpp_build_loans_from_a_publisher_and_commits(built, tmp_path):
 
 
 @needs_link
-def test_cpp_builder_poisons_a_fixed_length_mismatch(built, tmp_path):
+def test_cpp_fixed_length_arrays_take_no_count(built, tmp_path):
+    # N is the schema's, so alloc__x() takes no count and a wrong one is a compile error. It used
+    # to be a runtime poison, and on a record array the empty handle it returned crashed on use.
     cpp_root, _ = built
-    src = tmp_path / "poison.cpp"
-    src.write_text(
-        '#include "test/flux/fixed_names.hpp"\n'
-        "#include <cstdio>\n"
-        "int main()\n"
-        "{\n"
-        "  unsigned char buf[8192];\n"
-        "  test::flux_msg::FixedNames::Builder b(buf, sizeof buf);\n"
-        "  b.alloc__names(3);\n"
-        '  std::printf("%d\\n", b.ok__() ? 1 : 0);\n'
-        "  test::flux_msg::FixedNames::Builder c(buf, sizeof buf);\n"
-        "  c.alloc__pair(3);\n"
-        '  std::printf("%d\\n", c.ok__() ? 1 : 0);\n'
-        "  return 0;\n"
-        "}\n")
-    exe = tmp_path / "poison"
-    subprocess.run(
-        ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
-         f"-I{cpp_root}", f"-I{CORE_INCLUDE}", str(src), CORE_LIB, "-pthread", "-o", str(exe)],
-        check=True, capture_output=True, text=True)
+
+    def build(body):
+        src = tmp_path / "fixed.cpp"
+        src.write_text(
+            '#include "test/flux/fixed_names.hpp"\n'
+            "#include <cstdio>\n"
+            "int main()\n"
+            "{\n"
+            "  unsigned char buf[8192];\n"
+            "  test::flux_msg::FixedNames::Builder b(buf, sizeof buf);\n"
+            f"  {body}\n"
+            "}\n")
+        exe = tmp_path / "fixed"
+        return subprocess.run(
+            ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", f"-I{cpp_root}",
+             f"-I{CORE_INCLUDE}", str(src), CORE_LIB, "-pthread", "-o", str(exe)],
+            capture_output=True, text=True), exe
+
+    for wrong in ("b.alloc__names(3);", "b.alloc__pair(3);"):
+        compiled, _ = build(wrong)
+        assert compiled.returncode != 0, f"{wrong} compiled"
+    compiled, exe = build(
+        'b.alloc__names(); auto a = b.alloc__pair(); '
+        'std::printf("%zu %d\\n", a.size(), b.ok__() ? 1 : 0); return 0;')
+    assert compiled.returncode == 0, compiled.stderr
     proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
-    assert proc.stdout == "0\n0\n"
+    assert proc.stdout == "2 1\n"

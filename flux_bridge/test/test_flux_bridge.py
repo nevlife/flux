@@ -33,7 +33,7 @@ def _fake_adapter_package(root, pkg, modules):
     return str(root)
 
 
-def test_discover_maps_fingerprints_to_installed_adapters(tmp_path, monkeypatch):
+def test_discover_maps_fingerprints_to_installed_adapters(tmp_path, monkeypatch, capsys):
     path = _fake_adapter_package(tmp_path, "demo_flux", {
         "__init__": "",
         "cloud": 'TYPE_NAME__ = "demo/Cloud"\nFINGERPRINT__ = 0x10\nclass View: pass\n',
@@ -44,6 +44,10 @@ def test_discover_maps_fingerprints_to_installed_adapters(tmp_path, monkeypatch)
     monkeypatch.syspath_prepend(path)
     found = adapters.discover([path])
     assert list(found) == [0x10]
+    # A module that fails to import is skipped, but not silently: an adapter built against an
+    # older flux_gen would otherwise read as "no adapter installed".
+    err = capsys.readouterr().err
+    assert "demo_flux.broken" in err and "not an adapter" in err
     adapter = found[0x10]
     assert adapter.type_name == "demo/Cloud"
     assert adapter.ros_type == "demo/msg/Cloud"
@@ -74,3 +78,45 @@ def test_find_channel_accepts_the_flattened_spelling(monkeypatch, name):
     monkeypatch.setattr(flux, "flatten_key", lambda k: k.replace("/", "."))
     assert find_channel(name, domain="1").domain == "1"
     assert find_channel("/nothing", domain="1") is None
+
+
+def test_a_relay_skips_an_unreadable_frame_and_keeps_relaying():
+    # A frame that disagrees with its schema is a wrong message, not the end of the channel. The
+    # relay counts it and relays the frames after it; it used to die on the first one.
+    import time
+    import types
+
+    import numpy as np
+
+    import flux
+    from flux_bridge.bridge import Relay
+    from flux_gen.wire import WireError
+
+    sent = []
+
+    class Pub:
+        def publish(self, msg):
+            sent.append(msg)
+
+    node = types.SimpleNamespace(
+        create_publisher=lambda *a: Pub(), destroy_publisher=lambda p: None)
+
+    def to_msg(frame):
+        if frame[0] == 0xFF:
+            raise WireError("frame region escapes the frame")
+        return int(frame[0])
+
+    adapter = types.SimpleNamespace(message=object, view=lambda f: np.asarray(f), frame_to_msg=to_msg)
+    key, fp = "/pytest/bridge/unreadable", 0xB21D6E
+    pub = flux.Publisher(key, fingerprint=fp, slot_size=4096, slot_count=4)
+    relay = Relay(node, types.SimpleNamespace(key=key, fingerprint=fp), adapter, None)
+    try:
+        for handled, first_byte in enumerate((1, 0xFF, 2), start=1):
+            pub.publish(np.full(8, first_byte, dtype=np.uint8))
+            deadline = time.monotonic() + 5.0
+            while len(sent) + relay.unreadable < handled and time.monotonic() < deadline:
+                time.sleep(0.01)
+        assert sent == [1, 2]
+        assert relay.unreadable == 1
+    finally:
+        relay.stop()

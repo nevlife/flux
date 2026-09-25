@@ -19,8 +19,12 @@ public:
   : Node("flux_partitioned_sub"),
     fast_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
     slow_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
-    fast_(*this, kTopic, Image::kFingerprint, [this](const flux::FrameView & f) { on_fast(f); }),
-    slow_(*this, kTopic, Image::kFingerprint, [this](const flux::FrameView & f) { on_slow(f); })
+    fast_(
+      *this, kTopic, Image::kFingerprint, flux::QoS{},
+      [this](const flux::FrameView & f) { on_fast(f); }),
+    slow_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
+      on_slow(f);
+    })
   {
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
@@ -74,7 +78,6 @@ int main(int argc, char ** argv)
   ex.add(node->fast(), node->fast_group());
   ex.add(node->slow(), node->slow_group());
 
-  rclcpp::on_shutdown([&ex]() { ex.stop(); });
   ex.spin();
   rclcpp::shutdown();
   return 0;

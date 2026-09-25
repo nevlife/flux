@@ -161,12 +161,9 @@ void PointCloud2Display::subscribe()
     setStatus(StatusProperty::Error, "Topic", "No topic set");
     return;
   }
-  flux::QoS qos;
-  qos.depth = 1;
-  qos.max_borrow = 1;
+  const auto qos = flux::QoS(1).max_borrow(1);
   try {
-    sub_ = std::make_unique<flux::ros::Subscription>(
-      *node_, topic, Cloud::kFingerprint, flux::ros::Subscription::Callback{}, qos);
+    sub_ = std::make_unique<flux::ros::Subscription>(*node_, topic, Cloud::kFingerprint, qos);
   } catch (const std::exception & e) {
     setStatus(StatusProperty::Error, "Topic", QString("Subscribe failed: ") + e.what());
     return;
@@ -224,6 +221,12 @@ sensor_msgs::msg::PointCloud2::SharedPtr PointCloud2Display::takeFrame()
   if (!xyz.found) {
     setStatus(StatusProperty::Error, "Message", "No float32 x, y, z fields");
     return nullptr;
+  }
+  for (const std::uint32_t at : {xyz.x, xyz.y, xyz.z}) {
+    if (std::uint64_t{at} + sizeof(float) > msg->point_step) {
+      setStatus(StatusProperty::Error, "Message", "An x, y or z field lies past point_step");
+      return nullptr;
+    }
   }
   copy_valid_points(view, xyz, *msg);
   ++frames_;

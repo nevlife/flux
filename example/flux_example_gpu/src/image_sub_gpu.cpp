@@ -17,8 +17,8 @@ public:
   GpuImageSubscriber()
   : Node("flux_gpu_image_sub"),
     sub_(
-      *this, kTopic, flux::kNoSchema, [this](const flux::FrameView & f) { on_frame(f); },
-      flux::QoS{}, flux::Device::Cuda)
+      *this, kTopic, flux::kNoSchema, flux::QoS{},
+      [this](const flux::FrameView & f) { on_frame(f); }, flux::Device::Cuda)
   {
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
@@ -58,7 +58,6 @@ int main(int argc, char ** argv)
     ex.add(node->subscription());
     ex.add_ros_node(node);
 
-    rclcpp::on_shutdown([&ex]() { ex.stop(); });
     ex.spin();
   } catch (const std::invalid_argument & e) {
     RCLCPP_ERROR(rclcpp::get_logger("flux_gpu_image_sub"), "%s", e.what());

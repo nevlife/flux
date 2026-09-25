@@ -9,11 +9,13 @@
 #include "rviz_common/properties/int_property.hpp"
 #include "rviz_common/properties/string_property.hpp"
 
+#include <rclcpp/node.hpp>
+
+#include <sensor_msgs/msg/camera_info.hpp>
+
 #include <OgreMaterial.h>
 #include <OgrePixelFormat.h>
 #include <OgreTexture.h>
-#include <rclcpp/node.hpp>
-#include <sensor_msgs/msg/camera_info.hpp>
 
 #include <cstdint>
 #include <memory>

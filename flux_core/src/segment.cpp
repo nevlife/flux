@@ -113,17 +113,14 @@ Segment Segment::create_heap(
   return s;
 }
 
-bool Segment::protect_payload() noexcept
+void Segment::protect_payload() noexcept
 {
-  if (backing_ != kShm || base_ == nullptr) return false;
-  if (device_ != nullptr) return false;  // the payload is not in this mapping to protect
   const long page = ::sysconf(_SC_PAGESIZE);
-  if (page <= 0 || kPayloadAlign % static_cast<std::size_t>(page) != 0) return false;
+  if (page <= 0 || kPayloadAlign % static_cast<std::size_t>(page) != 0) return;
   const std::size_t off = layout_.payload_offset();
-  if (off >= bytes_) return false;
-  if (::mprotect(base_ + off, bytes_ - off, PROT_READ) != 0) return false;
+  if (off >= bytes_) return;  // a dGPU segment maps only the control plane
+  if (::mprotect(base_ + off, bytes_ - off, PROT_READ) != 0) return;
   payload_readonly_ = true;
-  return true;
 }
 
 // MADV_POPULATE_WRITE rather than a loop that stores into every page: a store into a shared

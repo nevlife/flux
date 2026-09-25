@@ -47,24 +47,20 @@ private:
 
 }  // namespace
 
-TEST(DomainTest, CanonicalAcceptsAlnumWithinBound)
+TEST(DomainTest, CanonicalRendersTheParsedInteger)
 {
   EXPECT_EQ(flux::canonical_domain("0"), "0");
   EXPECT_EQ(flux::canonical_domain("7"), "7");
-  EXPECT_EQ(flux::canonical_domain("prodA1"), "prodA1");
-  EXPECT_EQ(
-    flux::canonical_domain(std::string(flux::kMaxDomainLen, 'a')).size(), flux::kMaxDomainLen);
+  EXPECT_EQ(flux::canonical_domain("007"), "7");
+  EXPECT_EQ(flux::canonical_domain("4294967295"), "4294967295");
 }
 
-TEST(DomainTest, CanonicalRefusesWhatCannotNameAShmEntry)
+TEST(DomainTest, CanonicalRefusesAnythingButAPlainInteger)
 {
-  EXPECT_THROW(flux::canonical_domain(""), std::invalid_argument);
-  EXPECT_THROW(flux::canonical_domain("a/b"), std::invalid_argument);
-  EXPECT_THROW(flux::canonical_domain("a.b"), std::invalid_argument);
-  EXPECT_THROW(flux::canonical_domain("a b"), std::invalid_argument);
-  EXPECT_THROW(flux::canonical_domain("a-b"), std::invalid_argument);
-  EXPECT_THROW(
-    flux::canonical_domain(std::string(flux::kMaxDomainLen + 1, 'a')), std::invalid_argument);
+  for (const char * bad :
+       {"", "lab", "prodA1", "7x", "a/b", "-1", "+1", " 7", "7 ", "4294967296"}) {
+    EXPECT_THROW(flux::canonical_domain(bad), std::invalid_argument) << bad;
+  }
 }
 
 // The bug this axis is built to avoid: unset and the explicit default must be one domain, not two.
@@ -101,11 +97,11 @@ TEST(DomainTest, PartitionIsRenderedFromTheParsedNumber)
   EXPECT_EQ(flux::resolve_domain(kEnv), "7");
 }
 
-TEST(DomainTest, LabelWinsOverPartition)
+TEST(DomainTest, FluxDomainWinsOverPartitionAndIsRenderedTheSameWay)
 {
-  const ScopedEnv label("FLUX_DOMAIN", "lab");
+  const ScopedEnv label("FLUX_DOMAIN", "012");
   const ScopedEnv domain("ROS_DOMAIN_ID", "7");
-  EXPECT_EQ(flux::resolve_domain("ROS_DOMAIN_ID"), "lab");
+  EXPECT_EQ(flux::resolve_domain("ROS_DOMAIN_ID"), "12");
 }
 
 TEST(DomainTest, UnusablePartitionThrowsRatherThanJoiningTheDefault)
@@ -117,11 +113,13 @@ TEST(DomainTest, UnusablePartitionThrowsRatherThanJoiningTheDefault)
   }
 }
 
-TEST(DomainTest, UnusableLabelThrowsRatherThanJoiningTheDefault)
+TEST(DomainTest, UnusableFluxDomainThrowsRatherThanJoiningTheDefault)
 {
-  const ScopedEnv label("FLUX_DOMAIN", "a/b");
-  EXPECT_THROW(flux::resolve_domain(nullptr), std::invalid_argument);
-  EXPECT_THROW(flux::resolve_domain("ROS_DOMAIN_ID"), std::invalid_argument);
+  for (const char * bad : {"a/b", "lab"}) {
+    const ScopedEnv label("FLUX_DOMAIN", bad);
+    EXPECT_THROW(flux::resolve_domain(nullptr), std::invalid_argument) << bad;
+    EXPECT_THROW(flux::resolve_domain("ROS_DOMAIN_ID"), std::invalid_argument) << bad;
+  }
 }
 
 // A default that read nothing put a core caller in domain "0" while a ROS
@@ -131,6 +129,7 @@ TEST(DomainTest, CoreReadsThePartitionVariableItNames)
   const ScopedEnv no_label("FLUX_DOMAIN", nullptr);
   const ScopedEnv domain("ROS_DOMAIN_ID", "7");
   EXPECT_EQ(flux::resolve_domain(flux::kDefaultDomainEnv), "7");
+  EXPECT_EQ(flux::resolve_domain(), "7") << "the default variable is ROS_DOMAIN_ID, as in Python";
 }
 
 // The opt-out survives: a caller with no host domain to inherit says so.
@@ -152,10 +151,10 @@ TEST(DomainTest, ProcessDomainIsLatchedForTheLifeOfTheProcess)
 {
   const std::string first = flux::process_domain();
   {
-    const ScopedEnv label("FLUX_DOMAIN", "somethingelse");
+    const ScopedEnv label("FLUX_DOMAIN", "4242");
     EXPECT_EQ(flux::process_domain(), first) << "process_domain re-read the environment";
     // resolve_domain is the query and does follow the change: the two are different questions.
-    EXPECT_EQ(flux::resolve_domain(flux::kDefaultDomainEnv), "somethingelse");
+    EXPECT_EQ(flux::resolve_domain(flux::kDefaultDomainEnv), "4242");
   }
   EXPECT_EQ(flux::process_domain(), first);
   // The names a process builds are what the latch is for.
@@ -183,18 +182,25 @@ TEST(DomainTest, SegmentNameRefusesAnUnvalidatedDomain)
   EXPECT_THROW(flux::segment_name("/t", kFp, ""), std::invalid_argument);
 }
 
-// The clamp cuts the key, never an axis. A key long enough to overflow NAME_MAX must still leave
-// the domain and the full fingerprint intact, or two domains (or two schemas) meet on one name.
-TEST(DomainTest, ClampCutsTheKeyNotTheAxes)
+// A name is never cut: cutting drops the part that tells two keys or two schemas apart. So a key
+// is refused past the length whose longest name (widest domain, pid and starttime) still fits.
+TEST(DomainTest, AKeyPastTheLimitIsRefused)
 {
-  const std::string long_key(400, 'k');
-  const std::string a = flux::segment_name(long_key, kFp, "0");
-  const std::string b = flux::segment_name(long_key, kFp, "1");
-  EXPECT_EQ(a.size(), 255u);
-  EXPECT_EQ(b.size(), 255u);
-  EXPECT_NE(a, b);
+  EXPECT_NO_THROW(flux::segment_name(std::string(185, 'k'), kFp));
+  EXPECT_THROW(flux::segment_name(std::string(186, 'k'), kFp), std::invalid_argument);
+  EXPECT_THROW(flux::signpost_name(std::string(186, 'k'), kFp), std::invalid_argument);
+}
 
-  const std::string other_fp = flux::segment_name(long_key, kFp ^ 1ULL, "0");
-  EXPECT_NE(a, other_fp);
-  EXPECT_NE(a.find(".feedfacecafebeef"), std::string::npos);
+TEST(DomainTest, TheLongestNamesStayWholeAndDistinct)
+{
+  const std::string key(185, 'k');
+  flux::OwnerId widest;
+  widest.pid = 0xFFFFFFFFu;
+  widest.starttime = 0xFFFFFFFFFFFFFFFFull;
+  const std::string sp = flux::signpost_name(key, kFp, "4294967295");
+  const std::string seg = flux::unique_segment_name(sp, widest);
+  EXPECT_LE(seg.size(), 255u);
+  EXPECT_EQ(seg.rfind(sp, 0), 0u);
+  EXPECT_NE(
+    seg, flux::unique_segment_name(flux::signpost_name(key, kFp ^ 1, "4294967295"), widest));
 }

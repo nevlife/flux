@@ -76,8 +76,7 @@ TEST(RosCoexist, FluxAndRosTopicsDeliverTogether)
   std::atomic<int> torn{0};
   std::atomic<int> flux_seen{0};
   flux::ros::Subscription flux_sub(
-    *sub_node, "/demo/bulk", kFingerprint,
-    [&](const flux::FrameView & v) {
+    *sub_node, "/demo/bulk", kFingerprint, flux::QoS{}, [&](const flux::FrameView & v) {
       const auto * p = static_cast<const std::uint8_t *>(v.data());
       const auto tag = frame_tag(v);
       for (std::size_t i = 0; i < v.size(); ++i) {
@@ -88,8 +87,7 @@ TEST(RosCoexist, FluxAndRosTopicsDeliverTogether)
       }
       flux_ids.insert(frame_tag(v));
       flux_seen.fetch_add(1);
-    },
-    flux::QoS{});
+    });
 
   // publish loop driven by a wall timer on the publisher node
   std::uint64_t seq = 0;
@@ -97,7 +95,7 @@ TEST(RosCoexist, FluxAndRosTopicsDeliverTogether)
   auto pub_timer = pub_node->create_wall_timer(2ms, [&] {
     ++seq;
     std::memset(buf.data(), static_cast<int>(seq & 0xFF), buf.size());
-    flux_pub.publish(buf.data(), buf.size());
+    (void)flux_pub.publish(buf.data(), buf.size());
     std_msgs::msg::UInt64 m;
     m.data = seq;
     ros_pub->publish(m);
@@ -141,7 +139,8 @@ TEST(RosDomain, EndpointsReportTheDomainTheyResolvedAndCoreAgrees)
   auto node = std::make_shared<rclcpp::Node>("flux_domain_node");
 
   flux::ros::Publisher pub(*node, "/demo/domain", kFingerprint, kSlotSize, kSlots);
-  flux::ros::Subscription sub(*node, "/demo/domain", kFingerprint, [](const flux::FrameView &) {});
+  flux::ros::Subscription sub(
+    *node, "/demo/domain", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
 
   const std::string core = flux::process_domain();
   EXPECT_EQ(pub.domain(), core);
@@ -165,17 +164,18 @@ TEST(RosPublisher, LoanFillsTheSlotInPlace)
   std::atomic<int> torn{0};
   // No poll period: driven through the executor hooks here, so each publish is observed at a
   // known point.
-  flux::ros::Subscription sub(*node, "/demo/loan", kFingerprint, [&](const flux::FrameView & v) {
-    const auto * p = static_cast<const std::uint8_t *>(v.data());
-    const auto tag = frame_tag(v);
-    for (std::size_t i = 0; i < v.size(); ++i) {
-      if (p[i] != tag) {
-        torn.fetch_add(1);
-        break;
+  flux::ros::Subscription sub(
+    *node, "/demo/loan", kFingerprint, flux::QoS{}, [&](const flux::FrameView & v) {
+      const auto * p = static_cast<const std::uint8_t *>(v.data());
+      const auto tag = frame_tag(v);
+      for (std::size_t i = 0; i < v.size(); ++i) {
+        if (p[i] != tag) {
+          torn.fetch_add(1);
+          break;
+        }
       }
-    }
-    ids.push_back(frame_tag(v));
-  });
+      ids.push_back(frame_tag(v));
+    });
   ASSERT_TRUE(sub.attached());
 
   constexpr std::size_t kBytes = 4096;
@@ -212,7 +212,8 @@ TEST(RosCoexist, SubscriptionDropsADeadPublisherMapping)
 
   auto pub =
     std::make_unique<flux::ros::Publisher>(*node, "/demo/orphan", kFingerprint, kSlotSize, kSlots);
-  flux::ros::Subscription sub(*node, "/demo/orphan", kFingerprint, [](const flux::FrameView &) {});
+  flux::ros::Subscription sub(
+    *node, "/demo/orphan", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
   ASSERT_TRUE(sub.attached());
 
   pub.reset();

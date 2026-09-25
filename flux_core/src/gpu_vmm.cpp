@@ -3,6 +3,11 @@
 #include "cuda_driver.hpp"
 #include "flux/segment.hpp"
 
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <cerrno>
 #include <cstring>
@@ -10,20 +15,11 @@
 #include <string>
 #include <thread>
 
-#if defined(__linux__)
-#include <poll.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-#endif
-
 namespace flux::gpu
 {
 
 namespace
 {
-
-#if defined(__linux__)
 
 using detail::AllocHandle;
 using detail::DevicePtr;
@@ -242,10 +238,9 @@ private:
       fds[0].events = POLLIN;
       fds[1].fd = stop_r_;
       fds[1].events = POLLIN;
-      if (::poll(fds, 2, -1) < 0) {
-        if (errno == EINTR) continue;
-        return;
-      }
+      // Two valid fds fail poll only with EINTR or ENOMEM, and both pass. Returning would leave the
+      // socket listening with no one to answer, so a subscriber would block in recv_fd forever.
+      if (::poll(fds, 2, -1) < 0) continue;
       if (fds[1].revents != 0) return;  // asked to stop
       if ((fds[0].revents & POLLIN) == 0) continue;
       const int conn = ::accept4(listen_fd_, nullptr, nullptr, SOCK_CLOEXEC);
@@ -262,11 +257,7 @@ private:
   std::thread thread_;
 };
 
-#endif  // __linux__
-
 }  // namespace
-
-#if defined(__linux__)
 
 struct DeviceAlloc::State
 {
@@ -391,37 +382,6 @@ DeviceImport DeviceImport::open(const std::string & endpoint, std::size_t bytes,
   return out;
 }
 
-#else  // !__linux__
-
-struct DeviceAlloc::State
-{
-};
-struct DeviceImport::State
-{
-};
-
-std::string device_endpoint(const SegmentId &)
-{
-  return {};
-}
-
-std::size_t device_granularity(int) noexcept
-{
-  return 0;
-}
-
-DeviceAlloc DeviceAlloc::create(const std::string &, std::size_t, int)
-{
-  throw std::runtime_error("flux: the GPU handle path is Linux-only");
-}
-
-DeviceImport DeviceImport::open(const std::string &, std::size_t, int)
-{
-  throw std::runtime_error("flux: the GPU handle path is Linux-only");
-}
-
-#endif  // __linux__
-
 DeviceAlloc::~DeviceAlloc() = default;
 DeviceAlloc::DeviceAlloc(DeviceAlloc &&) noexcept = default;
 DeviceAlloc & DeviceAlloc::operator=(DeviceAlloc &&) noexcept = default;
@@ -430,8 +390,6 @@ DeviceImport::~DeviceImport() = default;
 DeviceImport::DeviceImport(DeviceImport &&) noexcept = default;
 DeviceImport & DeviceImport::operator=(DeviceImport &&) noexcept = default;
 
-#if defined(__linux__)
-
 void * DeviceAlloc::base() const noexcept
 {
   return state_ ? reinterpret_cast<void *>(state_->region.addr) : nullptr;
@@ -457,35 +415,5 @@ int DeviceImport::device() const noexcept
 {
   return state_ ? state_->region.device : -1;
 }
-
-#else
-
-void * DeviceAlloc::base() const noexcept
-{
-  return nullptr;
-}
-std::size_t DeviceAlloc::bytes() const noexcept
-{
-  return 0;
-}
-int DeviceAlloc::device() const noexcept
-{
-  return -1;
-}
-
-void * DeviceImport::base() const noexcept
-{
-  return nullptr;
-}
-std::size_t DeviceImport::bytes() const noexcept
-{
-  return 0;
-}
-int DeviceImport::device() const noexcept
-{
-  return -1;
-}
-
-#endif  // __linux__
 
 }  // namespace flux::gpu

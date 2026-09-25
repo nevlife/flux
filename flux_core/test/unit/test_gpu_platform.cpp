@@ -41,8 +41,8 @@ TEST(GpuPlatform, ProbeIsTotal)
 
   std::cerr << "gpu route=" << flux::gpu::to_string(p.route) << " integrated=" << p.integrated
             << " pageable=" << p.pageable_access << " host_register=" << p.host_register
-            << " vmm=" << p.vmm << " fd=" << p.posix_fd_handle
-            << " reason=\"" << p.reason << "\"\n";
+            << " vmm=" << p.vmm << " fd=" << p.posix_fd_handle << " reason=\"" << p.reason
+            << "\"\n";
 }
 
 // A route and an explanation are alternatives, never both and never neither: a caller must not
@@ -117,6 +117,8 @@ TEST(GpuPlatform, EveryRouteNamesItself)
       if (other != r) EXPECT_NE(name, flux::gpu::to_string(other));
     }
   }
+  // A value outside the enum is not reported as one inside it.
+  EXPECT_STREQ(flux::gpu::to_string(static_cast<Route>(0xEE)), "Unknown");
 }
 
 // An undeclared stream is the host-only default: it fences nothing and must not depend on CUDA
@@ -412,7 +414,7 @@ TEST(GpuChannel, LeakedLeasesStopTheConsumerUnderTheirOwnName)
   flux::Channel pub = flux::Channel::create(name, 256, 8, 0x6F0);
   ASSERT_TRUE(context_free());
   flux::Channel sub = flux::Channel::open(name, 0x6F0, unfenceable());
-  const std::uint32_t budget = sub.qos().max_borrow;
+  const std::uint32_t budget = sub.qos().max_borrow();
 
   const std::vector<std::uint8_t> bytes(16, 3);
   for (std::uint32_t i = 0; i < budget; ++i) {  // spend the whole lease budget on failed fences

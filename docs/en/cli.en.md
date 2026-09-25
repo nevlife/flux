@@ -15,15 +15,15 @@ flux topic hz /cam/left              # publish rate
 flux domain list                      # domains on this host and mine
 ```
 
-`--domain` picks the domain to look at, and `--all-domains` looks at all of them. The default is decided by the same rule a node uses (`FLUX_DOMAIN`, else `ROS_DOMAIN_ID`, else `0`). The two flags attach to the verb. `flux topic list --all-domains` is where a person types it.
+`--domain` picks the domain to look at, and `--all-domains` looks at all of them. The default is decided by the same rule a node uses (`FLUX_DOMAIN`, else `ROS_DOMAIN_ID`, else `0`). `--domain` takes an integer and renders it the way a node does, so `007` looks in domain `7`. Anything else is refused with exit code 2. The two flags attach to the verb. `flux topic list --all-domains` is where a person types it.
 
 ## list
 
 ```text
 CHANNEL        DOMAIN  SEGMENT  ENDPOINTS
 -------------  -----  -------  ------------
-/cam/left      lab    up       1 pub, 1 sub
-/lidar/points  lab    down     1 sub
+/cam/left      12     up       1 pub, 1 sub
+/lidar/points  12     down     1 sub
 ```
 
 A `SEGMENT` of `down` is not a fault. The signpost is permanent, so the name remains even with no publisher.
@@ -36,9 +36,9 @@ Lookup accepts both. Giving `/cam/left` or `.cam.left` to `info` and `hz` finds 
 
 ```text
 channel      /cam/left
-domain        lab
+domain        12
 fingerprint  0x0000000000000abc
-signpost     /flux.v7.slab..cam.left.0000000000000abc
+signpost     /flux.v7.s12..cam.left.0000000000000abc
 segment      up, epoch 1
 slots        8 x 1 MiB
 storage      host

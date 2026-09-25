@@ -14,11 +14,10 @@ inline void fill_topic_list(
   rviz_common::properties::EditableEnumProperty * property, std::uint64_t fingerprint)
 {
   property->clearOptions();
-  for (const flux::TopicView & t : flux::enumerate_topics()) {
+  for (const flux::Topic & t : flux::enumerate_topics()) {
     if (
       t.fingerprint == fingerprint && t.domain == flux::process_domain() && t.key_exact &&
-      flux::read_channel_stats(t.signpost).live)
-    {
+      flux::read_channel_stats(t.signpost).live) {
       property->addOptionStd(t.key);
     }
   }

@@ -44,7 +44,7 @@ def test_device_accepts_a_string_and_the_enum():
     pub = cuda_or_skip("/pytest/gpu/decl", slot_size=1 << 16, slot_count=4)
     same = flux.Publisher(
         "/pytest/gpu/decl", slot_size=1 << 16, slot_count=4, fingerprint=FP,
-        device=flux.Device.Cuda,
+        device=flux.Device.CUDA,
     )
     assert pub.stream is not None
     assert same.stream is not None
@@ -83,14 +83,14 @@ def test_loan_exposes_the_slot_as_a_device_array():
 
     # commit() waits on the stream, so the two seams are closed before anything is published.
     fill(loan, np.arange(32, dtype=np.float32).reshape(4, 8))
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
     assert pub.fence_failed == 0
 
 
 def test_a_consumed_loan_has_no_device_address():
     pub = cuda_or_skip("/pytest/gpu/loan_done", slot_size=1 << 16, slot_count=4)
     loan = pub.loan((16,), dtype="uint8")
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
     with pytest.raises(RuntimeError):
         loan.__cuda_array_interface__
 
@@ -109,7 +109,7 @@ def test_a_device_subscription_hands_back_a_scoped_frame():
 
     loan = pub.loan((6,), dtype="int32")
     fill(loan, np.arange(6, dtype=np.int32))
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
 
     frame = sub.take()
     assert isinstance(frame, flux.Frame)
@@ -159,7 +159,7 @@ def test_leaving_the_scope_returns_the_slot():
     for _ in range(2):
         loan = pub.loan((8,), dtype="uint8")
         assert loan is not None
-        assert loan.commit() == flux.Published.Ok
+        assert loan.commit() == flux.Published.OK
 
     held = [sub.take(), sub.take()]
     assert all(f is not None for f in held)
@@ -192,7 +192,7 @@ def test_whether_a_host_subscriber_may_read_a_device_channel_follows_the_route()
     payload = np.arange(64, dtype=np.uint8)
     loan = pub.loan((64,), dtype="uint8")
     loan.array[:] = payload
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
 
     got = sub.take()
     assert isinstance(got, np.ndarray)  # a host subscription is unchanged by the publisher
@@ -257,7 +257,7 @@ def test_the_executor_delivers_a_scoped_frame_too():
     # wherever the frame came from.
     pub = cuda_or_skip("/pytest/gpu/exec", slot_size=1 << 12, slot_count=4)
     sub = flux.Subscription("/pytest/gpu/exec", fingerprint=FP, device="cuda")
-    ex = flux.Executor(max_channels=2, poll_tick_ns=1_000_000)
+    ex = flux.Executor(poll_tick_ns=1_000_000)
 
     seen = []
 
@@ -272,7 +272,7 @@ def test_the_executor_delivers_a_scoped_frame_too():
     ex.dispatch()  # attach before publishing, so Volatile does not skip the frame
 
     loan = pub.loan((5,), dtype="uint8")
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
     ex.dispatch()
 
     assert seen == [(5,)]
@@ -307,7 +307,7 @@ def test_bfloat16_crosses_the_device_seam_through_dlpack():
     assert written.dtype == torch.bfloat16 and written.is_cuda
     written.copy_(vals)
     torch.cuda.synchronize()
-    assert loan.commit() == flux.Published.Ok
+    assert loan.commit() == flux.Published.OK
 
     frame = sub.take()
     assert frame is not None

@@ -7,6 +7,8 @@
 #include <std_msgs/msg/u_int64.hpp>
 
 #include <gtest/gtest.h>
+#include <pthread.h>
+#include <time.h>
 
 #include <atomic>
 #include <chrono>
@@ -51,14 +53,14 @@ TEST(PartitionedExecutor, BlockedGroupDoesNotStallOthers)
   std::atomic<bool> release{false};
 
   flux::ros::Subscription slow_sub(
-    *sub_node, "/part/slow", kFingerprint, [&](const flux::FrameView &) {
+    *sub_node, "/part/slow", kFingerprint, flux::QoS{}, [&](const flux::FrameView &) {
       slow_entered.fetch_add(1);
       while (!release.load()) {
         std::this_thread::sleep_for(1ms);
       }
     });
   flux::ros::Subscription fast_sub(
-    *sub_node, "/part/fast", kFingerprint,
+    *sub_node, "/part/fast", kFingerprint, flux::QoS{},
     [&](const flux::FrameView &) { fast_count.fetch_add(1); });
 
   flux::ros::PartitionedExecutor ex;
@@ -73,14 +75,14 @@ TEST(PartitionedExecutor, BlockedGroupDoesNotStallOthers)
 
   auto deadline = std::chrono::steady_clock::now() + 5s;
   while (slow_entered.load() == 0 && std::chrono::steady_clock::now() < deadline) {
-    slow_pub.publish(buf.data(), buf.size());
+    (void)slow_pub.publish(buf.data(), buf.size());
     std::this_thread::sleep_for(2ms);
   }
 
   // g_slow's thread is now parked inside its callback; g_fast must keep delivering.
   deadline = std::chrono::steady_clock::now() + 5s;
   while (fast_count.load() < 20 && std::chrono::steady_clock::now() < deadline) {
-    fast_pub.publish(buf.data(), buf.size());
+    (void)fast_pub.publish(buf.data(), buf.size());
     std::this_thread::sleep_for(2ms);
   }
   const int slow_blocked = slow_entered.load();
@@ -118,9 +120,11 @@ TEST(PartitionedExecutor, PriorityOrdersWithinAGroup)
   };
 
   flux::ros::Subscription lo_sub(
-    *sub_node, "/part/prio_lo", kFingerprint, [&](const flux::FrameView &) { note(1); });
+    *sub_node, "/part/prio_lo", kFingerprint, flux::QoS{},
+    [&](const flux::FrameView &) { note(1); });
   flux::ros::Subscription hi_sub(
-    *sub_node, "/part/prio_hi", kFingerprint, [&](const flux::FrameView &) { note(2); });
+    *sub_node, "/part/prio_hi", kFingerprint, flux::QoS{},
+    [&](const flux::FrameView &) { note(2); });
 
   flux::ros::PartitionedExecutor ex;
   ex.add(lo_sub, group);                   // added first, default priority
@@ -260,6 +264,33 @@ TEST(PartitionedExecutor, TheInheritedSpinVariantsWithoutAFluxMeaningThrow)
   rclcpp::shutdown();
 }
 
+// rclcpp::shutdown() (what SIGINT does after rclcpp::init) ends spin(), as it ends an rclcpp
+// executor's, without the caller wiring rclcpp::on_shutdown to stop().
+TEST(PartitionedExecutor, AContextShutdownEndsSpin)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("cie_ctx_down");
+  auto g = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  flux::ros::Subscription sub(
+    *node, "/part/ctx_down", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
+  flux::ros::PartitionedExecutor ex;
+  ex.add(sub, g);
+  ex.add_ros_node(node);
+  std::promise<void> done;
+  std::thread t([&] {
+    std::atomic<bool> run{true};
+    ex.spin(run, 20'000'000);
+    done.set_value();
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  rclcpp::shutdown();
+  const bool ended =
+    done.get_future().wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  if (!ended) ex.stop();
+  t.join();
+  EXPECT_TRUE(ended) << "spin() outlived rclcpp::shutdown()";
+}
+
 // A flux subscription assigned to a group whose node was never handed over: serving only the flux
 // side would let the group's ROS callbacks run on another executor, breaking the group's mutual
 // exclusion. spin() rejects it.
@@ -269,7 +300,8 @@ TEST(PartitionedExecutor, RejectsFluxGroupNotOnAnAddedNode)
   auto node = std::make_shared<rclcpp::Node>("cie_reject_node");
 
   auto g = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  flux::ros::Subscription sub(*node, "/part/reject", kFingerprint, [](const flux::FrameView &) {});
+  flux::ros::Subscription sub(
+    *node, "/part/reject", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
 
   flux::ros::PartitionedExecutor ex;
   ex.add(sub, g);
@@ -277,6 +309,61 @@ TEST(PartitionedExecutor, RejectsFluxGroupNotOnAnAddedNode)
   std::atomic<bool> run{true};
   EXPECT_THROW(ex.spin(run), std::invalid_argument);
 
+  rclcpp::shutdown();
+}
+
+// A group another executor already serves would have two threads running its callbacks. Both
+// kinds of child refuse it: the ROS-only one and the one that also serves flux subscriptions.
+TEST(PartitionedExecutor, RejectsAGroupAnotherExecutorServes)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("cie_taken_node");
+  auto ros_only = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  auto with_flux = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  flux::ros::Subscription sub(
+    *node, "/part/taken", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
+
+  for (const auto & g : {ros_only, with_flux}) {
+    rclcpp::executors::SingleThreadedExecutor other;
+    other.add_callback_group(g, node->get_node_base_interface());
+
+    flux::ros::PartitionedExecutor ex;
+    ex.add_ros_node(node);
+    if (g == with_flux) ex.add(sub, g);
+    std::atomic<bool> run{true};
+    std::string what;
+    try {
+      ex.spin(run);
+    } catch (const std::runtime_error & e) {
+      what = e.what();
+    }
+    EXPECT_NE(what, "") << (g == with_flux ? "flux group" : "ros-only group") << " was accepted";
+  }
+
+  rclcpp::shutdown();
+}
+
+// A child thread carries a name the OS shows (top -H, perf, gdb), as flux_py's children do.
+TEST(PartitionedExecutor, AChildThreadIsNamed)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("cie_named");
+  auto g = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  flux::ros::Subscription sub(
+    *node, "/part/named", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
+  flux::ros::PartitionedExecutor ex;
+  ex.add(sub, g);
+  ex.add_ros_node(node);
+  std::promise<std::string> seen;
+  ex.on_thread_start(g, [&] {
+    char name[16] = {};
+    ::pthread_getname_np(::pthread_self(), name, sizeof(name));
+    seen.set_value(name);
+    ex.stop();
+  });
+  std::atomic<bool> run{true};
+  ex.spin(run, 20'000'000);
+  EXPECT_EQ(seen.get_future().get().rfind("flux-part-g", 0), 0u);
   rclcpp::shutdown();
 }
 
@@ -385,13 +472,83 @@ TEST(PartitionedExecutor, AddAfterSpinThrows)
 
   auto g = sub_node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   flux::ros::Subscription sub(
-    *sub_node, "/part/lockout", kFingerprint, [](const flux::FrameView &) {});
+    *sub_node, "/part/lockout", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
   EXPECT_THROW(ex.add(sub, g), std::logic_error);
   EXPECT_THROW(ex.add_ros_node(sub_node), std::logic_error);
 
   run.store(false);
   ex.stop();
   spinner.join();
+  rclcpp::shutdown();
+}
+
+TEST(PartitionedExecutor, AStopBeforeSpinEndsItAndIsClearedOnTheWayOut)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("cie_stop_first_node");
+  flux::ros::PartitionedExecutor ex;
+  ex.add_ros_node(node);
+
+  ex.stop();
+  auto first = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+  ASSERT_EQ(first.wait_for(5s), std::future_status::ready) << "a stop() before spin() was lost";
+  first.get();
+
+  auto second = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+  EXPECT_EQ(second.wait_for(300ms), std::future_status::timeout)
+    << "the stop() outlived the spin it ended";
+  ex.stop();
+  ASSERT_EQ(second.wait_for(5s), std::future_status::ready);
+  second.get();
+  rclcpp::shutdown();
+}
+
+// A sub-millisecond tick is a wait of that length, not a busy loop: the rescan thread must not
+// turn 0.5 ms into 0 ms by converting it to whole milliseconds.
+TEST(PartitionedExecutor, ASubMillisecondTickIsWaitedNotSpun)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("cie_fine_tick_node");
+  flux::ros::PartitionedExecutor ex;
+  ex.add_ros_node(node);
+
+  std::atomic<bool> run{true};
+  std::promise<clockid_t> clock_of_spin;
+  std::thread spinner([&] {
+    clockid_t cid;
+    pthread_getcpuclockid(pthread_self(), &cid);
+    clock_of_spin.set_value(cid);
+    ex.spin(run, 500'000);
+  });
+  const clockid_t cid = clock_of_spin.get_future().get();
+  auto cpu = [cid] {
+    struct timespec ts;
+    clock_gettime(cid, &ts);
+    return std::chrono::seconds(ts.tv_sec) + std::chrono::nanoseconds(ts.tv_nsec);
+  };
+  std::this_thread::sleep_for(50ms);
+  const auto before = cpu();
+  std::this_thread::sleep_for(500ms);
+  const auto used = cpu() - before;
+
+  run.store(false);
+  ex.stop();
+  spinner.join();
+  EXPECT_LT(used, 250ms) << "the rescan thread busy-looped on a 0.5 ms tick";
+  rclcpp::shutdown();
+}
+
+// A Reentrant group handed to add() is refused at that call, where the mistake was made, as
+// flux.ros.PartitionedExecutor.add refuses it. Groups a node owns are still checked at spin.
+TEST(PartitionedExecutor, AReentrantGroupIsRefusedAtAdd)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("cie_reentrant_add");
+  auto reentrant = node->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+  flux::ros::Subscription sub(
+    *node, "/part/reentrant_add", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
+  flux::ros::PartitionedExecutor ex;
+  EXPECT_THROW(ex.add(sub, reentrant), std::invalid_argument);
   rclcpp::shutdown();
 }
 

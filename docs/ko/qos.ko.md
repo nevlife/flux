@@ -19,7 +19,6 @@ QoS를 읽기 전에 연산 두 개를 구분한다. DDS의 `read()` / `take()`�
 | --- | --- | --- |
 | `max_borrow` 소진 | `max_borrow` | 쥔 view를 안 놓고 또 부를 때 |
 | slot holder 테이블 만원 | `holder_table` | 한 슬롯을 `kMaxHolders`(10) 프로세스가 이미 쥐고 있을 때 |
-| 세그먼트가 아직 ready 아님 | `not_ready` | `init_state != ready` — 생성자가 bootstrap 중 |
 | 경쟁에 져 borrow 획득 실패 | `contended` | 재시도 상한(64회)까지 seqlock 검증이 계속 실패할 때 |
 | meta가 슬롯 범위를 벗어남 | `bad_frame` | 손상된 프레임을 view로 안 내준다 |
 | 슬롯에 프레임이 없음 | `bad_frame` | `commit_ticket == 0` — abort된 loan이나 회수된 claim이 남긴 상태. `latest`가 아직 그 슬롯을 가리켜도 내줄 프레임이 없다 |
@@ -63,7 +62,7 @@ max_borrow   동시에 쥐는 view 수 상한. ROS 2에 대응이 없다.
 
 `max_borrow`(기본 2)는 ROS 2에 대응이 없다. 동시에 쥐는 view 수 상한이다 — 쥔 view는 슬롯을 byte-lock으로 잡아두므로 발행자가 그 슬롯을 못 쓴다.
 
-`reliability`는 `best_effort`만 받는다. `reliable`을 주면 거절한다.
+`reliability` 설정은 없다. 전달은 항상 best-effort다(§6). reliable을 요구하면 C++은 컴파일 에러, Python은 `TypeError`다.
 
 ## 3. 세 깊이 구분 (헷갈림 주의)
 
@@ -80,24 +79,22 @@ max_borrow   동시에 쥐는 view 수 상한. ROS 2에 대응이 없다.
 
 ## 4. 거절하는 조합
 
-조용히 다른 값으로 바꾸지 않는다. `QoS::validate()`가 던진다.
+조용히 다른 값으로 바꾸지 않는다. C++에서 값 하나만으로 틀린 것은 그 값을 쓰는 setter가 던진다(`QoS(0)`, `keep_last(0)`, `max_borrow(0)`). 그래서 그런 값을 가진 `flux::QoS`는 없다. `n > depth`는 두 필드가 필요하므로 QoS를 쓰는 자리에서 `QoS::validate()`가 던진다. Python `flux.QoS(...)`는 모든 필드를 한 번에 받아 셋 다 `ValueError`로 낸다.
 
 | 조합 | 왜 |
 | --- | --- |
 | `TransientLocal(n)`에서 `n > depth` | 재생분도 같은 뒤처짐 창으로 들어온다. 밀릴 수 있는 것보다 많이 받을 수 없다 |
 | `depth == 0` | 최신만은 `depth = 1`이다 |
 | `max_borrow == 0` | view를 하나도 못 쥐면 take가 성립하지 않는다 |
-| `reliability = reliable` | 미구현 (§6) |
 
 ring보다 깊은 QoS는 에러가 아니다. ring은 아직 없을 수도 있는 발행자의 것이다. 보관된 만큼으로 잘리고, 못 받은 수는 `lost`에 잡힌다.
 
 ## 5. 쓰는 법
 
+C++는 `rclcpp::QoS`처럼 setter를 잇는다. Python은 rclpy `QoSProfile`처럼 키워드를 받는다.
+
 ```cpp
-flux::QoS q;                                        // depth 1, volatile
-q.depth = 10;
-q.durability = flux::Durability::TransientLocal(5);
-ch.qos(q);
+ch.qos(flux::QoS(10).transient_local(5));
 while (flux::FrameView v = ch.take()) { use(v); }
 ```
 

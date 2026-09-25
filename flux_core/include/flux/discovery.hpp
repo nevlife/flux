@@ -17,9 +17,6 @@
 namespace flux
 {
 
-// Longest domain label a name may carry. Bounds the name prefix so a long key still gets room.
-inline constexpr std::size_t kMaxDomainLen = 32;
-
 // Domain used when nothing selects one. Canonical under canonical_domain(), and what an unset
 // inherited variable resolves to, so a plain core process and a ROS process with no domain set
 // land in one domain rather than two.
@@ -31,16 +28,15 @@ inline constexpr const char * kDefaultDomain = "0";
 // then fail to meet, with no error on either side.
 inline constexpr const char * kDefaultDomainEnv = "ROS_DOMAIN_ID";
 
-// Canonical form of a domain label. Alphanumeric, 1..kMaxDomainLen characters; anything else
-// throws std::invalid_argument. Every domain reaches a name through here, so one input cannot
-// canonicalize two ways.
+// Canonical form of a domain: a plain decimal integer in [0, 2^32), rendered without leading
+// zeros. Anything else throws std::invalid_argument. Every domain reaches a name through here, so
+// one input cannot canonicalize two ways.
 std::string canonical_domain(const std::string & raw);
 
 // Resolve a domain from the environment, now:
-//   FLUX_DOMAIN set and non-empty  -> canonical_domain(FLUX_DOMAIN), an opaque label
-//   else domain_env set and non-empty -> its integer value, rendered canonically so "007" and
-//                                           "7" cannot name two domains
-//   else                          -> kDefaultDomain
+//   FLUX_DOMAIN set and non-empty     -> canonical_domain(FLUX_DOMAIN)
+//   else domain_env set and non-empty -> canonical_domain(its value)
+//   else                              -> kDefaultDomain
 //
 // A query, not the answer names are built from. It reads getenv on every call, so two calls
 // straddling a setenv disagree. process_domain() is what a name uses. `domain_env` names the
@@ -48,7 +44,7 @@ std::string canonical_domain(const std::string & raw);
 // kDefaultDomain only. Core does not interpret the value it reads. It renders an integer and
 // stops. A value that cannot be canonicalized throws rather than falling back: a typo must not
 // silently share the default domain with everyone else.
-std::string resolve_domain(const char * domain_env);
+std::string resolve_domain(const char * domain_env = kDefaultDomainEnv);
 
 // This process's domain. Resolved from kDefaultDomainEnv on first use and fixed for the life of
 // the process, the way rcl latches ROS_DOMAIN_ID (docs/en/api.en.md, domain section).
@@ -58,8 +54,13 @@ std::string resolve_domain(const char * domain_env);
 // The child inherits the environment it was resolved from, and exec replaces the process.
 const std::string & process_domain();
 
-// Valid POSIX shm name for a channel key + schema fingerprint: single leading '/', no other '/',
-// bounded length. Distinct fingerprints never share a name.
+// Longest key a name holds whole. The widest domain, fingerprint and owner suffix leave NAME_MAX
+// exactly this much, and a cut name would lose what tells two keys or two schemas apart.
+inline constexpr std::size_t kMaxKeyLen = 185;
+
+// Valid POSIX shm name for a channel key + schema fingerprint: single leading '/', no other '/'.
+// Distinct fingerprints never share a name. Throws std::invalid_argument for a key longer than
+// kMaxKeyLen.
 //
 // `key` is an opaque channel key, not a ROS topic: core neither resolves nor validates it, and
 // two keys that differ at all (`a/b` vs `/a/b`) name two segments. Peers agree on the key above
@@ -75,7 +76,7 @@ std::string segment_name(
   const std::string & domain = process_domain());
 
 // The key as a name spells it: every non-alnum character mapped to '.', so `/a/b` and `.a.b`
-// flatten alike. What a reader with no live participant to ask gets back (TopicView::key_exact),
+// flatten alike. What a reader with no live participant to ask gets back (Topic::key_exact),
 // so a tool matching a user-typed name against one must compare through this rather than restate
 // the rule.
 std::string flatten_key(const std::string & key);
@@ -87,15 +88,14 @@ std::string signpost_name(
   const std::string & domain = process_domain());
 
 // Segment name for one publisher-group instance: `<signpost>.<pid>.<starttime>`, never reused
-// across restarts. If the result would exceed NAME_MAX the signpost portion is truncated, never
-// the owner-id suffix. A subscriber must be able to rebuild the exact name from the signpost.
+// across restarts. A subscriber must be able to rebuild the exact name from the signpost.
 std::string unique_segment_name(const std::string & signpost, const OwnerId & creator);
 
 // Identity of the object `name` currently binds to. False if the name does not exist.
 bool stat_segment(const std::string & name, SegmentId & out) noexcept;
 
 // One live process's endpoint on a topic, as enumeration reports it.
-struct EndpointView
+struct Endpoint
 {
   OwnerId owner;
   std::string label;  // what the boundary announced; empty when it announced nothing
@@ -105,7 +105,7 @@ struct EndpointView
 // One channel, as enumeration reports it. Built from the /dev/shm name namespace plus the
 // manifests of the processes currently holding owner locks. There is no registry and no daemon,
 // so this is a snapshot taken by reading, not a subscription to anything.
-struct TopicView
+struct Topic
 {
   std::string signpost;  // the fixed name; the identity everything else joins on
   std::string domain;    // parsed back out of the name
@@ -115,7 +115,7 @@ struct TopicView
   // maps every non-alnum key character to '.', so `/a/b` and `.a.b` are one name: what is
   // reported then is the name's spelling, not the key the peers actually agreed on.
   bool key_exact = false;
-  std::vector<EndpointView> endpoints;
+  std::vector<Endpoint> endpoints;
 };
 
 // What a channel's current segment reports about itself, read without attaching to it.
@@ -136,10 +136,11 @@ struct ChannelStats
 };
 
 // Read `signpost`'s current segment. `live` is false, and every other field zero, when no
-// publisher has one up. Never throws and never writes: a tool may call this in a loop.
-ChannelStats read_channel_stats(const std::string & signpost) noexcept;
+// publisher has one up. Never writes: a tool may call this in a loop. Throws std::runtime_error
+// when the name exists but cannot be read (a permission, a malformed name).
+ChannelStats read_channel_stats(const std::string & signpost);
 
-// Every flux channel this process can see, newest state at the moment of the call. Reads the
+// Every flux channel this process can read, newest state at the moment of the call. Reads the
 // `/dev/shm` names and the manifest of every owner file whose OFD lock is still held; unlocked
 // owner files are dead participants and are skipped, not unlinked (that is sweep_dead's job, and
 // enumeration must not mutate what it reports). Signposts are persistent, so a channel with no
@@ -147,7 +148,7 @@ ChannelStats read_channel_stats(const std::string & signpost) noexcept;
 //
 // Never throws: a directory that cannot be read, or a name that vanishes mid-scan, yields fewer
 // rows rather than a failure. Costs one open per name, so it belongs in tooling, not a hot path.
-std::vector<TopicView> enumerate_topics() noexcept;
+std::vector<Topic> enumerate_topics() noexcept;
 
 // Unlink crashed orphans (segments and owner files with no live holder), preserving signposts.
 // Best-effort, never throws, serialized against concurrent sweeps: nothing with a live holder

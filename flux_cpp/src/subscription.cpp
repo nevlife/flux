@@ -15,8 +15,8 @@ namespace flux::ros
 {
 
 Subscription::Subscription(
-  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint, Callback cb,
-  const QoS & qos, Device device, const MemoryPolicy & mem)
+  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
+  Callback cb, Device device, const MemoryPolicy & mem)
 : seg_name_(flux::signpost_name(detail::resolve(node, topic), fingerprint)),
   fingerprint_(fingerprint),
   cb_(std::move(cb)),
@@ -24,10 +24,9 @@ Subscription::Subscription(
   stream_(gpu::stream_for(device)),  // same reason as qos_.validate(): refuse here, not later
   mem_(mem)
 {
+  qos_.validate();  // fail at construction, not inside a callback, and before announcing
   detail::announce(node, seg_name_, detail::resolve(node, topic), /*publisher=*/false);
-  qos_.validate();  // fail at construction, not inside a callback
-  attach();  // join the stream here if the publisher is already up: volatile is measured from
-             // where this subscription joined, not from the first wake
+  attach();  // volatile counts from where this subscription joined, not from the first wake
 }
 
 Subscription::~Subscription() = default;
@@ -69,7 +68,9 @@ bool Subscription::attach()
   } catch (const std::system_error &) {
     throw;  // a refused MemoryPolicy: reported, never downgraded to an unattached retry
   } catch (const std::runtime_error &) {
-    return false;  // the publisher left between the probe above and the open
+    // Transient only if the publisher left meanwhile; still live, no retry fixes it.
+    if (flux::read_channel_stats(seg_name_).live) throw;
+    return false;
   }
   ch_->qos(qos_);
   return true;

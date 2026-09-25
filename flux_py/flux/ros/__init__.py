@@ -26,10 +26,9 @@ has finished dispatching.
 
 import ctypes
 import threading
-import warnings
 import weakref
 
-from .._flux import Device, Durability, FenceWait, Frame, Published, QoS, Refused, Reliability
+from .._flux import Device, Durability, FenceWait, Frame, Published, QoS, Refused
 from .._flux import faulted
 from .._flux import SegmentMismatch, TransientLocal, Volatile
 from .._flux import Executor as _FluxExecutor
@@ -49,7 +48,6 @@ __all__ = [
     "Publisher",
     "QoS",
     "Refused",
-    "Reliability",
     "SegmentMismatch",
     "Subscription",
     "TransientLocal",
@@ -70,21 +68,22 @@ class Executor:
     the flux subscriptions and the nodes, then spin.
 
         ex = flux.ros.Executor()
-        ex.add_flux(sub)
+        ex.add(sub)
         ex.add_ros_node(node)
         ex.spin()
     """
 
-    def __init__(self, *, rclpy_executor=None, max_channels=32, poll_tick_ns=2_000_000):
+    def __init__(self, *, rclpy_executor=None):
         from rclpy.executors import SingleThreadedExecutor
 
         self._nodes = []
-        self._flux = _FluxExecutor(max_channels=max_channels, poll_tick_ns=poll_tick_ns)
+        self._flux = _FluxExecutor()
         self._exec = rclpy_executor or SingleThreadedExecutor()
 
         self._drained = threading.Event()
         self._drained.set()
         self._running = False
+        self._stop_requested = False  # held from stop() to the end of the spin it ends
         self._closed = False
         self._thread = None
         # One callable, reused for every task: rclpy allocates a Task per create_task and there
@@ -96,18 +95,18 @@ class Executor:
 
     # ---- registration ----
 
-    def add_flux(self, subscription, callback=None, priority=0):
+    def add(self, subscription, callback=None, priority=0):
         """Register a flux Subscription; its own callback runs per frame.
 
         Same contract as flux.Executor.add. `callback` is for a bare flux.Subscription, which
         has nowhere to carry one; a flux.ros.Subscription brings its own. `priority` orders the
-        visit within one dispatch pass, higher first, ties in registration order.
+        visit within one dispatch pass, higher first, ties taking turns a frame at a time.
 
         A `flux.ros.message_filters.Subscriber` is accepted here in place of the Subscription it
         drives, so a filter graph is registered the way C++ registers one (`ex.add(left)`).
         """
         if self._running:
-            raise RuntimeError("flux: add_flux() must be called before spin()")
+            raise RuntimeError("flux: add() must be called before spin()")
         subscription = _flux_source_of(subscription)
         self._flux.add(subscription, _callback_of(subscription, callback), priority)
 
@@ -140,34 +139,77 @@ class Executor:
         if self._closed:
             raise RuntimeError("flux.ros.Executor is closed")
         self._running = True
-        if not self._nodes:
-            # No ROS side to serve: this is the flux half of a split (see the executor example),
-            # and the C++ counterpart with no node does exactly this too. Driving an empty rclpy
-            # executor instead would add nothing and raise ExternalShutdownException on the way
-            # down, on whatever thread this is.
-            try:
-                while self._running:
-                    self._flux.spin_once(tick_ns)
-            finally:
-                self._running = False
-            return
-        self._start_bridge()
         try:
-            while self._running:
-                self._exec.spin_once(timeout_sec=_sec(tick_ns))
+            if not self._nodes:
+                # No ROS side to serve: this is the flux half of a split (see the executor
+                # example), and the C++ counterpart with no node does exactly this too. Driving an
+                # empty rclpy executor instead would add nothing and raise
+                # ExternalShutdownException on the way down, on whatever thread this is.
+                while self._running and not self._stop_requested:
+                    self._flux.spin_once(tick_ns)
+                return
+            if self._stop_requested:
+                return
+            self._start_bridge()
+            try:
+                while self._running and not self._stop_requested:
+                    self._exec.spin_once(timeout_sec=_sec(tick_ns))
+            finally:
+                self._stop_bridge()
         finally:
-            self._stop_bridge()
+            self._running = False
+            self._stop_requested = False
 
-    def spin_once(self, timeout_ns=100_000_000):
-        """One pass. Dispatches ready flux frames first, then serves ROS for up to timeout_ns."""
+    def spin_once(self, timeout_ns=-1):
+        """One pass: wait up to timeout_ns (negative = forever) for a flux frame or ROS work,
+        whichever comes first. Returns the flux callbacks run, as flux::ros::Executor does.
+
+        rclpy's wait cannot see a flux frame, so a watcher thread waits on the io_uring for the
+        length of the pass and wakes rclpy when one arrives. It only waits: the frames are
+        dispatched here, after the watcher has been joined, so the two never share the ring.
+        """
         if self._running:
             # dispatch() would race the bridge's wait_for_work() on the shared io_uring.
             raise RuntimeError("spin_once() must not run concurrently with spin()")
-        self._flux.dispatch()
-        self._exec.spin_once(timeout_sec=_sec(timeout_ns))
+        if not self._nodes:
+            return self._flux.spin_once(timeout_ns)
+        ran = self._flux.dispatch()
+        if ran > 0:
+            self._exec.spin_once(timeout_sec=0)
+            return ran
+        wake = {"watching": True, "queued": False, "ran": False}
+
+        def woke():
+            wake["ran"] = True
+
+        def watch():
+            self._flux.wait_for_work(timeout_ns)
+            if wake["watching"]:
+                wake["queued"] = True
+                self._exec.create_task(woke)  # wake the rclpy wait below
+
+        watcher = threading.Thread(target=watch, daemon=True, name="flux-watch")
+        watcher.start()
+        try:
+            self._exec.spin_once(timeout_sec=_sec(timeout_ns))
+        finally:
+            wake["watching"] = False
+            self._flux.interrupt()
+            watcher.join()
+        # rclpy may have returned on a ROS callback with the wake task still queued. Run it now:
+        # left queued, it would end the next spin_once() before anything arrived.
+        while wake["queued"] and not wake["ran"]:
+            self._exec.spin_once(timeout_sec=0)
+        self._flux.wait_for_work(0)  # drain the interrupt above so the next wait is not cut short
+        return self._flux.dispatch()
 
     def stop(self):
-        """End spin(). Safe from a callback or another thread. Idempotent."""
+        """End spin(). Safe from a callback or another thread. Idempotent.
+
+        A stop() before spin() is held rather than lost, and cleared on the way out so this
+        executor can be spun again.
+        """
+        self._stop_requested = True
         self._running = False
         self._flux.interrupt()
         # Nothing to wake once the context is down: rclpy's spin_once raises out of the loop on
@@ -269,9 +311,9 @@ class PartitionedExecutor:
     each as fine as rclpy allows it to be:
 
         add_ros_node(node)              -> one thread per NODE, serving all its ROS callbacks
-        add_flux(sub, cb, group=g)      -> one thread per GROUP, serving its flux frames
+        add(sub, cb, group=g)      -> one thread per GROUP, serving its flux frames
 
-    A group handed to add_flux must hold no ROS entities. Not a style rule: rclpy cannot move a
+    A group handed to add must hold no ROS entities. Not a style rule: rclpy cannot move a
     timer or a subscription onto this group's thread, so its ROS callbacks would keep running on
     the node's thread while flux frames ran here, the group's mutual exclusion broken with
     nothing said. Refusing is the same discipline the C++ side applies to a Reentrant group.
@@ -285,8 +327,7 @@ class PartitionedExecutor:
     serialize on the GIL no matter how many threads serve them.
     """
 
-    def __init__(self, *, poll_tick_ns=2_000_000):
-        self._poll_tick_ns = poll_tick_ns
+    def __init__(self):
         self._assigned = []  # [(group, [(sub, callback, priority), ...])], insertion ordered
         self._sync_groups = []  # [[filter, ...]], declared synchronizer input sets
         self._unplaced_sync_inputs = 0
@@ -294,8 +335,8 @@ class PartitionedExecutor:
         self._nodes = []
         self._children = []
         self._spinning = False
-        self._closed = False
         self._running = False
+        self._stop_requested = False  # held from stop() to the end of the spin it ends
         self._child_run = False
         # Parent's wait. A child sets it to report a failure or a context shutdown, so the parent
         # reacts at once instead of at the end of its tick.
@@ -305,10 +346,10 @@ class PartitionedExecutor:
 
     # ---- registration ----
 
-    def add_flux(self, subscription, group, callback=None, priority=0):
+    def add(self, subscription, group, callback=None, priority=0):
         """Assign a flux Subscription to a partition group: same group, same thread.
 
-        The callback comes from the subscription, as it does for Executor.add_flux. `group` is an
+        The callback comes from the subscription, as it does for Executor.add. `group` is an
         rclpy callback group used purely as the partition token; it must hold no ROS entities
         (see the class docstring). Subscriptions sharing a group share one thread, in the order
         they were added, unless `priority` reorders them: higher goes first within that group's
@@ -317,14 +358,12 @@ class PartitionedExecutor:
         from rclpy.callback_groups import CallbackGroup, ReentrantCallbackGroup
 
         if self._spinning:
-            raise RuntimeError("flux: add_flux() must be called before spin()")
-        if self._closed:
-            raise RuntimeError("flux: this PartitionedExecutor is closed")
+            raise RuntimeError("flux: add() must be called before spin()")
         subscription = _flux_source_of(subscription)
         callback = _callback_of(subscription, callback)
         if not isinstance(group, CallbackGroup):
             raise TypeError(
-                "add_flux(sub, group) expects an rclpy callback group as the second "
+                "add(sub, group) expects an rclpy callback group as the second "
                 "argument -- rclpy.callback_groups.MutuallyExclusiveCallbackGroup()"
             )
         # Same refusal as C++: one thread per group is exactly what a Reentrant group asks not to
@@ -353,8 +392,8 @@ class PartitionedExecutor:
         served by two threads couple through that lock. A synchronizer does not tell anyone what
         its inputs are, so the set comes from outside:
 
-            ex.add_flux(left, g)
-            ex.add_flux(right, g)
+            ex.add(left, g)
+            ex.add(right, g)
             ex.add_sync_group(left, right)   # these two are one synchronizer
             ex.spin()                        # raises if they are not on one thread
 
@@ -367,8 +406,6 @@ class PartitionedExecutor:
         """
         if self._spinning:
             raise RuntimeError("flux: add_sync_group() must be called before spin()")
-        if self._closed:
-            raise RuntimeError("flux: this PartitionedExecutor is closed")
         if len(inputs) < 2:
             raise ValueError("flux: add_sync_group() needs at least two inputs")
         self._sync_groups.append(list(inputs))
@@ -389,8 +426,6 @@ class PartitionedExecutor:
         """
         if self._spinning:
             raise RuntimeError("flux: add_ros_node() must be called before spin()")
-        if self._closed:
-            raise RuntimeError("flux: this PartitionedExecutor is closed")
         for n in self._nodes:
             if n is node:
                 return
@@ -399,7 +434,7 @@ class PartitionedExecutor:
     def on_thread_start(self, unit, init):
         """Run `init()` on the thread that will serve `unit`, before its first callback.
 
-        `unit` is a partition of this executor: a callback group handed to `add_flux`, or a node
+        `unit` is a partition of this executor: a callback group handed to `add`, or a node
         handed to `add_ros_node`. Both, because rclpy splits the unit in two here.
 
             ex.on_thread_start(control, set_up_this_thread)
@@ -413,8 +448,8 @@ class PartitionedExecutor:
         """
         if self._spinning:
             raise RuntimeError("flux: on_thread_start() must be called before spin()")
-        if self._closed:
-            raise RuntimeError("flux: this PartitionedExecutor is closed")
+        if unit is None:
+            raise ValueError("flux: on_thread_start(unit): unit is None")
         for declared, _init in self._thread_init:
             if declared is unit:
                 raise ValueError(
@@ -434,8 +469,6 @@ class PartitionedExecutor:
         """
         if self._spinning:
             raise RuntimeError("flux: spin() called while already spinning")
-        if self._closed:
-            raise RuntimeError("flux: this PartitionedExecutor is closed")
         self._spinning = True
         self._running = True
         self._child_run = True
@@ -443,13 +476,14 @@ class PartitionedExecutor:
             self._error = None
         self._wake.clear()
 
-        tick_sec = None if tick_ns < 0 else max(tick_ns, 1_000_000) / 1e9
+        tick_sec = None if tick_ns < 0 else tick_ns / 1e9
         scan_error = None
         try:
             self._check_sync_groups()
             self._check_thread_init()
-            self._spawn(tick_ns)
-            while self._running and self._child_run:
+            if not self._stop_requested:
+                self._spawn(tick_ns)
+            while self._running and self._child_run and not self._stop_requested:
                 if self._wake.wait(timeout=tick_sec):
                     self._wake.clear()
                 for group, _subs in self._assigned:
@@ -465,6 +499,7 @@ class PartitionedExecutor:
         self._children = []
         self._spinning = False
         self._running = False
+        self._stop_requested = False
 
         if scan_error is not None:
             raise scan_error
@@ -475,22 +510,18 @@ class PartitionedExecutor:
             raise child_error
 
     def stop(self):
-        """End spin(). Safe from a callback or another thread. Idempotent."""
+        """End spin(). Safe from a callback or another thread. Idempotent.
+
+        A stop() before spin() is held rather than lost, and cleared on the way out so this
+        executor can be spun again.
+        """
+        self._stop_requested = True
         self._running = False
         self._wake.set()
 
     def interrupt(self):
         """Break the parent's current wait without ending the spin. Safe from another thread."""
         self._wake.set()
-
-    def close(self):
-        """Stop and refuse further use. Idempotent.
-
-        Child executors are torn down by spin() itself, so this only bars a restart; call it
-        after the final spin() returns and before destroying the nodes.
-        """
-        self.stop()
-        self._closed = True
 
     # ---- internals ----
 
@@ -514,7 +545,7 @@ class PartitionedExecutor:
                         raise ValueError(
                             "flux: a synchronizer input is not assigned to any group, so no "
                             "child executor drives it and its partners wait forever -- pass it "
-                            "to add_flux(sub, group)"
+                            "to add(sub, group)"
                         )
                     threads.append(("flux", id(group), f))
                 else:
@@ -549,7 +580,7 @@ class PartitionedExecutor:
                 continue
             raise ValueError(
                 "flux: on_thread_start() was given a unit this executor does not serve, so no "
-                "thread would ever run it. Pass the callback group you handed to add_flux() or "
+                "thread would ever run it. Pass the callback group you handed to add() or "
                 "the node you handed to add_ros_node()"
             )
 
@@ -564,7 +595,7 @@ class PartitionedExecutor:
 
         for index, (group, subs) in enumerate(self._assigned):
             _require_flux_only(group)
-            flux_ex = _FluxExecutor(max_channels=len(subs), poll_tick_ns=self._poll_tick_ns)
+            flux_ex = _FluxExecutor()
             for subscription, callback, priority in subs:
                 flux_ex.add(subscription, callback, priority)
             name = f"flux-part-g{index}"
@@ -590,7 +621,7 @@ class PartitionedExecutor:
 
     def _start(self, child, name):
         child.thread = threading.Thread(target=child.run, name=name, daemon=True)
-        self._children.append(child)  # appended first: a start() that throws still gets joined
+        self._children.append(child)  # appended first: a start() that throws still gets torn down
         child.thread.start()
 
     def _child_running(self):
@@ -626,7 +657,7 @@ class _FluxChild:
         try:
             if self._init is not None:
                 self._init()
-            self._flux.spin(self._tick_ns if self._tick_ns >= 0 else 100_000_000)
+            self._flux.spin(self._tick_ns)
         except BaseException as exc:  # noqa: BLE001 - carried to the parent's spin()
             self._on_error(exc)
 
@@ -634,7 +665,7 @@ class _FluxChild:
         self._flux.stop()
 
     def join(self):
-        _join_child(self.thread, self._label)
+        _join_child(self.thread)
 
 
 class _RosChild:
@@ -643,7 +674,7 @@ class _RosChild:
     def __init__(self, ros_ex, node, tick_ns, on_error, running, on_shutdown, label, init=None):
         self._exec = ros_ex
         self._node = node
-        self._tick_sec = 0.1 if tick_ns < 0 else max(tick_ns, 1_000_000) / 1e9
+        self._tick_sec = 0.1 if tick_ns < 0 else tick_ns / 1e9
         self._on_error = on_error
         self._running = running
         self._on_shutdown = on_shutdown
@@ -668,30 +699,19 @@ class _RosChild:
             self._on_error(exc)
 
     def stop(self):
-        try:
-            self._exec.wake()
-        except Exception:  # noqa: BLE001 - a torn-down context has nothing left to wake
-            pass
+        self._exec.wake()
 
     def join(self):
-        _join_child(self.thread, self._label)
+        _join_child(self.thread)
         self._exec.remove_node(self._node)
 
 
-def _join_child(thread, label):
-    if thread is None:
+def _join_child(thread):
+    if thread is None or thread.ident is None:  # never started: nothing to join
         return
-    thread.join(timeout=5.0)
-    if thread.is_alive():
-        # Bounded so one wedged group cannot hang the whole teardown, but never silent: an
-        # abandoned thread is what turns a stuck child into a SIGABRT at interpreter exit,
-        # and that used to arrive with nothing said about where it came from.
-        warnings.warn(
-            f"flux: PartitionedExecutor child {label!r} did not stop within 5 s and was abandoned; "
-            "the process may abort at interpreter shutdown",
-            RuntimeWarning,
-            stacklevel=3,
-        )
+    # Unbounded, as in C++: a callback that never returns shows as a hang at this join, where a
+    # stack dump names it, rather than as an abandoned thread that aborts the interpreter later.
+    thread.join()
 
 
 def _require_flux_only(group):
@@ -707,7 +727,7 @@ def _require_flux_only(group):
         return
     kinds = sorted({type(entity).__name__ for entity in live})
     raise ValueError(
-        "flux: a callback group handed to add_flux() must hold no ROS entities, but this one "
+        "flux: a callback group handed to add() must hold no ROS entities, but this one "
         f"holds {len(live)} ({', '.join(kinds)}). rclpy has no add_callback_group, so those "
         "callbacks stay on their node's thread while flux frames run on this group's thread -- "
         "the group's mutual exclusion would be broken silently. Give the flux subscriptions a "
@@ -770,10 +790,10 @@ class Subscription(_Subscription):
 
     The callback belongs here, not to the executor call, for the reason it does in rclpy and in
     flux_cpp: a subscription is a topic plus what to do with it, and splitting the two lets the
-    same subscription be registered twice with different callbacks. `add_flux(sub)` reads it.
+    same subscription be registered twice with different callbacks. `add(sub)` reads it.
 
     Leaving `callback` unset is allowed and gives the pull surface: peek/take/take_blocking on
-    your own schedule. Only `add_flux` requires one.
+    your own schedule. Only `add` requires one.
     """
 
     def __init__(self, node, topic, callback=None, **kwargs):
@@ -784,13 +804,13 @@ class Subscription(_Subscription):
 
 
 def _flux_source_of(subscription):
-    """The flux Subscription behind whatever was handed to add_flux().
+    """The flux Subscription behind whatever was handed to add().
 
     A `flux.ros.message_filters.Subscriber` is not a Subscription. nanobind refuses a second
     base class, so it owns one instead of being one. Unwrapping it here is what lets the same
-    `add_flux(sub)` take either, as `ex.add(left)` does in C++.
+    `add(sub)` take either, as it does in C++.
     """
-    inner = getattr(subscription, "subscription", None)
+    inner = getattr(subscription, "sub", None)
     return inner if isinstance(inner, _Subscription) else subscription
 
 
@@ -801,7 +821,7 @@ def _sync_input_thread(f):
     message_filters.Subscriber by its node, which PartitionedExecutor gives a thread of its own.
     Anything else (a chain-middle filter, a Cache) cannot be placed and is not judged.
     """
-    inner = getattr(f, "subscription", None)
+    inner = getattr(f, "sub", None)
     if isinstance(inner, _Subscription):
         return ("flux", inner)
     if isinstance(f, _Subscription):
@@ -818,7 +838,7 @@ def _callback_of(subscription, callback):
     one, so the explicit argument stays for that case.
     """
     if not isinstance(subscription, _Subscription):
-        raise TypeError("add_flux expects a flux.Subscription")
+        raise TypeError("flux: add() expects a flux.Subscription")
     own = getattr(subscription, "callback", None)
     if callback is not None and own is not None and callback is not own:
         raise ValueError(
@@ -828,6 +848,6 @@ def _callback_of(subscription, callback):
     if resolved is None:
         raise TypeError(
             "flux: no callback -- construct the subscription as "
-            "flux.ros.Subscription(node, topic, callback=fn), or pass one to add_flux()"
+            "flux.ros.Subscription(node, topic, callback=fn), or pass one to add()"
         )
     return resolved

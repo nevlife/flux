@@ -16,7 +16,7 @@
 # `race:flux::Channel::publish` substring-matches publish_meta, whose fifty lines carry the
 # slot-claim CAS and the Dekker recheck. Those are not seqlock-validated; they are the
 # ordering this library is hardest to get right, and a defect in either was suppressed. The same
-# held for finish_commit (latest CAS, wake gate), stamp_writer (writer_ready_/writer_id_) and
+# held for finish_commit (latest CAS, wake gate), stamp_writer (the writer identity) and
 # recover_stuck_writes (the forward re-claim CAS).
 #
 # The leaves are [[gnu::noinline]] in channel.cpp for this file's sake: TSan matches a suppression

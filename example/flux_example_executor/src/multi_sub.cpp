@@ -28,7 +28,9 @@ public:
   : Node("flux_multi_sub"),
     slow_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
     fast_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
-    flux_sub_(*this, kTopic, Image::kFingerprint, [this](const flux::FrameView & f) { on_flux(f); })
+    flux_sub_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
+      on_flux(f);
+    })
   {
     auto qos = rclcpp::QoS(rclcpp::KeepLast(kDepth)).best_effort();
     rclcpp::SubscriptionOptions slow_opts;
@@ -107,11 +109,6 @@ int main(int argc, char ** argv)
 
   flux::ros::Executor fex;
   fex.add(node->flux_subscription());
-
-  rclcpp::on_shutdown([&fex, &mex]() {
-    fex.stop();
-    mex.cancel();
-  });
 
   std::thread ros_thread([&mex]() { mex.spin(); });
   fex.spin();

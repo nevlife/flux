@@ -80,7 +80,7 @@ const std::string & require_absolute(const std::string & topic)
 }
 
 // A GPU declaration named the way Python names things. The C++ enum is bound as flux.Device
-// too, so both `device="cuda"` and `device=flux.Device.Cuda` reach the same value; a string is
+// too, so both `device="cuda"` and `device=flux.Device.CUDA` reach the same value; a string is
 // what the ROS-facing call sites read best and the enum is what survives a typo.
 flux::Device device_from(nb::handle d)
 {
@@ -897,7 +897,7 @@ public:
     for (std::size_t i = 0; i < arr.ndim(); ++i) dims.push_back(arr.shape(i));
     // Same flux::Published flux_cpp returns. The checks above raise instead, because they are
     // about the argument and the message can name the path that does work (docs/en/contracts.en.md
-    // 3); what is left is the channel's own answer and it is reported, not collapsed.
+    // S-007); what is left is the channel's own answer and it is reported, not collapsed.
     // The copy into the slot is up to slot_size bytes; `arr` is held by the caller's argument
     // for the whole call, so nothing Python-side is touched without the GIL.
     nb::gil_scoped_release unlocked;
@@ -913,9 +913,9 @@ public:
       const std::size_t n = nb::len(shape);
       for (std::size_t i = 0; i < n; ++i) shp.push_back(nb::cast<std::size_t>(shape[i]));
     }
-    if (shp.empty() || shp.size() > flux::kMaxDims) {
+    if (shp.size() > flux::kMaxDims) {
       throw std::invalid_argument(
-        "flux: loan shape rank must be 1.." + std::to_string(flux::kMaxDims));
+        "flux: loan shape rank must be at most " + std::to_string(flux::kMaxDims));
     }
     auto [dt, itemsize] = flux_from_np_dtype(dtype);
     std::uint64_t nbytes = itemsize;
@@ -960,16 +960,13 @@ public:
   : seg_name_(flux::signpost_name(require_absolute(topic), fingerprint)),
     fp_(fingerprint),
     qos_(qos),
-    mem_(mem),
-    // Same reason as qos_.validate() below: a declaration this host cannot serve is refused
-    // where it is made, not once per frame on whichever thread ends up holding a view.
-    stream_(flux::gpu::stream_for(device_from(device)))
+    // A device this host cannot serve is refused here, not once per frame on some other thread.
+    stream_(flux::gpu::stream_for(device_from(device))),
+    mem_(mem)
   {
     announce(seg_name_, topic, /*publisher=*/false);
-    qos_.validate();  // fail at construction, not on the first take
-    attach();  // join the stream here if the publisher is already up: volatile is measured from
-               // where this subscription joined, and attaching lazily would move that to the
-               // first take. Failure is normal (late publisher) and retried on every call.
+    attach();  // volatile counts from where this subscription joined, not from the first take;
+               // a late publisher is normal and retried on every call.
   }
 
   // `self` is the python Subscription object; the returned view pins it so the mmap the
@@ -1021,6 +1018,7 @@ public:
 
   const flux::QoS & qos() const { return qos_; }
   std::uint64_t lost() const { return ch_ ? ch_->lost() : 0; }
+  std::uint32_t attach_generation() const { return ch_ ? ch_->attach_generation() : 0; }
   std::uint64_t fence_failed() const { return ch_ ? ch_->fence_failed() : 0; }
   // True until proven otherwise: an unattached subscription has no channel to ask, and a host
   // channel is the answer that costs nothing to be wrong about here (the guards that matter sit
@@ -1048,14 +1046,19 @@ private:
   {
     if (ch_ && ch_->orphaned()) ch_.reset();  // dead stream: drop the mapping, re-attach lazily
     if (ch_) return true;
+    if (!flux::read_channel_stats(seg_name_).live) return false;  // no publisher yet; retry later
     try {
       // Channel::open, not open_subscriber_segment: only the former records the signpost
       // name + epoch, and without those a publisher restart is never detected.
       ch_.emplace(flux::Channel::open(seg_name_, fp_, stream_, mem_));
     } catch (const flux::SegmentMismatch &) {
       throw;  // wrong fingerprint/version/config: retrying can never fix it, so say so
-    } catch (...) {
-      return false;  // publisher segment not up yet; caller retries
+    } catch (const std::system_error &) {
+      throw;  // a refused MemoryPolicy: reported, never downgraded to an unattached retry
+    } catch (const std::runtime_error &) {
+      // Transient only if the publisher left meanwhile; still live, no retry fixes it.
+      if (flux::read_channel_stats(seg_name_).live) throw;
+      return false;
     }
     ch_->qos(qos_);  // validated in the constructor, so this cannot throw here
     return true;
@@ -1138,10 +1141,7 @@ public:
 class Executor
 {
 public:
-  explicit Executor(unsigned max_channels, std::int64_t poll_tick_ns)
-  : core_(max_channels, poll_tick_ns)
-  {
-  }
+  explicit Executor(std::int64_t poll_tick_ns) : core_(poll_tick_ns) {}
 
   Executor(const Executor &) = delete;
   Executor & operator=(const Executor &) = delete;
@@ -1153,7 +1153,7 @@ public:
     }
     Subscription * s = &nb::cast<Subscription &>(sub_obj);
     auto src = std::make_unique<PySource>(std::move(sub_obj), s, std::move(cb));
-    core_.add(*src, priority);  // throws past max_channels, before this source is kept
+    core_.add(*src, priority);  // may throw; the source is kept only once it is registered
     sources_.push_back(std::move(src));
   }
 
@@ -1257,11 +1257,11 @@ NB_MODULE(_flux, m)
     nullptr);
 
   // Bound as an enum and accepted as a string: device="cuda" reads best at a call site, and
-  // flux.Device.Cuda is what a typo cannot survive.
+  // flux.Device.CUDA is what a typo cannot survive.
   nb::enum_<flux::Device>(m, "Device")
-    .value("Cpu", flux::Device::Cpu, "Host path. The default. Nothing here touches CUDA.")
+    .value("CPU", flux::Device::Cpu, "Host path. The default. Nothing here touches CUDA.")
     .value(
-      "Cuda", flux::Device::Cuda,
+      "CUDA", flux::Device::Cuda,
       "CUDA path. flux creates the stream both seams fence on. Raises ValueError when this host "
       "cannot serve the declaration rather than quietly running on the host path.");
 
@@ -1281,27 +1281,23 @@ NB_MODULE(_flux, m)
     "Durability: replay up to n frames already in the ring, then follow live. n must not exceed "
     "qos.depth, and is capped by what the publisher's ring still holds.");
 
-  nb::enum_<flux::Reliability>(m, "Reliability")
-    .value("BEST_EFFORT", flux::Reliability::BestEffort)
-    .value("RELIABLE", flux::Reliability::Reliable);
-
   // Same five outcomes flux_cpp returns. Not collapsed to a bool: Backpressure is a dropped
   // frame on a best-effort transport, while FenceFailed leaks the slot for good, and a caller
   // that cannot tell them apart watches the ring shrink with nothing in the log.
   nb::enum_<flux::Published>(m, "Published")
-    .value("Ok", flux::Published::Ok, "Published.")
+    .value("OK", flux::Published::Ok, "Published.")
     .value(
-      "Backpressure", flux::Published::Backpressure,
+      "BACKPRESSURE", flux::Published::Backpressure,
       "Every slot was borrowed, so the frame was dropped. A rate, not a fault: delivery is "
       "best-effort and .dropped counts these.")
     .value(
-      "TooLarge", flux::Published::TooLarge,
+      "TOO_LARGE", flux::Published::TooLarge,
       "The frame does not fit the slot, or this handle had already been committed or aborted.")
     .value(
-      "WrongDevice", flux::Published::WrongDevice,
+      "WRONG_DEVICE", flux::Published::WrongDevice,
       "A host publish into a device-backed channel. loan() plus a kernel is the path there.")
     .value(
-      "FenceFailed", flux::Published::FenceFailed,
+      "FENCE_FAILED", flux::Published::FenceFailed,
       "The declared stream could not be waited on. The slot is never reused, so a nonzero "
       ".fence_failed is a fault, not a rate.")
     // A nanobind enum is truthy for every value, Ok included. Ok is 0, so neither the
@@ -1311,14 +1307,13 @@ NB_MODULE(_flux, m)
 
   m.def(
     "faulted", &flux::faulted, nb::arg("published"),
-    "One question instead of five. False for Ok and for Backpressure (a dropped frame on a "
+    "One question instead of five. False for OK and for BACKPRESSURE (a dropped frame on a "
     "best-effort transport); True for the outcomes that do not clear on their own and are worth "
     "a log. Same function flux_cpp exposes.");
 
   nb::class_<flux::Channel::Refused>(m, "Refused")
     .def_ro("max_borrow", &flux::Channel::Refused::max_borrow)
     .def_ro("holder_table", &flux::Channel::Refused::holder_table)
-    .def_ro("not_ready", &flux::Channel::Refused::not_ready)
     .def_ro("contended", &flux::Channel::Refused::contended)
     .def_ro("bad_frame", &flux::Channel::Refused::bad_frame)
     .def_ro("no_owner_file", &flux::Channel::Refused::no_owner_file)
@@ -1327,7 +1322,6 @@ NB_MODULE(_flux, m)
     .def("__repr__", [](const flux::Channel::Refused & r) {
       return "Refused(max_borrow=" + std::to_string(r.max_borrow) +
              ", holder_table=" + std::to_string(r.holder_table) +
-             ", not_ready=" + std::to_string(r.not_ready) +
              ", contended=" + std::to_string(r.contended) +
              ", bad_frame=" + std::to_string(r.bad_frame) +
              ", no_owner_file=" + std::to_string(r.no_owner_file) +
@@ -1380,30 +1374,26 @@ NB_MODULE(_flux, m)
       "__init__",
       [](
         flux::QoS * self, std::uint32_t depth, const flux::Durability & durability,
-        std::uint32_t max_borrow, flux::Reliability reliability) {
-        flux::QoS q;
-        q.depth = depth;
-        q.durability = durability;
-        q.max_borrow = max_borrow;
-        q.reliability = reliability;
-        q.validate();  // ValueError here rather than a surprise at the first take
+        std::uint32_t max_borrow) {
+        flux::QoS q(depth);
+        q.transient_local(durability.replay).max_borrow(max_borrow);
+        q.validate();  // every field is in hand here, so the two-field check need not wait
         new (self) flux::QoS(q);
       },
       nb::arg("depth") = 1u, nb::arg("durability") = flux::Durability::Volatile(),
-      nb::arg("max_borrow") = 2u, nb::arg("reliability") = flux::Reliability::BestEffort,
+      nb::arg("max_borrow") = 2u,
       "Consumer QoS. depth: frames this subscription may fall behind the newest (1 = newest "
       "only). durability: Volatile() or TransientLocal(n) for the backlog on attach. "
-      "max_borrow: views held at once. reliability: BEST_EFFORT only.")
-    .def_ro("depth", &flux::QoS::depth)
-    .def_ro("durability", &flux::QoS::durability)
-    .def_ro("max_borrow", &flux::QoS::max_borrow)
-    .def_ro("reliability", &flux::QoS::reliability)
+      "max_borrow: views held at once. Delivery is always best-effort.")
+    .def_prop_ro("depth", [](const flux::QoS & q) { return q.depth(); })
+    .def_prop_ro("durability", [](const flux::QoS & q) { return q.durability(); })
+    .def_prop_ro("max_borrow", [](const flux::QoS & q) { return q.max_borrow(); })
     .def("__repr__", [](const flux::QoS & q) {
-      return "QoS(depth=" + std::to_string(q.depth) + ", durability=" +
-             (q.durability.is_volatile()
+      return "QoS(depth=" + std::to_string(q.depth()) + ", durability=" +
+             (q.durability().is_volatile()
                 ? std::string("Volatile()")
-                : "TransientLocal(" + std::to_string(q.durability.replay) + ")") +
-             ", max_borrow=" + std::to_string(q.max_borrow) + ")";
+                : "TransientLocal(" + std::to_string(q.durability().replay) + ")") +
+             ", max_borrow=" + std::to_string(q.max_borrow()) + ")";
     });
 
   nb::class_<Loan>(m, "Loan")
@@ -1413,9 +1403,9 @@ NB_MODULE(_flux, m)
       "Do not write after commit(): the frame is then live and may be borrowed by readers.")
     .def(
       "commit", &Loan::commit, nb::arg("nbytes") = nb::none(),
-      "Publish the bytes written into array() with no copy. Returns a flux.Published: Ok, "
-      "Backpressure (dropped, a rate), or a fault; flux.faulted(p) is the one check. Truthy "
-      "only for Ok, so `if not loan.commit()` still reads. nbytes publishes only the first "
+      "Publish the bytes written into array() with no copy. Returns a flux.Published: OK, "
+      "BACKPRESSURE (dropped, a rate), or a fault; flux.faulted(p) is the one check. Truthy "
+      "only for OK, so `if not loan.commit()` still reads. nbytes publishes only the first "
       "nbytes of a 1-D loan. A generated adapter uses that, since it loans the whole slot and "
       "sizes the frame as it builds it.")
     .def(
@@ -1500,9 +1490,11 @@ NB_MODULE(_flux, m)
     .def(
       "publish", &Publisher::publish, nb::arg("array"),
       "Copy a C-contiguous numpy array into the next free slot (1-copy). Returns a "
-      "flux.Published: Ok, or Backpressure when every slot is currently borrowed (frame dropped; "
-      "delivery is best-effort). Truthy only for Ok. Raises ValueError before it gets that far "
-      "if the array exceeds slot_size, is on a device, or the topic is not an absolute name.")
+      "flux.Published: OK, BACKPRESSURE when every slot is currently borrowed (frame dropped; "
+      "delivery is best-effort), or FENCE_FAILED when the declared stream cannot be waited on. "
+      "Truthy only for OK. Raises ValueError before it gets that far if the array is on a "
+      "device, the channel's slots are GPU memory, the rank exceeds 8, or the array exceeds "
+      "slot_size.")
     .def(
       "loan",
       [](nb::handle self, nb::object shape, nb::handle dtype) {
@@ -1574,7 +1566,12 @@ NB_MODULE(_flux, m)
       "forever). Near-zero CPU. Returns None on timeout. Prefer this over polling take().")
     .def_prop_ro(
       "lost", &Subscription::lost,
-      "Frames the last take() never delivered: lapped by the ring, or dropped by qos.depth.")
+      "Frames never delivered since this subscription joined the stream: lapped by the ring, or "
+      "dropped by qos.depth. Cumulative, like the DDS sample-lost status; diff it for a rate.")
+    .def_prop_ro(
+      "attach_generation", &Subscription::attach_generation,
+      "Changes on every re-attach, where lost restarts at 0. Diff lost only between two samples "
+      "with the same generation.")
     .def_prop_ro(
       "can_borrow", &Subscription::can_borrow,
       "False once max_borrow views are held. A take() that returned None with this False is "
@@ -1615,8 +1612,7 @@ NB_MODULE(_flux, m)
 
   nb::class_<Executor>(m, "Executor", nb::type_slots(kExecutorSlots))
     .def(
-      nb::init<unsigned, std::int64_t>(), nb::arg("max_channels") = 32u,
-      nb::arg("poll_tick_ns") = 2'000'000LL,
+      nb::init<std::int64_t>(), nb::arg("poll_tick_ns") = 2'000'000LL,
       "Wait on many Subscriptions with one blocking syscall and dispatch a callback per frame. "
       "On Linux 6.7+ every channel's wake word is armed in a single io_uring (no extra threads); "
       "on older kernels it falls back to a bounded poll tick (poll_tick_ns). Check "
@@ -1629,7 +1625,8 @@ NB_MODULE(_flux, m)
       "subscription's QoS: depth=1 delivers the newest frame per wake, "
       "depth=N drains up to N in publish order. The callback runs on the spin thread; do not "
       "retain the view past the call unless max_borrow allows it. priority orders the visit "
-      "within one dispatch pass, higher first, ties in registration order; it does not preempt "
+      "within one dispatch pass, higher first, ties taking turns a frame at a time; it does not "
+      "preempt "
       "a callback that is already running.")
     .def(
       "spin_once", &Executor::spin_once, nb::arg("timeout_ns") = -1,
@@ -1677,36 +1674,36 @@ NB_MODULE(_flux, m)
       "waking the spin thread through a control eventfd.")
     .def("__len__", &Executor::size);
 
-  nb::class_<flux::EndpointView>(m, "Endpoint", "One live process's endpoint on a channel.")
-    .def_prop_ro(
-      "pid", [](const flux::EndpointView & e) { return e.owner.pid; },
-      "Pid of the process holding this endpoint.")
-    .def_prop_ro(
-      "starttime", [](const flux::EndpointView & e) { return e.owner.starttime; },
-      "Process start time, which is what makes the pid safe to compare across pid reuse.")
+  nb::class_<flux::OwnerId>(m, "OwnerId", "A process, named so that pid reuse cannot alias it.")
+    .def_ro("pid", &flux::OwnerId::pid, "Pid of the process.")
     .def_ro(
-      "label", &flux::EndpointView::label,
+      "starttime", &flux::OwnerId::starttime,
+      "Process start time, which is what makes the pid safe to compare across pid reuse.");
+
+  nb::class_<flux::Endpoint>(m, "Endpoint", "One live process's endpoint on a channel.")
+    .def_ro("owner", &flux::Endpoint::owner, "The process holding this endpoint.")
+    .def_ro(
+      "label", &flux::Endpoint::label,
       "What the boundary announced. flux_cpp puts the ROS node's fully qualified name "
       "here; empty when nothing was announced.")
     .def_ro(
-      "publisher", &flux::EndpointView::publisher,
+      "publisher", &flux::Endpoint::publisher,
       "True for a publisher, False for a "
       "subscriber.");
 
-  nb::class_<flux::TopicView>(m, "Topic", "One flux channel as enumeration sees it.")
+  nb::class_<flux::Topic>(m, "Topic", "One flux channel as enumeration sees it.")
     .def_ro(
-      "signpost", &flux::TopicView::signpost,
+      "signpost", &flux::Topic::signpost,
       "The channel's fixed /dev/shm name. The identity everything else joins on.")
-    .def_ro("domain", &flux::TopicView::domain, "The domain the name is under.")
-    .def_ro("key", &flux::TopicView::key, "The channel key.")
-    .def_ro("fingerprint", &flux::TopicView::fingerprint, "The schema fingerprint.")
+    .def_ro("domain", &flux::Topic::domain, "The domain the name is under.")
+    .def_ro("key", &flux::Topic::key, "The channel key.")
+    .def_ro("fingerprint", &flux::Topic::fingerprint, "The schema fingerprint.")
     .def_ro(
-      "key_exact", &flux::TopicView::key_exact,
+      "key_exact", &flux::Topic::key_exact,
       "False when `key` was read back out of the name instead of from a live "
       "participant, in which case its punctuation is the name's, not the key's.")
     .def_ro(
-      "endpoints", &flux::TopicView::endpoints,
-      "Endpoints held by processes that are still alive.");
+      "endpoints", &flux::Topic::endpoints, "Endpoints held by processes that are still alive.");
 
   nb::class_<flux::ChannelStats>(
     m, "ChannelStats", "What a channel's current segment reports, read without attaching.")
@@ -1729,13 +1726,18 @@ NB_MODULE(_flux, m)
     .def_ro("waiters", &flux::ChannelStats::waiters, "Subscribers parked on the wake gate.");
 
   m.def(
+    "canonical_domain", &flux::canonical_domain, nb::arg("raw"),
+    "The canonical form of a domain: a plain decimal integer in [0, 2^32), without leading "
+    "zeros, so \"007\" and \"7\" are one domain. Anything else raises ValueError.");
+
+  m.def(
     "resolve_domain",
     [](std::optional<std::string> domain_env) {
       return domain_env.has_value() ? flux::resolve_domain(domain_env->c_str())
                                     : flux::resolve_domain(nullptr);
     },
     nb::arg("domain_env").none() = flux::kDefaultDomainEnv,
-    "Resolve a domain from the environment, now: FLUX_DOMAIN if set, else the integer in "
+    "Resolve a domain from the environment, now: the integer in FLUX_DOMAIN if set, else in "
     "`domain_env` if that names a set variable, else \"0\". Pass None to opt out of the "
     "inherited variable entirely. This reads the environment on every call, so it is a query "
     "rather than the answer names are built from; process_domain() is that.");
@@ -1759,11 +1761,13 @@ NB_MODULE(_flux, m)
     "read_channel_stats", &flux::read_channel_stats, nb::arg("signpost"),
     "Read a channel's current segment without attaching to it. Takes no lock and no borrow, so "
     "it perturbs nothing and no publisher or subscriber can tell it happened. Every field is "
-    "zero and `live` is False when no publisher has a segment up.");
+    "zero and `live` is False when no publisher has a segment up. Creates nothing. Raises "
+    "RuntimeError when the name exists but cannot be read (a permission, a malformed name).");
 
   m.def(
     "enumerate_topics", &flux::enumerate_topics,
-    "Every flux channel visible in /dev/shm right now, with the endpoints of every process "
+    "Every flux channel in /dev/shm this process can read right now, with the endpoints of every "
+    "process "
     "still holding its owner lock. A snapshot taken by reading files: there is no daemon and "
     "no registry, and nothing here is a subscription. Reports; never unlinks. Costs one open "
     "per name, so it belongs in tooling rather than a loop.");

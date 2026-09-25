@@ -3,8 +3,10 @@
 #include "flux/owner.hpp"
 #include "support/frame_id.hpp"
 
+#include <dirent.h>
 #include <gtest/gtest.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -133,6 +135,91 @@ TEST(CrashReclaim, DeadWriterStuckSlotIsRecovered)
   ::shm_unlink(name.c_str());
 }
 
+// A forked child that inherits a publisher that already wrote stamps its claims with its own
+// identity, not the parent's. With the parent's, the survivor probing a dead child's claim found
+// itself alive and never recovered the slot.
+TEST(CrashReclaim, AForkedChildClaimsUnderItsOwnIdentity)
+{
+  const std::uint64_t fp = 0xC0FFE4u;
+  const std::string name = flux::segment_name(uniq("/flux_fork_identity_test"), fp);
+  ::shm_unlink(name.c_str());
+  flux::Channel pub = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/1, fp);
+  std::vector<std::byte> buf(64, std::byte{0xAB});
+  ASSERT_EQ(publish_id(pub, buf.data(), buf.size(), 1), flux::Published::Ok);
+
+  int up[2];
+  ASSERT_EQ(::pipe(up), 0);
+  pid_t pid = ::fork();
+  ASSERT_GE(pid, 0);
+  if (pid == 0) {
+    flux::WriteSlot ws = pub.loan();
+    flux::OwnerId id = ws ? flux::OwnerFile::self() : flux::OwnerId{};
+    [[maybe_unused]] ssize_t w = ::write(up[1], &id, sizeof(id));
+    _exit(0);  // dies holding the claim
+  }
+  ::close(up[1]);
+  flux::OwnerId child_id{};
+  ASSERT_EQ(::read(up[0], &child_id, sizeof(child_id)), static_cast<ssize_t>(sizeof(child_id)));
+  ::close(up[0]);
+  ASSERT_NE(child_id.pid, 0u);
+  int status = 0;
+  ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+
+  EXPECT_EQ(publish_id(pub, buf.data(), buf.size(), 2), flux::Published::Ok);
+
+  ::shm_unlink(flux::owner_file_name(child_id).c_str());
+  ::shm_unlink(name.c_str());
+}
+
+// A child that cannot set up its identity (here: out of fds) has no way to be recovered after a
+// crash. It gives the claim back and drops the frame instead of claiming anonymously, which lost
+// the slot for good.
+TEST(CrashReclaim, AClaimWithNoIdentityIsGivenBack)
+{
+  const std::uint64_t fp = 0xC0FFE5u;
+  const std::string name = flux::segment_name(uniq("/flux_no_identity_test"), fp);
+  ::shm_unlink(name.c_str());
+  flux::Channel pub = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/1, fp);
+
+  int up[2];
+  ASSERT_EQ(::pipe(up), 0);
+  pid_t pid = ::fork();
+  ASSERT_GE(pid, 0);
+  if (pid == 0) {
+    const rlimit lim{64, 64};
+    ::setrlimit(RLIMIT_NOFILE, &lim);
+    while (::dup(0) >= 0) {
+    }
+    const std::uint64_t dropped = pub.dropped();
+    flux::WriteSlot ws = pub.loan();
+    const char r[2] = {static_cast<char>(ws.valid()), static_cast<char>(pub.dropped() - dropped)};
+    [[maybe_unused]] ssize_t w = ::write(up[1], r, sizeof(r));
+    _exit(0);  // dies holding whatever it claimed
+  }
+  ::close(up[1]);
+  char r[2] = {1, 0};
+  ASSERT_EQ(::read(up[0], r, sizeof(r)), 2);
+  ::close(up[0]);
+  int status = 0;
+  ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+  EXPECT_EQ(r[0], 0) << "claimed a slot with no identity";
+  EXPECT_EQ(r[1], 1) << "the refused loan is a dropped frame";
+
+  std::vector<std::byte> buf(64, std::byte{0xAB});
+  EXPECT_EQ(publish_id(pub, buf.data(), buf.size(), 1), flux::Published::Ok);
+  // The child's owner file, if it got as far as creating one.
+  const std::string owner = "flux.owner." + std::to_string(pid) + ".";
+  if (DIR * d = ::opendir("/dev/shm")) {
+    while (dirent * e = ::readdir(d)) {
+      if (std::strncmp(e->d_name, owner.c_str(), owner.size()) == 0) {
+        ::shm_unlink((std::string("/") + e->d_name).c_str());
+      }
+    }
+    ::closedir(d);
+  }
+  ::shm_unlink(name.c_str());
+}
+
 // Concurrent reclaimers must not double-subtract a dead holder's count.
 // With multiple publishers, several can be starved at once and all run reclaim over the same dead
 // holder table. If two subtract the same entry's count from the slot refcount, the u32 underflows
@@ -153,7 +240,7 @@ TEST(CrashReclaim, ConcurrentReclaimersDoNotUnderflow)
   flux::Channel pubA = flux::Channel::create(name, kSlotSize, 1, fp);  // reclaimer 1
   flux::Channel pubB = flux::Channel::create(name, kSlotSize, 1, fp);  // reclaimer 2 (co-publisher)
   std::vector<std::byte> buf(kSlotSize, std::byte{1});
-  const auto pub_once = [&](flux::Channel & p) { publish_id(p, buf.data(), buf.size(), 1); };
+  const auto pub_once = [&](flux::Channel & p) { (void)publish_id(p, buf.data(), buf.size(), 1); };
 
   for (unsigned r = 0; r < rounds; ++r) {
     // Fresh, free slot with a committed frame at the start of the round.
@@ -209,7 +296,7 @@ TEST(CrashReclaim, ConcurrentReclaimersDoNotUnderflow)
       while (!start.load(std::memory_order_acquire)) {
       }
       // starved -> reclaim_dead on the same entries
-      for (int i = 0; i < 8; ++i) publish_id(p, src.data(), src.size(), 1);
+      for (int i = 0; i < 8; ++i) (void)publish_id(p, src.data(), src.size(), 1);
     };
     std::thread t1([&] { racer(pubA); });
     std::thread t2([&] { racer(pubB); });

@@ -116,7 +116,13 @@ public:
   }
 
   Desc desc(std::size_t off) const noexcept { return get<Desc>(off); }
-  std::size_t len(std::size_t off) const noexcept { return desc(off).len; }
+  // Element count of a variable array. 0 (and bad()) if its `esize`-byte elements do not fit, so
+  // a loop bounded by it never indexes past the frame.
+  std::size_t len(std::size_t off, std::size_t esize, std::size_t align) const noexcept
+  {
+    const Desc d = desc(off);
+    return region(d.off, d.len, esize, align) ? d.len : 0;
+  }
 
   // Elements of a variable array, aliasing the frame. Empty (and bad()) if the descriptor does
   // not fit or points somewhere a T cannot be read from.
@@ -202,10 +208,6 @@ public:
   explicit operator bool() const noexcept { return !bad_; }
   std::size_t size() const noexcept { return used_; }  // bytes to commit
   std::byte * base() const noexcept { return base_; }
-
-  // Latch failure from a generated adapter's own validation (a fixed-N array given the wrong
-  // length), so commit() refuses exactly as it does for an out-of-bounds write.
-  void poison() noexcept { bad_ = true; }
 
   template <class T>
   void put(std::size_t off, const T & v) noexcept

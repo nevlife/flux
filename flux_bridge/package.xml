@@ -12,6 +12,7 @@
   <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
   <license>MIT</license>
 
+  <exec_depend>flux_gen</exec_depend>
   <exec_depend>flux_py</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>ros2cli</exec_depend>

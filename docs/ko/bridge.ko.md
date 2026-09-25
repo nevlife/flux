@@ -13,11 +13,11 @@ ros2 run flux_bridge bridge
 매초(`--poll`) 한 번 지나간다.
 
 1. `flux.enumerate_topics()`. 자기 도메인이고, 발행자가 살아 있고, 키가 정확한 채널만 남긴다.
-2. 채널의 fingerprint로 설치된 어댑터를 찾는다. 어댑터가 없는 채널은 한 번 로그를 남기고 건너뛴다.
+2. 채널의 fingerprint로 설치된 어댑터를 찾는다. 어댑터가 없는 채널은 한 번 로그를 남기고 건너뛴다. 설치돼 있지만 import가 실패하는 어댑터 모듈(예: 옛 `flux_gen`으로 생성한 것)은 에러를 담은 `flux: skipped adapter module` 한 줄을 stderr에 남기고 건너뛴다.
 3. ROS graph에 `get_subscriptions_info_by_topic()`을 묻는다. bridge 자신의 노드는 뺀다. 외부 구독자가 하나라도 있으면 그 채널은 필요한 채널이다.
 4. 필요한데 relay가 없는 채널은 relay를 시작하고, 더는 필요하지 않거나 발행자가 죽은 채널의 relay는 멈춘다.
 
-relay는 스레드 하나다. `flux.Subscription(depth=1, max_borrow=1)`에 `take_blocking()`, `frame_to_msg()`로 ROS 메시지 객체를 만들고, 같은 이름의 rclpy publisher로 `publish()`한다. 뷰는 publish 전에 놓는다. 그래서 프레임 경로는 flux 슬롯 -> 복사 1회 -> CDR 직렬화 -> DDS이고, 이것이 flux 채널에 stock 도구를 쓰는 대가다. 타입은 `flux_gen`이 생성한 어댑터(프레임은 `<pkg>_flux.<name>`, 메시지 객체는 `<pkg>_flux.<name>_ros`)에서 오므로, bridge가 도는 곳에 어댑터 패키지가 설치돼 있어야 한다.
+relay는 스레드 하나다. `flux.Subscription(depth=1, max_borrow=1)`에 `take_blocking()`, `frame_to_msg()`로 ROS 메시지 객체를 만들고, 같은 이름의 rclpy publisher로 `publish()`한다. 뷰는 publish 전에 놓는다. 그래서 프레임 경로는 flux 슬롯 -> 복사 1회 -> CDR 직렬화 -> DDS이고, 이것이 flux 채널에 stock 도구를 쓰는 대가다. 타입은 `flux_gen`이 생성한 어댑터(프레임은 `<pkg>_flux.<name>`, 메시지 객체는 `<pkg>_flux.<name>_ros`)에서 오므로, bridge가 도는 곳에 어댑터 패키지가 설치돼 있어야 한다. `frame_to_msg()`가 스키마대로 읽지 못하는 프레임은 건너뛰고 세며, relay는 다음 프레임을 이어서 중계한다. relay가 멈출 때 남기는 로그 한 줄이 그 개수를 알려 준다.
 
 | 항목 | 값 |
 | --- | --- |

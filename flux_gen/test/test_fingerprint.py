@@ -76,7 +76,6 @@ def test_canonical_carries_the_schema_version(reg):
     # The version prefix is what lets an incompatible encoding change show up as a mismatch
     # instead of as a coincidentally equal digest.
     leaves = flatten_message(reg["Pose"], reg).leaves
-    assert canonical(leaves).startswith(f"v{FINGERPRINT_SCHEMA_VERSION};")
     assert canonical(leaves, "p/M").startswith(f"v{FINGERPRINT_SCHEMA_VERSION}#p/M;")
     assert FINGERPRINT_SCHEMA_VERSION == 5
 
@@ -124,8 +123,8 @@ def test_jagged_element_structure_differentiates(reg):
 
     tensor_list = Message("TL", [Field("items", "Tensor", ArrayKind.DYNAMIC)])   # {u32[], f32[]}
     labeled_list = Message("LL", [Field("items", "Labeled", ArrayKind.DYNAMIC)])  # {string, f64[]}
-    a = fingerprint(flatten_message(tensor_list, reg).leaves)
-    b = fingerprint(flatten_message(labeled_list, reg).leaves)
+    a = fingerprint(flatten_message(tensor_list, reg).leaves, "p/M")
+    b = fingerprint(flatten_message(labeled_list, reg).leaves, "p/M")
     assert a != b
 
 
@@ -138,9 +137,9 @@ def test_jagged_fixed_size_differentiates(reg):
     n2 = Message("N2", [Field("items", "Labeled", ArrayKind.FIXED, 2)])
     n3 = Message("N3", [Field("items", "Labeled", ArrayKind.FIXED, 3)])
     fps = {
-        fingerprint(flatten_message(dyn, reg).leaves),
-        fingerprint(flatten_message(n2, reg).leaves),
-        fingerprint(flatten_message(n3, reg).leaves),
+        fingerprint(flatten_message(dyn, reg).leaves, "p/M"),
+        fingerprint(flatten_message(n2, reg).leaves, "p/M"),
+        fingerprint(flatten_message(n3, reg).leaves, "p/M"),
     }
     assert len(fps) == 3
 
@@ -156,9 +155,9 @@ def test_jagged_dynamic_does_not_collide_with_n_of_one(reg):
     b = Message("B", [Field("items", "Labeled", ArrayKind.FIXED, 1)])
     fa = flatten_message(a, reg).leaves
     fb = flatten_message(b, reg).leaves
-    assert canonical(fa) == "v5;jagged:-:0{string:-:1,column:f64:0}"
-    assert canonical(fb) == "v5;jagged:-:1{string:-:1,column:f64:0}"
-    assert fingerprint(fa) != fingerprint(fb)
+    assert canonical(fa, "p/M") == "v5#p/M;jagged:-:0{string:-:1,column:f64:0}"
+    assert canonical(fb, "p/M") == "v5#p/M;jagged:-:1{string:-:1,column:f64:0}"
+    assert fingerprint(fa, "p/M") != fingerprint(fb, "p/M")
 
 
 def test_fixed_and_dynamic_string_arrays_differ(reg):
@@ -168,9 +167,11 @@ def test_fixed_and_dynamic_string_arrays_differ(reg):
 
     one = Message("One", [Field("tags", "string", ArrayKind.FIXED, 1)])
     dyn = Message("Dyn", [Field("tags", "string", ArrayKind.DYNAMIC)])
-    assert canonical(flatten_message(one, reg).leaves) == "v5;sarray:-:1"
-    assert canonical(flatten_message(dyn, reg).leaves) == "v5;sarray:-:0"
-    assert fingerprint(flatten_message(one, reg).leaves) != fingerprint(flatten_message(dyn, reg).leaves)
+    fo = flatten_message(one, reg).leaves
+    fd = flatten_message(dyn, reg).leaves
+    assert canonical(fo, "p/M") == "v5#p/M;sarray:-:1"
+    assert canonical(fd, "p/M") == "v5#p/M;sarray:-:0"
+    assert fingerprint(fo, "p/M") != fingerprint(fd, "p/M")
 
 
 # --- corpus functionality ---------------------------------------------------------------------
@@ -238,11 +239,10 @@ def test_the_layout_fingerprint_is_a_function_of_the_shape_across_the_ros_corpus
     # jagged and string arrays both collapsed to one token once, and each was found by someone
     # thinking of the pair rather than by the corpus.
     #
-    # The layout-only digest is the one under test. It is what a caller with raw arrays and no
-    # .msg gets, so it carries no type name to separate two schemas that happen to flatten alike.
+    # Every schema gets the same type name here, so only the layout can separate them.
     buckets = {}
     for key, (flat, shape) in _corpus().items():
-        buckets.setdefault(fingerprint(flat.leaves), {}).setdefault(shape, []).append(key)
+        buckets.setdefault(fingerprint(flat.leaves, "p/M"), {}).setdefault(shape, []).append(key)
 
     collisions = {
         digest: list(by_shape.values())

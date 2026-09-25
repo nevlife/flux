@@ -15,15 +15,15 @@ flux topic hz /cam/left              # 발행 주기
 flux domain list                      # 이 호스트의 domain과 내 것
 ```
 
-`--domain`으로 볼 domain을 고르고, `--all-domains`으로 전부 본다. 기본값은 노드가 쓰는 것과 같은 규칙으로 정한다(`FLUX_DOMAIN`, 없으면 `ROS_DOMAIN_ID`, 없으면 `0`). 두 플래그는 verb에 붙는다 — `flux topic list --all-domains`이 사람이 타이핑하는 자리다.
+`--domain`으로 볼 domain을 고르고, `--all-domains`으로 전부 본다. 기본값은 노드가 쓰는 것과 같은 규칙으로 정한다(`FLUX_DOMAIN`, 없으면 `ROS_DOMAIN_ID`, 없으면 `0`). `--domain`은 정수를 받아 노드와 같은 방식으로 렌더하므로 `007`은 domain `7`을 본다. 그 밖의 값은 exit code 2로 거절한다. 두 플래그는 verb에 붙는다 — `flux topic list --all-domains`이 사람이 타이핑하는 자리다.
 
 ## list
 
 ```text
 CHANNEL        DOMAIN  SEGMENT  ENDPOINTS
 -------------  -----  -------  ------------
-/cam/left      lab    up       1 pub, 1 sub
-/lidar/points  lab    down     1 sub
+/cam/left      12     up       1 pub, 1 sub
+/lidar/points  12     down     1 sub
 ```
 
 `SEGMENT`가 `down`인 것은 고장이 아니다. signpost는 영구라 발행자가 없어도 이름은 남는다.
@@ -36,9 +36,9 @@ CHANNEL        DOMAIN  SEGMENT  ENDPOINTS
 
 ```text
 channel      /cam/left
-domain        lab
+domain        12
 fingerprint  0x0000000000000abc
-signpost     /flux.v7.slab..cam.left.0000000000000abc
+signpost     /flux.v7.s12..cam.left.0000000000000abc
 segment      up, epoch 1
 slots        8 x 1 MiB
 storage      host

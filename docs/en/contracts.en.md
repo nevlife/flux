@@ -33,6 +33,18 @@ C++ and Python call the same engine (`flux_core`), but different code calls it. 
 | X-023 | spin refuses when the inputs of one synchronizer span several threads | `SyncGroup.InputsInDifferentGroupsAreRefused` | `test_partitioned_refuses_sync_inputs_split_across_groups` |
 | X-024 | A synchronizer input that no thread runs is refused | `SyncGroup.AnUnassignedFluxInputIsRefused` | `test_partitioned_refuses_an_unassigned_flux_input` |
 | X-025 | An input whose placement cannot be determined is counted, not judged | `SyncGroup.AnUnplaceableInputIsCountedNotJudged` | `test_an_unplaceable_input_is_counted_not_judged` |
+| X-026 | A refused `MemoryPolicy` on a subscription throws instead of leaving it unattached | `PullSurface.ARefusedMemoryPolicyThrowsInsteadOfLookingUnattached` | `test_a_refused_lock_on_a_subscription_raises_rather_than_looking_unattached` |
+| X-027 | `spin_once` while the ROS executor's `spin` runs is refused, and the spin keeps running | `FluxExecutor.ASpinOnceDuringASpinIsRefusedAndLeavesTheSpinRunning` | `test_spin_once_rejected_while_spinning` |
+| X-028 | A `stop` before the ROS executor's `spin` ends it and is cleared on the way out | `FluxExecutor.AStopBeforeSpinEndsItAndIsClearedOnTheWayOut` | `test_a_stop_before_spin_ends_it_and_is_cleared_on_the_way_out` |
+| X-029 | A `stop` before `PartitionedExecutor`'s `spin` ends it and is cleared on the way out | `PartitionedExecutor.AStopBeforeSpinEndsItAndIsClearedOnTheWayOut` | `test_a_stop_before_a_partitioned_spin_ends_it_and_is_cleared_on_the_way_out` |
+| X-030 | The ROS executor's `spin_once` returns on the first work of either transport | `FluxExecutor.ASpinOnceReturnsOnTheFirstWorkOfEitherTransport` | `test_spin_once_returns_on_the_first_work_of_either_transport` |
+| X-031 | A domain is a plain integer rendered without leading zeros, and anything else is refused | `DomainTest.CanonicalRendersTheParsedInteger` | `test_a_domain_is_a_canonical_integer` |
+| X-032 | A Reentrant group handed to `PartitionedExecutor` is refused at the call that hands it over | `PartitionedExecutor.AReentrantGroupIsRefusedAtAdd` | `test_reentrant_group_is_refused` |
+| X-033 | An `on_thread_start` hook for no unit is refused at the call | `PartitionedExecutor.OnThreadStartRejects` | `test_a_hook_for_no_unit_is_refused_at_the_call` |
+| X-034 | A live publisher's segment that cannot be opened throws instead of leaving the subscription unattached | `PullSurface.ASegmentThatCannotBeOpenedWhileItsPublisherLivesThrows` | `test_a_segment_that_cannot_be_opened_while_its_publisher_lives_raises` |
+| X-035 | A signpost that exists but cannot be read throws instead of reading as no publisher | `PullSurface.ASignpostThatCannotBeReadThrows` | `test_a_signpost_that_cannot_be_read_raises` |
+| X-036 | A topic past 185 characters is refused at construction instead of cut | `PullSurface.ATopicPastTheNameLimitIsRefused` | `test_a_key_past_the_name_limit_is_refused` |
+| X-037 | A 0-d array is one element | `Channel.AZeroDimensionalFrameCarriesOneElement` | `test_a_zero_dimensional_array_round_trips` |
 
 ## 2. What only one side keeps
 
@@ -54,6 +66,13 @@ A row holds only the name of the divergence and the tests on both sides. The rea
 | S-002 | Relative topic names | `-` | `test_relative_topic_rejected` |
 | S-003 | A synchronizer mixing flux inputs and DDS inputs under `PartitionedExecutor` | `SyncGroup.AMixedGraphInOneGroupIsAccepted` | `test_partitioned_refuses_a_mixed_flux_and_dds_synchronizer` |
 | S-004 | The unit of a `PartitionedExecutor` `on_thread_start` hook | `PartitionedExecutor.OnThreadStartRunsOnTheChildBeforeItsFirstCallback` | `test_a_node_hook_runs_on_the_node_thread` |
+| S-005 | How a QoS is built, enum spelling, and where a subscription takes its QoS | `Channel.QosSetterRejectsAValueWrongOnItsOwn` | `test_unhonourable_qos_is_rejected` |
+| S-006 | `flux.ros.Executor.close()` | `-` | `test_stop_is_idempotent_and_close_detaches` |
+| S-007 | A publish argument wrong on its own: oversize, rank above 8, `commit(nbytes)` misuse | `Channel.OversizedPublishRejected` | `test_oversized_publish_rejected` |
+| S-008 | `add_ros_node` with a node already added | `FluxExecutor.AddingTheSameNodeTwiceThrowsAsRclcppDoes` | `test_add_ros_node_is_idempotent` |
+| S-009 | The error type for a subscription with no callback | `FluxExecutor.AddingASubscriptionWithNoCallbackIsRefused` | `test_adding_a_subscription_with_no_callback_is_refused` |
+| S-010 | How `flux.ros.Executor` merges the two transports, and the direct-loop calls (`dispatch`, `wait_for_work`, `pump_ros`, budgets) it therefore lacks | `FluxExecutor.TheInheritedSpinOnceServicesRosEntities` | `test_spin_once_returns_on_the_first_work_of_either_transport` |
+| S-011 | Subscribing a message_filters `Subscriber` late (default construction, `subscribe`, `unsubscribe`) | `MessageFilters.SubscribesLate` | `-` |
 
 S-001 comes from dGPU slots being VRAM. Accepting a host array would require an H2D copy, and `flux_core` has no copy primitive, so both sides refuse. What diverges is the form of the refusal. C++ returns `Published` and Python raises.
 
@@ -62,5 +81,19 @@ S-002 comes from core not interpreting the channel key as a ROS topic. `flux_cpp
 S-003 comes from rclpy not exposing `add_callback_group`. C++ can put flux subscriptions and ROS subscriptions together in that group and place it on one thread. Python has no means to move ROS entities as a group, so DDS inputs stay on the node thread. So the same graph passes in C++ and is refused in Python. The place to run that graph in Python is `flux.ros.Executor`. There, X-022 holds.
 
 S-004 diverges in the hook's unit. Both sides run the hook on the unit's child before its first callback, turn an exception from it into the `spin()` error, and refuse a second hook for one unit and a hook for a unit no child serves. C++ takes a callback group. Python also takes a node, from the same partition as S-003 (flux by group, ROS by node).
+
+S-005 follows ROS, which is not symmetric either. Each side is written the way ROS is written in that language. C++ chains setters on `flux::QoS` as on `rclcpp::QoS`, spells enum values `Cpu` in CamelCase as rclcpp does, and takes the QoS before the callback as `create_subscription(topic, qos, callback)` does. Python takes QoS keywords as `QoSProfile` does, spells enum values `CPU` in upper case as rclpy does, and takes the callback before keywords as `create_subscription(type, topic, callback, qos)` does. Chained setters cannot check two fields at once, so C++ checks `n > depth` where the QoS is used. Python checks it in `flux.QoS(...)`.
+
+S-006 comes from garbage collection. `flux.ros.Executor` adds its nodes to an rclpy executor, and a node can belong to one rclpy executor at a time, so `close()` removes them at a point the caller chooses instead of whenever the object is collected. C++ does the same in the destructor, which runs at a known point, so it has no `close()`. `PartitionedExecutor` has nothing to release after `spin()` returns and has no `close()` in either language.
+
+S-007 follows each language's convention for a caller's mistake. The C++ publish path is `noexcept` (D-065), so it returns `Published::TooLarge`, and `Published` is `[[nodiscard]]`: a call that drops the result is a compile warning. Python raises `ValueError`, whose message names what was wrong and the path that works. A literal C++ shape longer than 8 is a compile error instead. `Backpressure`, which is not a mistake, is a returned value in both.
+
+S-008 follows each language's ROS executor. rclcpp throws `std::runtime_error` for a node already added to an executor, and rclpy's `add_node` returns quietly for a node it already holds.
+
+S-009 is the same refusal in each language's type. C++ throws `std::invalid_argument`. Python raises `TypeError`, which is what Python raises for a missing callable.
+
+S-010 comes from rclpy. rclpy does not expose the on-new-message callback that C++ hooks into the io_uring, so `flux.ros.Executor` cannot put ROS readiness in the flux ring. A bridge thread waits on the flux side and hands the dispatch to the rclpy spin thread with `create_task`. With no single ring there is no pass a caller could drive by hand, so the direct-loop calls exist only in C++. Python's core `flux.Executor` still has `dispatch` and `wait_for_work` for a flux-only loop.
+
+S-011 follows upstream message_filters, whose C++ `Subscriber` subscribes late and whose Python `Subscriber` does not. The inner subscription is named the upstream way in each language too: `getSubscriber()` in C++, `.sub` in Python.
 
 The C++ `-` in S-002 is not a missing check. The argument of `Channel::create`/`open` is a channel key, not a ROS topic, and core stands without ROS. The refusal lives where `flux::ros::Publisher`/`Subscription` resolve through the node.

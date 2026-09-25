@@ -53,7 +53,7 @@ void doc_write_slot(flux::ros::Publisher & pub)
   flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
   if (w) {
     render_into(w.data(), w.capacity());
-    w.commit();
+    if (const flux::Published p = w.commit(); flux::faulted(p)) report(flux::to_string(p));
   }
   // [doc:/write_slot]
 }
@@ -74,14 +74,12 @@ void doc_raw_subscribe(const rclcpp::Node::SharedPtr & node)
 {
   // [doc:raw_subscribe]
   flux::ros::Subscription sub(
-    *node, "img", flux::kNoSchema,
-    [](const flux::FrameView & v) {
+    *node, "img", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & v) {
       const flux::FrameMeta & m = v.meta();
       if (m.ndim == 3 && m.dtype == flux::DType::U8) {
         use(v.data(), v.size());
       }
-    },
-    flux::QoS{});
+    });
   // [doc:/raw_subscribe]
   sink(sub.attached());
 }

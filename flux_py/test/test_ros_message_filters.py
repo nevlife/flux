@@ -103,14 +103,17 @@ def test_two_flux_inputs_pair_on_the_header_stamp(node, adapters):
 
     left = fmf.Subscriber(node, Stamped, "/pytest/mf/l", qos=flux.QoS(depth=8, max_borrow=32))
     right = fmf.Subscriber(node, Stamped, "/pytest/mf/r", qos=flux.QoS(depth=8, max_borrow=32))
+    # Upstream's accessors, as upstream Python spells them.
+    assert left.getTopic() == "/pytest/mf/l"
+    assert isinstance(left.sub, flux.Subscription)
 
     pairs = []
     sync = upstream.TimeSynchronizer([left, right], 10)
     sync.registerCallback(lambda a, b: pairs.append((a.view().seq, b.view().seq)))
 
     ex = flux.ros.Executor()
-    ex.add_flux(left)
-    ex.add_flux(right)
+    ex.add(left)
+    ex.add(right)
     spin_in_thread(ex, 20_000_000)
     try:
         # Right first, so arrival order and stamp order disagree.
@@ -148,7 +151,7 @@ def test_flux_and_dds_inputs_pair_in_one_synchronizer(node, adapters):
     sync.registerCallback(lambda a, b: pairs.append((a.view().seq, b.source)))
 
     ex = flux.ros.Executor()
-    ex.add_flux(fast)
+    ex.add(fast)
     ex.add_ros_node(node)
     spin_in_thread(ex, 20_000_000)
     try:
@@ -183,7 +186,7 @@ def test_a_queued_frame_outlives_the_callback_that_delivered_it(node, adapters):
     sub.registerCallback(held.append)
 
     ex = flux.ros.Executor()
-    ex.add_flux(sub)
+    ex.add(sub)
     spin_in_thread(ex, 20_000_000)
     try:
         for i in range(3):
@@ -199,22 +202,13 @@ def test_a_queued_frame_outlives_the_callback_that_delivered_it(node, adapters):
     ]
 
 
-# A schema with no Header has no key to synchronize on. C++ stops at compile time; the earliest
-# this language can stop is the first frame, and it must say why rather than pair everything.
-def test_a_schema_without_a_header_is_refused_at_the_first_frame(node, adapters):
+# A schema with no Header has no key to synchronize on. C++ refuses it where the Subscriber is
+# declared (a static_assert); Python refuses it where the Subscriber is constructed, not at the
+# first frame.
+def test_a_schema_without_a_header_is_refused_at_construction(node, adapters):
     _, Bare = adapters
-    fp = Bare.FINGERPRINT__
-    pub = flux.Publisher("/pytest/mf/bare", slot_size=4096, slot_count=4, fingerprint=fp)
-    sub = fmf.Subscriber(node, Bare, "/pytest/mf/bare", qos=flux.QoS(max_borrow=4))
-
-    b = Bare.build__(pub)
-    b.seq = 7
-    b.commit__()
-
-    ex = flux.ros.Executor()
-    ex.add_flux(sub)
     with pytest.raises(TypeError, match="no std_msgs/Header"):
-        ex.spin_once(50_000_000)
+        fmf.Subscriber(node, Bare, "/pytest/mf/bare")
 
 
 # PartitionedExecutor: flux inputs in one group are on one thread, so the graph runs.
@@ -233,8 +227,8 @@ def test_partitioned_accepts_flux_inputs_in_one_group(node, adapters):
 
     group = MutuallyExclusiveCallbackGroup()
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(left, group)
-    ex.add_flux(right, group)
+    ex.add(left, group)
+    ex.add(right, group)
     ex.add_sync_group(left, right)
     spin_in_thread(ex, 20_000_000)
     try:
@@ -256,8 +250,8 @@ def test_partitioned_refuses_sync_inputs_split_across_groups(node, adapters):
     right = fmf.Subscriber(node, Stamped, "/pytest/mf/gr")
 
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(left, MutuallyExclusiveCallbackGroup())
-    ex.add_flux(right, MutuallyExclusiveCallbackGroup())
+    ex.add(left, MutuallyExclusiveCallbackGroup())
+    ex.add(right, MutuallyExclusiveCallbackGroup())
     ex.add_sync_group(left, right)
     with pytest.raises(ValueError, match="spread across threads"):
         ex.spin(20_000_000)
@@ -273,7 +267,7 @@ def test_partitioned_refuses_a_mixed_flux_and_dds_synchronizer(node, adapters):
     slow = upstream.Subscriber(node, Header, "/pytest/mf/mr")
 
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(fast, MutuallyExclusiveCallbackGroup())
+    ex.add(fast, MutuallyExclusiveCallbackGroup())
     ex.add_ros_node(node)
     ex.add_sync_group(fast, slow)
     with pytest.raises(ValueError, match="flux.ros.Executor"):
@@ -288,7 +282,7 @@ def test_partitioned_refuses_an_unassigned_flux_input(node, adapters):
     right = fmf.Subscriber(node, Stamped, "/pytest/mf/ur")
 
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(left, MutuallyExclusiveCallbackGroup())
+    ex.add(left, MutuallyExclusiveCallbackGroup())
     ex.add_sync_group(left, right)
     with pytest.raises(ValueError, match="not assigned to any group"):
         ex.spin(20_000_000)
@@ -303,7 +297,7 @@ def test_an_unplaceable_input_is_counted_not_judged(node, adapters):
 
     group = MutuallyExclusiveCallbackGroup()
     ex = flux.ros.PartitionedExecutor()
-    ex.add_flux(left, group)
+    ex.add(left, group)
     ex.add_sync_group(left, cache)
     spin_in_thread(ex, 20_000_000)
     try:

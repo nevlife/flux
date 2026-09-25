@@ -73,7 +73,7 @@ def test_publish_region_loans_and_commits(example, node):
     again.alloc__x(n)[:] = xs
     again.width = n
     again.label = "front"
-    assert again.commit__() == flux.Published.Ok
+    assert again.commit__() == flux.Published.OK
 
     f = sub.take()
     assert f is not None, "commit() reported success but nothing arrived"

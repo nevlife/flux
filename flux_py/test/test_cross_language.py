@@ -147,7 +147,7 @@ def test_a_cpp_process_reads_what_a_python_process_published(tmp_path):
         assert p.stdout.readline().startswith("signpost ")
         deadline = time.time() + 10
         while time.time() < deadline and p.poll() is None:
-            assert pub.publish(payload) == flux.Published.Ok
+            assert pub.publish(payload) == flux.Published.OK
             time.sleep(0.01)
         out, _ = p.communicate(timeout=5)
     finally:

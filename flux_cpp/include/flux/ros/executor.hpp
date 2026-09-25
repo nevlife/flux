@@ -36,10 +36,7 @@ namespace flux::ros
 class Executor : public rclcpp::Executor
 {
 public:
-  // `max_channels` bounds how many flux subscriptions may be registered; the ring is sized for
-  // them plus the wake fd so one pass arms every wait in a single syscall. add() rejects past it
-  // rather than letting the ring silently drop arms.
-  explicit Executor(unsigned max_channels = 32);
+  Executor();
   ~Executor();
   Executor(const Executor &) = delete;
   Executor & operator=(const Executor &) = delete;
@@ -105,8 +102,7 @@ public:
   void spin_node_all(
     rclcpp::node_interfaces::NodeBaseInterface::SharedPtr node,
     std::chrono::nanoseconds max_duration) FLUX_ROS_OVERRIDE_SINCE_JAZZY;
-  void spin_node_all(
-    std::shared_ptr<rclcpp::Node> node, std::chrono::nanoseconds max_duration)
+  void spin_node_all(std::shared_ptr<rclcpp::Node> node, std::chrono::nanoseconds max_duration)
     FLUX_ROS_OVERRIDE_SINCE_JAZZY;
   rclcpp::FutureReturnCode spin_until_future_complete_impl(
     std::chrono::nanoseconds timeout,
@@ -130,7 +126,8 @@ public:
   void interrupt() noexcept { core_.interrupt(); }
 
   // One pass without looping: deliver ready flux frames, wait up to `timeout_ns` if none were,
-  // then service whatever ROS reports ready. Returns flux callbacks run.
+  // then service whatever ROS reports ready. Returns flux callbacks run. Throws std::logic_error
+  // while spin() runs: both would drive the same ring.
   int spin_once(std::int64_t timeout_ns);
 
   // Deliver every ready flux frame and re-arm, without blocking. Returns the callback count.
@@ -196,6 +193,7 @@ private:
   // the budget must keep the next pass from blocking.
   bool ros_backlog_ = false;
   std::atomic<bool> stop_requested_{false};
+  rclcpp::OnShutdownCallbackHandle on_shutdown_;  // context shutdown ends spin(), as in rclcpp
   // A spin loop owns the entry lists. rclcpp's `spinning` cannot say this: it is that library's
   // cancel mechanism and every ROS pass has to raise it, spin_once included.
   std::atomic<bool> reentry_{false};

@@ -25,7 +25,9 @@ class ServiceSubscriber : public rclcpp::Node
 public:
   ServiceSubscriber()
   : Node("flux_service_sub"),
-    sub_(*this, kTopic, Image::kFingerprint, [this](const flux::FrameView & f) { on_frame(f); })
+    sub_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
+      on_frame(f);
+    })
   {
     service_ = create_service<std_srvs::srv::Trigger>(
       kService, [this](
@@ -68,8 +70,6 @@ int main(int argc, char ** argv)
   flux::ros::Executor ex;
   ex.add(node->subscription());
   ex.add_ros_node(node);
-
-  rclcpp::on_shutdown([&ex]() { ex.stop(); });
 
   RCLCPP_INFO(node->get_logger(), "tick %ld ms", ServiceSubscriber::kTickNs / 1000000);
   ex.spin(ServiceSubscriber::kTickNs);

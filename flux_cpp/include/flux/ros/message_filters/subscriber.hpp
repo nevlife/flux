@@ -5,7 +5,8 @@
 #include "flux/ros/subscription.hpp"
 
 #include <rclcpp/node.hpp>
-#include <rclcpp/time.hpp>
+
+#include <std_msgs/msg/header.hpp>
 
 #include <message_filters/message_traits.h>
 #include <message_filters/simple_filter.h>
@@ -36,7 +37,9 @@ struct StampedFrame
   // that still has to compile) and FrameView is move-only by design: it IS the validated holder.
   // The cost is a second allocation per frame, on a path that already allocates.
   std::shared_ptr<flux::FrameView> frame;
-  rclcpp::Time stamp;
+  // Only the stamp is filled. A std_msgs Header is what upstream's default TimeStamp trait reads,
+  // so no trait specialization is needed, and Python reads the same `header.stamp`.
+  std_msgs::msg::Header header;
 
   typename Adapter::View view() const noexcept { return typename Adapter::View(*frame); }
 };
@@ -86,16 +89,22 @@ public:
 
   ~Subscriber() override = default;
 
-  // Replaces whatever this was subscribed to. The address of this object is what an executor
-  // registered, and that does not move, so re-subscribing under a running executor is safe.
+  // Replaces whatever this was subscribed to. Under a running executor, call it from the spin
+  // thread: the executor reads this object between callbacks, and the new channel's attach
+  // generation tells it to wait there instead.
   void subscribe(rclcpp::Node & node, const std::string & topic, const QoS & qos = QoS{})
   {
     sub_.reset();
-    sub_.emplace(node, topic, Adapter::kFingerprint, Subscription::Callback{}, qos);
+    sub_.emplace(node, topic, Adapter::kFingerprint, qos);
+    topic_ = topic;
   }
 
   void unsubscribe() { sub_.reset(); }
   bool subscribed() const noexcept { return sub_.has_value(); }
+
+  // Upstream's accessors. getSubscriber() is null while unsubscribed, as upstream's is.
+  std::string getTopic() const { return topic_; }
+  const Subscription * getSubscriber() const noexcept { return sub_ ? &*sub_ : nullptr; }
 
   // Frames handed to the filter graph. A synchronizer drops a message whose partners never
   // arrive without reporting it, so this diffed against the synchronizer's own callback count is
@@ -142,31 +151,18 @@ private:
     }
     auto m = std::make_shared<Message>();
     m->frame = std::make_shared<flux::FrameView>(std::move(f));
-    m->stamp = rclcpp::Time(sec, nanosec, RCL_ROS_TIME);
+    m->header.stamp.sec = sec;
+    m->header.stamp.nanosec = nanosec;
     ++forwarded_;
     this->signalMessage(std::shared_ptr<const Message>(std::move(m)));
   }
 
   std::optional<Subscription> sub_;
+  std::string topic_;
   std::uint64_t forwarded_ = 0;
   std::uint64_t unreadable_ = 0;
 };
 
 }  // namespace flux::ros::message_filters
-
-// Upstream reads the synchronization key through this trait; its default answers time 0 for
-// anything with no `header` member (message_traits.h:84), which would silently make every frame
-// synchronize with every other.
-namespace message_filters::message_traits
-{
-template <typename Adapter>
-struct TimeStamp<flux::ros::message_filters::StampedFrame<Adapter>, void>
-{
-  static rclcpp::Time value(const flux::ros::message_filters::StampedFrame<Adapter> & m)
-  {
-    return m.stamp;
-  }
-};
-}  // namespace message_filters::message_traits
 
 #endif  // FLUX_ROS_MESSAGE_FILTERS_SUBSCRIBER_HPP

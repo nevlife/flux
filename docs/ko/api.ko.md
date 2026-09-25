@@ -4,9 +4,9 @@ ROS 2 노드에서 쓰는 표면 전부다.
 
 ## 1. 먼저 알 것
 
-**rendezvous 키는 토픽 이름과 fingerprint와 domain다.** 이 셋에서 `/dev/shm` 세그먼트 이름을 유도하므로, 양쪽이 같은 이름을 만들어야 붙는다. 한 글자라도 다르면 안 붙고 에러도 안 난다. ROS가 `"img"`를 `"/robot1/img"`로 바꾸므로, 노드를 넘기는 생성자를 써서 remap이 끝난 이름을 쓴다.
+**rendezvous 키는 토픽 이름과 fingerprint와 domain다.** 이 셋에서 `/dev/shm` 세그먼트 이름을 유도하므로, 양쪽이 같은 이름을 만들어야 붙는다. 한 글자라도 다르면 안 붙고 에러도 안 난다. ROS가 `"img"`를 `"/robot1/img"`로 바꾸므로, 노드를 넘기는 생성자를 써서 remap이 끝난 이름을 쓴다. 토픽 이름이 185자를 넘으면 생성자가 던진다(C++은 `std::invalid_argument`, Python은 `ValueError`). `/dev/shm` 이름은 최대 255자이고 flux가 최대 70자를 붙이며, 이름을 자르면 두 토픽이나 두 스키마가 한 채널에서 만날 수 있기 때문이다.
 
-**domain은 한 호스트 안의 구획이다.** 기본값은 `0`이고, 보통 신경 쓸 일이 없다. `ROS_DOMAIN_ID`를 설정해 두었으면 flux도 그것으로 갈린다 — domain으로 나눠 놓은 두 시스템이 같은 토픽 이름을 써도 서로 섞이지 않는다. 직접 이름을 붙이려면 `FLUX_DOMAIN`을 쓴다(alnum 1..32자). 둘 다 있으면 `FLUX_DOMAIN`이 이긴다. 값이 alnum이 아니거나 `ROS_DOMAIN_ID`가 정수가 아니면 생성자가 던진다 — 오타가 조용히 기본 domain으로 떨어지면 격리가 사라지기 때문이다. 컨테이너는 이것과 무관하게 `/dev/shm`이 갈라 준다.
+**domain은 한 호스트 안의 구획이다.** 기본값은 `0`이고, 보통 신경 쓸 일이 없다. `ROS_DOMAIN_ID`를 설정해 두었으면 flux도 그것으로 갈린다 — domain으로 나눠 놓은 두 시스템이 같은 토픽 이름을 써도 서로 섞이지 않는다. flux만 따로 정하려면 `FLUX_DOMAIN`을 쓴다. 둘 다 있으면 `FLUX_DOMAIN`이 이긴다. 둘 다 [0, 2^32)의 정수만 받고 앞자리 0 없이 렌더하므로 `007`과 `7`은 한 domain이다. 그 밖의 값이면 생성자가 던진다(C++은 `std::invalid_argument`, Python은 `ValueError`) — 오타가 조용히 기본 domain으로 떨어지면 격리가 사라지기 때문이다. 컨테이너는 이것과 무관하게 `/dev/shm`이 갈라 준다.
 
 **fingerprint는 스키마 해시다.** 양쪽이 다르면 attach가 거절된다. `.msg`로 타입을 붙이면 생성기가 채워 준다. 0은 확인하지 않는다는 뜻이다.
 
@@ -14,7 +14,7 @@ ROS 2 노드에서 쓰는 표면 전부다.
 
 **전달은 best-effort다.** 발행자는 느린 구독자를 기다리지 않는다.
 
-산 발행자와 `slot_size`/`slot_count`가 어긋나면 attach가 `std::runtime_error`인 `flux::SegmentMismatch`(Python은 `RuntimeError`인 `flux.SegmentMismatch`)를 던진다. 재시도로 안 고쳐지므로 잡지 않는다.
+산 발행자와 `slot_size`/`slot_count`가 어긋나면 attach가 `std::runtime_error`인 `flux::SegmentMismatch`(Python은 `RuntimeError`인 `flux.SegmentMismatch`)를 던진다. 재시도로 안 고쳐지므로 잡지 않는다. 산 발행자의 세그먼트를 열 수 없을 때(권한이 없을 때 등)도 같다. attach가 원인을 담은 `std::runtime_error`(Python은 `RuntimeError`)를 던진다. 조용히 기다리는 것은 발행자가 아직 없을 때뿐이다.
 
 ## 2. 타입 붙이기 (`.msg` -> adapter)
 
@@ -69,7 +69,7 @@ string label
 
 중첩은 이름 prefix로 펴진다 -- `pose.position.x`는 `pose_position_x`다.
 
-`alloc__*`은 슬롯 안 메모리를 돌려준다. 거기에 쓰는 것이 0복사 경로다. 호출 순서는 자유다.
+`alloc__*`은 슬롯 안 메모리를 돌려준다. 거기에 쓰는 것이 0복사 경로다. 호출 순서는 자유다. 고정 길이 배열(`string[2]`, `Point[2]`)의 `alloc__x()`는 개수를 받지 않는다. 스키마가 이미 정하기 때문이다.
 
 `.msg`가 거부되면(`bool[]`, `T[<=N]`, `wstring`, 필드 없음) 생성이 실패한다. 그 메시지는 plain ROS로 보낸다.
 
@@ -84,27 +84,28 @@ flux::ros::Publisher pub(*node, "cloud", Cloud::kFingerprint, 16 << 20, 16);
 Cloud::Builder b = Cloud::build__(pub);   // 슬롯을 loan하고 그 위에 Builder를 얹는다
 if (b) {
   auto xs = b.alloc__x(n);            // 슬롯을 가리킨다
-  lidar.read_into(xs.data(), n);     // 데이터가 슬롯에서 만들어진다
+  lidar.read_into(xs.data(), xs.size());  // 데이터가 슬롯에서 만들어진다
   b.set__width(static_cast<std::uint32_t>(n));
   b.set__label("front");
-  b.commit__();                        // ok()가 false면 발행하지 않는다
+  if (const flux::Published p = b.commit__(); flux::faulted(p)) report(flux::to_string(p));  // ok__()가 false면 발행하지 않는다
 }
 ```
 
-`build__(pub)`는 슬롯을 Builder가 소유하게 만든다. 살려 둘 객체가 하나다. 빈 슬롯이 없으면 Builder가 false이고, 그 상태로 써도 무해하지만 `commit__()`은 `Backpressure`를 돌려준다 -- 나간 척하지 않는다. Python의 `Cloud.build__(pub)`와 같은 것이다.
+`build__(pub)`는 슬롯을 Builder가 소유하게 만든다. 살려 둘 객체가 하나다. 빈 슬롯이 없으면 Builder가 false이고, 그 상태의 `set__x()`는 무해하지만 `commit__()`은 `Backpressure`를 돌려준다 -- 나간 척하지 않는다. Python의 `Cloud.build__(pub)`와 같은 것이다. `alloc__x(n)`이 주는 span은 Builder가 false이거나 슬롯에 `n`개 자리가 없으면 비어 있으므로 `n`이 아니라 `xs.size()`개를 채운다. Python에서 false인 Builder의 `alloc__x(n)`은 대신 버려지는 `n`개짜리 배열을 주므로 `b.alloc__x(n)[:] = xs`도 실패하지 않는다.
 
 ```cpp doc:adapter_cpp_sub
 using my_pkg::flux_msg::Cloud;
 
-flux::ros::Subscription sub(*node, "cloud", Cloud::kFingerprint, [](const flux::FrameView & f) {
-  Cloud::View c(f);
-  for (float x : c.x()) {
-    use(x);
-  }
-  if (!c.ok__()) {                     // 프레임이 어긋났다: 읽은 값을 버린다
-    return;
-  }
-});
+flux::ros::Subscription sub(
+  *node, "cloud", Cloud::kFingerprint, flux::QoS{}, [](const flux::FrameView & f) {
+    Cloud::View c(f);
+    for (float x : c.x()) {
+      use(x);
+    }
+    if (!c.ok__()) {  // 프레임이 어긋났다: 읽은 값을 버린다
+      return;
+    }
+  });
 ```
 
 ### Python
@@ -114,7 +115,7 @@ from my_pkg_flux.cloud import Cloud
 
 pub = flux.ros.Publisher(node, "cloud", fingerprint=Cloud.FINGERPRINT__)
 
-b = Cloud.build__(pub)                  # 슬롯을 loan하고 Builder를 준다. 빈 슬롯 없으면 None
+b = Cloud.build__(pub)                  # 슬롯을 loan하고 Builder를 준다. 빈 슬롯 없으면 false
 if b:
     b.alloc__x(n)[:] = xs              # 슬롯에 바로 쓴다
     b.width = n
@@ -131,7 +132,7 @@ if f is not None:
     print(c.x, c.width, c.label)      # c.x는 슬롯을 가리키는 읽기전용 ndarray
 ```
 
-수신 쪽은 프레임을 다른 프로세스가 썼다고 보고 descriptor를 검사한다. C++은 어긋나면 `ok()`가 false로 래치되고 그 뒤 접근자는 빈 값을 준다. Python은 `flux_gen.wire.WireError`를 던진다.
+수신 쪽은 프레임을 다른 프로세스가 썼다고 보고 descriptor를 검사한다. C++은 어긋나면 `ok__()`가 false로 래치되고 그 뒤 접근자는 빈 값을 준다. descriptor가 프레임에 안 맞는 배열은 `x__size()`가 0이다. Python은 `flux_gen.wire.WireError`를 던진다.
 
 ### ROS 메시지 객체와 오갈 때
 
@@ -144,7 +145,7 @@ using sensor_msgs::flux_msg::Image;
 // 보낼 때: ROS 객체 -> 프레임
 Image::Builder b(w);
 msg_to_frame(img, b);                 // img의 모든 필드를 슬롯에 복사
-b.commit__();
+if (const flux::Published p = b.commit__(); flux::faulted(p)) report(flux::to_string(p));
 
 // 받을 때: 프레임 -> ROS 객체
 sensor_msgs::msg::Image back = frame_to_msg(Image::View(f));
@@ -198,7 +199,7 @@ pub.segment_name();
 
 ```cpp doc:subscription
 flux::ros::Subscription sub(
-  *node, "img", fingerprint, [](const flux::FrameView & v) { handle(v); }, flux::QoS{});
+  *node, "img", fingerprint, flux::QoS{}, [](const flux::FrameView & v) { handle(v); });
 ```
 
 구독은 자기를 돌리지 않는다. 읽는 방법이 둘이고 콜백 유무가 그걸 가른다.
@@ -215,7 +216,7 @@ flux::FrameView next = sub.take();                // 다음 프레임. 없으면
 flux::FrameView blocked = sub.take_blocking(-1);  // 올 때까지 futex에서 잔다
 ```
 
-여섯째·일곱째 인자가 `Device`와 `MemoryPolicy`다. 후자는 이 구독 자신의 매핑에 대한 페이지 사전 커밋이고 아래 `MemoryPolicy` 절에 있다. `sub.pages_committed()`·`sub.pages_locked()`가 그 결과를 보고한다 -- attach 전에는 둘 다 false다.
+QoS는 콜백보다 앞에 온다. rclcpp `create_subscription(topic, qos, callback)`의 순서다. 여섯째·일곱째 인자가 `Device`와 `MemoryPolicy`다. 후자는 이 구독 자신의 매핑에 대한 페이지 사전 커밋이고 아래 `MemoryPolicy` 절에 있다. `sub.pages_committed()`·`sub.pages_locked()`가 그 결과를 보고한다 -- attach 전에는 둘 다 false다.
 
 콜백 없는 구독을 executor에 넣으면 `add()`가 throw한다. 실행할 것이 없는데 등록만 되는 상태를 만들지 않는다.
 
@@ -246,7 +247,7 @@ mem.lock = true;        // mlock까지. RLIMIT_MEMLOCK이 세그먼트를 덮어
 
 flux::ros::Publisher pub(
   *node, "img", fingerprint, slot_size, slot_count, flux::Device::Cpu, mem);
-flux::ros::Subscription sub(*node, "img", fingerprint, {}, flux::QoS{}, flux::Device::Cpu, mem);
+flux::ros::Subscription sub(*node, "img", fingerprint, flux::QoS{}, {}, flux::Device::Cpu, mem);
 
 bool committed = pub.pages_committed();
 bool locked = pub.pages_locked();
@@ -284,7 +285,7 @@ flux::ros::Publisher pub(*node, "img", fingerprint, slot_size, slot_count, flux:
 flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
 if (w) {
   render_into(w.device_ptr(), w.capacity(), w.stream());   // 커널을 이 stream에 올린다
-  w.commit();                                              // stream을 기다린 뒤 발행
+  if (const flux::Published p = w.commit(); flux::faulted(p)) log("img", flux::to_string(p));  // stream을 기다린 뒤 발행
 }
 pub.fence_failed();
 pub.fence_wait();
@@ -292,8 +293,8 @@ pub.fence_wait();
 
 ```cpp doc:gpu_subscription
 flux::ros::Subscription sub(
-  *node, "img", fingerprint,
-  [](const flux::FrameView & v) { use(v.device_ptr(), v.size(), v.stream()); }, flux::QoS{},
+  *node, "img", fingerprint, flux::QoS{},
+  [](const flux::FrameView & v) { use(v.device_ptr(), v.size(), v.stream()); },
   flux::Device::Cuda);
 
 sub.fence_failed();
@@ -312,7 +313,7 @@ CPU와 다른 곳은 이렇다.
 
 `host_addressable()`은 반대쪽 질문이다 -- `data()`를 CPU로 읽어도 되는가. iGPU에서는 슬롯이 host 메모리이기도 해서 `true`이고, dGPU에서는 슬롯이 VRAM이라 `false`다. `device_ptr()`이 `nullptr`이 아니라는 것으로 이걸 대신 판정하면 안 된다 -- iGPU는 둘 다 성립하는 유일한 경우다. `FrameView`·`WriteSlot`·`Channel` 셋 다 같은 이름의 접근자를 가진다.
 
-`host_addressable()`이 `false`면 `data()`는 `nullptr`이다. 물어보지 않은 호출자를 첫 접근의 fault가 아니라 그 자리에서 멈추게 하려는 것이다 -- `wire::Reader`와 `wire::Writer`가 null base에서 `bad()`를 래치하므로, 생성 adapter의 `View`·`Builder`는 `ok() == false`가 되고 `commit()`이 거부한다.
+`host_addressable()`이 `false`면 `data()`는 `nullptr`이다. 물어보지 않은 호출자를 첫 접근의 fault가 아니라 그 자리에서 멈추게 하려는 것이다 -- `wire::Reader`와 `wire::Writer`가 null base에서 `bad()`를 래치하므로, 생성 adapter의 `View`·`Builder`는 `ok__() == false`가 되고 `commit__()`이 거부한다.
 
 dGPU에서는 넷이 닫힌다. iGPU는 슬롯이 host 메모리이기도 해서 전부 열려 있다.
 
@@ -348,20 +349,20 @@ seam을 나눠 두는 이유는 막는 스레드가 다르기 때문이다. 발�
 
 ### Executor
 
-flux 구독과 ROS 구독을 io_uring 하나로 같이 기다린다. 리눅스 6.7 미만에서는 채널당 스레드 폴백으로 내려간다 -- `uses_io_uring()`이 어느 경로인지 보고한다.
+flux 구독과 ROS 구독을 io_uring 하나로 같이 기다린다. 리눅스 6.7 미만에서는 채널당 스레드 폴백으로 내려간다. io_uring을 금지한 호스트(컨테이너 seccomp 프로파일, `kernel.io_uring_disabled`)도 같은 폴백으로 돌고, 이때는 프로세스당 한 번 stderr에 그렇다고 한 줄 찍는다. `FLUX_DISABLE_IO_URING=1`은 폴백을 직접 고르고 그 줄을 끈다. 그 밖의 io_uring 준비 실패(fd·memlock 한도, 메모리)는 폴백으로 가지 않고 생성자가 던진다. `uses_io_uring()`이 어느 경로인지 보고한다.
 
 대기 자체는 `flux::Executor`(flux_core)다. ROS를 모르는 부분은 거기 있고, 이 클래스가 얹는 것은 readiness를 그 대기로 보내는 다리와 rclcpp 실행 경로다. `flux_py`도 같은 `flux::Executor`를 쓴다(`core_api.ko.md` 6).
 
 ```cpp doc:executor
-flux::ros::Executor ex(32);      // max_channels
-ex.add(flux_sub);                // 콜백 없는 구독이면 throw. max_channels 초과면 throw
+flux::ros::Executor ex;
+ex.add(flux_sub);                // 콜백 없는 구독이면 throw
 ex.add(control_sub, 10);         // priority: 프레임이 있으면 먼저 돈다. 기본 0
 ex.add_ros_node(node);           // 노드째 넘긴다. 구독·타이머·서비스를 rclcpp가 꺼낸다
 ex.spin();                       // tick_ns 기본값 100 ms. spin(tick_ns)로 바꾼다
 ex.stop();                       // spin을 끝낸다. 콜백에서 불러도 된다
 ```
 
-`add`의 둘째 인자는 우선순위다. 큰 것이 먼저 가고 같으면 등록순이며 음수도 쓴다. 선택은 콜백마다 다시 한다 -- 낮은 채널의 콜백이 도는 중에 높은 채널로 프레임이 오면 낮은 채널의 다음 프레임보다 그것이 먼저 돈다. 선점 우선순위는 아니다. 이미 도는 콜백은 밀리지 않고, 한 pass의 상한도 안 바뀐다. 정렬되는 것은 flux 채널뿐이다. 같은 executor의 ROS entity는 `pump_ros()`가 rclcpp 순서로 돌린다.
+`add`의 둘째 인자는 우선순위다. 큰 것이 먼저 가고 같으면 등록순으로 시작해 한 프레임씩 번갈아 가며, 음수도 쓴다. 선택은 콜백마다 다시 한다 -- 낮은 채널의 콜백이 도는 중에 높은 채널로 프레임이 오면 낮은 채널의 다음 프레임보다 그것이 먼저 돈다. 선점 우선순위는 아니다. 이미 도는 콜백은 밀리지 않고, 한 pass의 상한도 안 바뀐다. 정렬되는 것은 flux 채널뿐이다. 같은 executor의 ROS entity는 `pump_ros()`가 rclcpp 순서로 돌린다.
 
 등록은 spin 전에만 한다. spin 중 `add`/`add_ros_node`/`add_ros_callback_group`은 throw — spin 스레드가 락 없이 등록 목록을 순회한다. spin이 반환한 뒤에는 다시 등록할 수 있다. 노드에 늦게 생긴 ROS 구독은 예외로, 다음 pass가 자동으로 잇는다(아래).
 
@@ -371,7 +372,7 @@ ex.stop();                       // spin을 끝낸다. 콜백에서 불러도 �
 
 `tick_ns`는 폴링 주기가 아니다. stop 재확인과 늦게 뜬 발행자 attach를 위한 대기 상한이다. 노드에 tick보다 짧은 주기의 타이머가 있으면 대기는 그 deadline까지만 잡으므로, tick을 길게 줘도 타이머 주기는 안 늘어난다.
 
-끝내는 방법은 `stop()`이다. 자기 종료 플래그를 이미 들고 있으면 `spin(run, tick_ns)`가 그것도 함께 본다.
+끝내는 방법은 `stop()`이다. 자기 종료 플래그를 이미 들고 있으면 `spin(run, tick_ns)`가 그것도 함께 본다. 컨텍스트 종료도 rclcpp executor처럼 spin을 끝낸다. `rclcpp::init` 뒤 Ctrl-C가 부르는 `rclcpp::shutdown()`은 `rclcpp::on_shutdown` 훅 없이도 이 executor와 `PartitionedExecutor`의 `spin()`을 돌려보낸다.
 
 상속받은 rclcpp 진입점 중 셋은 flux에서 뜻이 정확히 하나라 구현했다 -- `spin()`은 기본 tick의 `spin(tick_ns)`, `cancel()`은 `stop()`, `spin_once(timeout)`은 `spin_once(timeout.count())`다. 그래서 `rclcpp::Executor &`로 들고 있는 호출자도 이 executor를 제대로 돌린다. Humble에서는 rclcpp의 `cancel()`이 virtual이 아니라, `rclcpp::Executor &`를 통한 `cancel()`은 rclcpp의 플래그만 내리고 이 executor를 세우지 못한다. Humble에서는 `stop()`이나 flux 타입으로 부른 `cancel()`로 세운다. 나머지(`spin_some`·`spin_all`·`spin_node_some`·`spin_node_all`·`spin_until_future_complete`)는 throw다 -- 이 executor에 없는 wait set과 duration 예산에 대한 계약이고, 그럴듯한 근사는 flux 채널을 조용히 건너뛴다.
 
@@ -390,7 +391,7 @@ bool more = ex.has_more();          // 예산이 자른 나머지가 있다. 다
 bool ros_woke = ex.take_ros_ready();  // false면 ROS는 아무것도 안 왔다. pump_ros 생략 가능
 ```
 
-`has_more()`는 직전 `dispatch()`가 프레임이 남은 채로 예산에서 멈췄는지다. `wait_for_work()`와 `dispatch()`를 직접 부르는 루프는 이 값이 참이면 대기를 건너뛴다 -- 이미 와 있던 프레임에 대해 아무도 ring을 다시 두드리지 않는다. `spin()`과 `spin_once()`는 알아서 한다.
+`has_more()`는 직전 `dispatch()`가 프레임이 남은 채로 예산에서 멈췄는지다. `wait_for_work()`와 `dispatch()`를 직접 부르는 루프는 이 값이 참이면 대기를 건너뛴다 -- 이미 와 있던 프레임에 대해 아무도 ring을 다시 두드리지 않는다. `spin()`과 `spin_once()`는 알아서 한다. `spin()`이 도는 동안의 `spin_once()`는 같은 ring을 건드리므로 `std::logic_error`를 던진다. Python `flux.ros.Executor.spin_once()`도 같은 경우 `RuntimeError`를 던진다. `spin_once(timeout)`은 flux 프레임과 ROS 일 중 먼저 온 것에 반환하고, 둘 다 없으면 timeout에 반환한다. Python `spin_once()`도 같다.
 
 `pass_budget`은 flux 쪽의 같은 것이다. `dispatch()` 한 번이 돌릴 콜백 수의 상한이고, 채널마다가 아니라 채널 전체에 대한 하나의 예산이다. 기본값은 `flux::kMaxDrain`(64)이다. 낮추면 높은 우선순위 채널이 낮은 채널 뒤에서 기다리는 시간이 줄고, 올리면 pass당 arm 비용이 더 많은 프레임에 나뉜다.
 
@@ -407,9 +408,8 @@ namespace mf = message_filters;
 using sensor_msgs::flux_msg::Image;
 using Frame = flux::ros::message_filters::StampedFrame<Image>;
 
-flux::QoS qos;
-qos.depth = 4;
-qos.max_borrow = 16;  // inputs x queue_size: 짝이 올 때까지 필터가 프레임을 쥔다
+// max_borrow = inputs x queue_size: 짝이 올 때까지 필터가 프레임을 쥔다.
+const auto qos = flux::QoS(4).max_borrow(16);
 
 flux::ros::message_filters::Subscriber<Image> left(node, "cam/left", qos);
 flux::ros::message_filters::Subscriber<Image> right(node, "cam/right", qos);
@@ -432,8 +432,9 @@ ex.spin();
 
 큐에 들어가는 것은 바이트가 아니라 `StampedFrame`이다. borrow 하나와 stamp를 든다. payload는 세그먼트에 그대로 있으므로 이 경로도 복사가 없다. `view()`가 어댑터의 `View`를 준다.
 
-- 동기화 키는 메시지의 header stamp다. `Subscriber`가 프레임에서 `header__sec()`·`header__nanosec()` 둘만 읽어 `StampedFrame::stamp`에 넣는다. header 없는 스키마는 여기 못 들어간다 -- `FrameMeta`에 시각이 없어서 대안이 없고, 컴파일이 그 자리에서 멈춘다.
-- `Subscriber`는 `flux::Source`다. `ex.add(sub)`로 executor에 직접 넣는다. 기본 생성 후 `subscribe(node, topic, qos)`로 나중에 붙일 수도 있다 -- 노드 멤버로 선언될 때 필요하다. `subscribed()`가 붙었는지 보고하고, `unsubscribe()`가 뗀다. 안 붙은 동안 executor는 이 소스에서 아무것도 못 받고 그것으로 끝이다.
+- 동기화 키는 메시지의 header stamp다. `Subscriber`가 프레임에서 `header__sec()`·`header__nanosec()` 둘만 읽어 `StampedFrame::header.stamp`에 넣는다. `header`는 다른 필드가 빈 `std_msgs::msg::Header`다. upstream 기본 `TimeStamp` trait가 읽는 자리이고, Python도 같은 자리에 둔다. header 없는 스키마는 여기 못 들어간다 -- `FrameMeta`에 시각이 없어서 대안이 없고, 컴파일이 그 자리에서 멈춘다.
+- `Subscriber`는 `flux::Source`다. `ex.add(sub)`로 executor에 직접 넣는다. 기본 생성 후 `subscribe(node, topic, qos)`로 나중에 붙일 수도 있다 -- 노드 멤버로 선언될 때 필요하다. `subscribed()`가 붙었는지 보고하고, `unsubscribe()`가 뗀다. 안 붙은 동안 executor는 이 소스에서 아무것도 못 받고 그것으로 끝이다. executor가 도는 중에 `subscribe()`를 다시 부르는 것은 spin 스레드(콜백이나 타이머)에서 허용된다. executor는 다음 대기부터 새 topic을 기다린다.
+- `getTopic()`과 `getSubscriber()`는 upstream의 접근자다. `getSubscriber()`는 카운터(`lost()`, `refused()`)를 보라고 안쪽 `flux::ros::Subscription`을 주고, 안 붙은 동안은 `nullptr`이다.
 - `Subscriber<Image>::Message`가 큐에 들어가는 타입, 즉 `StampedFrame<Image>`다. `Synchronizer` 정책의 타입 인자를 쓸 때 어느 쪽 이름을 써도 같다.
 - `forwarded()`가 필터로 내보낸 수, `unreadable()`이 스키마에 안 맞아 버린 수다. synchronizer는 짝을 못 찾은 메시지를 조용히 버리므로, `forwarded()`를 사용자 콜백 횟수와 diff하는 것이 그 손실을 보는 방법이다.
 - `queue_size`(위의 `Policy(10)`)만큼을 입력마다 쥐므로 `max_borrow`가 그 곱을 덮어야 한다. 안 덮으면 소비자가 자기 lease를 다 써서 더 못 가져온다.
@@ -476,9 +477,10 @@ ex.interrupt();            // 부모의 스캔 대기만 깬다
 - `add(sub, group, priority)`의 셋째 인자는 그 그룹 자신의 pass 안 방문 순서다. 그룹을 넘지 않는다. 그룹은 서로 다른 스레드다.
 - 등록은 spin 전에만 한다. spin 중 `add`/`add_ros_node`/`on_thread_start`는 throw.
 - spin 시작 후 생긴 콜백 그룹은 tick 스캔이 잡아 자식을 붙인다.
-- 자식 `flux::ros::Executor`의 `max_channels`는 그룹에 배정된 flux 구독 수로 자동 산정된다.
+- 자식 스레드는 OS 스레드 이름이 `flux-part-g<i>`라 `top -H`, `perf`, `gdb`에서 어느 그룹의 스레드인지 보인다. Python도 그룹 스레드를 같은 방식으로, 노드 스레드는 `flux-part-n<i>`로 이름 붙인다.
+- `tick_ns`는 1ms 미만을 포함해 준 값 그대로 쓴다. 반올림하지 않는다. tick이 짧을수록 새 그룹을 빨리 찾고 깨어나는 횟수가 늘어난다. Python `PartitionedExecutor.spin(tick_ns)`도 같다.
 - `on_thread_start(group, fn)`은 그 그룹을 맡은 자식 스레드에서 첫 콜백 전에 `fn`을 실행한다. 그 스레드만 자기에게 할 수 있는 준비 작업을 여기에 둔다. `fn`의 예외는 spin()의 에러로 올라온다. 그룹당 하나, 어느 자식도 맡지 않는 그룹의 hook은 spin이 거부한다.
-- reentrant 그룹은 거절한다. 그룹당 스레드가 하나라 그 그룹의 콜백은 직렬로 돌고, 동시 실행을 선언한 그룹을 조용히 직렬화하지 않는다. 병렬이 필요하면 mutually exclusive 그룹 여럿으로 쪼갠다. 각자 스레드를 갖는다.
+- reentrant 그룹은 거절한다. 그룹당 스레드가 하나라 그 그룹의 콜백은 직렬로 돌고, 동시 실행을 선언한 그룹을 조용히 직렬화하지 않는다. 병렬이 필요하면 mutually exclusive 그룹 여럿으로 쪼갠다. 각자 스레드를 갖는다. `add`에 넘긴 reentrant 그룹은 그 호출에서 거절하고, 노드가 가진 그룹은 spin에서 확인한다.
 - 노드가 자동 등록으로 만든 그룹은 flux 구독이 없어도 자식이 붙는다. `automatically_add_to_executor_with_node()`가 false인 수동 그룹은 `add(sub, group)`으로 배정된 것만 서비스한다.
 - 그룹이 다르면 콜백은 실제로 동시에 돈다. 그룹 사이에 공유하는 상태는 호출자가 지킨다 -- PartitionedExecutor는 격리를 주지 상호배제를 주지 않는다(6).
 - GPU 채널을 받는 구독은 자기 그룹에 둔다. 해제 fence가 소비 커널이 끝날 때까지 그 스레드를 막으므로, 같은 그룹의 다른 콜백이 그만큼 밀린다.
@@ -531,12 +533,11 @@ if nxt is None and not sub.attached:       # 이 domain에 발행자가 없다
 | --- | --- |
 | `max_borrow` | 쥔 view를 안 놓고 또 불렀다. 발행이 와도 안 풀린다 |
 | `holder_table` | 한 슬롯을 `kMaxHolders`(10) 프로세스가 이미 쥐고 있다 |
-| `not_ready` | 세그먼트가 아직 초기화 중이다 |
 | `contended` | seqlock 검증이 재시도 예산(64회)을 다 썼다 |
 | `bad_frame` | meta가 슬롯 범위를 벗어났거나 그 슬롯에 커밋된 프레임이 없다 |
 | `no_owner_file` | 이 프로세스가 owner 파일을 못 잡았다(fd 고갈) |
 | `fence` | 실패한 fence가 리스를 `max_borrow`개 다 새게 했다. 이 소비자는 끝났다 |
-| `total` | 위 일곱의 합 |
+| `total` | 위 여섯의 합 |
 
 `max_borrow`만은 미리 물어볼 수 있다. `can_borrow`가 false면 그 다음 `take`는 프레임 유무와 무관하게 빈 것을 준다. `take_blocking`도 park하지 않고 즉시 돌려주므로, 여기서 재시도 루프를 돌면 CPU만 태운다 -- view를 먼저 놓아야 한다.
 
@@ -554,7 +555,7 @@ if nxt is None and not sub.attached:       # 이 domain에 발행자가 없다
 | `refused` | 이어진다 | 거절은 이 소비자에게 매인 값이다. 세그먼트가 바뀐다고 없던 일이 되지 않는다 |
 | `dropped` | 이어지지 않는다 | 발행자 쪽 카운터다. 세그먼트마다 따로다 |
 
-그래서 초당 비율을 뽑을 때 `lost`의 diff는 음수가 될 수 있다. `attach_generation()`(C++)이 재접속마다 오르므로, 앞뒤 샘플의 generation이 같을 때만 diff를 비율로 쓴다. 다르면 그 구간은 비율이 아니라 재시작이다.
+그래서 초당 비율을 뽑을 때 `lost`의 diff는 음수가 될 수 있다. `attach_generation()`(Python `attach_generation`. `flux::ros::Subscription`과 `flux::Channel` 모두 있다)이 재접속마다 바뀌므로, 앞뒤 샘플의 generation이 같을 때만 diff를 비율로 쓴다. 다르면 그 구간은 비율이 아니라 재시작이다.
 
 ### GPU (CUDA)
 
@@ -583,7 +584,7 @@ fence_failed = sub.fence_failed
 worst_release_ns = sub.fence_wait.release_max_ns
 ```
 
-`device`는 `"cpu"` / `"cuda"` 문자열이나 `flux.Device.Cpu` / `flux.Device.Cuda`를 받는다. 이 호스트가 못 받는 선언은 생성자가 `ValueError`로 거절한다 -- 못 지킬 선언을 조용히 host로 내려보내지 않는다.
+`device`는 `"cpu"` / `"cuda"` 문자열이나 `flux.Device.CPU` / `flux.Device.CUDA`를 받는다. 이 호스트가 못 받는 선언은 생성자가 `ValueError`로 거절한다 -- 못 지킬 선언을 조용히 host로 내려보내지 않는다.
 
 host 경로와 다른 곳은 셋뿐이다.
 
@@ -620,9 +621,7 @@ bf16은 어댑터 경로에 안 나온다 -- ROS IDL에 그 타입이 없다. nu
 ### QoS
 
 ```python doc:py_qos
-qos = flux.QoS(
-    depth=1, durability=flux.Volatile(), max_borrow=2, reliability=flux.Reliability.BEST_EFFORT
-)
+qos = flux.QoS(depth=1, durability=flux.Volatile(), max_borrow=2)
 
 volatile = flux.Volatile()          # 붙은 뒤 발행분만
 transient = flux.TransientLocal(n)  # ring에 남은 것 중 n개를 먼저 재생
@@ -640,7 +639,7 @@ ROS 콜백과 flux 콜백을 한 스레드에서 돌린다.
 
 ```python doc:py_ros_executor
 ex = flux.ros.Executor()
-ex.add_flux(sub)                  # 콜백은 구독이 들고 있다
+ex.add(sub)                  # 콜백은 구독이 들고 있다
 ex.add_ros_node(node)             # 노드째 넘긴다. C++의 add_ros_node와 같다
 ex.spin()                         # stop()까지. tick_ns 기본값 100 ms
 ex.spin_once(timeout_ns=100_000_000)
@@ -652,7 +651,7 @@ ex.close()                        # 마지막 stop() 뒤, 노드를 destroy하�
 resolved = flux.ros.resolve(node, "img")   # 노드 네임스페이스·remap을 적용한 절대 이름
 ```
 
-조립 순서와 이름이 C++과 같다. 생성하고, flux 구독과 노드를 건네고, spin한다. ROS 구독은 따로 넘기지 않는다 -- 노드에 만들면 이미 서비스된다.
+조립 순서와 이름이 C++과 같다. 생성하고, flux 구독과 노드를 건네고, spin한다. ROS 구독은 따로 넘기지 않는다 -- 노드에 만들면 이미 서비스된다. 컨텍스트가 종료되면 `spin()`은 감싼 rclpy executor와 같이 끝난다. 기본 `SingleThreadedExecutor`는 `ExternalShutdownException`을 던지고, rclpy 프로그램은 `spin()`을 그것으로 감싸 잡는다. `PartitionedExecutor`는 `MultiThreadedExecutor`처럼 조용히 돌아온다.
 
 `close()`는 rclpy executor에서 노드를 뗀다. 안 부르고 노드를 destroy하면 브릿지 스레드가 이미 없는 노드에 대해 task를 걸 수 있다.
 
@@ -668,19 +667,19 @@ rclpy는 on-new-message 콜백을 Python에 안 내준다. 그래서 C++처럼 �
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 ex = flux.ros.PartitionedExecutor()
 ex.add_ros_node(node)                                       # 노드마다 스레드 하나 (ROS 콜백)
-ex.add_flux(sub_a, MutuallyExclusiveCallbackGroup())        # 그룹마다 스레드 하나 (flux 프레임)
-ex.add_flux(sub_b, MutuallyExclusiveCallbackGroup(), priority=10)
+ex.add(sub_a, MutuallyExclusiveCallbackGroup())        # 그룹마다 스레드 하나 (flux 프레임)
+ex.add(sub_b, MutuallyExclusiveCallbackGroup(), priority=10)
 ex.spin(tick_ns=100_000_000)                                # stop()까지. 이 스레드는 콜백을 안 돈다
 ex.stop()
-ex.close()
 ```
 
-- `add_flux`의 그룹은 ROS 엔티티를 하나도 갖지 않아야 한다. rclpy가 그룹을 자식 executor에 넘기지 못하므로, 그 그룹의 ROS 콜백은 노드 스레드에 남고 flux 프레임만 여기서 돈다 -- 그룹의 상호배제가 말없이 깨진다. spin이 거절하고, spin 중 tick이 다시 확인한다.
+- `add`의 그룹은 ROS 엔티티를 하나도 갖지 않아야 한다. rclpy가 그룹을 자식 executor에 넘기지 못하므로, 그 그룹의 ROS 콜백은 노드 스레드에 남고 flux 프레임만 여기서 돈다 -- 그룹의 상호배제가 말없이 깨진다. spin이 거절하고, spin 중 tick이 다시 확인한다.
 - ROS와 flux를 한 스레드에서 돌려야 하는 그룹은 `flux.ros.Executor`다. 그것이 그 클래스의 일이다.
 - reentrant 그룹은 C++과 같은 이유로 거절한다.
 - `priority`는 C++과 같다. 한 그룹에 구독이 여럿일 때 그 그룹의 pass 안 방문 순서를 정하고, 그룹을 넘지 않는다.
-- 등록은 spin 전에만 한다. spin 중 `add_flux`/`add_ros_node`는 throw.
+- 등록은 spin 전에만 한다. spin 중 `add`/`add_ros_node`는 throw.
 - 자식 스레드의 예외는 모든 자식을 세우고 `spin()`에서 다시 던진다.
+- `spin()`이 돌아오기 전에 자식 스레드를 정리하므로 `close()`가 없다. 멈춘 executor는 C++처럼 다시 spin할 수 있다.
 - flux 그룹의 자식은 rclpy 브릿지 없이 `flux.Executor.spin`을 직접 돈다. 그룹에 ROS 엔티티가 없으니 합칠 것이 없다.
 - 자식 스레드의 준비 작업은 `on_thread_start`에 둔다(다음 절).
 - 스레드가 늘어도 GIL을 놓는 일만 겹친다. numpy·zlib·디코딩은 겹치고, 순수 Python 바이트코드는 스레드가 몇이든 직렬이다.
@@ -693,13 +692,13 @@ flux 채널만 볼 때는 안쪽의 `flux.Executor`를 직접 써도 된다. rcl
 
 ```python doc:py_thread_start
 ex = flux.ros.PartitionedExecutor()
-ex.add_flux(sub, group)
+ex.add(sub, group)
 ex.add_ros_node(node)
 ex.on_thread_start(group, set_up_this_thread)
 ex.on_thread_start(node, set_up_this_thread)
 ```
 
-- `on_thread_start(unit, fn)`의 `unit`은 `add_flux`에 준 콜백 그룹이거나 `add_ros_node`에 준 노드다. C++에서는 콜백 그룹 하나지만 여기서는 단위가 둘로 갈린다.
+- `on_thread_start(unit, fn)`의 `unit`은 `add`에 준 콜백 그룹이거나 `add_ros_node`에 준 노드다. C++에서는 콜백 그룹 하나지만 여기서는 단위가 둘로 갈린다.
 - `fn`의 예외는 모든 자식을 멈추고 `spin()`에서 다시 던져진다. 스레드가 준비 없이 콜백을 계속 돌지 않는다.
 - 단위당 하나이고, 두 번째는 그 자리에서 거절한다. 이 executor가 돌리지 않는 단위의 hook은 `spin()`이 거절한다.
 
@@ -719,16 +718,16 @@ sync = message_filters.ApproximateTimeSynchronizer([left, right], 10, 0.02)
 sync.registerCallback(lambda a, b: use(a.view().width, b.width))
 
 ex = flux.ros.Executor()
-ex.add_flux(left)      # flux 쪽은 flux executor가, DDS 쪽은 rclpy가, 같은 스레드에서
+ex.add(left)      # flux 쪽은 flux executor가, DDS 쪽은 rclpy가, 같은 스레드에서
 ex.add_ros_node(node)
 ex.spin()
 ```
 
-C++판(3절)과 같은 모양이고, 차이는 셋이다.
+C++판(3절)과 같은 모양이다. upstream 자체의 C++과 Python이 다른 곳은 각자 upstream을 따른다. 안쪽 구독은 여기서 `.sub`, C++에서 `getSubscriber()`이고, 나중에 붙이는 `subscribe()`/`unsubscribe()`는 upstream처럼 C++에만 있다. `getTopic()`과 `header.stamp`는 두 언어가 같다. 그 밖의 차이는 셋이다.
 
 - 둘째 인자가 어댑터 모듈이다. `FINGERPRINT__`로 구독하고 `View`로 읽는다. `m.view()`가 그 `View`를 준다.
 - 큐가 프레임 객체를 그대로 문다. Python 콜백이 받는 것은 이미 자기 borrow를 쥔 객체라 C++처럼 `take()`로 소유권을 옮길 필요가 없다.
-- header 없는 스키마는 첫 프레임에서 `TypeError`다. C++은 컴파일이 멈추고, 이 언어가 멈출 수 있는 가장 이른 자리가 거기다.
+- header 없는 스키마는 생성자에서 `TypeError`다. C++은 `Subscriber`를 선언한 자리에서 컴파일이 멈춘다.
 
 주의할 값이 둘이다.
 
@@ -740,8 +739,8 @@ C++판(3절)과 같은 모양이고, 차이는 셋이다.
 `PartitionedExecutor`에서는 C++과 갈린다.
 
 ```python
-ex.add_flux(left, g)
-ex.add_flux(right, g)
+ex.add(left, g)
+ex.add(right, g)
 ex.add_sync_group(left, right)   # 이 둘이 한 synchronizer의 입력이다
 ex.spin()                        # 한 스레드에 안 모이면 여기서 던진다
 ```
@@ -757,14 +756,17 @@ ex.spin()                        # 한 스레드에 안 모이면 여기서 던�
 
 ## 5. QoS 한 장
 
-| 값 | 기본 | 뜻 |
-| --- | --- | --- |
-| `depth` | 1 | 최신에서 몇 프레임까지 뒤처져도 되나. 1이면 최신만 |
-| `durability` | `Volatile()` | 붙기 전 발행분을 받나. `TransientLocal(n)`이면 n개 재생 |
-| `max_borrow` | 2 | 동시에 쥐는 view 수 |
-| `reliability` | `BestEffort` | 유일한 값. C++ `flux::Reliability::BestEffort`, Python `flux.Reliability.BEST_EFFORT` |
+| 값 | 기본 | C++ | Python | 뜻 |
+| --- | --- | --- | --- | --- |
+| `depth` | 1 | `QoS(n)`, `keep_last(n)` | `depth=n` | 최신에서 몇 프레임까지 뒤처져도 되나. 1이면 최신만 |
+| `durability` | volatile | `transient_local(n)`, `durability_volatile()` | `durability=flux.TransientLocal(n)` | 붙기 전 발행분을 받나. `TransientLocal(n)`이면 n개 재생 |
+| `max_borrow` | 2 | `max_borrow(n)` | `max_borrow=n` | 동시에 쥐는 view 수 |
 
-거절하는 조합: `TransientLocal(n)`에서 `n > depth`, `depth == 0`, `max_borrow == 0`, reliable(C++ `flux::Reliability::Reliable`, Python `flux.Reliability.RELIABLE`). 이 값은 거절당하려고 enum에 있다. 조용히 best-effort로 낮추지 않는다.
+각 언어에서 ROS가 만드는 방식을 따른다. C++는 `rclcpp::QoS`처럼 setter를 잇는다: `flux::QoS(8).transient_local(4).max_borrow(4)`. Python은 rclpy `QoSProfile`처럼 키워드를 받는다. getter는 setter와 같은 이름에 인자가 없다(`qos.depth()`). 대입할 필드는 없다.
+
+전달은 항상 best-effort라 reliability 설정이 없다. reliable을 요구하면 C++은 컴파일 에러, Python은 `TypeError`다. 조용히 best-effort로 낮추지 않는다.
+
+거절: `depth == 0`, `max_borrow == 0`, `TransientLocal(n)`에서 `n > depth`. C++에서 앞의 둘은 그 값을 쓰는 setter가 던진다. 마지막은 두 필드가 필요하므로 QoS를 쓰는 자리(`Channel::qos`, `flux::ros::Subscription` 생성자)에서 구독을 알리기 전에 던진다. Python `flux.QoS(...)`는 모든 필드를 한 번에 받으므로 셋 다 그 자리에서 `ValueError`로 낸다.
 
 발행자의 `slot_count`보다 깊은 QoS는 에러가 아니다. 보관된 만큼으로 잘리고 못 받은 수는 `lost`에 잡힌다.
 

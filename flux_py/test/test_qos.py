@@ -17,7 +17,7 @@ def test_peek_repeats_and_take_consumes():
     pub = flux.Publisher("/pytest/qos/peek", slot_size=4096, slot_count=4, fingerprint=FP)
     sub = flux.Subscription("/pytest/qos/peek", fingerprint=FP)
 
-    assert pub.publish(np.full(8, 3, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.full(8, 3, dtype=np.uint8)) == flux.Published.OK
 
     assert int(sub.peek()[0]) == 3
     assert int(sub.peek()[0]) == 3  # nothing new published: the same frame again
@@ -32,7 +32,7 @@ def test_depth_one_delivers_newest_only():
     assert sub.qos.depth == 1
 
     for i in range(5):
-        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.Ok
+        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.OK
 
     assert int(sub.take()[0]) == 4
     assert sub.lost == 4
@@ -44,7 +44,7 @@ def test_depth_n_catches_up_in_order():
     sub = flux.Subscription("/pytest/qos/dn", fingerprint=FP, qos=flux.QoS(depth=8))
 
     for i in range(5):
-        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.Ok
+        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.OK
 
     seen = []
     while (v := sub.take()) is not None:
@@ -55,7 +55,7 @@ def test_depth_n_catches_up_in_order():
 def test_volatile_skips_the_backlog_and_transient_local_replays_it():
     pub = flux.Publisher("/pytest/qos/dur", slot_size=4096, slot_count=8, fingerprint=FP)
     for i in range(3):
-        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.Ok
+        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.OK
 
     late = flux.Subscription("/pytest/qos/dur", fingerprint=FP, qos=flux.QoS(depth=8))
     assert late.take() is None  # joined after those three
@@ -74,8 +74,8 @@ def test_unhonourable_qos_is_rejected():
         flux.QoS(depth=0)
     with pytest.raises(ValueError):
         flux.QoS(max_borrow=0)
-    with pytest.raises(ValueError):
-        flux.QoS(reliability=flux.Reliability.RELIABLE)
+    with pytest.raises(TypeError):
+        flux.QoS(reliability="reliable")  # delivery is best-effort; there is no knob to turn
 
 
 def test_take_blocking_waits_for_the_next_frame():
@@ -84,6 +84,6 @@ def test_take_blocking_waits_for_the_next_frame():
 
     assert sub.take_blocking(timeout_ns=20_000_000) is None  # nothing published yet
 
-    assert pub.publish(np.full(8, 9, dtype=np.uint8)) == flux.Published.Ok
+    assert pub.publish(np.full(8, 9, dtype=np.uint8)) == flux.Published.OK
     v = sub.take_blocking(timeout_ns=500_000_000)
     assert v is not None and int(v[0]) == 9
