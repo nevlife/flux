@@ -79,9 +79,9 @@ Anything that can be seen from the arguments alone is an exception in Python. Ov
 ### One-copy publish
 
 ```cpp doc:raw_publish
-flux::ros::Publisher pub(*node, "img", flux::kNoSchema, slot_size, slot_count);
+auto pub = flux::ros::create_publisher(node, "img", flux::kNoSchema, slot_size, slot_count);
 
-if (const flux::Published p = pub.publish(data, flux::DType::U8, {480, 640, 3});
+if (const flux::Published p = pub->publish(data, flux::DType::U8, {480, 640, 3});
     flux::faulted(p)) {
   report(flux::to_string(p));
 }
@@ -96,7 +96,7 @@ For a flat byte string, use `publish(data, nbytes)`. It is stamped as `u8[nbytes
 ### Zero-copy publish
 
 ```cpp doc:write_slot
-flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
+flux::WriteSlot w = pub->loan(flux::DType::U8, {480, 640, 3});
 if (w) {
   render_into(w.data(), w.capacity());
   if (const flux::Published p = w.commit(); flux::faulted(p)) report(flux::to_string(p));
@@ -124,8 +124,8 @@ Since dtype and shape were stated once in `loan`, `commit()` takes no arguments.
 ### Consuming
 
 ```cpp doc:raw_subscribe
-flux::ros::Subscription sub(
-  *node, "img", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & v) {
+auto sub = flux::ros::create_subscription(
+  node, "img", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & v) {
     const flux::FrameMeta & m = v.meta();
     if (m.ndim == 3 && m.dtype == flux::DType::U8) {
       use(v.data(), v.size());
@@ -142,7 +142,7 @@ What `meta()` returns was written by another process. If it was written by the s
 ### One-copy publish
 
 ```python doc:raw_py_publish
-pub = flux.ros.Publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
+pub = flux.ros.create_publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
 
 pub.publish(arr)
 ```
@@ -159,14 +159,15 @@ if loan:
 ```
 
 ```python doc:raw_py_loan_api
-loan = pub.loan(pub.slot_size, dtype="uint8")
-held = loan.valid
+loan = pub.loan()
+held = bool(loan)
+capacity = loan.capacity
 writable = loan.host_addressable
 published = loan.commit(nbytes=1024)
 loan.abort()
 ```
 
-`pub.loan(...)` returns a `flux.Loan`. It corresponds to C++ `flux::WriteSlot` and stays alive while holding the slot. `commit()` or `abort()` releases it. When no free slot exists it returns something falsy, so `if loan:` is the test.
+`pub.loan(...)` returns a `flux.Loan`. It corresponds to C++ `flux::WriteSlot` and stays alive while holding the slot. `commit()` or `abort()` releases it. When no free slot exists it returns `None`. A `Loan` that `commit()` or `abort()` released is falsy too, as C++ `WriteSlot`. So `if loan:` is the test for both. `capacity` is the bytes the slot holds, as C++ `capacity()`.
 
 After `commit()` the slot belongs to the subscribers. `loan.array` turns read-only, so writing through it raises `ValueError`, and asking for it again raises `RuntimeError`. A slice, `memoryview` or DLPack tensor taken before `commit()` is not covered. Writing through one changes the frame under a subscriber that is reading it, with no error. Finish every write before `commit()`, the same rule as a C++ pointer taken from `data()`.
 

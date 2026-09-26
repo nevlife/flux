@@ -13,11 +13,9 @@
 class ImagePublishPublisher : public rclcpp::Node
 {
 public:
-  ImagePublishPublisher()
-  : Node("flux_publish_image_pub"),
-    pub_(*this, kTopic, Image::kFingerprint, kSlotSize, kSlotCount),
-    buf_(kSlotSize)
+  ImagePublishPublisher() : Node("flux_publish_image_pub"), buf_(kSlotSize)
   {
+    pub_ = flux::ros::create_publisher(*this, kTopic, Image::kFingerprint, kSlotSize, kSlotCount);
     timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / kRateHz)),
@@ -61,13 +59,13 @@ private:
     // The schema is in the fingerprint, so an adapter frame carries no descriptor of its own.
     // Backpressure is a dropped frame on a best-effort transport, so it is not an error.
     // Anything else does not clear on its own.
-    if (const flux::Published p = pub_.publish(buf_.data(), b.size__()); flux::faulted(p)) {
+    if (const flux::Published p = pub_->publish(buf_.data(), b.size__()); flux::faulted(p)) {
       RCLCPP_ERROR_ONCE(get_logger(), "publish refused: %s", flux::to_string(p));
     }
     ++phase_;
   }
 
-  flux::ros::Publisher pub_;
+  std::shared_ptr<flux::ros::Publisher> pub_;
   std::vector<std::uint8_t> buf_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::uint8_t phase_ = 0;

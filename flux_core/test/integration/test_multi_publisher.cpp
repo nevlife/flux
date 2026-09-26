@@ -45,7 +45,7 @@ std::string uniq(const std::string & base)
 TEST(MultiPublisher, TwoPublishersShareOneSegment)
 {
   const std::uint64_t fp = 0xABCDEFu;
-  const std::string name = flux::segment_name(uniq("/flux_multipub_share"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_multipub_share"), fp);
   ::shm_unlink(name.c_str());
 
   flux::Channel pub1 = flux::Channel::create(name, 256, 4, fp);
@@ -84,7 +84,7 @@ TEST(MultiPublisher, TwoPublishersShareOneSegment)
 TEST(MultiPublisher, ConcurrentTwoPublishersCoherent)
 {
   const std::uint64_t fp = 0xABCD01u;
-  const std::string name = flux::segment_name(uniq("/flux_multipub_stress"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_multipub_stress"), fp);
   ::shm_unlink(name.c_str());
 
   constexpr std::uint32_t kSlotSize = 4096;
@@ -165,7 +165,7 @@ TEST(MultiPublisher, ConcurrentTwoPublishersCoherent)
 TEST(MultiPublisher, RestartReplacesSegmentAndSubscriberReattaches)
 {
   const std::uint64_t fp = 0x5217A57u;
-  const std::string name = flux::segment_name(uniq("/flux_restart"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_restart"), fp);
   ::shm_unlink(name.c_str());
   std::vector<std::byte> buf(128);
 
@@ -213,7 +213,7 @@ TEST(MultiPublisher, RestartReplacesSegmentAndSubscriberReattaches)
 TEST(MultiPublisher, ReplacementDoesNotStompLiveBorrow)
 {
   const std::uint64_t fp = 0x5717A99u;
-  const std::string name = flux::segment_name(uniq("/flux_reinit_live_borrow"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_reinit_live_borrow"), fp);
   ::shm_unlink(name.c_str());
   std::vector<std::byte> buf(64);
 

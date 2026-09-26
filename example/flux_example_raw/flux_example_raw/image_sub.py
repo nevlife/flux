@@ -19,7 +19,7 @@ class ImageRawSubscriber(Node):
         self.seen = 0
         self.shape = ()
         self.data_bytes = 0
-        self.subscription = flux.ros.Subscription(
+        self.subscription = flux.ros.create_subscription(
             self, self.TOPIC, callback=self.on_frame, fingerprint=flux.NO_SCHEMA
         )
 
@@ -42,7 +42,7 @@ def main(args=None):
         pass
     finally:
         executor.stop()
-        executor.close()
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
 

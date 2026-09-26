@@ -27,11 +27,12 @@ public:
   MultiSubscriber()
   : Node("flux_multi_sub"),
     slow_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
-    fast_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
-    flux_sub_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
-      on_flux(f);
-    })
+    fast_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive))
   {
+    flux_sub_ = flux::ros::create_subscription(
+      *this, kTopic, Image::kFingerprint, flux::QoS{},
+      [this](const flux::FrameView & f) { on_flux(f); });
+
     auto qos = rclcpp::QoS(rclcpp::KeepLast(kDepth)).best_effort();
     rclcpp::SubscriptionOptions slow_opts;
     slow_opts.callback_group = slow_group_;
@@ -47,7 +48,7 @@ public:
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
 
-  flux::ros::Subscription & flux_subscription() { return flux_sub_; }
+  flux::ros::Subscription & flux_subscription() { return *flux_sub_; }
 
 private:
   using Image = sensor_msgs::flux_msg::Image;
@@ -89,7 +90,7 @@ private:
 
   rclcpp::CallbackGroup::SharedPtr slow_group_;
   rclcpp::CallbackGroup::SharedPtr fast_group_;
-  flux::ros::Subscription flux_sub_;
+  std::shared_ptr<flux::ros::Subscription> flux_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr ros_slow_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr ros_fast_;
   rclcpp::TimerBase::SharedPtr timer_;

@@ -58,9 +58,9 @@ const std::string & process_domain();
 // exactly this much, and a cut name would lose what tells two keys or two schemas apart.
 inline constexpr std::size_t kMaxKeyLen = 185;
 
-// Valid POSIX shm name for a channel key + schema fingerprint: single leading '/', no other '/'.
-// Distinct fingerprints never share a name. Throws std::invalid_argument for a key longer than
-// kMaxKeyLen.
+// The signpost: fixed across publisher restarts, it points at the current segment. A valid
+// POSIX shm name (one leading '/'). Distinct fingerprints never share a name. Throws
+// std::invalid_argument for a key longer than kMaxKeyLen.
 //
 // `key` is an opaque channel key, not a ROS topic: core neither resolves nor validates it, and
 // two keys that differ at all (`a/b` vs `/a/b`) name two segments. Peers agree on the key above
@@ -71,7 +71,7 @@ inline constexpr std::size_t kMaxKeyLen = 185;
 // domains never share a name, and nothing crosses between them. It is always present in the name,
 // never elided when it is the default. An optional component would give one state two spellings
 // and let "unset" and "explicitly default" fail to meet.
-std::string segment_name(
+std::string signpost_name(
   const std::string & key, std::uint64_t fingerprint,
   const std::string & domain = process_domain());
 
@@ -80,12 +80,6 @@ std::string segment_name(
 // so a tool matching a user-typed name against one must compare through this rather than restate
 // the rule.
 std::string flatten_key(const std::string & key);
-
-// Fixed-name rendezvous object for a channel key. Never changes across
-// publisher restarts; points at the current unique-named segment.
-std::string signpost_name(
-  const std::string & key, std::uint64_t fingerprint,
-  const std::string & domain = process_domain());
 
 // Segment name for one publisher-group instance: `<signpost>.<pid>.<starttime>`, never reused
 // across restarts. A subscriber must be able to rebuild the exact name from the signpost.

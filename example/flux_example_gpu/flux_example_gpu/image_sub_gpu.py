@@ -27,7 +27,7 @@ class GpuImageSubscriber(Node):
         self.seen = 0
         self.device_ptr = 0
         self.shape = ()
-        self.subscription = flux.ros.Subscription(
+        self.subscription = flux.ros.create_subscription(
             self, self.TOPIC, callback=self.on_frame, fingerprint=flux.NO_SCHEMA, device="cuda"
         )
         self.timer = self.create_timer(1.0, self.report)
@@ -63,7 +63,7 @@ def main(args=None):
         pass
     finally:
         executor.stop()
-        executor.close()
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
 

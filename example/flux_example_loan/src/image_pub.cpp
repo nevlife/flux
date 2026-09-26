@@ -12,9 +12,9 @@
 class ImageLoanPublisher : public rclcpp::Node
 {
 public:
-  ImageLoanPublisher()
-  : Node("flux_loan_image_pub"), pub_(*this, kTopic, Image::kFingerprint, kSlotSize, kSlotCount)
+  ImageLoanPublisher() : Node("flux_loan_image_pub")
   {
+    pub_ = flux::ros::create_publisher(*this, kTopic, Image::kFingerprint, kSlotSize, kSlotCount);
     timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / kRateHz)),
@@ -37,7 +37,7 @@ private:
 
   void tick()
   {
-    Image::Builder b = Image::build__(pub_);
+    Image::Builder b = Image::build__(*pub_);
     if (!b) {
       return;  // every slot borrowed; delivery is best-effort
     }
@@ -63,7 +63,7 @@ private:
     ++phase_;
   }
 
-  flux::ros::Publisher pub_;
+  std::shared_ptr<flux::ros::Publisher> pub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::uint8_t phase_ = 0;
 };

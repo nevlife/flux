@@ -7,6 +7,7 @@ is parked wakes it) rather than picked up by a polling tick.
 """
 
 import gc
+import os
 import threading
 import time
 import weakref
@@ -18,6 +19,7 @@ rclpy = pytest.importorskip("rclpy")
 
 import flux  # noqa: E402
 import flux.ros  # noqa: E402
+from rclpy.executors import SingleThreadedExecutor  # noqa: E402
 
 FP = 0xB817DE
 
@@ -147,7 +149,7 @@ def test_add_ros_node_is_idempotent(node):
     ex.add_ros_node(node)
     ex.add_ros_node(node)
     assert node.executor is not None
-    ex.close()
+    ex.shutdown()
 
 
 def test_adding_a_subscription_with_no_callback_is_refused(node):
@@ -156,7 +158,7 @@ def test_adding_a_subscription_with_no_callback_is_refused(node):
     ex = flux.ros.Executor()
     with pytest.raises(TypeError):
         ex.add(flux.Subscription("/pytest/rosex/no_cb", fingerprint=FP))
-    ex.close()
+    ex.shutdown()
 
 
 def test_registration_is_refused_while_spinning(node):
@@ -176,7 +178,18 @@ def test_registration_is_refused_while_spinning(node):
     ex.stop()
     assert done.wait(timeout=5.0)
     t.join(timeout=5.0)
-    ex.close()
+    ex.shutdown()
+
+
+def test_created_publishers_and_subscriptions_meet(node):
+    # The rclcpp create_publisher(node, ...) form.
+    topic = f"create_{os.getpid()}"
+    pub = flux.ros.create_publisher(node, topic, slot_size=4096, slot_count=2, fingerprint=FP)
+    sub = flux.ros.create_subscription(node, topic, fingerprint=FP)
+    assert isinstance(pub, flux.ros.Publisher) and isinstance(sub, flux.ros.Subscription)
+    assert pub.publish(np.full(4, 5, dtype=np.uint8)) == flux.Published.OK
+    v = sub.take()
+    assert v is not None and int(v[0]) == 5
 
 
 def test_topic_is_resolved_against_the_node_namespace():
@@ -189,9 +202,9 @@ def test_topic_is_resolved_against_the_node_namespace():
         try:
             pub = flux.ros.Publisher(n, "image", slot_size=4096, slot_count=2, fingerprint=FP)
             sub = flux.ros.Subscription(n, "image", fingerprint=FP)
-            assert flux.ros.resolve(n, "image") == "/robot1/image"
+            assert pub.topic_name == sub.topic_name == "/robot1/image"
             # Same resolved name on both ends -> same segment -> they meet.
-            assert pub.segment_name == sub.segment_name
+            assert pub.signpost_name == sub.signpost_name
             # And a namespace-less node would NOT meet it.
             assert pub.publish(np.full(4, 3, dtype=np.uint8)) == flux.Published.OK
             v = sub.take()
@@ -240,7 +253,7 @@ def test_spin_once_blocks_by_default_and_returns_the_flux_callbacks_run(node):
     while ran == 0 and time.monotonic() < deadline:
         ran = ex.spin_once()
     assert ran == 1
-    ex.close()
+    ex.shutdown()
 
 
 def test_spin_once_returns_on_the_first_work_of_either_transport(node):
@@ -283,7 +296,7 @@ def test_spin_once_returns_on_the_first_work_of_either_transport(node):
         assert flux_wait < 1.0, "a flux frame did not end the wait"
         assert got["flux"] == 1
     finally:
-        ex.close()
+        ex.shutdown()
 
 
 def test_a_stop_before_spin_ends_it_and_is_cleared_on_the_way_out(node):
@@ -301,7 +314,7 @@ def test_a_stop_before_spin_ends_it_and_is_cleared_on_the_way_out(node):
     ex.stop()
     t.join(timeout=5.0)
     assert not t.is_alive()
-    ex.close()
+    ex.shutdown()
 
 
 def test_frames_arrive_under_the_events_executor(node):
@@ -332,25 +345,53 @@ def test_frames_arrive_under_the_events_executor(node):
         t.join(timeout=5.0)
 
 
-def test_stop_is_idempotent_and_close_detaches(node):
+def test_stop_is_idempotent_and_shutdown_detaches(node):
     ex = flux.ros.Executor()
     ex.add_ros_node(node)
+    assert not ex.is_spinning
     t = spin_in_thread(ex)
     time.sleep(0.1)
+    assert ex.is_spinning
     ex.stop()
     ex.stop()  # second stop must be a no-op, not an error
     t.join(timeout=5.0)
     assert not t.is_alive()
+    assert not ex.is_spinning
 
-    ex.close()
-    ex.close()  # idempotent
+    ex.shutdown()
+    ex.shutdown()  # idempotent
     with pytest.raises(RuntimeError):
-        ex.spin()  # a closed executor refuses to spin rather than queue onto a detached node
+        ex.spin()  # a shut-down executor refuses to spin rather than queue onto a detached node
+
+
+def test_shutdown_reports_a_callback_it_could_not_wait_out(node):
+    # As rclpy's Executor.shutdown(timeout_sec): False, nodes still attached, rather than
+    # detaching quietly under a callback that is still running.
+    entered = threading.Event()
+    release = threading.Event()
+
+    def stuck():
+        entered.set()
+        release.wait()
+
+    node.create_timer(0.01, stuck)
+    rclpy_executor = SingleThreadedExecutor()
+    ex = flux.ros.Executor(rclpy_executor=rclpy_executor)
+    ex.add_ros_node(node)
+    t = spin_in_thread(ex)
+    assert entered.wait(timeout=5.0)
+    assert ex.shutdown(timeout_sec=0.1) is False
+    assert node in rclpy_executor.get_nodes()
+    release.set()
+    assert ex.shutdown() is True
+    assert node not in rclpy_executor.get_nodes()
+    t.join(timeout=5.0)
+    assert not t.is_alive()
 
 
 @pytest.mark.parametrize("kind", ["wait_set", "events"])
 def test_teardown_survives_an_external_shutdown(node, kind):
-    """Ctrl-C order: the context dies first, and stop()/close() still have to run.
+    """Ctrl-C order: the context dies first, and stop()/shutdown() still have to run.
 
     Both wake the spin thread with create_task, and by then the context behind the rclpy
     executor is gone. Neither may raise -- teardown that throws leaves the bridge thread
@@ -384,7 +425,7 @@ def test_teardown_survives_an_external_shutdown(node, kind):
     assert raised == ["ExternalShutdownException"]
 
     ex.stop()
-    ex.close()
+    ex.shutdown()
 
 
 def test_a_queued_task_does_not_pin_the_executor(node):
@@ -393,16 +434,16 @@ def test_a_queued_task_does_not_pin_the_executor(node):
     The bridge queues a dispatch task per wake, and one queued as the context goes down is
     never run and never dropped -- the rclpy executor holds it, and an EventsExecutor is
     itself held by the context it registered a shutdown callback with. If that task carried a
-    strong reference back here, close() would not be the end of the segment mapping.
+    strong reference back here, shutdown() would not be the end of the segment mapping.
     """
     ex = flux.ros.Executor()
     ex.add_ros_node(node)
     stranded = ex._exec.create_task(ex._dispatch_task)  # the object the bridge queues
     ex.stop()
-    ex.close()
+    ex.shutdown()
 
     ref = weakref.ref(ex)
     del ex
     gc.collect()
-    assert ref() is None, "a queued task kept the executor alive past close()"
+    assert ref() is None, "a queued task kept the executor alive past shutdown()"
     stranded()  # and running it afterwards is a no-op, not an attribute error on a dead object

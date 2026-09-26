@@ -29,7 +29,7 @@ class ImageLoanPublisher(Node):
         super().__init__("flux_loan_image_pub")
         self.ramp = np.arange(self.DATA_BYTES, dtype=np.uint8)
         self.phase = 0
-        self.publisher = flux.ros.Publisher(
+        self.publisher = flux.ros.create_publisher(
             self,
             self.TOPIC,
             fingerprint=Image.FINGERPRINT__,

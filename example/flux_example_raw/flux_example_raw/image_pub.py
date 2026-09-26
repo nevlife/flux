@@ -27,7 +27,7 @@ class ImageRawPublisher(Node):
             self.HEIGHT, self.WIDTH, self.CHANNELS
         )
         self.phase = 0
-        self.publisher = flux.ros.Publisher(
+        self.publisher = flux.ros.create_publisher(
             self,
             self.TOPIC,
             fingerprint=flux.NO_SCHEMA,

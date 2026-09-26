@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace rclcpp
 {
@@ -64,9 +65,11 @@ public:
 
   bool has_callback() const noexcept { return static_cast<bool>(cb_); }
   bool attached() const noexcept { return ch_.has_value(); }
+  // The topic with the node's namespace and remaps applied, as rclcpp's get_topic_name().
+  const char * get_topic_name() const noexcept { return topic_.c_str(); }
   // The fixed rendezvous name (the signpost), not the segment it
   // currently points at.
-  const std::string & segment_name() const noexcept { return seg_name_; }
+  const std::string & signpost_name() const noexcept { return seg_name_; }
 
   // This process's domain, the one this subscription searched. attached() says whether a
   // publisher was found; this says where it looked (docs/en/api.en.md, Subscription).
@@ -115,6 +118,7 @@ public:
   Channel * channel() noexcept override { return ch_ ? &*ch_ : nullptr; }
 
 private:
+  std::string topic_;
   std::string seg_name_;
   std::uint64_t fingerprint_;
   Callback cb_;
@@ -125,6 +129,23 @@ private:
   MemoryPolicy mem_;  // same reason as stream_: declared here, re-applied per attach
   std::optional<Channel> ch_;
 };
+
+// The rclcpp::create_subscription() form. The constructor stays public, as rclcpp's does.
+inline std::shared_ptr<Subscription> create_subscription(
+  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
+  const QoS & qos = QoS{}, Subscription::Callback cb = {}, Device device = Device::Cpu,
+  const MemoryPolicy & mem = {})
+{
+  return std::make_shared<Subscription>(node, topic, fingerprint, qos, std::move(cb), device, mem);
+}
+
+inline std::shared_ptr<Subscription> create_subscription(
+  const std::shared_ptr<rclcpp::Node> & node, const std::string & topic,
+  std::uint64_t fingerprint = kNoSchema, const QoS & qos = QoS{}, Subscription::Callback cb = {},
+  Device device = Device::Cpu, const MemoryPolicy & mem = {})
+{
+  return create_subscription(*node, topic, fingerprint, qos, std::move(cb), device, mem);
+}
 
 }  // namespace flux::ros
 

@@ -863,7 +863,7 @@ FrameView Channel::peek() noexcept
 
 void Channel::apply_memory_policy()
 {
-  if (mem_.none()) return;
+  if (!mem_.precommit && !mem_.lock) return;
   if (mem_.lock) {
     sh_->seg.lock_pages();  // populates what it locks, so the commit comes with it
     return;

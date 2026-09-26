@@ -22,8 +22,6 @@ struct MemoryPolicy
   // pressure. Needs RLIMIT_MEMLOCK to cover the segment; a refusal is reported, never downgraded.
   // Implies the commit, since mlock populates what it locks.
   bool lock = false;
-
-  bool none() const noexcept { return !precommit && !lock; }
 };
 
 }  // namespace flux

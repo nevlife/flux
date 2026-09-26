@@ -16,7 +16,7 @@ The slot size is a build time constant. So it is sized with `kMaxPoints`. When t
 ```cpp
 static constexpr std::uint32_t kSlotSize = kMaxPoints * kPointStep + 4096;
 
-Cloud::Builder b = Cloud::build__(pub_);
+Cloud::Builder b = Cloud::build__(*pub_);
 b.set__width(n);
 b.set__row_step(n * kPointStep);
 auto data = b.alloc__data(n * kPointStep);

@@ -17,7 +17,8 @@ namespace flux::ros
 Subscription::Subscription(
   rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
   Callback cb, Device device, const MemoryPolicy & mem)
-: seg_name_(flux::signpost_name(detail::resolve(node, topic), fingerprint)),
+: topic_(detail::resolve(node, topic)),
+  seg_name_(flux::signpost_name(topic_, fingerprint)),
   fingerprint_(fingerprint),
   cb_(std::move(cb)),
   qos_(qos),
@@ -25,7 +26,7 @@ Subscription::Subscription(
   mem_(mem)
 {
   qos_.validate();  // fail at construction, not inside a callback, and before announcing
-  detail::announce(node, seg_name_, detail::resolve(node, topic), /*publisher=*/false);
+  detail::announce(node, seg_name_, topic_, /*publisher=*/false);
   attach();  // volatile counts from where this subscription joined, not from the first wake
 }
 

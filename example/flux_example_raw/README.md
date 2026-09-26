@@ -12,7 +12,7 @@ ros2 run flux_example_raw image_sub         # ros2 run flux_example_raw image_su
 `loan()` takes the dtype and shape. The byte count follows from these two, so the description a consumer uses to build a view cannot diverge from the actual payload.
 
 ```cpp
-flux::WriteSlot w = pub_.loan(flux::DType::U8, {kHeight, kWidth, kChannels});
+flux::WriteSlot w = pub_->loan(flux::DType::U8, {kHeight, kWidth, kChannels});
 auto * px = static_cast<std::uint8_t *>(w.data());
 w.commit();
 ```

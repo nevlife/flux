@@ -72,16 +72,16 @@ TEST(DomainTest, UnsetAndExplicitDefaultAreOneDomain)
   const char * const kEnv = flux::kDefaultDomainEnv;
   const ScopedEnv no_label("FLUX_DOMAIN", nullptr);
   const ScopedEnv no_domain("ROS_DOMAIN_ID", nullptr);
-  const std::string implicit = flux::segment_name("/t", kFp, flux::resolve_domain(kEnv));
+  const std::string implicit = flux::signpost_name("/t", kFp, flux::resolve_domain(kEnv));
 
   const ScopedEnv explicit_zero("ROS_DOMAIN_ID", "0");
-  EXPECT_EQ(flux::segment_name("/t", kFp, flux::resolve_domain(kEnv)), implicit);
+  EXPECT_EQ(flux::signpost_name("/t", kFp, flux::resolve_domain(kEnv)), implicit);
 
   const ScopedEnv empty_domain("ROS_DOMAIN_ID", "");
-  EXPECT_EQ(flux::segment_name("/t", kFp, flux::resolve_domain(kEnv)), implicit);
+  EXPECT_EQ(flux::signpost_name("/t", kFp, flux::resolve_domain(kEnv)), implicit);
 
   const ScopedEnv label_zero("FLUX_DOMAIN", "0");
-  EXPECT_EQ(flux::segment_name("/t", kFp, flux::resolve_domain(kEnv)), implicit);
+  EXPECT_EQ(flux::signpost_name("/t", kFp, flux::resolve_domain(kEnv)), implicit);
 }
 
 // The other half of the same bug: a domain written two ways is one domain.
@@ -90,10 +90,10 @@ TEST(DomainTest, PartitionIsRenderedFromTheParsedNumber)
   const char * const kEnv = flux::kDefaultDomainEnv;
   const ScopedEnv no_label("FLUX_DOMAIN", nullptr);
   const ScopedEnv seven("ROS_DOMAIN_ID", "7");
-  const std::string canonical = flux::segment_name("/t", kFp, flux::resolve_domain(kEnv));
+  const std::string canonical = flux::signpost_name("/t", kFp, flux::resolve_domain(kEnv));
 
   const ScopedEnv padded("ROS_DOMAIN_ID", "007");
-  EXPECT_EQ(flux::segment_name("/t", kFp, flux::resolve_domain(kEnv)), canonical);
+  EXPECT_EQ(flux::signpost_name("/t", kFp, flux::resolve_domain(kEnv)), canonical);
   EXPECT_EQ(flux::resolve_domain(kEnv), "7");
 }
 
@@ -158,18 +158,18 @@ TEST(DomainTest, ProcessDomainIsLatchedForTheLifeOfTheProcess)
   }
   EXPECT_EQ(flux::process_domain(), first);
   // The names a process builds are what the latch is for.
-  EXPECT_EQ(flux::segment_name("/t", kFp), flux::segment_name("/t", kFp, first));
+  EXPECT_EQ(flux::signpost_name("/t", kFp), flux::signpost_name("/t", kFp, first));
 }
 
 TEST(DomainTest, DistinctDomainsNeverShareAName)
 {
-  EXPECT_NE(flux::segment_name("/t", kFp, "0"), flux::segment_name("/t", kFp, "1"));
+  EXPECT_NE(flux::signpost_name("/t", kFp, "0"), flux::signpost_name("/t", kFp, "1"));
   EXPECT_NE(flux::signpost_name("/t", kFp, "0"), flux::signpost_name("/t", kFp, "1"));
 }
 
 TEST(DomainTest, NameCarriesTheDomainAndStaysAValidShmName)
 {
-  const std::string name = flux::segment_name("/camera/image_raw", kFp, "7");
+  const std::string name = flux::signpost_name("/camera/image_raw", kFp, "7");
   EXPECT_EQ(name.front(), '/');
   EXPECT_EQ(name.find('/', 1), std::string::npos);
   EXPECT_LE(name.size(), 255u);
@@ -178,16 +178,16 @@ TEST(DomainTest, NameCarriesTheDomainAndStaysAValidShmName)
 
 TEST(DomainTest, SegmentNameRefusesAnUnvalidatedDomain)
 {
-  EXPECT_THROW(flux::segment_name("/t", kFp, "a/b"), std::invalid_argument);
-  EXPECT_THROW(flux::segment_name("/t", kFp, ""), std::invalid_argument);
+  EXPECT_THROW(flux::signpost_name("/t", kFp, "a/b"), std::invalid_argument);
+  EXPECT_THROW(flux::signpost_name("/t", kFp, ""), std::invalid_argument);
 }
 
 // A name is never cut: cutting drops the part that tells two keys or two schemas apart. So a key
 // is refused past the length whose longest name (widest domain, pid and starttime) still fits.
 TEST(DomainTest, AKeyPastTheLimitIsRefused)
 {
-  EXPECT_NO_THROW(flux::segment_name(std::string(185, 'k'), kFp));
-  EXPECT_THROW(flux::segment_name(std::string(186, 'k'), kFp), std::invalid_argument);
+  EXPECT_NO_THROW(flux::signpost_name(std::string(185, 'k'), kFp));
+  EXPECT_THROW(flux::signpost_name(std::string(186, 'k'), kFp), std::invalid_argument);
   EXPECT_THROW(flux::signpost_name(std::string(186, 'k'), kFp), std::invalid_argument);
 }
 

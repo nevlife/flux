@@ -21,7 +21,7 @@ class CloudSubscriber(Node):
         self.points = 0
         self.point_step = 0
         self.data_bytes = 0
-        self.subscription = flux.ros.Subscription(
+        self.subscription = flux.ros.create_subscription(
             self, self.TOPIC, callback=self.on_frame, fingerprint=PointCloud2.FINGERPRINT__
         )
         self.timer = self.create_timer(1.0, self.report)
@@ -52,7 +52,7 @@ def main(args=None):
         pass
     finally:
         executor.stop()
-        executor.close()
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
 

@@ -14,16 +14,15 @@
 class NewestSubscriber : public rclcpp::Node
 {
 public:
-  NewestSubscriber()
-  : Node("flux_qos_newest"),
-    sub_(*this, kTopic, Image::kFingerprint, newest_qos(), [this](const flux::FrameView & f) {
-      on_frame(f);
-    })
+  NewestSubscriber() : Node("flux_qos_newest")
   {
+    sub_ = flux::ros::create_subscription(
+      *this, kTopic, Image::kFingerprint, newest_qos(),
+      [this](const flux::FrameView & f) { on_frame(f); });
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
 
-  flux::ros::Subscription & subscription() { return sub_; }
+  flux::ros::Subscription & subscription() { return *sub_; }
 
 private:
   using Image = sensor_msgs::flux_msg::Image;
@@ -42,13 +41,13 @@ private:
 
   void report()
   {
-    const flux::Channel::Refused r = sub_.refused();
+    const flux::Channel::Refused r = sub_->refused();
     RCLCPP_INFO(
-      get_logger(), "seen %lu  lost %lu  refused %lu (max_borrow %lu)", seen_, sub_.lost(),
+      get_logger(), "seen %lu  lost %lu  refused %lu (max_borrow %lu)", seen_, sub_->lost(),
       r.total(), r.max_borrow);
   }
 
-  flux::ros::Subscription sub_;
+  std::shared_ptr<flux::ros::Subscription> sub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::uint64_t seen_ = 0;
 };

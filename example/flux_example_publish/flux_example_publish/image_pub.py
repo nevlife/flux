@@ -30,7 +30,7 @@ class ImagePublishPublisher(Node):
         self.ramp = np.arange(self.DATA_BYTES, dtype=np.uint8)
         self.buf = np.empty(self.SLOT_SIZE, dtype=np.uint8)
         self.phase = 0
-        self.publisher = flux.ros.Publisher(
+        self.publisher = flux.ros.create_publisher(
             self,
             self.TOPIC,
             fingerprint=Image.FINGERPRINT__,

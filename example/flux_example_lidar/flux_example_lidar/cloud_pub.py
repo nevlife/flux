@@ -28,7 +28,7 @@ class CloudPublisher(Node):
         super().__init__("flux_lidar_cloud_pub")
         self.sweep = 0
         self.ramp = np.arange(self.MAX_POINTS, dtype=np.float32) * 0.001
-        self.publisher = flux.ros.Publisher(
+        self.publisher = flux.ros.create_publisher(
             self,
             self.TOPIC,
             fingerprint=PointCloud2.FINGERPRINT__,

@@ -57,6 +57,18 @@ def test_an_unknown_device_is_refused_not_guessed():
         flux.Subscription("/pytest/gpu/bad", fingerprint=FP, device="opencl")
 
 
+def test_a_refused_declaration_says_what_would_work():
+    # The error is the probe: it names what flux takes and the way out, as in C++.
+    try:
+        flux.Publisher("/pytest/gpu/refused", fingerprint=FP, device="cuda")
+    except ValueError as exc:
+        msg = str(exc)
+    else:
+        pytest.skip("this host has a GPU route")
+    assert "integrated GPU" in msg and "VMM and POSIX fd export" in msg
+    assert 'device="cpu"' in msg
+
+
 def test_a_host_channel_declares_no_stream():
     pub = flux.Publisher("/pytest/gpu/host", slot_size=1 << 16, slot_count=2, fingerprint=FP)
     sub = flux.Subscription("/pytest/gpu/host", fingerprint=FP)

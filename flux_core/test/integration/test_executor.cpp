@@ -983,7 +983,7 @@ TEST_P(ExecutorTest, AnOrphanedChannelRestartsTheEntryWithoutLeakingTheGate)
 TEST_P(ExecutorTest, DeliverySurvivesAPublisherRestart)
 {
   const std::uint64_t fp = 0xE0E0E0u;
-  const std::string name = flux::segment_name(uniq("/flux_exec_restart"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_exec_restart"), fp);
   ::shm_unlink(name.c_str());
   std::vector<std::byte> buf(128);
 
@@ -1067,7 +1067,7 @@ TEST(ExecutorRestart, ARestartLeavesNoExtraWaitInTheKernel)
   };
 
   const std::uint64_t fp = 0xE1E1E1u;
-  const std::string name = flux::segment_name(uniq("/flux_exec_restart_leak"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_exec_restart_leak"), fp);
   ::shm_unlink(name.c_str());
   std::vector<std::byte> buf(128);
   std::optional<flux::Channel> pub;
@@ -1116,7 +1116,7 @@ TEST_P(ExecutorTest, AMergedWaitLosesNeitherAFrameNorAnInterrupt)
   constexpr std::int64_t kTimeoutNs = 100'000'000;  // 600x the worst wait measured on this path
 
   const std::uint64_t fp = 0xEF0011u;
-  const std::string name = flux::segment_name(uniq("/flux_exec_merged"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_exec_merged"), fp);
   ::shm_unlink(name.c_str());
 
   std::optional<flux::Channel> pub;

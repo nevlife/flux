@@ -210,7 +210,7 @@ TEST(Channel, ConcurrentCoherence)
   if (const char * e = std::getenv("FLUX_STRESS_FRAMES")) frames = std::strtoull(e, nullptr, 10);
 
   const std::string name =
-    flux::segment_name("/flux_test/coherence." + std::to_string(::getpid()), kFp);
+    flux::signpost_name("/flux_test/coherence." + std::to_string(::getpid()), kFp);
   flux::Channel ch = flux::Channel::create(name, kSlotSize, kSlots, kFp);
 
   std::atomic<bool> stop{false};

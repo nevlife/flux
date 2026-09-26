@@ -19,7 +19,7 @@ auto data = b.alloc__data(kDataBytes);
 if (!b.ok__()) {
   return;
 }
-pub_.publish(buf_.data(), b.size__());
+pub_->publish(buf_.data(), b.size__());
 ```
 
 For a frame with an adapter the schema is in the fingerprint, so the publisher has nothing to describe. It is one line, `publish(data, nbytes)`.

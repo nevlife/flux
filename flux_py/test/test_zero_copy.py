@@ -158,6 +158,21 @@ def test_uncommitted_loan_is_safe_to_drop():
     scope()  # both die here; the test failing means the process crashed
 
 
+def test_a_loan_is_truthy_until_released_and_reports_its_capacity():
+    # As C++ WriteSlot: operator bool and capacity().
+    pub = flux.Publisher("/pytest/loan/truthy", slot_size=4096, slot_count=4, fingerprint=FP)
+    loan = pub.loan((16,), dtype="uint8")
+    assert loan and loan.capacity == 4096
+    loan.commit()
+    assert not loan
+    loan = pub.loan((16,), dtype="uint8")
+    loan.abort()
+    assert not loan
+    whole = pub.loan()  # no shape: the whole slot, as C++ loan()
+    assert whole.array.shape == (4096,) and whole.array.dtype == np.uint8
+    whole.abort()
+
+
 def test_publish_rejects_rank_above_max_dims():
     # ndim was only checked on the read side, where a bad frame is dropped WITHOUT advancing the
     # cursor -- so one such publish wedged take() on that slot forever. Reject on write instead.
@@ -268,8 +283,8 @@ def test_endpoints_report_the_domain_they_resolved_and_core_agrees():
     core = flux.process_domain()
     assert pub.domain == core
     assert sub.domain == core
-    assert pub.segment_name == sub.segment_name
-    assert f".s{core}." in pub.segment_name
+    assert pub.signpost_name == sub.signpost_name
+    assert f".s{core}." in pub.signpost_name
 
 
 # resolve_domain is a query and follows the environment; process_domain is the answer names are
@@ -286,7 +301,7 @@ def test_process_domain_is_latched_while_resolve_domain_follows_the_environment(
 
     pub = flux.Publisher("/pytest/domain/latched", slot_size=4096, slot_count=2, fingerprint=FP)
     assert pub.domain == latched
-    assert f".s{latched}." in pub.segment_name
+    assert f".s{latched}." in pub.signpost_name
 
 
 def test_subscription_drops_a_dead_publisher_mapping():
@@ -567,7 +582,7 @@ def test_a_segment_that_cannot_be_opened_while_its_publisher_lives_raises():
     if os.geteuid() == 0:
         pytest.skip("root opens a read-only file anyway")
     pub = flux.Publisher("/pytest/unopenable", slot_size=4096, slot_count=2, fingerprint=FP)
-    prefix = pub.segment_name[1:] + "."
+    prefix = pub.signpost_name[1:] + "."
     locked = [n for n in os.listdir("/dev/shm") if n.startswith(prefix)]
     assert len(locked) == 1
     os.chmod("/dev/shm/" + locked[0], 0o400)
@@ -582,12 +597,12 @@ def test_a_signpost_that_cannot_be_read_raises():
     if os.geteuid() == 0:
         pytest.skip("root reads a mode-0 file anyway")
     pub = flux.Publisher("/pytest/unreadable", slot_size=4096, slot_count=2, fingerprint=FP)
-    os.chmod("/dev/shm" + pub.segment_name, 0)
+    os.chmod("/dev/shm" + pub.signpost_name, 0)
     try:
         with pytest.raises(RuntimeError):
             flux.Subscription("/pytest/unreadable", fingerprint=FP)
     finally:
-        os.chmod("/dev/shm" + pub.segment_name, 0o600)  # signposts persist across runs
+        os.chmod("/dev/shm" + pub.signpost_name, 0o600)  # signposts persist across runs
     del pub
 
 
@@ -616,3 +631,18 @@ def test_a_zero_dimensional_array_round_trips():
     loan.commit()
     v = sub.take()
     assert v.shape == () and float(v) == 2.5
+
+
+def test_the_version_is_the_linked_library_s():
+    # C++ flux::version(): the library, not a string pinned in the Python package.
+    import re
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+", flux.__version__)
+
+
+def test_signpost_name_is_the_name_a_publisher_reports_and_stats_read():
+    pub = flux.Publisher("/pytest/signpost", fingerprint=FP, slot_size=4096, slot_count=2)
+    name = flux.signpost_name("/pytest/signpost", FP)
+    assert name == pub.signpost_name
+    assert name == flux.signpost_name("/pytest/signpost", FP, flux.process_domain())
+    assert flux.read_channel_stats(name).live

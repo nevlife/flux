@@ -21,6 +21,7 @@ from ._flux import (
     Topic,
     TransientLocal,
     Volatile,
+    __version__,
     canonical_domain,
     enumerate_topics,
     faulted,
@@ -28,6 +29,7 @@ from ._flux import (
     process_domain,
     read_channel_stats,
     resolve_domain,
+    signpost_name,
 )
 
 __all__ = [
@@ -51,6 +53,7 @@ __all__ = [
     "Topic",
     "TransientLocal",
     "Volatile",
+    "__version__",
     "canonical_domain",
     "enumerate_topics",
     "faulted",
@@ -58,4 +61,5 @@ __all__ = [
     "process_domain",
     "read_channel_stats",
     "resolve_domain",
+    "signpost_name",
 ]

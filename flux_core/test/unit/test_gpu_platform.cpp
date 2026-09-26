@@ -121,6 +121,22 @@ TEST(GpuPlatform, EveryRouteNamesItself)
   EXPECT_STREQ(flux::gpu::to_string(static_cast<Route>(0xEE)), "Unknown");
 }
 
+// The refusal says what flux takes and what to do instead, not only why this host failed, so a
+// caller needs no probe of its own to decide.
+TEST(GpuPlatform, ARefusedDeclarationSaysWhatWouldWork)
+{
+  if (flux::gpu::probe().route != Route::None) GTEST_SKIP() << "this host has a GPU route";
+  try {
+    flux::gpu::require_route();
+    FAIL() << "require_route() accepted a host with no route";
+  } catch (const std::invalid_argument & e) {
+    const std::string what = e.what();
+    EXPECT_NE(what.find("integrated GPU"), std::string::npos) << what;
+    EXPECT_NE(what.find("VMM and POSIX fd export"), std::string::npos) << what;
+    EXPECT_NE(what.find("Device::Cpu"), std::string::npos) << what;
+  }
+}
+
 // An undeclared stream is the host-only default: it fences nothing and must not depend on CUDA
 // being present, since every channel that never mentions GPU carries one.
 TEST(GpuStream, UndeclaredStreamFencesNothing)
@@ -163,7 +179,7 @@ namespace
 
 std::string gpu_name(const char * base)
 {
-  return flux::segment_name(std::string(base) + "." + std::to_string(::getpid()), 0x6F0);
+  return flux::signpost_name(std::string(base) + "." + std::to_string(::getpid()), 0x6F0);
 }
 
 // A declared stream whose fence fails: CUDA's legacy stream handle, which resolves against the

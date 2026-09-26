@@ -36,7 +36,7 @@ class SplitSubscriber(Node):
         self.flux_width = 0
         self.ros_width = 0
 
-        self.flux_sub = flux.ros.Subscription(
+        self.flux_sub = flux.ros.create_subscription(
             self, self.TOPIC, callback=self.on_flux, fingerprint=Image.FINGERPRINT__
         )
         qos = QoSProfile(depth=self.DEPTH, reliability=ReliabilityPolicy.BEST_EFFORT)

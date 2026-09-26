@@ -55,12 +55,14 @@ def test_precommit_reaches_the_mapping():
         memory=flux.MemoryPolicy(precommit=True),
     )
     assert _resident_kb(_needle(topic)) >= PAYLOAD_KB
+    assert pub.pages_committed and not pub.pages_locked
     assert pub.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.OK
 
 
 def test_without_it_the_segment_stays_sparse():
     topic = "/pytest/mem/sparse"
     pub = flux.Publisher(topic, fingerprint=FP, slot_size=SLOT, slot_count=SLOTS)
+    assert not pub.pages_committed and not pub.pages_locked
     assert _resident_kb(_needle(topic)) < PAYLOAD_KB // 2
     assert pub.publish(np.zeros(16, dtype=np.uint8)) == flux.Published.OK
 
@@ -74,6 +76,7 @@ def test_a_subscriber_declares_its_own():
     resident = _resident_kb(_needle(topic))
     assert resident >= PAYLOAD_KB, "the subscriber's mapping was not committed"
     assert resident < PAYLOAD_KB + PAYLOAD_KB // 2, "the publisher's mapping was committed too"
+    assert sub.pages_committed and not pub.pages_committed
     assert pub.publish(np.full(8, 5, dtype=np.uint8)) == flux.Published.OK
     assert int(sub.take()[0]) == 5
 

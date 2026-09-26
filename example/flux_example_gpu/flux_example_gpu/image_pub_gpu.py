@@ -34,7 +34,7 @@ class GpuImagePublisher(Node):
         super().__init__("flux_gpu_image_pub")
         self.phase = 0
         self.shape = (self.HEIGHT, self.WIDTH, self.CHANNELS)
-        self.publisher = flux.ros.Publisher(
+        self.publisher = flux.ros.create_publisher(
             self,
             self.TOPIC,
             fingerprint=flux.NO_SCHEMA,

@@ -13,15 +13,14 @@
 class ImageSubscriber : public rclcpp::Node
 {
 public:
-  ImageSubscriber()
-  : Node("flux_loan_image_sub"),
-    sub_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
-      on_frame(f);
-    })
+  ImageSubscriber() : Node("flux_loan_image_sub")
   {
+    sub_ = flux::ros::create_subscription(
+      *this, kTopic, Image::kFingerprint, flux::QoS{},
+      [this](const flux::FrameView & f) { on_frame(f); });
   }
 
-  flux::ros::Subscription & subscription() { return sub_; }
+  flux::ros::Subscription & subscription() { return *sub_; }
 
 private:
   using Image = sensor_msgs::flux_msg::Image;
@@ -45,7 +44,7 @@ private:
     ++seen_;
   }
 
-  flux::ros::Subscription sub_;
+  std::shared_ptr<flux::ros::Subscription> sub_;
   std::uint64_t seen_ = 0;
   std::uint32_t width_ = 0;
   std::uint32_t height_ = 0;

@@ -14,16 +14,15 @@
 class GpuImageSubscriber : public rclcpp::Node
 {
 public:
-  GpuImageSubscriber()
-  : Node("flux_gpu_image_sub"),
-    sub_(
-      *this, kTopic, flux::kNoSchema, flux::QoS{},
-      [this](const flux::FrameView & f) { on_frame(f); }, flux::Device::Cuda)
+  GpuImageSubscriber() : Node("flux_gpu_image_sub")
   {
+    sub_ = flux::ros::create_subscription(
+      *this, kTopic, flux::kNoSchema, flux::QoS{},
+      [this](const flux::FrameView & f) { on_frame(f); }, flux::Device::Cuda);
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
 
-  flux::ros::Subscription & subscription() { return sub_; }
+  flux::ros::Subscription & subscription() { return *sub_; }
 
 private:
   static constexpr const char * kTopic = "image_gpu";
@@ -36,13 +35,13 @@ private:
 
   void report()
   {
-    const flux::Channel::FenceWait fw = sub_.fence_wait();
+    const flux::Channel::FenceWait fw = sub_->fence_wait();
     RCLCPP_INFO(
       get_logger(), "seen %lu  device_ptr %p  release max %lu us  fence_failed %lu", seen_,
-      device_ptr_, fw.release_max_ns / 1000, sub_.fence_failed());
+      device_ptr_, fw.release_max_ns / 1000, sub_->fence_failed());
   }
 
-  flux::ros::Subscription sub_;
+  std::shared_ptr<flux::ros::Subscription> sub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::uint64_t seen_ = 0;
   const void * device_ptr_ = nullptr;

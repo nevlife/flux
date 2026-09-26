@@ -33,7 +33,7 @@ std::string uniq(const std::string & base)
 
 TEST(Shm, SameProcessCreateOpenRoundTrip)
 {
-  const std::string name = flux::segment_name(uniq("/flux_test/roundtrip"), 0x1111);
+  const std::string name = flux::signpost_name(uniq("/flux_test/roundtrip"), 0x1111);
   flux::Channel pub = flux::Channel::create(name, 256, 4, 0x1111);
   flux::Channel sub = flux::Channel::open(name, 0x1111);
 
@@ -47,14 +47,14 @@ TEST(Shm, SameProcessCreateOpenRoundTrip)
 
 TEST(Shm, FingerprintMismatchRejected)
 {
-  const std::string name = flux::segment_name(uniq("/flux_test/fp"), 0xAAAA);
+  const std::string name = flux::signpost_name(uniq("/flux_test/fp"), 0xAAAA);
   flux::Channel pub = flux::Channel::create(name, 64, 2, 0xAAAA);
   EXPECT_THROW(flux::Channel::open(name, 0xBBBB), std::runtime_error);
 }
 
 TEST(Shm, OpenMissingRejected)
 {
-  const std::string name = flux::segment_name(uniq("/flux_test/absent"), 0x1234);
+  const std::string name = flux::signpost_name(uniq("/flux_test/absent"), 0x1234);
   EXPECT_THROW(flux::Channel::open(name, 0x1234), std::runtime_error);
 }
 
@@ -65,7 +65,7 @@ TEST(Shm, OpenMissingRejected)
 // 1).
 TEST(Shm, ConfigMismatchIsDistinctFromAnAbsentSegment)
 {
-  const std::string absent = flux::segment_name(uniq("/flux_test/absent2"), 0x019A);
+  const std::string absent = flux::signpost_name(uniq("/flux_test/absent2"), 0x019A);
   try {
     flux::Channel::open(absent, 0x019A);
     FAIL() << "an absent segment must still fail";
@@ -74,7 +74,7 @@ TEST(Shm, ConfigMismatchIsDistinctFromAnAbsentSegment)
   } catch (const std::runtime_error &) {
   }
 
-  const std::string name = flux::segment_name(uniq("/flux_test/cfg"), 0x019B);
+  const std::string name = flux::signpost_name(uniq("/flux_test/cfg"), 0x019B);
   flux::Channel pub = flux::Channel::create(name, 64, 2, 0x019B);
   EXPECT_THROW(flux::Channel::create(name, 128, 4, 0x019B), flux::SegmentMismatch);
 }
@@ -89,7 +89,7 @@ TEST(Shm, SubscriberPayloadIsHardwareReadOnly)
     GTEST_SKIP()
       << "flux-cap:small-page page size larger than kPayloadAlign: protection is skipped by design";
   }
-  const std::string name = flux::segment_name(uniq("/flux_test/prot"), 0x5EC);
+  const std::string name = flux::signpost_name(uniq("/flux_test/prot"), 0x5EC);
   flux::Channel pub = flux::Channel::create(name, 256, 4, 0x5EC);
   flux::Channel sub = flux::Channel::open(name, 0x5EC);
   EXPECT_FALSE(pub.payload_readonly());
@@ -113,7 +113,7 @@ TEST(Shm, SubscriberPayloadIsHardwareReadOnly)
 // boundary. The child _exit()s with a status code the parent asserts on.
 TEST(Shm, CrossProcessCoherence)
 {
-  const std::string name = flux::segment_name(uniq("/flux_test/xproc"), 0xC0FFEE);
+  const std::string name = flux::signpost_name(uniq("/flux_test/xproc"), 0xC0FFEE);
   constexpr std::uint32_t slot_size = 4096;
   constexpr std::uint32_t slots = 4;
   flux::Channel pub = flux::Channel::create(name, slot_size, slots, 0xC0FFEE);
@@ -169,7 +169,7 @@ TEST(Shm, CrossProcessCoherence)
 // boundary -- the reason the wake word lives inside the shared segment.
 TEST(Shm, CrossProcessWake)
 {
-  const std::string name = flux::segment_name(uniq("/flux_test/xwake"), 0xBEEF);
+  const std::string name = flux::signpost_name(uniq("/flux_test/xwake"), 0xBEEF);
   constexpr std::uint32_t slot_size = 512;
   flux::Channel pub = flux::Channel::create(name, slot_size, 4, 0xBEEF);
 
@@ -214,7 +214,7 @@ TEST(Shm, CrossProcessWake)
 // ftruncate costs a page on tmpfs, not the layout's 280 MiB.
 TEST(Shm, AttachRejectsAnUnaddressableSlotCount)
 {
-  const std::string signpost = flux::segment_name(uniq("/flux_test/badcfg"), 0xBAD);
+  const std::string signpost = flux::signpost_name(uniq("/flux_test/badcfg"), 0xBAD);
   flux::OwnerId creator;
   creator.pid = 424245;
   creator.starttime = 7;
@@ -273,7 +273,7 @@ TEST(Shm, AttachRejectsAnUnaddressableSlotCount)
 // path rejects them the same way. A config another process wrote takes the attach-side path.
 TEST(Shm, CreateRejectsAnOutOfRangeLayoutConfig)
 {
-  const std::string name = flux::segment_name(uniq("/flux_test/badcfg2"), 0xBAD2);
+  const std::string name = flux::signpost_name(uniq("/flux_test/badcfg2"), 0xBAD2);
   EXPECT_THROW(flux::Channel::create(name, 256, 0, 0xBAD2), std::invalid_argument);
   EXPECT_THROW(flux::Channel::create(name, 0, 4, 0xBAD2), std::invalid_argument);
   EXPECT_THROW(

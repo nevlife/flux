@@ -145,8 +145,8 @@ TEST(RosDomain, EndpointsReportTheDomainTheyResolvedAndCoreAgrees)
   const std::string core = flux::process_domain();
   EXPECT_EQ(pub.domain(), core);
   EXPECT_EQ(sub.domain(), core);
-  EXPECT_EQ(pub.segment_name(), sub.segment_name());
-  EXPECT_EQ(pub.segment_name(), flux::signpost_name("/demo/domain", kFingerprint, core));
+  EXPECT_EQ(pub.signpost_name(), sub.signpost_name());
+  EXPECT_EQ(pub.signpost_name(), flux::signpost_name("/demo/domain", kFingerprint, core));
 
   rclcpp::shutdown();
 }

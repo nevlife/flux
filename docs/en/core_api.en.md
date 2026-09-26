@@ -25,6 +25,8 @@ target_link_libraries(mytool PRIVATE flux::core)
 
 This layer needs `flux_core` only. `flux_cpp`, `flux_py`, and `flux_gen` are not needed.
 
+`flux::version()` (`#include "flux/version.hpp"`) returns the version of the linked library. `flux::kVersion` is the version of the header compiled against. Python has `flux.__version__`, read from the library the bindings link.
+
 ## 3. Building the name
 
 The rendezvous key is the name, the fingerprint, and the domain. All three must match to attach. Since the ROS wrapper is not involved, give the name directly as an absolute path.
@@ -33,6 +35,8 @@ The rendezvous key is the name, the fingerprint, and the domain. All three must 
 std::string domain = flux::process_domain();
 std::string name = flux::signpost_name("/img", /*fingerprint=*/0, domain);
 ```
+
+The result is the signpost name: the fixed name a channel keeps across publisher restarts, and what `read_channel_stats()` in section 9 takes. It only builds a string. Python has the same function, `flux.signpost_name(key, fingerprint, domain=None)`, where `None` is `process_domain()`.
 
 `process_domain()` checks `FLUX_DOMAIN` first, then `ROS_DOMAIN_ID` if that is absent. If neither is set, it is `0`. Both hold a plain integer, and `canonical_domain(raw)` (`flux.canonical_domain` in Python) renders one without leading zeros (`007` is `7`) or throws. No node resolves it here, so a process attaching to a channel a ROS node uses must be in that node's domain.
 
@@ -275,6 +279,7 @@ if (stats.live) {
 
 ```python doc:py_channel_stats
 domain = flux.process_domain()
+signpost = flux.signpost_name("/img", 0, domain)
 
 stats = flux.read_channel_stats(signpost)
 if stats.live:

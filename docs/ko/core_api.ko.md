@@ -25,6 +25,8 @@ target_link_libraries(mytool PRIVATE flux::core)
 
 이 층에는 `flux_core`만 필요하다. `flux_cpp`·`flux_py`·`flux_gen`은 필요 없다.
 
+`flux::version()`(`#include "flux/version.hpp"`)은 링크된 라이브러리의 버전을 돌려준다. `flux::kVersion`은 컴파일할 때 쓴 헤더의 버전이다. Python은 `flux.__version__`이고, 바인딩이 링크한 라이브러리에서 읽는다.
+
 ## 3. 이름 만들기
 
 rendezvous 키는 이름과 fingerprint와 domain다. 셋이 같아야 붙는다. ROS 래퍼가 안 끼므로 이름을 직접 절대 경로로 준다.
@@ -33,6 +35,8 @@ rendezvous 키는 이름과 fingerprint와 domain다. 셋이 같아야 붙는다
 std::string domain = flux::process_domain();
 std::string name = flux::signpost_name("/img", /*fingerprint=*/0, domain);
 ```
+
+결과는 signpost 이름이다. publisher가 재시작해도 바뀌지 않는 채널의 고정 이름이고, 9절 `read_channel_stats()`가 받는 이름이다. 문자열만 만든다. Python에도 같은 함수 `flux.signpost_name(key, fingerprint, domain=None)`이 있고, `None`은 `process_domain()`이다.
 
 `process_domain()`는 `FLUX_DOMAIN`을 먼저 보고 없으면 `ROS_DOMAIN_ID`를 본다. 둘 다 없으면 `0`이다. 두 값 모두 정수이고, `canonical_domain(raw)`(Python은 `flux.canonical_domain`)가 앞자리 0 없이 렌더하거나(`007`은 `7`) 던진다. 여기서는 노드가 domain을 풀어 주지 않는다. ROS 노드가 쓰는 채널에 붙으려면 프로세스가 그 노드와 같은 domain에 있어야 한다.
 
@@ -275,6 +279,7 @@ if (stats.live) {
 
 ```python doc:py_channel_stats
 domain = flux.process_domain()
+signpost = flux.signpost_name("/img", 0, domain)
 
 stats = flux.read_channel_stats(signpost)
 if stats.live:

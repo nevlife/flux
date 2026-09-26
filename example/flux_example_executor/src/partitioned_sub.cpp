@@ -18,21 +18,21 @@ public:
   PartitionedSubscriber()
   : Node("flux_partitioned_sub"),
     fast_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
-    slow_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
-    fast_(
-      *this, kTopic, Image::kFingerprint, flux::QoS{},
-      [this](const flux::FrameView & f) { on_fast(f); }),
-    slow_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
-      on_slow(f);
-    })
+    slow_group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive))
   {
+    fast_ = flux::ros::create_subscription(
+      *this, kTopic, Image::kFingerprint, flux::QoS{},
+      [this](const flux::FrameView & f) { on_fast(f); });
+    slow_ = flux::ros::create_subscription(
+      *this, kTopic, Image::kFingerprint, flux::QoS{},
+      [this](const flux::FrameView & f) { on_slow(f); });
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
 
   rclcpp::CallbackGroup::SharedPtr fast_group() { return fast_group_; }
   rclcpp::CallbackGroup::SharedPtr slow_group() { return slow_group_; }
-  flux::ros::Subscription & fast() { return fast_; }
-  flux::ros::Subscription & slow() { return slow_; }
+  flux::ros::Subscription & fast() { return *fast_; }
+  flux::ros::Subscription & slow() { return *slow_; }
 
 private:
   using Image = sensor_msgs::flux_msg::Image;
@@ -61,8 +61,8 @@ private:
 
   rclcpp::CallbackGroup::SharedPtr fast_group_;
   rclcpp::CallbackGroup::SharedPtr slow_group_;
-  flux::ros::Subscription fast_;
-  flux::ros::Subscription slow_;
+  std::shared_ptr<flux::ros::Subscription> fast_;
+  std::shared_ptr<flux::ros::Subscription> slow_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::uint64_t fast_seen_ = 0;
   std::uint64_t slow_seen_ = 0;

@@ -79,11 +79,11 @@ If the `.msg` is rejected (`bool[]`, `T[<=N]`, `wstring`, no fields), generation
 #include "my_pkg/flux/cloud.hpp"
 using my_pkg::flux_msg::Cloud;
 
-flux::ros::Publisher pub(*node, "cloud", Cloud::kFingerprint, 16 << 20, 16);
+auto pub = flux::ros::create_publisher(node, "cloud", Cloud::kFingerprint, 16 << 20, 16);
 
-Cloud::Builder b = Cloud::build__(pub);   // loans a slot and puts a Builder on top of it
+Cloud::Builder b = Cloud::build__(*pub);  // loans a slot and puts a Builder on top of it
 if (b) {
-  auto xs = b.alloc__x(n);            // points into the slot
+  auto xs = b.alloc__x(n);                // points into the slot
   lidar.read_into(xs.data(), xs.size());  // the data is produced in the slot
   b.set__width(static_cast<std::uint32_t>(n));
   b.set__label("front");
@@ -96,8 +96,8 @@ if (b) {
 ```cpp doc:adapter_cpp_sub
 using my_pkg::flux_msg::Cloud;
 
-flux::ros::Subscription sub(
-  *node, "cloud", Cloud::kFingerprint, flux::QoS{}, [](const flux::FrameView & f) {
+auto sub = flux::ros::create_subscription(
+  node, "cloud", Cloud::kFingerprint, flux::QoS{}, [](const flux::FrameView & f) {
     Cloud::View c(f);
     for (float x : c.x()) {
       use(x);
@@ -113,7 +113,7 @@ flux::ros::Subscription sub(
 ```python doc:adapter_py_pub
 from my_pkg_flux.cloud import Cloud
 
-pub = flux.ros.Publisher(node, "cloud", fingerprint=Cloud.FINGERPRINT__)
+pub = flux.ros.create_publisher(node, "cloud", fingerprint=Cloud.FINGERPRINT__)
 
 b = Cloud.build__(pub)                  # loans a slot and returns a Builder. False if no free slot
 if b:
@@ -124,7 +124,7 @@ if b:
 ```
 
 ```python doc:adapter_py_sub
-sub = flux.ros.Subscription(node, "cloud", fingerprint=Cloud.FINGERPRINT__)
+sub = flux.ros.create_subscription(node, "cloud", fingerprint=Cloud.FINGERPRINT__)
 
 f = sub.take()
 if f is not None:
@@ -173,19 +173,22 @@ Stock ROS 2 tools (`rqt`, `ros2 topic`) see a flux channel through `flux_bridge`
 ### Publisher
 
 ```cpp doc:publisher
-flux::ros::Publisher pub(*node, "img", fingerprint, slot_size, slot_count);
+auto pub = flux::ros::create_publisher(node, "img", fingerprint, slot_size, slot_count);
 
-pub.loan();                        // 0-copy. invalid handle if no free slot
-pub.dropped();
-pub.slot_size();                    // bytes of one slot. the generated adapter's build__() reads it
-pub.segment_name();
+pub->loan();                       // 0-copy. invalid handle if no free slot
+pub->dropped();
+pub->slot_size();                   // bytes of one slot. the generated adapter's build__() reads it
+pub->signpost_name();
+pub->get_topic_name();  // "img" with the node namespace and remaps applied, as rclcpp
 ```
 
 The defaults are `fingerprint = flux::kNoSchema`, `slot_size = 16 MiB` (`Publisher::kDefaultSlotSize`), and `slot_count = 16` (`Publisher::kDefaultSlotCount`). The adapter path always passes the fingerprint, so only the last two are omitted. `slot_size` is an upper bound, not an allocation. The payload area is not touched at init, so tmpfs leaves it sparse. `slot_count` is the ring depth and the hard cap for subscriber QoS.
 
 Publishing on the adapter path is `Builder::commit()`. The return value `flux::Published` (Python: `flux.Published`) separates backpressure from permanent errors. The meaning of each value is in section 2 of [`raw_api.en.md`](raw_api.en.md). There is usually no need to tell the five apart. `flux::faulted(p)` / `flux.faulted(p)` folds them into one question: "is this a dropped frame, or a fault that does not clear on its own".
 
-What `segment_name()` returns is the signpost name (the fixed name derived from the topic and fingerprint). The actual segment name has an instance suffix appended and changes on every publisher restart.
+`flux::ros::create_publisher()` and `flux::ros::create_subscription()` return a `std::shared_ptr`, in the form of rclcpp's `create_publisher(node, ...)`. Python has `flux.ros.create_publisher()` and `flux.ros.create_subscription()` in the same form. The arguments are those of the constructors, which stay public as rclcpp's do. `get_topic_name()` (Python `topic_name`) returns the topic with the node namespace and remaps applied.
+
+`signpost_name()` returns the signpost name, the fixed name derived from the topic and fingerprint. The segment behind it has an instance suffix appended and a new name on every publisher restart.
 
 The seventh argument is page precommit. The name differs by language. The C++ constructor parameter is `mem` (`flux_cpp/include/flux/ros/publisher.hpp`) and the Python keyword argument is `memory`. It is off by default, and the `MemoryPolicy` section below describes the trade-off.
 
@@ -198,8 +201,8 @@ A reserved slot leaves the ring until commit or abort. Holding it for a long tim
 ### Subscription
 
 ```cpp doc:subscription
-flux::ros::Subscription sub(
-  *node, "img", fingerprint, flux::QoS{}, [](const flux::FrameView & v) { handle(v); });
+auto sub = flux::ros::create_subscription(
+  node, "img", fingerprint, flux::QoS{}, [](const flux::FrameView & v) { handle(v); });
 ```
 
 A subscription does not drive itself. There are two ways to read, and the presence of a callback decides which.
@@ -209,11 +212,11 @@ With a callback it is push. Hand it to `flux::ros::Executor` or `PartitionedExec
 Without a callback it is pull. Read directly from a loop you already have. It has the same shape as Python's `flux.ros.Subscription`.
 
 ```cpp doc:subscription_pull
-flux::ros::Subscription sub(*node, "img", fingerprint);  // no callback
+auto sub = flux::ros::create_subscription(node, "img", fingerprint);  // no callback
 
-flux::FrameView newest = sub.peek();              // latest state. does not consume
-flux::FrameView next = sub.take();                // next frame. invalid if none
-flux::FrameView blocked = sub.take_blocking(-1);  // sleeps on the futex until one arrives
+flux::FrameView newest = sub->peek();              // latest state. does not consume
+flux::FrameView next = sub->take();                // next frame. invalid if none
+flux::FrameView blocked = sub->take_blocking(-1);  // sleeps on the futex until one arrives
 ```
 
 The QoS comes before the callback, in the order of rclcpp's `create_subscription(topic, qos, callback)`. The sixth and seventh arguments are `Device` and `MemoryPolicy`. The latter is page precommit for this subscription's own mapping and is described in the `MemoryPolicy` section below. `sub.pages_committed()` and `sub.pages_locked()` report the result. Before attach, both are false.
@@ -223,13 +226,13 @@ Adding a subscription without a callback to an executor makes `add()` throw. It 
 There was a `poll_period` argument that drove the subscription from a wall timer, and it was removed. Waking on a period charged every subscription a latency bound and idle wakeups, and it was the only arrangement `flux_py` could not provide, so the same node written in the two languages ended up with different executors.
 
 ```cpp doc:subscription_api
-bool attached = sub.attached();
-bool driven = sub.has_callback();  // false means pull-only. the executor refuses it
-const flux::QoS & qos = sub.qos();
-std::uint64_t lost = sub.lost();   // cumulative count of frames not received
-bool can_borrow = sub.can_borrow();               // false means I am holding a view, so an empty result comes back
-flux::Channel::Refused refused = sub.refused();   // same fields as "When an empty result comes back" in section 4
-const std::string & domain = sub.domain();          // this process's domain. pub.domain() is the same
+bool attached = sub->attached();
+bool driven = sub->has_callback();  // false means pull-only. the executor refuses it
+const flux::QoS & qos = sub->qos();
+std::uint64_t lost = sub->lost();                 // cumulative count of frames not received
+bool can_borrow = sub->can_borrow();              // false means I am holding a view, so an empty result comes back
+flux::Channel::Refused refused = sub->refused();  // same fields as "When an empty result comes back" in section 4
+const std::string & domain = sub->domain();       // this process's domain. pub->domain() is the same
 ```
 
 Read `attached()` and `domain()` together. If no frames arrive and `attached()` is false, there is no publisher yet. If `domain()` differs from what you expect, the publisher exists but is in a different partition. The two look the same from the outside. `take()` returns an empty result and `refused()` is all zeros. `flux domain list` shows what lives in which domain ([cli.md](cli.en.md)).
@@ -245,12 +248,13 @@ flux::MemoryPolicy mem;
 mem.precommit = true;   // fault in every page at attach
 mem.lock = true;        // mlock as well. RLIMIT_MEMLOCK must cover the segment
 
-flux::ros::Publisher pub(
-  *node, "img", fingerprint, slot_size, slot_count, flux::Device::Cpu, mem);
-flux::ros::Subscription sub(*node, "img", fingerprint, flux::QoS{}, {}, flux::Device::Cpu, mem);
+auto pub = flux::ros::create_publisher(
+  node, "img", fingerprint, slot_size, slot_count, flux::Device::Cpu, mem);
+auto sub = flux::ros::create_subscription(
+  node, "img", fingerprint, flux::QoS{}, {}, flux::Device::Cpu, mem);
 
-bool committed = pub.pages_committed();
-bool locked = pub.pages_locked();
+bool committed = pub->pages_committed();
+bool locked = pub->pages_locked();
 ```
 
 - Both are off by default. Turning them on trades away the benefit of sparseness (a large `slot_size` at almost zero idle RAM).
@@ -262,7 +266,7 @@ bool locked = pub.pages_locked();
 - On kernels below 5.14, `precommit` throws. `MADV_POPULATE_WRITE` does not exist there.
 - The payload of a dGPU channel is not in this mapping. Only the control plane is covered.
 
-`pages_committed()` and `pages_locked()` report what was actually obtained. With the default policy both are false. If it was requested and refused, the result is a throw, not false.
+`pages_committed()` and `pages_locked()` (Python: the `pages_committed` and `pages_locked` properties) report what was actually obtained. With the default policy both are false. If it was requested and refused, the result is a throw, not false.
 
 ### FrameView (what the callback receives)
 
@@ -280,25 +284,26 @@ It is valid only while the callback runs. It is move-only, so it is not copied. 
 Attaching `Device::Cuda` turns the same channel into the GPU path. Without it, `Device::Cpu` is the default and the sections above apply as is.
 
 ```cpp doc:gpu_publisher
-flux::ros::Publisher pub(*node, "img", fingerprint, slot_size, slot_count, flux::Device::Cuda);
+auto pub = flux::ros::create_publisher(
+  node, "img", fingerprint, slot_size, slot_count, flux::Device::Cuda);
 
-flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
+flux::WriteSlot w = pub->loan(flux::DType::U8, {480, 640, 3});
 if (w) {
   render_into(w.device_ptr(), w.capacity(), w.stream());   // launch the kernel on this stream
   if (const flux::Published p = w.commit(); flux::faulted(p)) log("img", flux::to_string(p));  // waits for the stream, then publishes
 }
-pub.fence_failed();
-pub.fence_wait();
+pub->fence_failed();
+pub->fence_wait();
 ```
 
 ```cpp doc:gpu_subscription
-flux::ros::Subscription sub(
-  *node, "img", fingerprint, flux::QoS{},
+auto sub = flux::ros::create_subscription(
+  node, "img", fingerprint, flux::QoS{},
   [](const flux::FrameView & v) { use(v.device_ptr(), v.size(), v.stream()); },
   flux::Device::Cuda);
 
-sub.fence_failed();
-sub.fence_wait();
+sub->fence_failed();
+sub->fence_wait();
 ```
 
 These are the differences from CPU.
@@ -341,7 +346,7 @@ The seams are kept separate because they block different threads. The publish si
 
 On a `Device::Cpu` channel everything is 0. Not even the clock is read. A failed wait also spent time, so it is counted too. The values are cumulative. Only the two `_max_ns` fields are the maximum so far and never decrease.
 
-The constructor refuses on the spot a declaration this host cannot honor. Without a GPU it throws. It does not silently fall back to CPU. On an iGPU that requires registration, instead of refusing it registers the payload, and throws if the driver rejects that registration.
+The constructor refuses on the spot a declaration this host cannot honor. Without a GPU it throws. It does not silently fall back to CPU. The message says why this host has no route, the attributes it read when it could read them, which GPUs flux takes (an integrated GPU, or a discrete GPU with VMM and POSIX fd export), and that `Device::Cpu` is the way without one. So there is no separate call to ask first. On an iGPU that requires registration, instead of refusing it registers the payload, and throws if the driver rejects that registration.
 
 ### FrameMeta
 
@@ -495,11 +500,12 @@ import flux.ros
 ### Publisher
 
 ```python doc:py_publisher
-pub = flux.ros.Publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
+pub = flux.ros.create_publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
 
-dropped = pub.dropped                           # all three are properties
+dropped = pub.dropped                           # all are properties
 slot_size = pub.slot_size
-segment_name = pub.segment_name
+signpost_name = pub.signpost_name
+topic_name = pub.topic_name                     # node namespace and remaps applied, as rclpy
 ```
 
 Publishing is done by the adapter. `Cloud.build__(pub)` loans a slot and `commit()` publishes (section 2). The surface for putting in and taking out an ndarray directly is section 4 of [`raw_api.en.md`](raw_api.en.md).
@@ -507,14 +513,14 @@ Publishing is done by the adapter. `Cloud.build__(pub)` loans a slot and `commit
 ### Subscription
 
 ```python doc:py_subscription
-sub = flux.ros.Subscription(node, "img", callback=_sink, fingerprint=FP, qos=flux.QoS())
+sub = flux.ros.create_subscription(node, "img", callback=_sink, fingerprint=FP, qos=flux.QoS())
 
 newest = sub.peek()                        # latest, not consumed. None if none
 nxt = sub.take()                           # next one, consumed. None if none
 blocking = sub.take_blocking(timeout_ns=-1)  # until one arrives. None on timeout. Ctrl-C is KeyboardInterrupt
 lost = sub.lost                            # all are properties
 qos = sub.qos
-segment_name = sub.segment_name
+signpost_name = sub.signpost_name
 domain = sub.domain                          # this process's domain. pub.domain is the same
 
 if nxt is None and not sub.can_borrow:     # empty because I have not released a view
@@ -562,7 +568,7 @@ So when computing a per-second rate, the diff of `lost` can be negative. `attach
 Attaching `device="cuda"` turns the same channel into the GPU path. Without it, the host path applies as is.
 
 ```python doc:py_gpu_publisher
-pub = flux.ros.Publisher(node, "img", fingerprint=FP, device="cuda")
+pub = flux.ros.create_publisher(node, "img", fingerprint=FP, device="cuda")
 
 loan = pub.loan((480, 640, 3), dtype="uint8")
 if loan:
@@ -573,7 +579,7 @@ worst_commit_ns = pub.fence_wait.commit_max_ns
 ```
 
 ```python doc:py_gpu_subscription
-sub = flux.ros.Subscription(node, "img", fingerprint=FP, qos=flux.QoS(), device="cuda")
+sub = flux.ros.create_subscription(node, "img", fingerprint=FP, qos=flux.QoS(), device="cuda")
 
 frame = sub.take()
 if frame:
@@ -584,7 +590,7 @@ fence_failed = sub.fence_failed
 worst_release_ns = sub.fence_wait.release_max_ns
 ```
 
-`device` accepts the strings `"cpu"` / `"cuda"` or `flux.Device.CPU` / `flux.Device.CUDA`. A declaration this host cannot honor is refused by the constructor with `ValueError`. A declaration that cannot be kept is not silently sent down to host.
+`device` accepts the strings `"cpu"` / `"cuda"` or `flux.Device.CPU` / `flux.Device.CUDA`. A declaration this host cannot honor is refused by the constructor with `ValueError`, whose message is the one C++ gives (what this host lacks, what flux takes, `device="cpu"` as the way out). A declaration that cannot be kept is not silently sent down to host.
 
 There are only three differences from the host path.
 
@@ -644,16 +650,15 @@ ex.add_ros_node(node)             # pass the whole node. same as C++ add_ros_nod
 ex.spin()                         # until stop(). tick_ns defaults to 100 ms
 ex.spin_once(timeout_ns=100_000_000)
 merged = ex.uses_io_uring
+spinning = ex.is_spinning         # True while spin() runs, as rclpy
 ex.interrupt()                    # keeps the loop, wakes only the wait
 ex.stop()
-ex.close()                        # after the last stop(), before destroying the node
-
-resolved = flux.ros.resolve(node, "img")   # absolute name with node namespace and remaps applied
+ex.shutdown()                     # before destroying the node
 ```
 
 The assembly order and names are the same as C++. Create it, hand over flux subscriptions and nodes, and spin. ROS subscriptions are not passed separately. Once created on the node, they are already serviced. On a context shutdown, `spin()` ends the way the rclpy executor it wraps ends: the default `SingleThreadedExecutor` raises `ExternalShutdownException`, which rclpy programs catch around `spin()`. `PartitionedExecutor` returns quietly, as `MultiThreadedExecutor` does.
 
-`close()` detaches the node from the rclpy executor. If you destroy the node without calling it, the bridge thread may schedule a task against a node that no longer exists.
+`shutdown(timeout_sec=None)` stops the executor, waits for `spin()` to return, and detaches the node from the rclpy executor, as rclpy's `Executor.shutdown(timeout_sec)` does. `None` or a negative value waits until then. If a callback is still running when the time runs out, it returns `False` and leaves the node attached. Otherwise it returns `True`. If you destroy the node without calling it, the bridge thread may schedule a task against a node that no longer exists.
 
 Without any node, it is an executor that runs flux only. It is the same as using it without `add_ros_node` in C++, and the arrangement where `rclpy.spin(node)` handles the ROS side on another thread (`split_sub` in `flux_example_executor`) is that case.
 
@@ -679,7 +684,7 @@ ex.stop()
 - `priority` is the same as C++. When a group has several subscriptions, it decides the visiting order within that group's pass, and does not cross groups.
 - Registration happens only before spin. `add`/`add_ros_node` during spin throw.
 - An exception in a child thread stops every child and is rethrown from `spin()`.
-- `spin()` tears its child threads down before it returns, so there is no `close()`. A stopped executor can spin again, as in C++.
+- `spin()` tears its child threads down before it returns, so there is no `shutdown()`. A stopped executor can spin again, as in C++.
 - The child for a flux group runs `flux.Executor.spin` directly, without the rclpy bridge. The group has no ROS entities, so there is nothing to merge.
 - A child thread's setup goes in `on_thread_start` (next section).
 - With more threads, only the parts that release the GIL overlap. numpy, zlib, and decoding overlap. Pure Python bytecode is serial no matter how many threads there are.

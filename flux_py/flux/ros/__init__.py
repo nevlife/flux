@@ -52,8 +52,9 @@ __all__ = [
     "Subscription",
     "TransientLocal",
     "Volatile",
+    "create_publisher",
+    "create_subscription",
     "faulted",
-    "resolve",
 ]
 
 
@@ -83,8 +84,10 @@ class Executor:
         self._drained = threading.Event()
         self._drained.set()
         self._running = False
+        self._idle = threading.Event()  # clear for the whole of spin(), stop() included
+        self._idle.set()
         self._stop_requested = False  # held from stop() to the end of the spin it ends
-        self._closed = False
+        self._shut_down = False
         self._thread = None
         # One callable, reused for every task: rclpy allocates a Task per create_task and there
         # is no way around that (a Task is one-shot and refuses to run again once finished),
@@ -118,8 +121,8 @@ class Executor:
         """
         if self._running:
             raise RuntimeError("flux: add_ros_node() must be called before spin()")
-        if self._closed:
-            raise RuntimeError("flux.ros.Executor is closed")
+        if self._shut_down:
+            raise RuntimeError("flux.ros.Executor is shut down")
         for n in self._nodes:
             if n is node:
                 return
@@ -136,9 +139,10 @@ class Executor:
         """
         if self._running:
             raise RuntimeError("flux.ros.Executor.spin() is already running")
-        if self._closed:
-            raise RuntimeError("flux.ros.Executor is closed")
+        if self._shut_down:
+            raise RuntimeError("flux.ros.Executor is shut down")
         self._running = True
+        self._idle.clear()
         try:
             if not self._nodes:
                 # No ROS side to serve: this is the flux half of a split (see the executor
@@ -159,6 +163,7 @@ class Executor:
         finally:
             self._running = False
             self._stop_requested = False
+            self._idle.set()
 
     def spin_once(self, timeout_ns=-1):
         """One pass: wait up to timeout_ns (negative = forever) for a flux frame or ROS work,
@@ -214,30 +219,40 @@ class Executor:
         self._flux.interrupt()
         # Nothing to wake once the context is down: rclpy's spin_once raises out of the loop on
         # its own, so the task would only sit in the queue of an executor nobody spins again.
-        if not self._closed and any(n.context.ok() for n in self._nodes):
+        if not self._shut_down and any(n.context.ok() for n in self._nodes):
             self._exec.create_task(_nothing)  # wake the spin thread out of its wait
 
     def interrupt(self):
         """Break the current wait without ending the loop. Safe from another thread."""
         self._flux.interrupt()
-        if not self._closed and any(n.context.ok() for n in self._nodes):
+        if not self._shut_down and any(n.context.ok() for n in self._nodes):
             self._exec.create_task(_nothing)
 
-    def close(self):
-        """Detach from the rclpy executor. Idempotent.
+    def shutdown(self, timeout_sec=None):
+        """Stop, wait for spin() to return, then detach from the rclpy executor. Idempotent.
 
-        Call after the final stop(), before destroying the nodes. A closed executor cannot spin
-        again. A bridge thread that failed to stop (wedged in a callback) keeps the executor
-        attached: detaching a node another thread may still queue work against is worse.
+        As rclpy's `Executor.shutdown`: waits up to `timeout_sec` (None or negative = forever)
+        and returns False if spin() is still inside a callback then, with the nodes left
+        attached. Call it before destroying the nodes. A shut-down executor cannot spin again.
         """
         self.stop()
+        if timeout_sec is not None and timeout_sec < 0:
+            timeout_sec = None
+        if not self._idle.wait(timeout_sec):
+            return False
         self._stop_bridge()
         if self._thread is not None:
-            return
-        if not self._closed:
-            self._closed = True
+            return False
+        if not self._shut_down:
+            self._shut_down = True
             for node in self._nodes:
                 self._exec.remove_node(node)
+        return True
+
+    @property
+    def is_spinning(self):
+        """True while spin() runs, as rclpy's `Executor.is_spinning`."""
+        return not self._idle.is_set()
 
     def __len__(self):
         """Registered flux subscriptions. `ex.size()` on the C++ side."""
@@ -294,7 +309,7 @@ class Executor:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             if self._thread.is_alive():
-                return  # wedged: close() stays attached rather than detach under a live task
+                return  # wedged: shutdown() stays attached rather than detach under a live task
             self._thread = None
 
 
@@ -768,21 +783,18 @@ def _weak_dispatch(ref):
     return run
 
 
-def resolve(node, topic):
-    """Expand a ROS topic name against a node's namespace and remap rules.
-
-    flux derives the shm segment name from the FULLY RESOLVED topic, so both ends must resolve
-    identically or they name different segments and never meet. A C++ flux node resolves through
-    its rclcpp node automatically; this is the rclpy equivalent.
-    """
-    return node.resolve_topic_name(topic)
-
-
 class Publisher(_Publisher):
     """flux.Publisher whose topic is resolved against `node` (namespace + remaps applied)."""
 
     def __init__(self, node, topic, **kwargs):
-        super().__init__(resolve(node, topic), **kwargs)
+        name = node.resolve_topic_name(topic)
+        super().__init__(name, **kwargs)
+        self._topic_name = name
+
+    @property
+    def topic_name(self):
+        """The topic with the node's namespace and remaps applied, as rclpy's `topic_name`."""
+        return self._topic_name
 
 
 class Subscription(_Subscription):
@@ -797,10 +809,27 @@ class Subscription(_Subscription):
     """
 
     def __init__(self, node, topic, callback=None, **kwargs):
-        super().__init__(resolve(node, topic), **kwargs)
+        name = node.resolve_topic_name(topic)
+        super().__init__(name, **kwargs)
         if callback is not None and not callable(callback):
             raise TypeError("flux: callback must be callable")
         self.callback = callback
+        self._topic_name = name
+
+    @property
+    def topic_name(self):
+        """The topic with the node's namespace and remaps applied, as rclpy's `topic_name`."""
+        return self._topic_name
+
+
+def create_publisher(node, topic, **kwargs):
+    """The rclcpp `create_publisher(node, ...)` form. Same as `Publisher(node, topic, ...)`."""
+    return Publisher(node, topic, **kwargs)
+
+
+def create_subscription(node, topic, callback=None, **kwargs):
+    """The rclcpp `create_subscription(node, ...)` form. Same as `Subscription(node, topic, ...)`."""
+    return Subscription(node, topic, callback=callback, **kwargs)
 
 
 def _flux_source_of(subscription):

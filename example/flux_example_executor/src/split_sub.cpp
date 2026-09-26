@@ -23,19 +23,18 @@
 class SplitSubscriber : public rclcpp::Node
 {
 public:
-  SplitSubscriber()
-  : Node("flux_split_sub"),
-    flux_sub_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
-      on_flux(f);
-    })
+  SplitSubscriber() : Node("flux_split_sub")
   {
+    flux_sub_ = flux::ros::create_subscription(
+      *this, kTopic, Image::kFingerprint, flux::QoS{},
+      [this](const flux::FrameView & f) { on_flux(f); });
     ros_sub_ = create_subscription<sensor_msgs::msg::Image>(
       kTopic, rclcpp::QoS(rclcpp::KeepLast(kDepth)).best_effort(),
       [this](const sensor_msgs::msg::Image::ConstSharedPtr & msg) { on_ros(*msg); });
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
 
-  flux::ros::Subscription & flux_subscription() { return flux_sub_; }
+  flux::ros::Subscription & flux_subscription() { return *flux_sub_; }
 
 private:
   using Image = sensor_msgs::flux_msg::Image;
@@ -70,7 +69,7 @@ private:
       ros_width_);
   }
 
-  flux::ros::Subscription flux_sub_;
+  std::shared_ptr<flux::ros::Subscription> flux_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr ros_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::mutex mutex_;

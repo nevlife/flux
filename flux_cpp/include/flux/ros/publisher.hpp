@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 
 namespace rclcpp
@@ -99,18 +100,40 @@ public:
   // policy that asked and was refused threw at construction rather than reporting false here.
   bool pages_committed() const noexcept { return ch_.pages_committed(); }
   bool pages_locked() const noexcept { return ch_.pages_locked(); }
+  // The topic with the node's namespace and remaps applied, as rclcpp's get_topic_name().
+  const char * get_topic_name() const noexcept { return topic_.c_str(); }
   // The signpost: the fixed name from the resolved topic and fingerprint, not the segment behind
   // it, which carries an owner-id suffix and changes on every publisher restart.
-  const std::string & segment_name() const noexcept { return seg_name_; }
+  const std::string & signpost_name() const noexcept { return seg_name_; }
 
   // This process's domain, the one every name it builds carries. A peer in another domain never
   // appears, which reads like a peer that has not started yet.
   const std::string & domain() const noexcept { return flux::process_domain(); }
 
 private:
+  std::string topic_;
   std::string seg_name_;
   Channel ch_;
 };
+
+// The rclcpp::create_publisher() form. The constructor stays public, as rclcpp's does.
+inline std::shared_ptr<Publisher> create_publisher(
+  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
+  std::uint32_t slot_size = Publisher::kDefaultSlotSize,
+  std::uint32_t slot_count = Publisher::kDefaultSlotCount, Device device = Device::Cpu,
+  const MemoryPolicy & mem = {})
+{
+  return std::make_shared<Publisher>(node, topic, fingerprint, slot_size, slot_count, device, mem);
+}
+
+inline std::shared_ptr<Publisher> create_publisher(
+  const std::shared_ptr<rclcpp::Node> & node, const std::string & topic,
+  std::uint64_t fingerprint = kNoSchema, std::uint32_t slot_size = Publisher::kDefaultSlotSize,
+  std::uint32_t slot_count = Publisher::kDefaultSlotCount, Device device = Device::Cpu,
+  const MemoryPolicy & mem = {})
+{
+  return create_publisher(*node, topic, fingerprint, slot_size, slot_count, device, mem);
+}
 
 }  // namespace flux::ros
 

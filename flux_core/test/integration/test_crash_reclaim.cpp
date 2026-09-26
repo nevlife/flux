@@ -43,7 +43,7 @@ std::string uniq(const std::string & base)
 TEST(CrashReclaim, DeadSubscriberSlotIsReclaimed)
 {
   const std::uint64_t fp = 0xC0FFEEu;
-  const std::string name = flux::segment_name(uniq("/flux_crash_reclaim_test"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_crash_reclaim_test"), fp);
   ::shm_unlink(name.c_str());
 
   flux::Channel pub = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/1, fp);
@@ -98,7 +98,7 @@ TEST(CrashReclaim, DeadSubscriberSlotIsReclaimed)
 TEST(CrashReclaim, DeadWriterStuckSlotIsRecovered)
 {
   const std::uint64_t fp = 0xC0FFE3u;
-  const std::string name = flux::segment_name(uniq("/flux_stuck_write_test"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_stuck_write_test"), fp);
   ::shm_unlink(name.c_str());
 
   flux::Channel pubA = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/1, fp);
@@ -141,7 +141,7 @@ TEST(CrashReclaim, DeadWriterStuckSlotIsRecovered)
 TEST(CrashReclaim, AForkedChildClaimsUnderItsOwnIdentity)
 {
   const std::uint64_t fp = 0xC0FFE4u;
-  const std::string name = flux::segment_name(uniq("/flux_fork_identity_test"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_fork_identity_test"), fp);
   ::shm_unlink(name.c_str());
   flux::Channel pub = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/1, fp);
   std::vector<std::byte> buf(64, std::byte{0xAB});
@@ -177,7 +177,7 @@ TEST(CrashReclaim, AForkedChildClaimsUnderItsOwnIdentity)
 TEST(CrashReclaim, AClaimWithNoIdentityIsGivenBack)
 {
   const std::uint64_t fp = 0xC0FFE5u;
-  const std::string name = flux::segment_name(uniq("/flux_no_identity_test"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_no_identity_test"), fp);
   ::shm_unlink(name.c_str());
   flux::Channel pub = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/1, fp);
 
@@ -229,7 +229,7 @@ TEST(CrashReclaim, AClaimWithNoIdentityIsGivenBack)
 TEST(CrashReclaim, ConcurrentReclaimersDoNotUnderflow)
 {
   const std::uint64_t fp = 0xC0FFE2u;
-  const std::string name = flux::segment_name(uniq("/flux_reclaim_race_test"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_reclaim_race_test"), fp);
   ::shm_unlink(name.c_str());
 
   constexpr std::uint32_t kSlotSize = 64;
@@ -328,7 +328,7 @@ TEST(CrashReclaim, ConcurrentReclaimersDoNotUnderflow)
 TEST(CrashReclaim, HolderEntryIsFreedOnNormalRelease)
 {
   const std::uint64_t fp = 0xF12EEu;
-  const std::string name = flux::segment_name(uniq("/flux_holder_release_test"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_holder_release_test"), fp);
   ::shm_unlink(name.c_str());
 
   flux::Channel pub = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/1, fp);
@@ -374,7 +374,7 @@ TEST(CrashReclaim, HolderEntryIsFreedOnNormalRelease)
 TEST(CrashReclaim, ABorrowIsRefusedWhenTheHolderTableIsFull)
 {
   const std::uint64_t fp = 0xC0FFE3u;
-  const std::string name = flux::segment_name(uniq("/flux_holder_full_test"), fp);
+  const std::string name = flux::signpost_name(uniq("/flux_holder_full_test"), fp);
   ::shm_unlink(name.c_str());
 
   constexpr std::uint32_t kSlotSize = 64;

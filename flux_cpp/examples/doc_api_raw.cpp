@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace flux::doc_raw_examples
 {
@@ -38,19 +39,19 @@ void doc_raw_publish(
   const void * data)
 {
   // [doc:raw_publish]
-  flux::ros::Publisher pub(*node, "img", flux::kNoSchema, slot_size, slot_count);
+  auto pub = flux::ros::create_publisher(node, "img", flux::kNoSchema, slot_size, slot_count);
 
-  if (const flux::Published p = pub.publish(data, flux::DType::U8, {480, 640, 3});
+  if (const flux::Published p = pub->publish(data, flux::DType::U8, {480, 640, 3});
       flux::faulted(p)) {
     report(flux::to_string(p));
   }
   // [doc:/raw_publish]
 }
 
-void doc_write_slot(flux::ros::Publisher & pub)
+void doc_write_slot(const std::shared_ptr<flux::ros::Publisher> & pub)
 {
   // [doc:write_slot]
-  flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
+  flux::WriteSlot w = pub->loan(flux::DType::U8, {480, 640, 3});
   if (w) {
     render_into(w.data(), w.capacity());
     if (const flux::Published p = w.commit(); flux::faulted(p)) report(flux::to_string(p));
@@ -73,15 +74,15 @@ void doc_write_slot_api(flux::WriteSlot & w, std::size_t nbytes)
 void doc_raw_subscribe(const rclcpp::Node::SharedPtr & node)
 {
   // [doc:raw_subscribe]
-  flux::ros::Subscription sub(
-    *node, "img", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & v) {
+  auto sub = flux::ros::create_subscription(
+    node, "img", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & v) {
       const flux::FrameMeta & m = v.meta();
       if (m.ndim == 3 && m.dtype == flux::DType::U8) {
         use(v.data(), v.size());
       }
     });
   // [doc:/raw_subscribe]
-  sink(sub.attached());
+  sink(sub->attached());
 }
 
 void doc_frame_meta(const flux::FrameMeta & m)

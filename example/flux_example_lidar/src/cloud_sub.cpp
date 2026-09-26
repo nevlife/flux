@@ -13,16 +13,15 @@
 class CloudSubscriber : public rclcpp::Node
 {
 public:
-  CloudSubscriber()
-  : Node("flux_lidar_cloud_sub"),
-    sub_(*this, kTopic, Cloud::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
-      on_frame(f);
-    })
+  CloudSubscriber() : Node("flux_lidar_cloud_sub")
   {
+    sub_ = flux::ros::create_subscription(
+      *this, kTopic, Cloud::kFingerprint, flux::QoS{},
+      [this](const flux::FrameView & f) { on_frame(f); });
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
 
-  flux::ros::Subscription & subscription() { return sub_; }
+  flux::ros::Subscription & subscription() { return *sub_; }
 
 private:
   using Cloud = sensor_msgs::flux_msg::PointCloud2;
@@ -48,10 +47,10 @@ private:
   {
     RCLCPP_INFO(
       get_logger(), "seen %lu  points %u  point_step %u  bytes %zu  lost %lu", seen_, points_,
-      point_step_, data_bytes_, sub_.lost());
+      point_step_, data_bytes_, sub_->lost());
   }
 
-  flux::ros::Subscription sub_;
+  std::shared_ptr<flux::ros::Subscription> sub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::uint64_t seen_ = 0;
   std::uint32_t points_ = 0;

@@ -62,7 +62,7 @@ flux::gpu::Stream fenceable()
 // Distinct per process so parallel runs of this binary do not share a segment.
 std::string gpu_name(const char * base)
 {
-  return flux::segment_name(std::string(base) + "." + std::to_string(::getpid()), 0x6F0);
+  return flux::signpost_name(std::string(base) + "." + std::to_string(::getpid()), 0x6F0);
 }
 
 }  // namespace

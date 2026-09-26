@@ -27,25 +27,26 @@ def set_up_this_thread():
 
 def doc_publisher(node):
     # [doc:py_publisher]
-    pub = flux.ros.Publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
+    pub = flux.ros.create_publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
 
     dropped = pub.dropped
     slot_size = pub.slot_size
-    segment_name = pub.segment_name
+    signpost_name = pub.signpost_name
+    topic_name = pub.topic_name
     # [doc:/py_publisher]
-    _sink(dropped, slot_size, segment_name)
+    _sink(dropped, slot_size, signpost_name, topic_name)
 
 
 def doc_subscription(node):
     # [doc:py_subscription]
-    sub = flux.ros.Subscription(node, "img", callback=_sink, fingerprint=FP, qos=flux.QoS())
+    sub = flux.ros.create_subscription(node, "img", callback=_sink, fingerprint=FP, qos=flux.QoS())
 
     newest = sub.peek()
     nxt = sub.take()
     blocking = sub.take_blocking(timeout_ns=-1)
     lost = sub.lost
     qos = sub.qos
-    segment_name = sub.segment_name
+    signpost_name = sub.signpost_name
     domain = sub.domain
 
     if nxt is None and not sub.can_borrow:
@@ -53,7 +54,7 @@ def doc_subscription(node):
     if nxt is None and not sub.attached:
         where = sub.domain
     # [doc:/py_subscription]
-    _sink(newest, nxt, blocking, lost, qos, segment_name, domain, held, where)
+    _sink(newest, nxt, blocking, lost, qos, signpost_name, domain, held, where)
 
 
 def doc_qos(n):
@@ -78,13 +79,12 @@ def doc_ros_executor(node, sub):
     ex.spin()                         # runs until stop(); tick_ns defaults to 100 ms
     ex.spin_once(timeout_ns=100_000_000)
     merged = ex.uses_io_uring
+    spinning = ex.is_spinning         # as rclpy
     ex.interrupt()                    # wakes the wait without ending the loop
     ex.stop()
-    ex.close()                        # after the last stop(), before destroying the node
-
-    resolved = flux.ros.resolve(node, "img")
+    ex.shutdown()                     # before destroying the node
     # [doc:/py_ros_executor]
-    _sink(resolved, merged)
+    _sink(merged, spinning)
 
 
 
@@ -114,7 +114,7 @@ def doc_thread_start(node, sub, group):
 
 def doc_gpu_publisher(node, cp, render_into):
     # [doc:py_gpu_publisher]
-    pub = flux.ros.Publisher(node, "img", fingerprint=FP, device="cuda")
+    pub = flux.ros.create_publisher(node, "img", fingerprint=FP, device="cuda")
 
     loan = pub.loan((480, 640, 3), dtype="uint8")
     if loan:
@@ -128,7 +128,7 @@ def doc_gpu_publisher(node, cp, render_into):
 
 def doc_gpu_subscription(node, cp, use):
     # [doc:py_gpu_subscription]
-    sub = flux.ros.Subscription(node, "img", fingerprint=FP, qos=flux.QoS(), device="cuda")
+    sub = flux.ros.create_subscription(node, "img", fingerprint=FP, qos=flux.QoS(), device="cuda")
 
     frame = sub.take()
     if frame:

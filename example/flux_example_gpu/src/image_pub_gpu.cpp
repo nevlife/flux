@@ -14,11 +14,11 @@
 class GpuImagePublisher : public rclcpp::Node
 {
 public:
-  GpuImagePublisher()
-  : Node("flux_gpu_image_pub"),
-    pub_(*this, kTopic, flux::kNoSchema, kSlotSize, kSlotCount, flux::Device::Cuda)
+  GpuImagePublisher() : Node("flux_gpu_image_pub")
   {
-    RCLCPP_INFO(get_logger(), "host_addressable %d", static_cast<int>(pub_.host_addressable()));
+    pub_ = flux::ros::create_publisher(
+      *this, kTopic, flux::kNoSchema, kSlotSize, kSlotCount, flux::Device::Cuda);
+    RCLCPP_INFO(get_logger(), "host_addressable %d", static_cast<int>(pub_->host_addressable()));
     timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / kRateHz)),
@@ -37,7 +37,7 @@ private:
 
   void tick()
   {
-    flux::WriteSlot w = pub_.loan(flux::DType::U8, {kHeight, kWidth, kChannels});
+    flux::WriteSlot w = pub_->loan(flux::DType::U8, {kHeight, kWidth, kChannels});
     if (!w.valid()) {
       return;
     }
@@ -64,7 +64,7 @@ private:
     ++phase_;
   }
 
-  flux::ros::Publisher pub_;
+  std::shared_ptr<flux::ros::Publisher> pub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::uint8_t phase_ = 0;
 };

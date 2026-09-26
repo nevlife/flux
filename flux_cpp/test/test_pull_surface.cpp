@@ -201,7 +201,7 @@ TEST_F(PullSurface, ASegmentThatCannotBeOpenedWhileItsPublisherLivesThrows)
   flux::ros::Publisher pub(*node_, topic, kFingerprint, kSlotSize, kSlots);
   // The segment is the signpost's name plus an owner suffix; the signpost stays readable, so the
   // publisher still reads as live.
-  const std::string prefix = pub.segment_name().substr(1) + ".";
+  const std::string prefix = pub.signpost_name().substr(1) + ".";
   int locked = 0;
   if (DIR * d = ::opendir("/dev/shm")) {
     while (dirent * e = ::readdir(d)) {
@@ -217,6 +217,30 @@ TEST_F(PullSurface, ASegmentThatCannotBeOpenedWhileItsPublisherLivesThrows)
   EXPECT_FALSE(flux::ros::Subscription(*node_, uniq("absent_"), kFingerprint).attached());
 }
 
+// The rclcpp::create_publisher(node, ...) form, from a shared_ptr node and from a reference.
+TEST_F(PullSurface, CreatedPublishersAndSubscriptionsMeet)
+{
+  const std::string topic = uniq("create_");
+  std::shared_ptr<flux::ros::Publisher> pub =
+    flux::ros::create_publisher(node_, topic, kFingerprint, kSlotSize, kSlots);
+  std::shared_ptr<flux::ros::Subscription> sub =
+    flux::ros::create_subscription(*node_, topic, kFingerprint);
+
+  const std::uint8_t one[4] = {0x22, 0x22, 0x22, 0x22};
+  ASSERT_EQ(pub->publish(one, sizeof(one)), flux::Published::Ok);
+  EXPECT_EQ(first_byte(sub->take()), 0x22);
+}
+
+TEST_F(PullSurface, TheTopicNameIsResolvedAgainstTheNodeNamespace)
+{
+  auto ns_node = std::make_shared<rclcpp::Node>("resolver", "/robot1");
+  const std::string topic = uniq("image_");
+  flux::ros::Publisher pub(*ns_node, topic, kFingerprint, kSlotSize, kSlots);
+  flux::ros::Subscription sub(*ns_node, topic, kFingerprint);
+  EXPECT_STREQ(pub.get_topic_name(), ("/robot1/" + topic).c_str());
+  EXPECT_STREQ(sub.get_topic_name(), pub.get_topic_name());
+}
+
 TEST_F(PullSurface, ATopicPastTheNameLimitIsRefused)
 {
   EXPECT_THROW(
@@ -230,7 +254,7 @@ TEST_F(PullSurface, ASignpostThatCannotBeReadThrows)
   if (::geteuid() == 0) GTEST_SKIP() << "root reads a mode-0 file anyway";
   const std::string topic = uniq("unreadable_");
   flux::ros::Publisher pub(*node_, topic, kFingerprint, kSlotSize, kSlots);
-  const std::string file = "/dev/shm" + pub.segment_name();
+  const std::string file = "/dev/shm" + pub.signpost_name();
   ASSERT_EQ(::chmod(file.c_str(), 0), 0);
   EXPECT_THROW(flux::ros::Subscription(*node_, topic, kFingerprint), std::runtime_error);
   ::chmod(file.c_str(), 0600);
@@ -246,6 +270,6 @@ TEST_F(PullSurface, ASubscriptionItsQosRefusedIsNotAnnounced)
     flux::ros::Subscription(*node_, topic, kFingerprint, replay_past_depth), std::invalid_argument);
   for (const auto & e :
        flux::OwnerFile::read_manifest(flux::owner_file_name(flux::OwnerFile::self()))) {
-    EXPECT_FALSE(e.signpost == pub.segment_name() && !e.publisher);
+    EXPECT_FALSE(e.signpost == pub.signpost_name() && !e.publisher);
   }
 }

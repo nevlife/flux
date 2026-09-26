@@ -29,10 +29,10 @@ class PartitionedSubscriber(Node):
         self.fast_group = MutuallyExclusiveCallbackGroup()
         self.slow_group = MutuallyExclusiveCallbackGroup()
 
-        self.fast_sub = flux.ros.Subscription(
+        self.fast_sub = flux.ros.create_subscription(
             self, self.TOPIC, callback=self.on_fast, fingerprint=Image.FINGERPRINT__
         )
-        self.slow_sub = flux.ros.Subscription(
+        self.slow_sub = flux.ros.create_subscription(
             self, self.TOPIC, callback=self.on_slow, fingerprint=Image.FINGERPRINT__
         )
 

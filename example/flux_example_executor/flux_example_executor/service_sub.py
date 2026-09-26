@@ -26,7 +26,7 @@ class ServiceSubscriber(Node):
     def __init__(self):
         super().__init__("flux_service_sub")
         self.seen = 0
-        self.subscription = flux.ros.Subscription(
+        self.subscription = flux.ros.create_subscription(
             self, self.TOPIC, callback=self.on_frame, fingerprint=Image.FINGERPRINT__
         )
         self.service = self.create_service(Trigger, self.SERVICE, self.on_request)
@@ -53,7 +53,7 @@ def main(args=None):
         pass
     finally:
         executor.stop()
-        executor.close()
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
 

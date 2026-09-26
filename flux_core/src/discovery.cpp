@@ -93,7 +93,7 @@ std::string flatten_key(const std::string & key)
   return out;
 }
 
-std::string segment_name(
+std::string signpost_name(
   const std::string & key, std::uint64_t fingerprint, const std::string & domain)
 {
   // POSIX shm names allow one leading '/' and no other '/'. Map every non-alnum
@@ -117,13 +117,6 @@ std::string segment_name(
       std::to_string(kMaxKeyLen));
   }
   return prefix + flatten_key(key) + suffix;
-}
-
-std::string signpost_name(
-  const std::string & key, std::uint64_t fingerprint, const std::string & domain)
-{
-  // The fixed name names the signpost, not a segment.
-  return segment_name(key, fingerprint, domain);
 }
 
 std::string unique_segment_name(const std::string & signpost, const OwnerId & creator)
@@ -155,7 +148,7 @@ namespace
 
 // A signpost name is `/flux.v<layout>.s<domain>.<body>.<fp16>`. Split it back apart, or report
 // false when the name is not one (a segment name, which appends `.<pid>.<starttime>`, is not).
-// This is the only parser of the naming ABI besides segment_name() that builds it, and it lives
+// This is the only parser of the naming ABI besides signpost_name() that builds it, and it lives
 // beside it for that reason: two parsers of one format is how the format silently forks.
 bool parse_signpost(
   const char * entry, std::string & domain, std::string & body,

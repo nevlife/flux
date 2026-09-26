@@ -12,8 +12,8 @@ ros2 run flux_example_gpu image_sub_gpu     # ros2 run flux_example_gpu image_su
 `Device::Cuda` makes flux create a stream to fence the two seams. The wire does not change. A host subscriber on the same topic keeps running. This declaration is not about how the bytes travel but about who touches them.
 
 ```cpp
-flux::ros::Publisher pub(*this, "image_gpu", flux::kNoSchema, slot_size, slot_count,
-                         flux::Device::Cuda);
+auto pub = flux::ros::create_publisher(
+  *this, "image_gpu", flux::kNoSchema, slot_size, slot_count, flux::Device::Cuda);
 ```
 
 If the host cannot honor that declaration the constructor throws. A publisher that believes it is on the GPU while quietly running the host path is what this check prevents.

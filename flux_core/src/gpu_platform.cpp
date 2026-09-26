@@ -135,7 +135,18 @@ void require_route()
     case Route::None:
       break;
   }
-  throw std::invalid_argument("flux: no GPU route on this host: " + p.reason);
+  const auto yn = [](bool b) { return b ? "yes" : "no"; };
+  std::string msg = "flux: no GPU route on this host: " + p.reason + ".";
+  if (p.device >= 0) {
+    msg += std::string("\n  This host: device ") + std::to_string(p.device) +
+           ", integrated=" + yn(p.integrated) + ", pageable_access=" + yn(p.pageable_access) +
+           ", host_register=" + yn(p.host_register) + ", vmm=" + yn(p.vmm) +
+           ", posix_fd=" + yn(p.posix_fd_handle) + ".";
+  }
+  msg +=
+    "\n  flux takes an integrated GPU (Jetson), or a discrete GPU with VMM and POSIX fd export."
+    "\n  Without one, create the channel on the CPU (Device::Cpu, device=\"cpu\"), the default.";
+  throw std::invalid_argument(msg);
 }
 
 void require_fenceable(const Stream & stream)

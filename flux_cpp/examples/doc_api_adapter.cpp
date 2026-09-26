@@ -48,9 +48,9 @@ void doc_adapter_publish(const rclcpp::Node::SharedPtr & node, Lidar & lidar, st
   // [doc:adapter_cpp_pub]
   using my_pkg::flux_msg::Cloud;
 
-  flux::ros::Publisher pub(*node, "cloud", Cloud::kFingerprint, 16 << 20, 16);
+  auto pub = flux::ros::create_publisher(node, "cloud", Cloud::kFingerprint, 16 << 20, 16);
 
-  Cloud::Builder b = Cloud::build__(pub);
+  Cloud::Builder b = Cloud::build__(*pub);
   if (b) {
     auto xs = b.alloc__x(n);
     lidar.read_into(xs.data(), xs.size());
@@ -66,8 +66,8 @@ void doc_adapter_subscribe(const rclcpp::Node::SharedPtr & node)
   // [doc:adapter_cpp_sub]
   using my_pkg::flux_msg::Cloud;
 
-  flux::ros::Subscription sub(
-    *node, "cloud", Cloud::kFingerprint, flux::QoS{}, [](const flux::FrameView & f) {
+  auto sub = flux::ros::create_subscription(
+    node, "cloud", Cloud::kFingerprint, flux::QoS{}, [](const flux::FrameView & f) {
       Cloud::View c(f);
       for (float x : c.x()) {
         use(x);

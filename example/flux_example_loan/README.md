@@ -12,7 +12,7 @@ ros2 run flux_example_loan image_sub        # ros2 run flux_example_loan image_s
 `build(pub)` takes an empty slot and puts a `Builder` on top of it. The Builder points at that slot, so the memory returned by `alloc_data(n)` is the bytes that will be published. If the camera writes there directly there is no copy at all.
 
 ```cpp
-Image::Builder b = Image::build__(pub_);
+Image::Builder b = Image::build__(*pub_);
 if (!b) {
   return;
 }

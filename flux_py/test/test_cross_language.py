@@ -195,7 +195,7 @@ def test_the_two_meet_under_a_non_default_ros_domain_id(tmp_path):
          "import os, time, numpy as np, flux\n"
          f"pub = flux.Publisher({key!r}, slot_size=1 << 16, slot_count=4, fingerprint={FP})\n"
          "print(pub.domain, flush=True)\n"
-         "print(pub.segment_name, flush=True)\n"
+         "print(pub.signpost_name, flush=True)\n"
          f"buf = np.full({payload.size}, {int(payload[0])}, dtype=np.uint8)\n"
          "end = time.time() + 10\n"
          "while time.time() < end:\n"

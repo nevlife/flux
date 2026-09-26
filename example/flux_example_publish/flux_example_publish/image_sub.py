@@ -22,7 +22,7 @@ class ImageSubscriber(Node):
         self.height = 0
         self.encoding = ""
         self.data_bytes = 0
-        self.subscription = flux.ros.Subscription(
+        self.subscription = flux.ros.create_subscription(
             self, self.TOPIC, callback=self.on_frame, fingerprint=Image.FINGERPRINT__
         )
 
@@ -47,7 +47,7 @@ def main(args=None):
         pass
     finally:
         executor.stop()
-        executor.close()
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
 

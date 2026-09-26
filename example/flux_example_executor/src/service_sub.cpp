@@ -23,12 +23,11 @@
 class ServiceSubscriber : public rclcpp::Node
 {
 public:
-  ServiceSubscriber()
-  : Node("flux_service_sub"),
-    sub_(*this, kTopic, Image::kFingerprint, flux::QoS{}, [this](const flux::FrameView & f) {
-      on_frame(f);
-    })
+  ServiceSubscriber() : Node("flux_service_sub")
   {
+    sub_ = flux::ros::create_subscription(
+      *this, kTopic, Image::kFingerprint, flux::QoS{},
+      [this](const flux::FrameView & f) { on_frame(f); });
     service_ = create_service<std_srvs::srv::Trigger>(
       kService, [this](
                   const std_srvs::srv::Trigger::Request::SharedPtr,
@@ -39,7 +38,7 @@ public:
       });
   }
 
-  flux::ros::Subscription & subscription() { return sub_; }
+  flux::ros::Subscription & subscription() { return *sub_; }
 
   static constexpr std::int64_t kTickNs = 3'000'000'000;  // 3 s: long enough to be visible
 
@@ -57,7 +56,7 @@ private:
     }
   }
 
-  flux::ros::Subscription sub_;
+  std::shared_ptr<flux::ros::Subscription> sub_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;
   std::uint64_t seen_ = 0;
 };

@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -56,12 +57,13 @@ void doc_publisher(
   std::uint64_t fingerprint)
 {
   // [doc:publisher]
-  flux::ros::Publisher pub(*node, "img", fingerprint, slot_size, slot_count);
+  auto pub = flux::ros::create_publisher(node, "img", fingerprint, slot_size, slot_count);
 
-  pub.loan();
-  pub.dropped();
-  pub.slot_size();
-  pub.segment_name();
+  pub->loan();
+  pub->dropped();
+  pub->slot_size();
+  pub->signpost_name();
+  pub->get_topic_name();
   // [doc:/publisher]
 }
 
@@ -70,50 +72,51 @@ void doc_gpu_publisher(
   std::uint64_t fingerprint)
 {
   // [doc:gpu_publisher]
-  flux::ros::Publisher pub(*node, "img", fingerprint, slot_size, slot_count, flux::Device::Cuda);
+  auto pub = flux::ros::create_publisher(
+    node, "img", fingerprint, slot_size, slot_count, flux::Device::Cuda);
 
-  flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
+  flux::WriteSlot w = pub->loan(flux::DType::U8, {480, 640, 3});
   if (w) {
     render_into(w.device_ptr(), w.capacity(), w.stream());
     if (const flux::Published p = w.commit(); flux::faulted(p)) log("img", flux::to_string(p));
   }
-  pub.fence_failed();
-  pub.fence_wait();
+  pub->fence_failed();
+  pub->fence_wait();
   // [doc:/gpu_publisher]
 }
 
 void doc_gpu_subscription(const rclcpp::Node::SharedPtr & node, std::uint64_t fingerprint)
 {
   // [doc:gpu_subscription]
-  flux::ros::Subscription sub(
-    *node, "img", fingerprint, flux::QoS{},
+  auto sub = flux::ros::create_subscription(
+    node, "img", fingerprint, flux::QoS{},
     [](const flux::FrameView & v) { use(v.device_ptr(), v.size(), v.stream()); },
     flux::Device::Cuda);
 
-  sub.fence_failed();
-  sub.fence_wait();
+  sub->fence_failed();
+  sub->fence_wait();
   // [doc:/gpu_subscription]
 }
 
 void doc_subscription(const rclcpp::Node::SharedPtr & node, std::uint64_t fingerprint)
 {
   // [doc:subscription]
-  flux::ros::Subscription sub(
-    *node, "img", fingerprint, flux::QoS{}, [](const flux::FrameView & v) { handle(v); });
+  auto sub = flux::ros::create_subscription(
+    node, "img", fingerprint, flux::QoS{}, [](const flux::FrameView & v) { handle(v); });
   // [doc:/subscription]
-  sink(sub.attached());
+  sink(sub->attached());
 }
 
-void doc_subscription_api(flux::ros::Subscription & sub)
+void doc_subscription_api(const std::shared_ptr<flux::ros::Subscription> & sub)
 {
   // [doc:subscription_api]
-  bool attached = sub.attached();
-  bool driven = sub.has_callback();
-  const flux::QoS & qos = sub.qos();
-  std::uint64_t lost = sub.lost();
-  bool can_borrow = sub.can_borrow();
-  flux::Channel::Refused refused = sub.refused();
-  const std::string & domain = sub.domain();
+  bool attached = sub->attached();
+  bool driven = sub->has_callback();
+  const flux::QoS & qos = sub->qos();
+  std::uint64_t lost = sub->lost();
+  bool can_borrow = sub->can_borrow();
+  flux::Channel::Refused refused = sub->refused();
+  const std::string & domain = sub->domain();
   // [doc:/subscription_api]
   sink(attached, driven, qos.depth(), lost, can_borrow, refused.total(), domain);
 }
@@ -121,11 +124,11 @@ void doc_subscription_api(flux::ros::Subscription & sub)
 void doc_subscription_pull(const rclcpp::Node::SharedPtr & node, std::uint64_t fingerprint)
 {
   // [doc:subscription_pull]
-  flux::ros::Subscription sub(*node, "img", fingerprint);  // no callback: pull with peek/take below
+  auto sub = flux::ros::create_subscription(node, "img", fingerprint);  // no callback: pull
 
-  flux::FrameView newest = sub.peek();              // newest frame; does not consume
-  flux::FrameView next = sub.take();                // next frame in order; invalid when caught up
-  flux::FrameView blocked = sub.take_blocking(-1);  // sleeps on the futex until one arrives
+  flux::FrameView newest = sub->peek();              // newest frame; does not consume
+  flux::FrameView next = sub->take();                // next frame in order; invalid when caught up
+  flux::FrameView blocked = sub->take_blocking(-1);  // sleeps on the futex until one arrives
   // [doc:/subscription_pull]
   sink(static_cast<bool>(newest), static_cast<bool>(next), static_cast<bool>(blocked));
 }
@@ -150,14 +153,15 @@ void doc_memory_policy(const rclcpp::Node::SharedPtr & node, std::uint64_t finge
   mem.precommit = true;  // fault every page in at attach
   mem.lock = true;       // and mlock; RLIMIT_MEMLOCK must cover the segment
 
-  flux::ros::Publisher pub(
-    *node, "img", fingerprint, slot_size, slot_count, flux::Device::Cpu, mem);
-  flux::ros::Subscription sub(*node, "img", fingerprint, flux::QoS{}, {}, flux::Device::Cpu, mem);
+  auto pub = flux::ros::create_publisher(
+    node, "img", fingerprint, slot_size, slot_count, flux::Device::Cpu, mem);
+  auto sub = flux::ros::create_subscription(
+    node, "img", fingerprint, flux::QoS{}, {}, flux::Device::Cpu, mem);
 
-  bool committed = pub.pages_committed();
-  bool locked = pub.pages_locked();
+  bool committed = pub->pages_committed();
+  bool locked = pub->pages_locked();
   // [doc:/memory_policy]
-  sink(committed, locked, sub.lost(), 0);
+  sink(committed, locked, sub->lost(), 0);
 }
 
 void doc_executor(

@@ -377,7 +377,7 @@ def test_waiter_gate_balances_across_a_self_reattach():
 
     pub = flux.Publisher("/pytest/ex/gate", slot_size=4096, slot_count=4, fingerprint=FP)
 
-    signpost = pub.segment_name  # derived, not spelled out: the name shape is not this test's
+    signpost = pub.signpost_name  # derived, not spelled out: the name shape is not this test's
     prefix = "/dev/shm" + signpost + "."  # unique segment = <signpost>.<pid>.<starttime>
 
     def gate():

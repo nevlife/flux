@@ -16,7 +16,7 @@ def doc_core_publisher(arr):
     pub = flux.Publisher("/img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
     pub.publish(arr)
     # [doc:/core_py_publisher]
-    _sink(pub.dropped, pub.segment_name)
+    _sink(pub.dropped, pub.signpost_name)
 
 
 def doc_core_subscription():
@@ -35,7 +35,7 @@ def doc_core_memory_policy():
     pub = flux.Publisher("/img", fingerprint=FP, slot_size=4096, slot_count=8, memory=mem)
     sub = flux.Subscription("/img", fingerprint=FP, memory=mem)
     # [doc:/core_py_memory_policy]
-    _sink(pub.segment_name, sub.segment_name)
+    _sink(pub.signpost_name, sub.signpost_name)
 
 
 def doc_core_executor(sub, callback):
@@ -70,9 +70,10 @@ def doc_enumerate():
     # [doc:/py_enumerate]
 
 
-def doc_channel_stats(signpost):
+def doc_channel_stats():
     # [doc:py_channel_stats]
     domain = flux.process_domain()
+    signpost = flux.signpost_name("/img", 0, domain)
 
     stats = flux.read_channel_stats(signpost)
     if stats.live:

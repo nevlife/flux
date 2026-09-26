@@ -10,6 +10,7 @@
 #include "flux/owner.hpp"
 #include "flux/segment.hpp"
 #include "flux/segment_layout.hpp"
+#include "flux/version.hpp"
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -619,6 +620,7 @@ public:
     ws_.abort();
   }
   bool valid() const { return ws_.valid(); }
+  std::size_t capacity() const { return ws_.capacity(); }
 
 private:
   // A handed-out array aliases the claimed slot, so a write after commit() corrupts a published
@@ -906,8 +908,11 @@ public:
 
   nb::object loan(nb::handle self, nb::object shape, nb::handle dtype)
   {
+    auto [dt, itemsize] = flux_from_np_dtype(dtype);
     std::vector<std::size_t> shp;
-    if (nb::isinstance<nb::int_>(shape)) {
+    if (shape.is_none()) {
+      shp.push_back(slot_size_ / itemsize);
+    } else if (nb::isinstance<nb::int_>(shape)) {
       shp.push_back(nb::cast<std::size_t>(shape));
     } else {
       const std::size_t n = nb::len(shape);
@@ -917,7 +922,6 @@ public:
       throw std::invalid_argument(
         "flux: loan shape rank must be at most " + std::to_string(flux::kMaxDims));
     }
-    auto [dt, itemsize] = flux_from_np_dtype(dtype);
     std::uint64_t nbytes = itemsize;
     for (std::size_t s : shp) {  // unchecked, this wraps to a small value and passes the cap below
       if (s != 0 && nbytes > UINT64_MAX / s) {
@@ -942,7 +946,9 @@ public:
   flux::Channel::FenceWait fence_wait() const { return ch_.fence_wait(); }
   nb::object stream() const { return stream_object(ch_.stream()); }
   std::uint32_t slot_size() const { return slot_size_; }
-  const std::string & segment_name() const { return seg_name_; }
+  bool pages_committed() const { return ch_.pages_committed(); }
+  bool pages_locked() const { return ch_.pages_locked(); }
+  const std::string & signpost_name() const { return seg_name_; }
   const std::string & domain() const { return flux::process_domain(); }
 
 private:
@@ -1029,7 +1035,9 @@ public:
     return ch_ ? ch_->fence_wait() : flux::Channel::FenceWait{};
   }
   nb::object stream() const { return stream_object(stream_); }
-  const std::string & segment_name() const { return seg_name_; }
+  bool pages_committed() const { return ch_ && ch_->pages_committed(); }
+  bool pages_locked() const { return ch_ && ch_->pages_locked(); }
+  const std::string & signpost_name() const { return seg_name_; }
   const std::string & domain() const { return flux::process_domain(); }
   bool attached() const { return ch_.has_value(); }
   bool can_borrow() const { return ch_ ? ch_->can_borrow() : true; }
@@ -1236,6 +1244,8 @@ NB_MODULE(_flux, m)
   // No schema contract: any publisher on the same topic name attaches. Named rather than spelled
   // 0 at the call site, where a literal does not say whether it is a decision or a hole.
   m.attr("NO_SCHEMA") = flux::kNoSchema;
+  // From the linked library, as C++ flux::version().
+  m.attr("__version__") = flux::version();
 
   // Derives from RuntimeError so code that predates this type still catches it. Without its own
   // translator, an attach that can never succeed would arrive as a bare RuntimeError, losing the
@@ -1413,6 +1423,9 @@ NB_MODULE(_flux, m)
       "Discard without publishing. The frame that slot held is dropped, not restored: array "
       "aliases it, so it is gone as soon as you write. Lagging consumers count it in .lost.")
     .def_prop_ro("valid", &Loan::valid)
+    .def("__bool__", &Loan::valid, "False once commit() or abort() has released the slot.")
+    .def_prop_ro(
+      "capacity", &Loan::capacity, "Bytes the reserved slot holds, as C++ WriteSlot::capacity().")
     .def_prop_ro(
       "__cuda_array_interface__", &Loan::cai,
       "Device-side view of the reserved slot, so cp.asarray(loan) writes straight into shared "
@@ -1500,10 +1513,11 @@ NB_MODULE(_flux, m)
       [](nb::handle self, nb::object shape, nb::handle dtype) {
         return nb::cast<Publisher &>(self).loan(self, shape, dtype);
       },
-      nb::arg("shape"), nb::arg("dtype") = "uint8",
+      nb::arg("shape") = nb::none(), nb::arg("dtype") = "uint8",
       "Reserve a free slot and return a Loan whose .array writes straight into shared memory "
       "(0-copy publish). Call commit() to publish. Returns None if every slot is borrowed "
-      "(dropped; delivery is best-effort).")
+      "(dropped; delivery is best-effort). With no shape the loan is the whole slot, as C++ "
+      "loan().")
     .def_prop_ro(
       "dropped", &Publisher::dropped,
       "Frames this publisher discarded because every slot was borrowed.")
@@ -1529,7 +1543,13 @@ NB_MODULE(_flux, m)
       "Bytes one slot holds. A generated adapter loans this much and commits the prefix it "
       "actually filled.")
     .def_prop_ro(
-      "segment_name", &Publisher::segment_name,
+      "pages_committed", &Publisher::pages_committed,
+      "What the declared MemoryPolicy got for this mapping. False with the default policy; a "
+      "policy that was refused raised at construction instead.")
+    .def_prop_ro(
+      "pages_locked", &Publisher::pages_locked, "Same as pages_committed, for the mlock.")
+    .def_prop_ro(
+      "signpost_name", &Publisher::signpost_name,
       "The fixed rendezvous name derived from the topic and fingerprint: the signpost, not "
       "the segment. The segment behind it carries a per-instance suffix and is recreated on "
       "every publisher restart.")
@@ -1598,7 +1618,13 @@ NB_MODULE(_flux, m)
       "the slot is VRAM: publish() and .array/.bits are refused there and the paths are loan() "
       "plus __cuda_array_interface__ / __dlpack__.")
     .def_prop_ro(
-      "segment_name", &Subscription::segment_name,
+      "pages_committed", &Subscription::pages_committed,
+      "What the declared MemoryPolicy got for this mapping. False with the default policy; a "
+      "policy that was refused raised at construction instead. False before attach.")
+    .def_prop_ro(
+      "pages_locked", &Subscription::pages_locked, "Same as pages_committed, for the mlock.")
+    .def_prop_ro(
+      "signpost_name", &Subscription::signpost_name,
       "The fixed rendezvous name (the signpost), not the segment it currently points at.")
     .def_prop_ro(
       "attached", &Subscription::attached,
@@ -1749,6 +1775,16 @@ NB_MODULE(_flux, m)
     "same way, so the flux half and the ROS half of one process cannot end up in different "
     "domains. Tooling calls this to agree with the nodes rather than deriving the answer "
     "twice.");
+
+  m.def(
+    "signpost_name",
+    [](const std::string & key, std::uint64_t fingerprint, std::optional<std::string> domain) {
+      return flux::signpost_name(key, fingerprint, domain ? *domain : flux::process_domain());
+    },
+    nb::arg("key"), nb::arg("fingerprint"), nb::arg("domain") = nb::none(),
+    "The fixed rendezvous name (the signpost) of a channel: the key flattened, the fingerprint, "
+    "and the domain, process_domain() when None. The name read_channel_stats() takes, and the one "
+    "a Publisher or Subscription on the same key reports as signpost_name. Builds a string only.");
 
   m.def(
     "flatten_key", &flux::flatten_key, nb::arg("key"),

@@ -12,15 +12,14 @@
 class ImageRawSubscriber : public rclcpp::Node
 {
 public:
-  ImageRawSubscriber()
-  : Node("flux_raw_image_sub"),
-    sub_(*this, kTopic, flux::kNoSchema, flux::QoS{}, [this](const flux::FrameView & f) {
-      on_frame(f);
-    })
+  ImageRawSubscriber() : Node("flux_raw_image_sub")
   {
+    sub_ = flux::ros::create_subscription(
+      *this, kTopic, flux::kNoSchema, flux::QoS{},
+      [this](const flux::FrameView & f) { on_frame(f); });
   }
 
-  flux::ros::Subscription & subscription() { return sub_; }
+  flux::ros::Subscription & subscription() { return *sub_; }
 
 private:
   static constexpr const char * kTopic = "image_raw";
@@ -39,7 +38,7 @@ private:
     ++seen_;
   }
 
-  flux::ros::Subscription sub_;
+  std::shared_ptr<flux::ros::Subscription> sub_;
   std::uint64_t seen_ = 0;
   std::uint64_t height_ = 0;
   std::uint64_t width_ = 0;

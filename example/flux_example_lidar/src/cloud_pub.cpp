@@ -15,9 +15,9 @@
 class CloudPublisher : public rclcpp::Node
 {
 public:
-  CloudPublisher()
-  : Node("flux_lidar_cloud_pub"), pub_(*this, kTopic, Cloud::kFingerprint, kSlotSize, kSlotCount)
+  CloudPublisher() : Node("flux_lidar_cloud_pub")
   {
+    pub_ = flux::ros::create_publisher(*this, kTopic, Cloud::kFingerprint, kSlotSize, kSlotCount);
     timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::duration<double>(1.0 / kRateHz)),
@@ -38,7 +38,7 @@ private:
 
   void tick()
   {
-    Cloud::Builder b = Cloud::build__(pub_);
+    Cloud::Builder b = Cloud::build__(*pub_);
     if (!b) {
       return;  // every slot borrowed; delivery is best-effort
     }
@@ -93,7 +93,7 @@ private:
 
   static constexpr std::uint8_t kFloat32 = 7;  // sensor_msgs/PointField::FLOAT32
 
-  flux::ros::Publisher pub_;
+  std::shared_ptr<flux::ros::Publisher> pub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::uint32_t sweep_ = 0;
 };

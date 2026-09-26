@@ -17,7 +17,7 @@ def _sink(*_args):
 
 def doc_raw_publish(node, arr):
     # [doc:raw_py_publish]
-    pub = flux.ros.Publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
+    pub = flux.ros.create_publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
 
     pub.publish(arr)
     # [doc:/raw_py_publish]
@@ -33,13 +33,14 @@ def doc_raw_loan(pub, frame):
     # [doc:/raw_py_loan]
 
     # [doc:raw_py_loan_api]
-    loan = pub.loan(pub.slot_size, dtype="uint8")
-    held = loan.valid
+    loan = pub.loan()
+    held = bool(loan)
+    capacity = loan.capacity
     writable = loan.host_addressable
     published = loan.commit(nbytes=1024)
     loan.abort()
     # [doc:/raw_py_loan_api]
-    _sink(held, writable, published)
+    _sink(held, capacity, writable, published)
 
 
 def doc_raw_view(sub):

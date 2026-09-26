@@ -21,7 +21,7 @@ def _sink(*_args):
 
 def doc_publish(node, n, xs):
     # [doc:adapter_py_pub]
-    pub = flux.ros.Publisher(node, "cloud", fingerprint=Cloud.FINGERPRINT__)
+    pub = flux.ros.create_publisher(node, "cloud", fingerprint=Cloud.FINGERPRINT__)
 
     b = Cloud.build__(pub)
     if b:
@@ -35,7 +35,7 @@ def doc_publish(node, n, xs):
 
 def doc_subscribe(node):
     # [doc:adapter_py_sub]
-    sub = flux.ros.Subscription(node, "cloud", fingerprint=Cloud.FINGERPRINT__)
+    sub = flux.ros.create_subscription(node, "cloud", fingerprint=Cloud.FINGERPRINT__)
 
     f = sub.take()
     if f is not None:

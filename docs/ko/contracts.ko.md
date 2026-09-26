@@ -67,12 +67,13 @@ C++과 Python은 같은 엔진(`flux_core`)을 부르지만 서로 다른 코드
 | S-003 | `PartitionedExecutor`에서 flux 입력과 DDS 입력을 섞은 synchronizer | `SyncGroup.AMixedGraphInOneGroupIsAccepted` | `test_partitioned_refuses_a_mixed_flux_and_dds_synchronizer` |
 | S-004 | `PartitionedExecutor` `on_thread_start` hook의 단위 | `PartitionedExecutor.OnThreadStartRunsOnTheChildBeforeItsFirstCallback` | `test_a_node_hook_runs_on_the_node_thread` |
 | S-005 | QoS를 만드는 방식, enum 표기, 구독이 QoS를 받는 자리 | `Channel.QosSetterRejectsAValueWrongOnItsOwn` | `test_unhonourable_qos_is_rejected` |
-| S-006 | `flux.ros.Executor.close()` | `-` | `test_stop_is_idempotent_and_close_detaches` |
+| S-006 | `flux.ros.Executor.shutdown()` | `-` | `test_stop_is_idempotent_and_shutdown_detaches` |
 | S-007 | 인자만 보고 틀린 발행: 크기 초과, rank 8 초과, `commit(nbytes)` 오용 | `Channel.OversizedPublishRejected` | `test_oversized_publish_rejected` |
 | S-008 | 이미 넣은 노드로 `add_ros_node` | `FluxExecutor.AddingTheSameNodeTwiceThrowsAsRclcppDoes` | `test_add_ros_node_is_idempotent` |
 | S-009 | 콜백 없는 구독을 넣을 때의 에러 종류 | `FluxExecutor.AddingASubscriptionWithNoCallbackIsRefused` | `test_adding_a_subscription_with_no_callback_is_refused` |
 | S-010 | `flux.ros.Executor`가 두 transport를 합치는 방식과, 그래서 없는 직접 루프 호출(`dispatch`, `wait_for_work`, `pump_ros`, 예산) | `FluxExecutor.TheInheritedSpinOnceServicesRosEntities` | `test_spin_once_returns_on_the_first_work_of_either_transport` |
 | S-011 | message_filters `Subscriber`를 나중에 붙이기(기본 생성, `subscribe`, `unsubscribe`) | `MessageFilters.SubscribesLate` | `-` |
+| S-012 | `flux.Frame`과 `.bits` 뷰(`Loan.bits`, `Frame.bits`) | `-` | `test_a_device_subscription_hands_back_a_scoped_frame` |
 
 S-001은 dGPU 슬롯이 VRAM인 데서 온다. host 배열을 받으면 H2D 복사가 필요한데 `flux_core`는 복사 primitive를 두지 않으므로 양쪽 다 거절한다. 갈린 것은 거절의 형태다. C++은 `Published`로 돌려주고 Python은 던진다.
 
@@ -84,7 +85,7 @@ S-004는 hook의 단위가 갈린다. hook을 그 단위의 자식에서 첫 콜
 
 S-005는 ROS를 따른다. ROS도 두 언어가 대칭이 아니다. 각 쪽은 그 언어에서 ROS를 쓰는 방식대로 쓴다. C++은 `rclcpp::QoS`처럼 `flux::QoS`에 setter를 잇고, rclcpp처럼 enum 값을 `Cpu`처럼 CamelCase로 쓰고, `create_subscription(topic, qos, callback)`처럼 QoS를 콜백 앞에서 받는다. Python은 `QoSProfile`처럼 QoS를 키워드로 받고, rclpy처럼 enum 값을 `CPU`처럼 대문자로 쓰고, `create_subscription(type, topic, callback, qos)`처럼 콜백을 키워드 앞에서 받는다. setter를 이으면 두 필드를 한 번에 검사할 수 없으므로 C++은 `n > depth`를 QoS를 쓰는 자리에서 검사한다. Python은 `flux.QoS(...)`에서 검사한다.
 
-S-006은 GC에서 온다. `flux.ros.Executor`는 노드를 rclpy executor에 붙이고, 노드는 한 번에 rclpy executor 하나에만 붙는다. 그래서 `close()`가 객체가 수거되는 시점이 아니라 호출자가 고른 시점에 노드를 뗀다. C++은 같은 일을 시점이 정해진 소멸자에서 하므로 `close()`가 없다. `PartitionedExecutor`는 `spin()`이 돌아온 뒤 풀 것이 없어 두 언어 모두 `close()`가 없다.
+S-006은 GC에서 온다. `flux.ros.Executor`는 노드를 rclpy executor에 붙이고, 노드는 한 번에 rclpy executor 하나에만 붙는다. 그래서 `shutdown()`이 객체가 수거되는 시점이 아니라 호출자가 고른 시점에 노드를 뗀다. 이름은 rclpy `Executor.shutdown()`을 따른다. C++은 rclcpp executor처럼 같은 일을 시점이 정해진 소멸자에서 하므로 `shutdown()`이 없다. `PartitionedExecutor`는 `spin()`이 돌아온 뒤 풀 것이 없어 두 언어 모두 `shutdown()`이 없다.
 
 S-007은 호출자 실수를 알리는 각 언어의 관례를 따른다. C++ 발행 경로는 `noexcept`라(D-065) `Published::TooLarge`를 돌려주고, `Published`가 `[[nodiscard]]`라 결과를 버리는 호출은 컴파일 경고다. Python은 무엇이 틀렸고 어느 경로가 되는지를 메시지에 담은 `ValueError`를 던진다. C++ 리터럴 모양이 8개를 넘으면 컴파일 에러다. 실수가 아닌 `Backpressure`는 두 언어 모두 반환값이다.
 
@@ -95,5 +96,7 @@ S-009는 같은 거절을 각 언어의 타입으로 낸다. C++은 `std::invali
 S-010은 rclpy에서 온다. C++이 io_uring에 거는 on-new-message 콜백을 rclpy가 내주지 않아, `flux.ros.Executor`는 ROS 준비 상태를 flux 링에 넣을 수 없다. 브릿지 스레드가 flux 쪽을 기다리다 `create_task`로 dispatch를 rclpy spin 스레드에 넘긴다. 링이 하나가 아니므로 호출자가 손으로 돌릴 pass가 없고, 직접 루프 호출은 C++에만 있다. flux만 도는 루프라면 Python core `flux.Executor`에 `dispatch`와 `wait_for_work`가 있다.
 
 S-011은 upstream message_filters를 따른다. upstream C++ `Subscriber`는 나중에 붙일 수 있고 Python `Subscriber`는 그렇지 않다. 안쪽 구독의 이름도 각 언어의 upstream대로 C++은 `getSubscriber()`, Python은 `.sub`다.
+
+S-012는 numpy에서 온다. numpy 배열은 GPU 메모리와 bf16을 담지 못한다. 그래서 Python에서 device frame은 `flux.Frame`으로 오고, `with` 안에서만 GPU 배열로 열린다. bf16 payload는 같은 바이트의 unsigned 뷰인 `.bits`로 읽고 쓴다(`test_bfloat16_roundtrips_through_bits`). C++은 둘 다 `FrameView`에서 바로 읽으므로(`device_ptr()`, `data()`) 둘 다 없다. ROS에는 두 언어 모두 대응하는 것이 없다.
 
 S-002의 C++이 `-`인 것은 검사를 빠뜨린 것이 아니다. `Channel::create`/`open`의 인자는 ROS 토픽이 아니라 채널 키이고 core는 ROS 없이 선다. 거절은 `flux::ros::Publisher`/`Subscription`이 노드로 resolve하는 자리에 있다.

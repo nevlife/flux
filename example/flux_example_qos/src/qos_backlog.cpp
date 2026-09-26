@@ -16,16 +16,15 @@
 class BacklogSubscriber : public rclcpp::Node
 {
 public:
-  BacklogSubscriber()
-  : Node("flux_qos_backlog"),
-    sub_(*this, kTopic, Image::kFingerprint, backlog_qos(), [this](const flux::FrameView & f) {
-      on_frame(f);
-    })
+  BacklogSubscriber() : Node("flux_qos_backlog")
   {
+    sub_ = flux::ros::create_subscription(
+      *this, kTopic, Image::kFingerprint, backlog_qos(),
+      [this](const flux::FrameView & f) { on_frame(f); });
     timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
 
-  flux::ros::Subscription & subscription() { return sub_; }
+  flux::ros::Subscription & subscription() { return *sub_; }
 
 private:
   using Image = sensor_msgs::flux_msg::Image;
@@ -46,13 +45,13 @@ private:
 
   void report()
   {
-    const flux::Channel::Refused r = sub_.refused();
+    const flux::Channel::Refused r = sub_->refused();
     RCLCPP_INFO(
       get_logger(), "seen %lu  lost %lu  refused %lu (max_borrow %lu)  can_borrow %d", seen_,
-      sub_.lost(), r.total(), r.max_borrow, sub_.can_borrow());
+      sub_->lost(), r.total(), r.max_borrow, sub_->can_borrow());
   }
 
-  flux::ros::Subscription sub_;
+  std::shared_ptr<flux::ros::Subscription> sub_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::uint64_t seen_ = 0;
 };

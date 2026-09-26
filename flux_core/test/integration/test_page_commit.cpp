@@ -95,7 +95,7 @@ constexpr std::size_t kPayloadKb = (static_cast<std::size_t>(kSlotSize) / 1024) 
 // these tests would pass without the feature existing.
 TEST(PageCommit, TheDefaultLeavesTheSegmentSparse)
 {
-  const std::string name = flux::segment_name(uniq("/flux_pc/default"), kFp);
+  const std::string name = flux::signpost_name(uniq("/flux_pc/default"), kFp);
   flux::Channel pub = flux::Channel::create(name, kSlotSize, kSlots, kFp);
 
   EXPECT_FALSE(pub.pages_committed());
@@ -108,7 +108,7 @@ TEST(PageCommit, TheDefaultLeavesTheSegmentSparse)
 
 TEST(PageCommit, PrecommitMakesThePublisherMappingResident)
 {
-  const std::string name = flux::segment_name(uniq("/flux_pc/pub"), kFp);
+  const std::string name = flux::signpost_name(uniq("/flux_pc/pub"), kFp);
   flux::MemoryPolicy mem;
   mem.precommit = true;
   flux::Channel pub = flux::Channel::create(name, kSlotSize, kSlots, kFp, {}, mem);
@@ -126,7 +126,7 @@ TEST(PageCommit, PrecommitMakesThePublisherMappingResident)
 // remove. Publisher uncommitted, subscriber committed: exactly one of the two is resident.
 TEST(PageCommit, ASubscriberCommitsItsOwnMappingPastTheReadOnlyPayload)
 {
-  const std::string name = flux::segment_name(uniq("/flux_pc/sub"), kFp);
+  const std::string name = flux::signpost_name(uniq("/flux_pc/sub"), kFp);
   flux::Channel pub = flux::Channel::create(name, kSlotSize, kSlots, kFp);
 
   flux::MemoryPolicy mem;
@@ -149,7 +149,7 @@ TEST(PageCommit, ASubscriberCommitsItsOwnMappingPastTheReadOnlyPayload)
 // and MADV_POPULATE_WRITE on a shared mapping must not disturb what is in it.
 TEST(PageCommit, ACommittedChannelStillCarriesFrames)
 {
-  const std::string name = flux::segment_name(uniq("/flux_pc/carry"), kFp);
+  const std::string name = flux::signpost_name(uniq("/flux_pc/carry"), kFp);
   flux::MemoryPolicy mem;
   mem.precommit = true;
   flux::Channel pub = flux::Channel::create(name, 4096, 4, kFp, {}, mem);
@@ -166,7 +166,7 @@ TEST(PageCommit, ACommittedChannelStillCarriesFrames)
 // mlock subsumes the commit -- it populates what it locks -- so a locked mapping reports both.
 TEST(PageCommit, LockReportsItselfAndCountsAsCommitted)
 {
-  const std::string name = flux::segment_name(uniq("/flux_pc/lock"), kFp);
+  const std::string name = flux::signpost_name(uniq("/flux_pc/lock"), kFp);
   flux::MemoryPolicy mem;
   mem.lock = true;
 
@@ -200,7 +200,7 @@ TEST(PageCommit, ALockRefusalThrowsInsteadOfDowngrading)
   tiny.rlim_cur = 4096;  // one page, far below the segment
   ASSERT_EQ(::setrlimit(RLIMIT_MEMLOCK, &tiny), 0);
 
-  const std::string name = flux::segment_name(uniq("/flux_pc/refuse"), kFp);
+  const std::string name = flux::signpost_name(uniq("/flux_pc/refuse"), kFp);
   flux::MemoryPolicy mem;
   mem.lock = true;
   bool threw = false;
@@ -220,7 +220,7 @@ TEST(PageCommit, ALockRefusalThrowsInsteadOfDowngrading)
 // which is the failure mode nothing else in this file would notice.
 TEST(PageCommit, TheCommitFollowsAPublisherRestart)
 {
-  const std::string name = flux::segment_name(uniq("/flux_pc/restart"), kFp);
+  const std::string name = flux::signpost_name(uniq("/flux_pc/restart"), kFp);
   ::shm_unlink(name.c_str());
   std::vector<std::byte> buf(4096);
 

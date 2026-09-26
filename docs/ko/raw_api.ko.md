@@ -79,9 +79,9 @@ Python도 같은 `flux.Published`를 돌려준다. 값 이름은 rclpy enum처�
 ### 1복사 발행
 
 ```cpp doc:raw_publish
-flux::ros::Publisher pub(*node, "img", flux::kNoSchema, slot_size, slot_count);
+auto pub = flux::ros::create_publisher(node, "img", flux::kNoSchema, slot_size, slot_count);
 
-if (const flux::Published p = pub.publish(data, flux::DType::U8, {480, 640, 3});
+if (const flux::Published p = pub->publish(data, flux::DType::U8, {480, 640, 3});
     flux::faulted(p)) {
   report(flux::to_string(p));
 }
@@ -96,7 +96,7 @@ if (const flux::Published p = pub.publish(data, flux::DType::U8, {480, 640, 3});
 ### 0복사 발행
 
 ```cpp doc:write_slot
-flux::WriteSlot w = pub.loan(flux::DType::U8, {480, 640, 3});
+flux::WriteSlot w = pub->loan(flux::DType::U8, {480, 640, 3});
 if (w) {
   render_into(w.data(), w.capacity());
   if (const flux::Published p = w.commit(); flux::faulted(p)) report(flux::to_string(p));
@@ -124,8 +124,8 @@ w.abort();
 ### 소비
 
 ```cpp doc:raw_subscribe
-flux::ros::Subscription sub(
-  *node, "img", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & v) {
+auto sub = flux::ros::create_subscription(
+  node, "img", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & v) {
     const flux::FrameMeta & m = v.meta();
     if (m.ndim == 3 && m.dtype == flux::DType::U8) {
       use(v.data(), v.size());
@@ -142,7 +142,7 @@ Python에는 `FrameMeta`가 노출되지 않는다. 배열이 `dtype`과 `shape`
 ### 1복사 발행
 
 ```python doc:raw_py_publish
-pub = flux.ros.Publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
+pub = flux.ros.create_publisher(node, "img", fingerprint=FP, slot_size=16 << 20, slot_count=16)
 
 pub.publish(arr)
 ```
@@ -159,14 +159,15 @@ if loan:
 ```
 
 ```python doc:raw_py_loan_api
-loan = pub.loan(pub.slot_size, dtype="uint8")
-held = loan.valid
+loan = pub.loan()
+held = bool(loan)
+capacity = loan.capacity
 writable = loan.host_addressable
 published = loan.commit(nbytes=1024)
 loan.abort()
 ```
 
-`pub.loan(...)`이 돌려주는 것은 `flux.Loan`이다. C++의 `flux::WriteSlot`에 대응하고, 슬롯을 쥔 채로 살아 있다 -- `commit()`이나 `abort()`가 그것을 놓는다. 빈 슬롯이 없으면 falsy한 것을 돌려주므로 `if loan:`이 그 판정이다.
+`pub.loan(...)`이 돌려주는 것은 `flux.Loan`이다. C++의 `flux::WriteSlot`에 대응하고, 슬롯을 쥔 채로 살아 있다 -- `commit()`이나 `abort()`가 그것을 놓는다. 빈 슬롯이 없으면 `None`을 돌려준다. `commit()`이나 `abort()`로 놓은 `Loan`도 C++ `WriteSlot`처럼 falsy다. 그래서 두 경우 모두 `if loan:`으로 판정한다. `capacity`는 슬롯이 담는 바이트 수이고 C++ `capacity()`와 같다.
 
 `commit()` 뒤에 슬롯은 구독자의 것이다. `loan.array`는 읽기 전용이 되어 쓰면 `ValueError`, 다시 받으려 하면 `RuntimeError`가 난다. `commit()` 전에 만든 슬라이스·`memoryview`·DLPack tensor는 여기에 해당하지 않는다. 그것으로 쓰면 구독자가 읽는 중인 frame이 에러 없이 바뀐다. 모든 쓰기는 `commit()` 전에 끝낸다. C++에서 `data()`로 얻은 포인터와 같은 규칙이다.
 
