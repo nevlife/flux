@@ -24,16 +24,21 @@ from .dtypes import SIZE
 from .fingerprint import fingerprint
 from .flatten import DYNAMIC_COUNT, LeafKind
 
-DESC_SIZE = 8   # {uint32 off, uint32 len}
+DESC_SIZE = 8  # {uint32 off, uint32 len}
 DESC_ALIGN = 4
 STAMP_SIZE = 8  # {int32 sec, uint32 nanosec}
 MAX_ALIGN = 8
 
 # Kinds whose scalar-block entry is a descriptor into the var region.
-VARIABLE = frozenset({
-    LeafKind.COLUMN, LeafKind.RECORD_COLUMN, LeafKind.JAGGED,
-    LeafKind.STRING, LeafKind.STRING_ARRAY,
-})
+VARIABLE = frozenset(
+    {
+        LeafKind.COLUMN,
+        LeafKind.RECORD_COLUMN,
+        LeafKind.JAGGED,
+        LeafKind.STRING,
+        LeafKind.STRING_ARRAY,
+    }
+)
 
 
 class LayoutError(Exception):
@@ -157,7 +162,8 @@ def _check_names(block, path="", root=True):
         if p.name in seen:
             raise LayoutError(
                 f"{path}{p.name}: two fields flatten to the same name -- nesting is joined "
-                f"with '_', so 'a_b' and 'a.b' collide")
+                f"with '_', so 'a_b' and 'a.b' collide"
+            )
         seen.add(p.name)
         if p.elem is not None:
             _check_names(p.elem, f"{path}{p.name}[].", root=False)
@@ -179,7 +185,8 @@ def _check_elem_classes(block):
             if cls in seen:
                 raise LayoutError(
                     f"element class name collision: field paths '{seen[cls]}' and '{dotted}' "
-                    f"both generate {cls}; rename one of the fields to disambiguate")
+                    f"both generate {cls}; rename one of the fields to disambiguate"
+                )
             seen[cls] = dotted
             rec(p.elem, path)
 
@@ -189,23 +196,31 @@ def _check_elem_classes(block):
 def build_layout(flat):
     """FlatResult -> Layout. A rejected schema carries its reason through unchanged."""
     if flat.rejected:
-        return Layout(flat.name, flat.package, "reject", rejected=flat.rejected,
-                      constants=flat.constants)
+        return Layout(
+            flat.name, flat.package, "reject", rejected=flat.rejected, constants=flat.constants
+        )
     root = build_block(flat.leaves)
     _check_names(root)
     _check_elem_classes(root)
     if root.stride == 0:
         raise LayoutError(f"{flat.name}: empty schema has no bytes to publish")
     return Layout(
-        flat.name, flat.package, flat.tier, root,
-        fingerprint(flat.leaves, flat.type_name), constants=flat.constants)
+        flat.name,
+        flat.package,
+        flat.tier,
+        root,
+        fingerprint(flat.leaves, flat.type_name),
+        constants=flat.constants,
+    )
 
 
 def walk(block):
     """Yield every (path, Placed) in the block, descending into element blocks."""
+
     def rec(b, path):
         for p in b.placed:
             yield path + (p,)
             if p.elem is not None:
                 yield from rec(p.elem, path + (p,))
+
     yield from rec(block, ())

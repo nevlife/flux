@@ -253,8 +253,8 @@ for topic in flux.enumerate_topics():
     name = topic.key if topic.key_exact else topic.signpost
     for ep in topic.endpoints:
         role = "pub" if ep.publisher else "sub"
-        _sink(name, topic.domain, topic.fingerprint, role, ep.owner.pid, ep.owner.starttime,
-              ep.label)
+        pid, start = ep.owner.pid, ep.owner.starttime
+        _sink(name, topic.domain, topic.fingerprint, role, pid, start, ep.label)
 ```
 
 `key_exact`가 False면 `key`는 산 참가자가 아니라 이름에서 되읽은 것이다. 이름은 alnum이 아닌 문자를 전부 `.`으로 바꾸므로 `/a/b`와 `.a.b`가 한 이름이다. 그때 보이는 것은 peer가 실제로 합의한 key가 아니라 이름의 철자다. 참가자가 하나도 없는 채널이 그 경우다(signpost는 영구라 이름만 남는다).

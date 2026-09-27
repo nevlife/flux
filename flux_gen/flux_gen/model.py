@@ -5,8 +5,8 @@ from enum import Enum
 
 
 class ArrayKind(Enum):
-    SCALAR = "scalar"    # T name
-    FIXED = "fixed"      # T[N] name
+    SCALAR = "scalar"  # T name
+    FIXED = "fixed"  # T[N] name
     BOUNDED = "bounded"  # T[<=N] name  (rejected: never rides the fast path)
     DYNAMIC = "dynamic"  # T[] name
 

@@ -168,7 +168,10 @@ def test_a_ros_subscription_created_after_spin_is_served(node):
         time.sleep(0.1)  # spin is up before the group exists
         got = []
         node.create_subscription(
-            UInt64, "/pytest/part/late", lambda m: got.append(m.data), 10,
+            UInt64,
+            "/pytest/part/late",
+            lambda m: got.append(m.data),
+            10,
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
         deadline = time.monotonic() + 5.0
@@ -239,7 +242,9 @@ def test_group_holding_ros_entities_is_refused(node):
     from std_msgs.msg import UInt64
 
     group = MutuallyExclusiveCallbackGroup()
-    node.create_subscription(UInt64, "/pytest/part/occupied", lambda m: None, 10, callback_group=group)
+    node.create_subscription(
+        UInt64, "/pytest/part/occupied", lambda m: None, 10, callback_group=group
+    )
 
     sub = flux.Subscription("/pytest/part/occupied_flux", fingerprint=FP)
     ex = flux.ros.PartitionedExecutor()

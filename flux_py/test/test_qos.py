@@ -85,8 +85,8 @@ def test_volatile_skips_the_backlog_and_transient_local_replays_it():
     assert late.take() is None  # joined after those three
 
     replay = flux.Subscription(
-        "/pytest/qos/dur", fingerprint=FP,
-        qos=flux.QoS(depth=8, durability=flux.TransientLocal(2)))
+        "/pytest/qos/dur", fingerprint=FP, qos=flux.QoS(depth=8, durability=flux.TransientLocal(2))
+    )
     assert [int(replay.take()[0]) for _ in range(2)] == [1, 2]
     assert replay.take() is None
 

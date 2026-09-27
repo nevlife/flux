@@ -12,7 +12,6 @@ from sensor_msgs_flux.point_cloud2 import PointCloud2
 
 
 class CloudSubscriber(Node):
-
     TOPIC = "cloud"
 
     def __init__(self):

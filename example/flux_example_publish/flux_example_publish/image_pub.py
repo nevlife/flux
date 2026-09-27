@@ -13,7 +13,6 @@ from sensor_msgs_flux.image import Image
 
 
 class ImagePublishPublisher(Node):
-
     TOPIC = "image"
     FRAME_ID = "camera"
     ENCODING = "bgr8"

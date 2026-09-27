@@ -15,7 +15,6 @@ from sensor_msgs_flux.image import Image
 
 
 class PartitionedSubscriber(Node):
-
     TOPIC = "image"
     SLOW_WORK_SEC = 0.08
 

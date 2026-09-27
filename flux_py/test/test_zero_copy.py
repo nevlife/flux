@@ -49,8 +49,9 @@ def test_dtypes_roundtrip():
     # float16 is in the list because it is the one type the binding cannot template on -- it is
     # carried as u16 with the dtype overridden, and nothing was covering that branch.
     for dt in (np.uint8, np.int16, np.uint32, np.int64, np.float16, np.float32, np.float64):
-        pub = flux.Publisher(f"/pytest/dt_{dt.__name__}", slot_size=1 << 16,
-                             slot_count=2, fingerprint=FP)
+        pub = flux.Publisher(
+            f"/pytest/dt_{dt.__name__}", slot_size=1 << 16, slot_count=2, fingerprint=FP
+        )
         sub = flux.Subscription(f"/pytest/dt_{dt.__name__}", fingerprint=FP)
         a = (np.arange(64) % 17).astype(dt)
         assert pub.publish(a) == flux.Published.OK
@@ -259,7 +260,8 @@ def test_take_blocking_does_not_park_when_max_borrow_is_held():
     # "lease exhausted" as "no data" slept through every publish until the timeout.
     pub = flux.Publisher("/pytest/loan/lease", slot_size=64, slot_count=4, fingerprint=FP)
     sub = flux.Subscription(
-        "/pytest/loan/lease", fingerprint=FP, qos=flux.QoS(depth=4, max_borrow=1))
+        "/pytest/loan/lease", fingerprint=FP, qos=flux.QoS(depth=4, max_borrow=1)
+    )
     assert pub.publish(np.full(8, 1, dtype=np.uint8)) == flux.Published.OK
     assert pub.publish(np.full(8, 2, dtype=np.uint8)) == flux.Published.OK
 
@@ -279,7 +281,8 @@ def test_an_exhausted_lease_is_visible_and_counted():
     # refused counts it after; without both, a retry loop here just burns CPU.
     pub = flux.Publisher("/pytest/loan/refused", slot_size=64, slot_count=4, fingerprint=FP)
     sub = flux.Subscription(
-        "/pytest/loan/refused", fingerprint=FP, qos=flux.QoS(depth=4, max_borrow=1))
+        "/pytest/loan/refused", fingerprint=FP, qos=flux.QoS(depth=4, max_borrow=1)
+    )
     assert pub.publish(np.full(8, 1, dtype=np.uint8)) == flux.Published.OK
 
     assert sub.can_borrow is True

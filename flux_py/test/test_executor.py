@@ -136,8 +136,8 @@ def test_late_publisher_is_picked_up():
     # transient_local(1): the attach necessarily lands after the publish, and volatile would
     # (correctly) join from there and see nothing.
     sub = flux.Subscription(
-        "/pytest/ex/late", fingerprint=FP,
-        qos=flux.QoS(durability=flux.TransientLocal(1)))
+        "/pytest/ex/late", fingerprint=FP, qos=flux.QoS(durability=flux.TransientLocal(1))
+    )
     seen = []
     ex = flux.Executor()
     ex.add(sub, lambda v: seen.append(int(v[0])))

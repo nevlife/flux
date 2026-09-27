@@ -31,21 +31,29 @@ MSG_DIR = os.path.join(os.path.dirname(__file__), "msg")
 # string arrays, and a bare-Time stamp. Regenerate deliberately, and bump
 # FINGERPRINT_SCHEMA_VERSION in the same commit -- these values are the wire contract.
 GOLDEN = [
-    ("Pose",
-     "v5#test/Pose;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1",
-     0x355D5F3FA5A9D96A),
-    ("FlatPose",
-     "v5#test/FlatPose;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1",
-     0x8025D4B81455B91C),
+    (
+        "Pose",
+        "v5#test/Pose;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1",
+        0x355D5F3FA5A9D96A,
+    ),
+    (
+        "FlatPose",
+        "v5#test/FlatPose;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1;fixed:f64:1",
+        0x8025D4B81455B91C,
+    ),
     ("Vec3", "v5#test/Vec3;fixed:f64:1;fixed:f64:1;fixed:f64:1", 0xF331315EA0FFEB11),
-    ("PointCloud",
-     "v5#test/PointCloud;column:f32:0;column:f32:0;column:f32:0;fixed:u32:1;fixed:u32:1",
-     0x438B2D5EE8C0D2C8),
+    (
+        "PointCloud",
+        "v5#test/PointCloud;column:f32:0;column:f32:0;column:f32:0;fixed:u32:1;fixed:u32:1",
+        0x438B2D5EE8C0D2C8,
+    ),
     ("Labeled", "v5#test/Labeled;string:-:1;column:f64:0", 0xCD34AB0E7FEDFE3B),
     ("NestedString", "v5#test/NestedString;string:-:1;column:f64:0", 0x61259AAF57E27568),
-    ("Trajectory",
-     "v5#test/Trajectory;record:-:0{fixed:f64:1,fixed:f64:1,fixed:f64:1,fixed:f64:1,fixed:f64:1,fixed:f64:1}",
-     0x6189DBC36C3162D4),
+    (
+        "Trajectory",
+        "v5#test/Trajectory;record:-:0{fixed:f64:1,fixed:f64:1,fixed:f64:1,fixed:f64:1,fixed:f64:1,fixed:f64:1}",
+        0x6189DBC36C3162D4,
+    ),
     ("TensorList", "v5#test/TensorList;jagged:-:0{column:u32:0,column:f32:0}", 0x365EF7BD07FF3A69),
     ("Tensor", "v5#test/Tensor;column:u32:0;column:f32:0", 0x1917DE80DD607226),
     # Event carries a bare Time. It tokenizes as the two fields it lays out as, not as an opaque
@@ -104,7 +112,8 @@ def test_type_name_separates_identical_layouts(reg):
     # a Vector3 subscription on one topic never connect. The fingerprint refuses it the same way.
     leaves = flatten_message(reg["Vec3"], reg).leaves
     assert fingerprint(leaves, "geometry_msgs/msg/Point") != fingerprint(
-        leaves, "geometry_msgs/msg/Vector3")
+        leaves, "geometry_msgs/msg/Vector3"
+    )
     # Nested names stay out of it: only the outermost name identifies the schema.
     assert fingerprint(leaves, "p/M") == fingerprint(leaves, "p/M")
 
@@ -121,7 +130,7 @@ def test_jagged_element_structure_differentiates(reg):
     from flux_gen import Field, Message
     from flux_gen.model import ArrayKind
 
-    tensor_list = Message("TL", [Field("items", "Tensor", ArrayKind.DYNAMIC)])   # {u32[], f32[]}
+    tensor_list = Message("TL", [Field("items", "Tensor", ArrayKind.DYNAMIC)])  # {u32[], f32[]}
     labeled_list = Message("LL", [Field("items", "Labeled", ArrayKind.DYNAMIC)])  # {string, f64[]}
     a = fingerprint(flatten_message(tensor_list, reg).leaves, "p/M")
     b = fingerprint(flatten_message(labeled_list, reg).leaves, "p/M")
@@ -245,15 +254,15 @@ def test_the_layout_fingerprint_is_a_function_of_the_shape_across_the_ros_corpus
         buckets.setdefault(fingerprint(flat.leaves, "p/M"), {}).setdefault(shape, []).append(key)
 
     collisions = {
-        digest: list(by_shape.values())
-        for digest, by_shape in buckets.items()
-        if len(by_shape) > 1
+        digest: list(by_shape.values()) for digest, by_shape in buckets.items() if len(by_shape) > 1
     }
     assert not collisions, (
         "distinct shapes share one layout fingerprint, so flux would let them share a segment: "
         + "; ".join(
             f"0x{d:016X} -> " + " vs ".join(sorted(g)[0] for g in groups)
-            for d, groups in sorted(collisions.items())))
+            for d, groups in sorted(collisions.items())
+        )
+    )
 
 
 @pytest.mark.skipif(not glob.glob(ROS_MSG_DIR_GLOB), reason="no installed ROS messages to sweep")
@@ -264,6 +273,7 @@ def test_the_named_fingerprint_separates_every_type_in_the_ros_corpus():
     for key, (flat, _) in _corpus().items():
         digest = fingerprint(flat.leaves, flat.type_name)
         assert digest not in seen or seen[digest] == key, (
-            f"{key} and {seen[digest]} share fingerprint 0x{digest:016X}")
+            f"{key} and {seen[digest]} share fingerprint 0x{digest:016X}"
+        )
         seen[digest] = key
     assert len(seen) > 100, "expected a substantial corpus to sweep"

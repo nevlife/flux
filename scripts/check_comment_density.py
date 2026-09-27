@@ -93,12 +93,14 @@ def main():
             where = "its recorded exemption" if rel in exempt else "the limit"
             errors.append(
                 f"{rel}: a comment block of {longest} lines exceeds {where} of {limit}; "
-                "move the prose to docs/ or shorten it")
+                "move the prose to docs/ or shorten it"
+            )
 
     for rel in sorted(set(exempt) - seen):
         errors.append(
             f"{BUDGET}: block-exempt names {rel}, which is not a source file here -- "
-            "drop the row rather than leaving an exemption nothing applies to")
+            "drop the row rather than leaving an exemption nothing applies to"
+        )
 
     if total_code == 0:
         raise SystemExit("no sources measured -- the layout changed")
@@ -107,7 +109,8 @@ def main():
     if round(density, 3) > max_density:
         errors.append(
             f"comment density {density:.3f} ({total_comments}/{total_code}) is above the budget "
-            f"of {max_density:.3f}; this number is a ratchet, so lower it or delete a comment")
+            f"of {max_density:.3f}; this number is a ratchet, so lower it or delete a comment"
+        )
 
     for e in errors:
         print(e, file=sys.stderr)
@@ -115,7 +118,8 @@ def main():
         return 1
     print(
         f"comment density {density:.3f} <= {max_density:.3f} "
-        f"({total_comments}/{total_code}), longest block within budget")
+        f"({total_comments}/{total_code}), longest block within budget"
+    )
     return 0
 
 

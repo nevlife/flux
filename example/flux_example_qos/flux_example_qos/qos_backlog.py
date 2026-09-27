@@ -14,7 +14,6 @@ from sensor_msgs_flux.image import Image
 
 
 class BacklogSubscriber(Node):
-
     TOPIC = "image"
     WORK_SEC = 0.05
 

@@ -81,17 +81,27 @@ def generate(msg_path, pkg, out_cpp, out_py, reg, depfile=None):
     snake = emit_cpp.snake(stem)
     written = []
     if out_cpp:
-        written.append(_write(
-            os.path.join(out_cpp, pkg, "flux", snake + ".hpp"), emit_cpp.emit(layout, source)))
-        written.append(_write(
-            os.path.join(out_cpp, pkg, "flux", snake + "_ros.hpp"),
-            emit_ros.emit_cpp(layout, source)))
+        written.append(
+            _write(
+                os.path.join(out_cpp, pkg, "flux", snake + ".hpp"), emit_cpp.emit(layout, source)
+            )
+        )
+        written.append(
+            _write(
+                os.path.join(out_cpp, pkg, "flux", snake + "_ros.hpp"),
+                emit_ros.emit_cpp(layout, source),
+            )
+        )
     if out_py:
-        written.append(_write(
-            os.path.join(out_py, pkg + "_flux", snake + ".py"), emit_py.emit(layout, source)))
-        written.append(_write(
-            os.path.join(out_py, pkg + "_flux", snake + "_ros.py"),
-            emit_ros.emit_py(layout, source)))
+        written.append(
+            _write(os.path.join(out_py, pkg + "_flux", snake + ".py"), emit_py.emit(layout, source))
+        )
+        written.append(
+            _write(
+                os.path.join(out_py, pkg + "_flux", snake + "_ros.py"),
+                emit_ros.emit_py(layout, source),
+            )
+        )
     if depfile:
         deps = " ".join(sorted(set(sources(msg, reg))))
         _write(depfile, "".join(f"{out}: {deps}\n" for out in written))
@@ -105,8 +115,11 @@ def main(argv=None):
     ap.add_argument("--out-cpp", help="root for include/<pkg>/flux/<name>.hpp")
     ap.add_argument("--out-py", help="root for <pkg>_flux/<name>.py")
     ap.add_argument("--depfile", help="write a make depfile listing every .msg read")
-    ap.add_argument("--no-ament", action="store_true",
-                    help="do not resolve nested types against installed ROS packages")
+    ap.add_argument(
+        "--no-ament",
+        action="store_true",
+        help="do not resolve nested types against installed ROS packages",
+    )
     args = ap.parse_args(argv)
 
     if not args.out_cpp and not args.out_py:

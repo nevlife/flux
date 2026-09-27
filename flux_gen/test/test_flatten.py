@@ -5,8 +5,7 @@ import os
 
 import pytest
 
-from flux_gen import (
-    DYNAMIC_COUNT, DType, LeafKind, Registry, flatten_message, load_dir, parse_msg)
+from flux_gen import DYNAMIC_COUNT, DType, LeafKind, Registry, flatten_message, load_dir, parse_msg
 from flux_gen.flatten import ALWAYS_DYNAMIC, ALWAYS_FIXED
 
 MSG_DIR = os.path.join(os.path.dirname(__file__), "msg")
@@ -46,10 +45,13 @@ def test_header_is_frame_metadata(reg):
 
     # A Header (stamp + string frame_id) must not reject: it maps to frame metadata, not a
     # flattened struct. The message stays supported with the payload column intact.
-    m = Message("Stamped", [
-        Field("header", "std_msgs/Header", ArrayKind.SCALAR),
-        Field("data", "float32", ArrayKind.DYNAMIC),
-    ])
+    m = Message(
+        "Stamped",
+        [
+            Field("header", "std_msgs/Header", ArrayKind.SCALAR),
+            Field("data", "float32", ArrayKind.DYNAMIC),
+        ],
+    )
     r = flatten_message(m, reg)
     assert r.tier != "reject"
     assert r.leaves[0].kind == LeafKind.HEADER
@@ -70,7 +72,13 @@ def test_pointcloud_columns_and_scalars(reg):
     r = flat(reg, "PointCloud")
     assert r.tier == "columnar"
     kinds = [l.kind for l in r.leaves]
-    assert kinds == [LeafKind.COLUMN, LeafKind.COLUMN, LeafKind.COLUMN, LeafKind.FIXED, LeafKind.FIXED]
+    assert kinds == [
+        LeafKind.COLUMN,
+        LeafKind.COLUMN,
+        LeafKind.COLUMN,
+        LeafKind.FIXED,
+        LeafKind.FIXED,
+    ]
 
 
 def test_labeled_has_string_tail(reg):
@@ -178,8 +186,8 @@ def test_nested_fixed_arrays_cannot_blow_up_generation(reg):
     from flux_gen.model import ArrayKind
 
     inner = Message("Inner", [Field(n, "float64", ArrayKind.SCALAR) for n in ("x", "y", "z")])
-    mid = Message("Mid", [Field("a", "Inner", ArrayKind.FIXED, 64)])       # 192 leaves
-    outer = Message("Outer", [Field("b", "Mid", ArrayKind.FIXED, 64)])     # 12288 leaves
+    mid = Message("Mid", [Field("a", "Inner", ArrayKind.FIXED, 64)])  # 192 leaves
+    outer = Message("Outer", [Field("b", "Mid", ArrayKind.FIXED, 64)])  # 12288 leaves
     r = flatten_message(outer, {"Inner": inner, "Mid": mid, "Outer": outer})
     assert r.tier == "reject"
     assert str(MAX_LEAVES) in r.rejected

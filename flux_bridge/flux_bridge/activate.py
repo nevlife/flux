@@ -90,7 +90,9 @@ def run_with_bridge(args, topic_name, action):
         return 1
     adapter = discover().get(channel.fingerprint)
     if adapter is None:
-        print(f"flux: no adapter installed for '{topic_name}' (fingerprint {channel.fingerprint:#018x})")
+        print(
+            f"flux: no adapter installed for '{topic_name}' (fingerprint {channel.fingerprint:#018x})"
+        )
         return 1
     with private_node(f"_flux_cli_{os.getpid()}") as node:
         node.create_subscription(adapter.message, channel.key, lambda _msg: None, _dummy_qos())
@@ -101,4 +103,3 @@ def run_with_bridge(args, topic_name, action):
             )
             return 1
         return action(args)
-

@@ -124,7 +124,9 @@ class Bridge:
             if adapter is None:
                 if key not in self._unknown:
                     self._unknown.add(key)
-                    self._log(f"{key}: no adapter installed for fingerprint {topic.fingerprint:#018x}")
+                    self._log(
+                        f"{key}: no adapter installed for fingerprint {topic.fingerprint:#018x}"
+                    )
                 continue
             bridgeable[key] = (topic, adapter)
         wanted = {k for k in bridgeable if external_subscribers(self._node, k)}
@@ -133,7 +135,8 @@ class Bridge:
             relay = self._relays.pop(key)
             relay.stop()
             self._log(
-                f"{key}: stopped after {relay.published} frames, {relay.unreadable} unreadable")
+                f"{key}: stopped after {relay.published} frames, {relay.unreadable} unreadable"
+            )
         for key in start:
             topic, adapter = bridgeable[key]
             self._relays[key] = Relay(self._node, topic, adapter, self._qos)

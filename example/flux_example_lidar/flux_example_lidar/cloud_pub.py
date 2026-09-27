@@ -13,7 +13,6 @@ from sensor_msgs_flux.point_cloud2 import PointCloud2
 
 
 class CloudPublisher(Node):
-
     TOPIC = "cloud"
     FRAME_ID = "lidar"
     POINT_STEP = 16

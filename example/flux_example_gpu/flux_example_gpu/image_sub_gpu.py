@@ -19,7 +19,6 @@ from rclpy.node import Node
 
 
 class GpuImageSubscriber(Node):
-
     TOPIC = "image_gpu"
 
     def __init__(self):

@@ -37,14 +37,14 @@ DYNAMIC_COUNT = 0
 
 
 class LeafKind(Enum):
-    FIXED = "fixed"          # compile-time offset scalar block entry (dtype x count)
-    COLUMN = "column"        # per-frame dynamic primitive array (0-copy)
+    FIXED = "fixed"  # compile-time offset scalar block entry (dtype x count)
+    COLUMN = "column"  # per-frame dynamic primitive array (0-copy)
     RECORD_COLUMN = "record"  # per-frame dynamic array of a fixed struct (0-copy)
-    STRING = "string"        # single string (variable tail)
+    STRING = "string"  # single string (variable tail)
     STRING_ARRAY = "sarray"  # array of strings (variable tail)
-    JAGGED = "jagged"        # dynamic array of a variable-length element (bulk + structure)
-    HEADER = "header"        # std_msgs/Header -> frame metadata (stamp + frame_id)
-    STAMP = "stamp"          # bare builtin_interfaces/Time -> frame stamp
+    JAGGED = "jagged"  # dynamic array of a variable-length element (bulk + structure)
+    HEADER = "header"  # std_msgs/Header -> frame metadata (stamp + frame_id)
+    STAMP = "stamp"  # bare builtin_interfaces/Time -> frame stamp
 
 
 # Which side of the DYNAMIC_COUNT rule each kind is pinned to. STRING_ARRAY and JAGGED are on
@@ -128,9 +128,13 @@ def _expand(fld, registry, seen, package=None, prefix=()):
     if base == "string":
         if kind == ArrayKind.SCALAR:
             return [Leaf(LeafKind.STRING, path=path)]
-        return [Leaf(
-            LeafKind.STRING_ARRAY,
-            count=fld.size if kind == ArrayKind.FIXED else DYNAMIC_COUNT, path=path)]
+        return [
+            Leaf(
+                LeafKind.STRING_ARRAY,
+                count=fld.size if kind == ArrayKind.FIXED else DYNAMIC_COUNT,
+                path=path,
+            )
+        ]
     if base == "wstring":
         raise Reject(f"{fld.name}: wstring not supported")
 
@@ -162,18 +166,36 @@ def _expand(fld, registry, seen, package=None, prefix=()):
             return [x for i in range(fld.size) for x in _reparent(sub, path + (i,))]
         # Carry the element's flattened layout (and the fixed count N) so the fingerprint
         # distinguishes jagged schemas by their element structure, not just "jagged".
-        return [Leaf(
-            LeafKind.JAGGED, count=fld.size, record_leaves=tuple(sub), path=path,
-            elem_type=ident)]
+        return [
+            Leaf(
+                LeafKind.JAGGED,
+                count=fld.size,
+                record_leaves=tuple(sub),
+                path=path,
+                elem_type=ident,
+            )
+        ]
     # DYNAMIC array of a struct: 0-copy record column iff the element is purely fixed
     # (rectangular), otherwise the element varies in length -> jagged.
     if _all_fixed(sub):
-        return [Leaf(
-            LeafKind.RECORD_COLUMN, count=DYNAMIC_COUNT, record_leaves=tuple(sub), path=path,
-            elem_type=ident)]
-    return [Leaf(
-        LeafKind.JAGGED, count=DYNAMIC_COUNT, record_leaves=tuple(sub), path=path,
-        elem_type=ident)]
+        return [
+            Leaf(
+                LeafKind.RECORD_COLUMN,
+                count=DYNAMIC_COUNT,
+                record_leaves=tuple(sub),
+                path=path,
+                elem_type=ident,
+            )
+        ]
+    return [
+        Leaf(
+            LeafKind.JAGGED,
+            count=DYNAMIC_COUNT,
+            record_leaves=tuple(sub),
+            path=path,
+            elem_type=ident,
+        )
+    ]
 
 
 def _frame_meta(fld):
@@ -207,9 +229,8 @@ def flatten_message(msg, registry):
             # Constant-only messages (std_msgs/Empty, rcl_interfaces/ParameterType) carry no
             # payload, so there is nothing for a frame to be. Plain ROS handles them.
             raise Reject(f"{msg.name}: no publishable fields")
-        return FlatResult(
-            msg.name, leaves, package=msg.package, constants=tuple(msg.constants))
+        return FlatResult(msg.name, leaves, package=msg.package, constants=tuple(msg.constants))
     except Reject as exc:
         return FlatResult(
-            msg.name, [], rejected=str(exc), package=msg.package,
-            constants=tuple(msg.constants))
+            msg.name, [], rejected=str(exc), package=msg.package, constants=tuple(msg.constants)
+        )

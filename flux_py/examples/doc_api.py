@@ -74,18 +74,17 @@ def doc_qos(n):
 def doc_ros_executor(node, sub):
     # [doc:py_ros_executor]
     ex = flux.ros.Executor()
-    ex.add(sub)                  # the subscription carries the callback
-    ex.add_ros_node(node)             # the whole node, same as add_ros_node in C++
-    ex.spin()                         # runs until stop(); tick_ns defaults to 100 ms
+    ex.add(sub)  # the subscription carries the callback
+    ex.add_ros_node(node)  # the whole node, same as add_ros_node in C++
+    ex.spin()  # runs until stop(); tick_ns defaults to 100 ms
     ex.spin_once(timeout_ns=100_000_000)
     merged = ex.uses_io_uring
-    spinning = ex.is_spinning         # as rclpy
-    ex.interrupt()                    # wakes the wait without ending the loop
+    spinning = ex.is_spinning  # as rclpy
+    ex.interrupt()  # wakes the wait without ending the loop
     ex.stop()
-    ex.shutdown()                     # before destroying the node
+    ex.shutdown()  # before destroying the node
     # [doc:/py_ros_executor]
     _sink(merged, spinning)
-
 
 
 def doc_partitioned(node, sub_a, sub_b):
@@ -107,9 +106,6 @@ def doc_thread_start(node, sub, group):
     ex.on_thread_start(group, set_up_this_thread)
     ex.on_thread_start(node, set_up_this_thread)
     # [doc:/py_thread_start]
-
-
-
 
 
 def doc_gpu_publisher(node, cp, render_into):

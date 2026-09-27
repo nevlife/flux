@@ -34,13 +34,17 @@ def _fake_adapter_package(root, pkg, modules):
 
 
 def test_discover_maps_fingerprints_to_installed_adapters(tmp_path, monkeypatch, capsys):
-    path = _fake_adapter_package(tmp_path, "demo_flux", {
-        "__init__": "",
-        "cloud": 'TYPE_NAME__ = "demo/Cloud"\nFINGERPRINT__ = 0x10\nclass View: pass\n',
-        "cloud_ros": 'MESSAGE = "ros-cloud"\ndef frame_to_msg(v): return v\n',
-        "broken": "raise ImportError('not an adapter')\n",
-        "plain": "X = 1\n",
-    })
+    path = _fake_adapter_package(
+        tmp_path,
+        "demo_flux",
+        {
+            "__init__": "",
+            "cloud": 'TYPE_NAME__ = "demo/Cloud"\nFINGERPRINT__ = 0x10\nclass View: pass\n',
+            "cloud_ros": 'MESSAGE = "ros-cloud"\ndef frame_to_msg(v): return v\n',
+            "broken": "raise ImportError('not an adapter')\n",
+            "plain": "X = 1\n",
+        },
+    )
     monkeypatch.syspath_prepend(path)
     found = adapters.discover([path])
     assert list(found) == [0x10]
@@ -74,7 +78,9 @@ def test_find_channel_accepts_the_flattened_spelling(monkeypatch, name):
             self.key = key
             self.domain = domain
 
-    monkeypatch.setattr(flux, "enumerate_topics", lambda: [Topic("/cam/left", "0"), Topic("/cam/left", "1")])
+    monkeypatch.setattr(
+        flux, "enumerate_topics", lambda: [Topic("/cam/left", "0"), Topic("/cam/left", "1")]
+    )
     monkeypatch.setattr(flux, "flatten_key", lambda k: k.replace("/", "."))
     assert find_channel(name, domain="1").domain == "1"
     assert find_channel("/nothing", domain="1") is None
@@ -99,14 +105,17 @@ def test_a_relay_skips_an_unreadable_frame_and_keeps_relaying():
             sent.append(msg)
 
     node = types.SimpleNamespace(
-        create_publisher=lambda *a: Pub(), destroy_publisher=lambda p: None)
+        create_publisher=lambda *a: Pub(), destroy_publisher=lambda p: None
+    )
 
     def to_msg(frame):
         if frame[0] == 0xFF:
             raise WireError("frame region escapes the frame")
         return int(frame[0])
 
-    adapter = types.SimpleNamespace(message=object, view=lambda f: np.asarray(f), frame_to_msg=to_msg)
+    adapter = types.SimpleNamespace(
+        message=object, view=lambda f: np.asarray(f), frame_to_msg=to_msg
+    )
     key, fp = "/pytest/bridge/unreadable", 0xB21D6E
     pub = flux.Publisher(key, fingerprint=fp, slot_size=4096, slot_count=4)
     relay = Relay(node, types.SimpleNamespace(key=key, fingerprint=fp), adapter, None)

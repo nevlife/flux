@@ -12,7 +12,6 @@ from rclpy.node import Node
 
 
 class ImageRawPublisher(Node):
-
     TOPIC = "image_raw"
     WIDTH = 1920
     HEIGHT = 1200

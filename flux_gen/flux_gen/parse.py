@@ -74,10 +74,14 @@ def _parse_size(inner, tok, ctx):
     """Parse the N of T[N]. Only a plain non-negative decimal is accepted -- no signs, no
     whitespace, no underscores, no unicode digits -- so nothing turns into a size by accident."""
     if not _DECIMAL_RE.fullmatch(inner):
-        raise ParseError(f"bad fixed array size '{inner}' in type '{tok}' (expected T[N], T[] or T[<=N])", **ctx)
+        raise ParseError(
+            f"bad fixed array size '{inner}' in type '{tok}' (expected T[N], T[] or T[<=N])", **ctx
+        )
     size = int(inner)
     if size == 0:
-        raise ParseError(f"zero-length fixed array in type '{tok}' (use T[] for a dynamic array)", **ctx)
+        raise ParseError(
+            f"zero-length fixed array in type '{tok}' (use T[] for a dynamic array)", **ctx
+        )
     if size > MAX_FIXED_ARRAY:
         raise ParseError(
             f"fixed array size {size} in type '{tok}' exceeds the {MAX_FIXED_ARRAY} limit "
@@ -188,16 +192,18 @@ def parse_msg(text, name, path=None, package=None):
                 raise ParseError(f"array constant '{field_name}' is not valid in a .msg", **ctx)
             if not _CONST_NAME_RE.match(field_name):
                 raise ParseError(
-                    f"malformed constant name '{field_name}' (rosidl requires UPPER_CASE)", **ctx)
+                    f"malformed constant name '{field_name}' (rosidl requires UPPER_CASE)", **ctx
+                )
             if field_name == name:
                 raise ParseError(
                     f"constant name '{field_name}' collides with the namespace the generated "
-                    f"adapter defines", **ctx)
+                    f"adapter defines",
+                    **ctx,
+                )
             if field_name in seen_constants:
                 raise ParseError(f"duplicate constant name '{field_name}'", **ctx)
             seen_constants.add(field_name)
-            constants.append(
-                Constant(field_name, base, _constant_value(base, const_text, ctx)))
+            constants.append(Constant(field_name, base, _constant_value(base, const_text, ctx)))
             continue
 
         if not _NAME_RE.match(field_name):
@@ -206,8 +212,7 @@ def parse_msg(text, name, path=None, package=None):
             raise ParseError(f"duplicate field name '{field_name}'", **ctx)
         seen.add(field_name)
         fields.append(Field(name=field_name, type_name=base, kind=kind, size=size))
-    return Message(
-        name=name, fields=fields, package=package, path=path, constants=constants)
+    return Message(name=name, fields=fields, package=package, path=path, constants=constants)
 
 
 class Registry(dict):

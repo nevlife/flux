@@ -61,12 +61,14 @@ def cmd_list(args):
     rows = []
     for t in topics:
         stats = flux.read_channel_stats(t.signpost)
-        rows.append([
-            display_name(t),
-            t.domain,
-            "up" if stats.live else "down",
-            endpoint_summary(t),
-        ])
+        rows.append(
+            [
+                display_name(t),
+                t.domain,
+                "up" if stats.live else "down",
+                endpoint_summary(t),
+            ]
+        )
     print("\n".join(table(rows, ["CHANNEL", "DOMAIN", "SEGMENT", "ENDPOINTS"])))
     return 0
 
@@ -174,33 +176,38 @@ def build_parser():
     # subcommand, which is not where anyone types them.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
-        "--domain", default=None,
-        help="Domain to look in (default: this process's, from FLUX_DOMAIN or ROS_DOMAIN_ID).")
-    common.add_argument(
-        "--all-domains", action="store_true", help="Do not filter by domain.")
+        "--domain",
+        default=None,
+        help="Domain to look in (default: this process's, from FLUX_DOMAIN or ROS_DOMAIN_ID).",
+    )
+    common.add_argument("--all-domains", action="store_true", help="Do not filter by domain.")
 
     parser = argparse.ArgumentParser(
         prog="flux",
         description="Inspect flux channels on this host. Reads /dev/shm; daemonless, needs no "
-                    "ROS, and cannot be seen by the processes it reports on.")
+        "ROS, and cannot be seen by the processes it reports on.",
+    )
     groups = parser.add_subparsers(dest="group", required=True)
     topic = groups.add_parser("topic", help="Commands about channels.")
     verbs = topic.add_subparsers(dest="verb", required=True)
 
-    verbs.add_parser(
-        "list", parents=[common], help="List channels.").set_defaults(func=cmd_list)
+    verbs.add_parser("list", parents=[common], help="List channels.").set_defaults(func=cmd_list)
 
     info = verbs.add_parser("info", parents=[common], help="Show one channel in detail.")
     info.add_argument("channel")
     info.set_defaults(func=cmd_info)
 
     hz = verbs.add_parser(
-        "hz", parents=[common],
-        help="Publish rate, sampled from the segment's frame counter.")
+        "hz", parents=[common], help="Publish rate, sampled from the segment's frame counter."
+    )
     hz.add_argument("channel")
     hz.add_argument(
-        "--window", type=float, default=1.0, metavar="SEC",
-        help="Seconds between samples (default: 1.0).")
+        "--window",
+        type=float,
+        default=1.0,
+        metavar="SEC",
+        help="Seconds between samples (default: 1.0).",
+    )
     hz.set_defaults(func=cmd_hz)
 
     # No --domain here on purpose: this verb reports which domain the environment puts this process

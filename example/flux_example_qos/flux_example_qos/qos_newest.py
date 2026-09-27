@@ -12,7 +12,6 @@ from sensor_msgs_flux.image import Image
 
 
 class NewestSubscriber(Node):
-
     TOPIC = "image"
 
     def __init__(self):

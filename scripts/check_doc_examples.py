@@ -186,7 +186,9 @@ def main():
     errors = []
     for doc, sources in PAIRS:
         errors.extend(check(doc, sources))
-        errors.extend(check(doc.parent.parent / "ko" / doc.name.replace(".en.md", ".ko.md"), sources))
+        errors.extend(
+            check(doc.parent.parent / "ko" / doc.name.replace(".en.md", ".ko.md"), sources)
+        )
     for e in errors:
         print(e, file=sys.stderr)
     if errors:

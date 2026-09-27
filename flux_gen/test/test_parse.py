@@ -28,10 +28,10 @@ def one(text):
     [
         ("float64[abc] x", "bad fixed array size"),
         ("float64[-1] x", "bad fixed array size"),
-        ("float64[1_0] x", "bad fixed array size"),   # python int() accepts underscores; we must not
-        ("float64[٣] x", "bad fixed array size"),     # str.isdigit() is true, int() returns 3
-        ("float64[²] x", "bad fixed array size"),     # str.isdigit() is true, int() raises ValueError
-        ("float64[ 3] x", "unterminated array"),      # whitespace splits the token
+        ("float64[1_0] x", "bad fixed array size"),  # python int() accepts underscores; we must not
+        ("float64[٣] x", "bad fixed array size"),  # str.isdigit() is true, int() returns 3
+        ("float64[²] x", "bad fixed array size"),  # str.isdigit() is true, int() raises ValueError
+        ("float64[ 3] x", "unterminated array"),  # whitespace splits the token
         ("float64[3 x", "unterminated array"),
         ("float64[3", "unterminated array"),
         ("float64[0] x", "zero-length fixed array"),
@@ -136,8 +136,12 @@ def two_package_registry():
     """Two packages defining the same message name with different layouts -- the shape that made
     the old basename fallback return the wrong one."""
     reg = Registry()
-    reg.add(Message("GoalStatus", [Field("status", "int8", ArrayKind.SCALAR)], package="action_msgs"))
-    reg.add(Message("GoalStatus", [Field("text", "string", ArrayKind.SCALAR)], package="actionlib_msgs"))
+    reg.add(
+        Message("GoalStatus", [Field("status", "int8", ArrayKind.SCALAR)], package="action_msgs")
+    )
+    reg.add(
+        Message("GoalStatus", [Field("text", "string", ArrayKind.SCALAR)], package="actionlib_msgs")
+    )
     return reg
 
 
@@ -222,12 +226,15 @@ def test_installed_ros_messages_all_parse():
             parse_msg(f.read(), os.path.basename(path)[:-4], path=path)
 
 
-@pytest.mark.parametrize("line", [
-    "float64 _leading",   # the Python adapter names its own slots _r/_at/_w
-    "float64 Upper",
-    "float64 double__underscore",
-    "float64 trailing_",
-])
+@pytest.mark.parametrize(
+    "line",
+    [
+        "float64 _leading",  # the Python adapter names its own slots _r/_at/_w
+        "float64 Upper",
+        "float64 double__underscore",
+        "float64 trailing_",
+    ],
+)
 def test_field_names_follow_the_ros_rule(line):
     # ROS 2 requires lowercase, letter-initial, single underscores between alphanumerics. Being
     # laxer than ROS here would accept a .msg that rosidl rejects, so the flux path and the plain
@@ -249,9 +256,14 @@ def test_string_constants_follow_rosidl_quoting():
         'string B="hi there"\n'
         "string C=bare value   # note\n"
         "string D='a#b'\n"
-        "uint8 x\n")
+        "uint8 x\n"
+    )
     assert {c.name: c.value for c in m.constants} == {
-        "A": "hello", "B": "hi there", "C": "bare value", "D": "a#b"}
+        "A": "hello",
+        "B": "hi there",
+        "C": "bare value",
+        "D": "a#b",
+    }
 
 
 def test_a_duplicate_key_is_still_an_error():

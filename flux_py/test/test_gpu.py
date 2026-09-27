@@ -43,7 +43,10 @@ def cuda_or_skip(topic, **kwargs):
 def test_device_accepts_a_string_and_the_enum():
     pub = cuda_or_skip("/pytest/gpu/decl", slot_size=1 << 16, slot_count=4)
     same = flux.Publisher(
-        "/pytest/gpu/decl", slot_size=1 << 16, slot_count=4, fingerprint=FP,
+        "/pytest/gpu/decl",
+        slot_size=1 << 16,
+        slot_count=4,
+        fingerprint=FP,
         device=flux.Device.CUDA,
     )
     assert pub.stream is not None
@@ -164,7 +167,9 @@ def test_leaving_the_scope_returns_the_slot():
     # depth=2 so both frames are delivered: at depth 1 the cursor is pulled to the newest each
     # take and the second one has nothing to hand back (docs/en/qos.en.md, X-002).
     sub = flux.Subscription(
-        "/pytest/gpu/return", fingerprint=FP, device="cuda",
+        "/pytest/gpu/return",
+        fingerprint=FP,
+        device="cuda",
         qos=flux.QoS(depth=2, max_borrow=2),
     )
 
@@ -228,7 +233,9 @@ def device_array_or_skip():
             return torch.zeros(16, dtype=torch.uint8, device="cuda")
     except ImportError:
         pass
-    pytest.skip("flux-cap:cupy-or-torch needs a library that allocates device memory (cupy or torch)")
+    pytest.skip(
+        "flux-cap:cupy-or-torch needs a library that allocates device memory (cupy or torch)"
+    )
 
 
 def test_publish_refuses_a_device_array_by_name():
@@ -301,7 +308,9 @@ def torch_or_skip():
     try:
         import torch
     except ImportError:
-        pytest.skip("flux-cap:torch torch is not installed; the DLPack consumer side cannot be exercised")
+        pytest.skip(
+            "flux-cap:torch torch is not installed; the DLPack consumer side cannot be exercised"
+        )
     if not torch.cuda.is_available():
         pytest.skip("flux-cap:torch-cuda torch has no CUDA device here")
     return torch

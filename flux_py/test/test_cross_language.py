@@ -24,7 +24,8 @@ import pytest
 import flux
 
 CORE_INCLUDE = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "flux_core", "include"))
+    os.path.join(os.path.dirname(__file__), "..", "..", "flux_core", "include")
+)
 
 
 def _core_lib():
@@ -43,7 +44,8 @@ CORE_LIB = _core_lib()
 
 needs_cxx = pytest.mark.skipif(
     shutil.which("g++") is None or not os.path.isdir(CORE_INCLUDE) or CORE_LIB is None,
-    reason="flux-cap:cxx-toolchain")
+    reason="flux-cap:cxx-toolchain",
+)
 
 FP = 0xC0FFEE01
 KEY = f"/pytest/xlang/{os.getpid()}"
@@ -120,9 +122,21 @@ def _build(tmp_path, source, name):
     src, exe = tmp_path / f"{name}.cpp", tmp_path / name
     src.write_text(source)
     subprocess.run(
-        ["g++", "-std=c++17", "-O1", f"-I{CORE_INCLUDE}", str(src), CORE_LIB, "-pthread",
-         "-o", str(exe)],
-        check=True, capture_output=True, text=True)
+        [
+            "g++",
+            "-std=c++17",
+            "-O1",
+            f"-I{CORE_INCLUDE}",
+            str(src),
+            CORE_LIB,
+            "-pthread",
+            "-o",
+            str(exe),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return exe
 
 
@@ -141,7 +155,8 @@ def test_a_cpp_process_reads_what_a_python_process_published(tmp_path):
 
     pub = flux.Publisher(key, slot_size=1 << 16, slot_count=4, fingerprint=FP)
     p = subprocess.Popen(
-        [str(exe), key, str(FP), str(payload.nbytes)], stdout=subprocess.PIPE, text=True)
+        [str(exe), key, str(FP), str(payload.nbytes)], stdout=subprocess.PIPE, text=True
+    )
     try:
         assert p.stdout.readline().startswith("domain ")
         assert p.stdout.readline().startswith("signpost ")
@@ -164,7 +179,8 @@ def test_a_python_process_reads_what_a_cpp_process_published(tmp_path):
     n, fill = 512, 9
 
     p = subprocess.Popen(
-        [str(exe), key, str(FP), str(n), str(fill)], stdout=subprocess.PIPE, text=True)
+        [str(exe), key, str(FP), str(n), str(fill)], stdout=subprocess.PIPE, text=True
+    )
     try:
         for _ in range(3):
             assert p.stdout.readline() != "", "the C++ publisher died before it was ready"
@@ -191,17 +207,23 @@ def test_the_two_meet_under_a_non_default_ros_domain_id(tmp_path):
     env = _domain_env("7")
 
     parent = subprocess.Popen(
-        [sys.executable, "-c",
-         "import os, time, numpy as np, flux\n"
-         f"pub = flux.Publisher({key!r}, slot_size=1 << 16, slot_count=4, fingerprint={FP})\n"
-         "print(pub.domain, flush=True)\n"
-         "print(pub.signpost_name, flush=True)\n"
-         f"buf = np.full({payload.size}, {int(payload[0])}, dtype=np.uint8)\n"
-         "end = time.time() + 10\n"
-         "while time.time() < end:\n"
-         "    pub.publish(buf)\n"
-         "    time.sleep(0.01)\n"],
-        stdout=subprocess.PIPE, text=True, env=env)
+        [
+            sys.executable,
+            "-c",
+            "import os, time, numpy as np, flux\n"
+            f"pub = flux.Publisher({key!r}, slot_size=1 << 16, slot_count=4, fingerprint={FP})\n"
+            "print(pub.domain, flush=True)\n"
+            "print(pub.signpost_name, flush=True)\n"
+            f"buf = np.full({payload.size}, {int(payload[0])}, dtype=np.uint8)\n"
+            "end = time.time() + 10\n"
+            "while time.time() < end:\n"
+            "    pub.publish(buf)\n"
+            "    time.sleep(0.01)\n",
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
     child = None
     try:
         # Read the publisher's announcement before starting the subscriber: a signpost resolved
@@ -210,7 +232,10 @@ def test_the_two_meet_under_a_non_default_ros_domain_id(tmp_path):
         py_segment = parent.stdout.readline().strip()
         child = subprocess.Popen(
             [str(exe), key, str(FP), str(payload.nbytes)],
-            stdout=subprocess.PIPE, text=True, env=env)
+            stdout=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
         cxx_domain = child.stdout.readline().split(maxsplit=1)[1].strip()
         child.stdout.readline()  # signpost
         out, _ = child.communicate(timeout=15)

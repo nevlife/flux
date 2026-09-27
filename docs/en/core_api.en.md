@@ -253,8 +253,8 @@ for topic in flux.enumerate_topics():
     name = topic.key if topic.key_exact else topic.signpost
     for ep in topic.endpoints:
         role = "pub" if ep.publisher else "sub"
-        _sink(name, topic.domain, topic.fingerprint, role, ep.owner.pid, ep.owner.starttime,
-              ep.label)
+        pid, start = ep.owner.pid, ep.owner.starttime
+        _sink(name, topic.domain, topic.fingerprint, role, pid, start, ep.label)
 ```
 
 If `key_exact` is False, `key` was read back from the name, not from a live participant. The name replaces every non-alphanumeric character with `.`, so `/a/b` and `.a.b` are one name. What is visible then is the spelling of the name, not the key the peers actually agreed on. A channel with no participants at all is that case (the signpost is permanent, so only the name remains).

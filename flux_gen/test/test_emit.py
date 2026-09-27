@@ -17,14 +17,29 @@ from flux_gen.cli import generate
 
 MSG_DIR = os.path.join(os.path.dirname(__file__), "msg")
 CORE_INCLUDE = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "flux_core", "include"))
+    os.path.join(os.path.dirname(__file__), "..", "..", "flux_core", "include")
+)
 
-GOOD = ["Vec3", "Pose", "FlatPose", "PointCloud", "Labeled", "NestedString", "Trajectory",
-        "TensorList", "Tensor", "Event", "Names", "Status", "FixedNames"]
+GOOD = [
+    "Vec3",
+    "Pose",
+    "FlatPose",
+    "PointCloud",
+    "Labeled",
+    "NestedString",
+    "Trajectory",
+    "TensorList",
+    "Tensor",
+    "Event",
+    "Names",
+    "Status",
+    "FixedNames",
+]
 
 needs_cxx = pytest.mark.skipif(
     shutil.which("g++") is None or not os.path.isdir(CORE_INCLUDE),
-    reason="needs g++ and flux_core headers")
+    reason="needs g++ and flux_core headers",
+)
 
 
 def _core_lib():
@@ -45,7 +60,8 @@ CORE_LIB = _core_lib()
 
 needs_link = pytest.mark.skipif(
     shutil.which("g++") is None or not os.path.isdir(CORE_INCLUDE) or CORE_LIB is None,
-    reason="needs g++, flux_core headers and a built libflux_core")
+    reason="needs g++, flux_core headers and a built libflux_core",
+)
 
 
 @pytest.fixture(scope="module")
@@ -67,6 +83,7 @@ def built(tmp_path_factory, reg):
 
 def module(name):
     from flux_gen.emit_cpp import snake
+
     return __import__(f"test_flux.{snake(name)}", fromlist=["Builder"])
 
 
@@ -90,14 +107,16 @@ def test_columnar_round_trip(built):
     b.width = 3
     b.height = 1
 
-    v = m.View(memoryview(buf)[:b.size__])
+    v = m.View(memoryview(buf)[: b.size__])
     assert list(v.x) == [1.0, 2.0, 3.0]
     assert list(v.z) == [7.0, 8.0, 9.0]
     assert (v.width, v.height) == (3, 1)
 
 
-@pytest.mark.parametrize("name,field,value", [
-    ("PointCloud", "width", 3), ("Labeled", "label", "x"), ("Event", "tags", ["a"])])
+@pytest.mark.parametrize(
+    "name,field,value",
+    [("PointCloud", "width", 3), ("Labeled", "label", "x"), ("Event", "tags", ["a"])],
+)
 def test_a_builder_field_is_write_only(built, name, field, value):
     # A Builder has no getter at all, as in C++: reading is Python's own AttributeError.
     m = module(name)
@@ -142,7 +161,7 @@ def test_a_string_that_is_not_utf8_reads_as_rclpy_reads_it(built):
     b = m.Builder(buf)
     b.label = b"ok \xed\x95"  # U+D55C cut after two of its three bytes
     b.alloc__values(1)[:] = [2.5]
-    v = m.View(memoryview(buf)[:b.size__])
+    v = m.View(memoryview(buf)[: b.size__])
     assert v.label == "ok \ufffd"
     assert list(v.values) == [2.5]
 
@@ -155,7 +174,7 @@ def test_string_and_stamp_round_trip(built):
     b.tags = ["a", "", "unicode å"]
     b.alloc__values(2)[:] = [0.5, -0.5]
 
-    v = m.View(memoryview(buf)[:b.size__])
+    v = m.View(memoryview(buf)[: b.size__])
     assert v.stamp__stamp == (-7, 250000000)
     assert v.tags == ["a", "", "unicode å"]
     assert list(v.values) == [0.5, -0.5]
@@ -170,7 +189,7 @@ def test_jagged_round_trip(built):
         e.alloc__shape(2)[:] = [i, i + 1]
         e.alloc__data(i)[:] = range(i)
 
-    v = m.View(memoryview(buf)[:b.size__])
+    v = m.View(memoryview(buf)[: b.size__])
     assert len(v.tensors) == 3
     for i, e in enumerate(v.tensors):
         assert list(e.shape) == [i, i + 1]
@@ -185,7 +204,7 @@ def test_record_round_trip(built):
     poses[0].position_x = 1.0
     poses[1].orientation_z = 2.0
 
-    v = m.View(memoryview(buf)[:b.size__])
+    v = m.View(memoryview(buf)[: b.size__])
     assert len(v.poses) == 2
     assert v.poses[0].position_x == 1.0
     assert v.poses[1].orientation_z == 2.0
@@ -197,13 +216,14 @@ def test_received_views_are_read_only(built):
     buf = bytearray(1024)
     b = m.Builder(buf)
     b.alloc__x(2)[:] = [1.0, 2.0]
-    v = m.View(memoryview(buf)[:b.size__])
+    v = m.View(memoryview(buf)[: b.size__])
     with pytest.raises(ValueError):
         v.x[0] = 9.0
 
 
 def test_a_frame_larger_than_the_slot_is_refused(built):
     from flux_gen.wire import WireError
+
     m = module("PointCloud")
     b = m.Builder(bytearray(64))
     with pytest.raises(WireError):
@@ -216,7 +236,8 @@ def test_a_truncated_frame_does_not_read_past_its_end(built):
     b = m.Builder(buf)
     b.alloc__x(4)[:] = [1.0, 2.0, 3.0, 4.0]
     from flux_gen.wire import WireError
-    v = m.View(memoryview(buf)[:b.size__ - 8])  # descriptor now points past the frame
+
+    v = m.View(memoryview(buf)[: b.size__ - 8])  # descriptor now points past the frame
     with pytest.raises(WireError):
         list(v.x)
 
@@ -238,6 +259,7 @@ def test_f16_has_no_cpp_mapping_and_says_why():
     # rather than fall through to an internal-looking KeyError or hand out raw bits.
     from flux_gen.dtypes import DType
     from flux_gen.emit_cpp import cpp_type
+
     with pytest.raises(ValueError, match="f16"):
         cpp_type(DType.F16)
 
@@ -249,6 +271,7 @@ def test_ros_bridge_refuses_a_fixed_length_mismatch(reg):
     from flux_gen import build_layout, flatten_message
     from flux_gen.emit_ros import emit_cpp as bridge_cpp
     from flux_gen.emit_ros import emit_py as bridge_py
+
     layout = build_layout(flatten_message(reg["FixedNames"], reg))
     cpp = bridge_cpp(layout, "test/msg/FixedNames.msg")
     assert "std::min" not in cpp
@@ -262,6 +285,7 @@ def test_py_bridge_raises_on_a_fixed_length_mismatch(built):
     # Executable half of the check above. A stand-in message class is enough here: the length
     # check fires before any field agreement with rosidl is at stake.
     import types
+
     saved = {k: sys.modules.get(k) for k in ("test", "test.msg")}
     pkg, msgs = types.ModuleType("test"), types.ModuleType("test.msg")
 
@@ -276,12 +300,14 @@ def test_py_bridge_raises_on_a_fixed_length_mismatch(built):
     sys.modules["test"], sys.modules["test.msg"] = pkg, msgs
     try:
         import test_flux.fixed_names_ros as fn_ros
+
         m = module("FixedNames")
 
         def frame(n_names, n_pair):
             # The Builder now refuses a wrong length, so a mismatched frame -- what a foreign
             # or older writer could still produce -- is crafted on the raw Writer.
             from flux_gen.wire import Writer
+
             buf = bytearray(8192)
             w = Writer(buf, m.SCALAR_BYTES__)
             w.put_strs(0, ["x"] * n_names)
@@ -290,7 +316,7 @@ def test_py_bridge_raises_on_a_fixed_length_mismatch(built):
                 e = m.PairElemBuilder(w, pair_at + i * m.PairElem.STRIDE)
                 e.alloc__shape(1)[:] = [1]
                 e.alloc__data(1)[:] = [0.5]
-            return m.View(memoryview(buf)[:w.size])
+            return m.View(memoryview(buf)[: w.size])
 
         with pytest.raises(ValueError, match="names.*schema fixes 2"):
             fn_ros.frame_to_msg(frame(3, 2))
@@ -309,14 +335,13 @@ def test_constants_stay_out_of_the_fingerprint(reg):
     # Adding a constant must not move the fingerprint: it is not wire data, so a peer built
     # before it was added still reads the same bytes and must still meet this one.
     from flux_gen import fingerprint, parse_msg
+
     body = "uint16 code\nfloat64[] values\n"
     bare = flatten_message(parse_msg(body, "Status", package="test"), reg)
-    withc = flatten_message(
-        parse_msg("uint16 EXTRA = 9\n" + body, "Status", package="test"), reg)
+    withc = flatten_message(parse_msg("uint16 EXTRA = 9\n" + body, "Status", package="test"), reg)
     assert withc.constants and not bare.constants
     assert bare.leaves == withc.leaves
-    assert fingerprint(bare.leaves, bare.type_name) == fingerprint(
-        withc.leaves, withc.type_name)
+    assert fingerprint(bare.leaves, bare.type_name) == fingerprint(withc.leaves, withc.type_name)
 
 
 CXX_DRIVER = r"""
@@ -369,13 +394,29 @@ int main(int argc, char ** argv)
 def test_generated_headers_compile(built, tmp_path):
     cpp_root, _ = built
     src = tmp_path / "all.cpp"
-    src.write_text("".join(
-        f'#include "test/flux/{__import__("flux_gen.emit_cpp", fromlist=["snake"]).snake(n)}.hpp"\n'
-        for n in GOOD) + "int main() { return 0; }\n")
+    src.write_text(
+        "".join(
+            f'#include "test/flux/{__import__("flux_gen.emit_cpp", fromlist=["snake"]).snake(n)}.hpp"\n'
+            for n in GOOD
+        )
+        + "int main() { return 0; }\n"
+    )
     subprocess.run(
-        ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-fsyntax-only",
-         f"-I{cpp_root}", f"-I{CORE_INCLUDE}", str(src)],
-        check=True, capture_output=True, text=True)
+        [
+            "g++",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-fsyntax-only",
+            f"-I{cpp_root}",
+            f"-I{CORE_INCLUDE}",
+            str(src),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 @needs_link
@@ -384,9 +425,22 @@ def test_cpp_and_python_agree_on_the_bytes(built, tmp_path):
     src, exe = tmp_path / "driver.cpp", tmp_path / "driver"
     src.write_text(CXX_DRIVER)
     subprocess.run(
-        ["g++", "-std=c++17", "-O1", f"-I{cpp_root}", f"-I{CORE_INCLUDE}",
-         str(src), CORE_LIB, "-pthread", "-o", str(exe)],
-        check=True, capture_output=True, text=True)
+        [
+            "g++",
+            "-std=c++17",
+            "-O1",
+            f"-I{cpp_root}",
+            f"-I{CORE_INCLUDE}",
+            str(src),
+            CORE_LIB,
+            "-pthread",
+            "-o",
+            str(exe),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
     # Python writes a jagged frame for C++ to read.
     tl = module("TensorList")
@@ -396,11 +450,12 @@ def test_cpp_and_python_agree_on_the_bytes(built, tmp_path):
         e.alloc__shape(1)[:] = [i + 7]
         e.alloc__data(2)[:] = [i + 0.25, i + 0.5]
     from_py = tmp_path / "from_py.bin"
-    from_py.write_bytes(bytes(memoryview(buf)[:bb.size__]))
+    from_py.write_bytes(bytes(memoryview(buf)[: bb.size__]))
 
     to_py = tmp_path / "from_cpp.bin"
-    proc = subprocess.run([str(exe), str(to_py), str(from_py)],
-                          check=True, capture_output=True, text=True)
+    proc = subprocess.run(
+        [str(exe), str(to_py), str(from_py)], check=True, capture_output=True, text=True
+    )
     assert proc.stdout.split("\n")[0] == "2"
     assert proc.stdout.split("\n")[1] == "7 | 0.25 0.5 "
     assert proc.stdout.split("\n")[2] == "8 | 1.25 1.5 "
@@ -416,9 +471,11 @@ def test_cpp_and_python_agree_on_the_bytes(built, tmp_path):
 
 # --- ROS bridge -------------------------------------------------------------------------------
 
+
 def _has_rclpy():
     try:
         import geometry_msgs.msg  # noqa: F401
+
         return True
     except Exception:
         return False
@@ -437,6 +494,7 @@ def test_ros_bridge_round_trips_real_messages(tmp_path):
     from sensor_msgs.msg import Image, PointCloud2, PointField
 
     from flux_gen.cli import ament_registry, generate
+
     reg = ament_registry()
     cpp, py = str(tmp_path / "inc"), str(tmp_path / "py")
     for key in ("geometry_msgs/PoseStamped", "sensor_msgs/Image", "sensor_msgs/PointCloud2"):
@@ -454,7 +512,7 @@ def test_ros_bridge_round_trips_real_messages(tmp_path):
             buf = bytearray(1 << 20)
             b = mod.Builder(buf)
             mod.msg_to_frame(msg, b)
-            back = mod.frame_to_msg(mod.View(memoryview(buf)[:b.size__]))
+            back = mod.frame_to_msg(mod.View(memoryview(buf)[: b.size__]))
             # Equality is Python-level; only the C converter notices a numpy scalar in an int
             # field, and it aborts the process rather than raising.
             assert deserialize_message(serialize_message(back), type(msg)) == msg
@@ -476,8 +534,10 @@ def test_ros_bridge_round_trips_real_messages(tmp_path):
         pc = PointCloud2()
         pc.header.frame_id = "lidar"
         pc.height, pc.width = 1, 3
-        pc.fields = [PointField(name=n, offset=4 * i, datatype=7, count=1)
-                     for i, n in enumerate(("x", "y", "z"))]
+        pc.fields = [
+            PointField(name=n, offset=4 * i, datatype=7, count=1)
+            for i, n in enumerate(("x", "y", "z"))
+        ]
         pc.point_step, pc.row_step = 12, 36
         pc.data = bytes(range(36))
         pc.is_dense = True
@@ -492,8 +552,9 @@ def _ros_include_dirs():
     for prefix in os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep):
         inc = os.path.join(prefix, "include")
         if prefix and os.path.isdir(inc):
-            dirs += [os.path.join(inc, d) for d in os.listdir(inc)
-                     if os.path.isdir(os.path.join(inc, d))]
+            dirs += [
+                os.path.join(inc, d) for d in os.listdir(inc) if os.path.isdir(os.path.join(inc, d))
+            ]
     return dirs
 
 
@@ -503,6 +564,7 @@ def test_ros_bridge_compiles_against_rosidl_headers(tmp_path):
     # The Python half of the bridge is checked by round-tripping; the C++ half can only be
     # checked by handing it to a compiler with the real generated message headers.
     from flux_gen.cli import ament_registry, generate
+
     reg = ament_registry()
     cpp = str(tmp_path / "inc")
     for key in ("geometry_msgs/PoseStamped", "sensor_msgs/Image", "sensor_msgs/PointCloud2"):
@@ -520,18 +582,23 @@ def test_ros_bridge_compiles_against_rosidl_headers(tmp_path):
         "  sensor_msgs::flux_msg::msg_to_frame(m, b);\n"
         "  sensor_msgs::flux_msg::PointCloud2::View v(buf, b.size__());\n"
         "  return sensor_msgs::flux_msg::frame_to_msg(v).width == 0 ? 0 : 1;\n"
-        "}\n")
+        "}\n"
+    )
     inc = [f"-I{d}" for d in _ros_include_dirs()]
     if not inc:
         pytest.skip("flux-cap:ros-headers no ROS include dirs on AMENT_PREFIX_PATH")
     subprocess.run(
         ["g++", "-std=c++17", "-fsyntax-only", f"-I{cpp}", f"-I{CORE_INCLUDE}", *inc, str(src)],
-        check=True, capture_output=True, text=True)
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _ros_bridges(tmp_path, keys, py=False):
     """Generate the adapter and bridge for installed messages; return (cpp_root, py_root)."""
     from flux_gen.cli import ament_registry, generate
+
     reg = ament_registry()
     cpp, pyroot = str(tmp_path / "inc"), str(tmp_path / "py") if py else None
     for key in keys:
@@ -542,6 +609,7 @@ def _ros_bridges(tmp_path, keys, py=False):
 def _fields_desc_offset():
     """Where PointCloud2's `fields` descriptor sits in the scalar block."""
     from flux_gen.cli import ament_registry
+
     reg = ament_registry()
     layout = build_layout(flatten_message(reg["sensor_msgs/PointCloud2"], reg))
     return next(p.offset for p in layout.root.placed if p.name == "fields")
@@ -577,14 +645,28 @@ def test_cpp_bridge_writes_nothing_into_a_slot_too_small_for_the_message(tmp_pat
         "  sensor_msgs::flux_msg::msg_to_frame(pc, pb);\n"
         '  std::printf("%d\\n", pb.ok__() ? 1 : 0);\n'
         "  return 0;\n"
-        "}\n")
+        "}\n"
+    )
     inc = [f"-I{d}" for d in _ros_include_dirs()]
     if not inc:
         pytest.skip("flux-cap:ros-headers no ROS include dirs on AMENT_PREFIX_PATH")
     subprocess.run(
-        ["g++", "-std=c++17", f"-I{cpp}", f"-I{CORE_INCLUDE}", *inc, str(src), CORE_LIB,
-         "-pthread", "-o", str(exe)],
-        check=True, capture_output=True, text=True)
+        [
+            "g++",
+            "-std=c++17",
+            f"-I{cpp}",
+            f"-I{CORE_INCLUDE}",
+            *inc,
+            str(src),
+            CORE_LIB,
+            "-pthread",
+            "-o",
+            str(exe),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     proc = subprocess.run([str(exe)], capture_output=True, text=True)
     assert proc.returncode == 0, f"bridge crashed: {proc.returncode}"
     assert proc.stdout == "0\n0\n"
@@ -624,14 +706,28 @@ def test_cpp_bridge_refuses_a_descriptor_that_runs_past_the_frame(tmp_path):
         '    std::printf("threw\\n");\n'
         "  }\n"
         "  return 0;\n"
-        "}\n")
+        "}\n"
+    )
     inc = [f"-I{d}" for d in _ros_include_dirs()]
     if not inc:
         pytest.skip("flux-cap:ros-headers no ROS include dirs on AMENT_PREFIX_PATH")
     subprocess.run(
-        ["g++", "-std=c++17", f"-I{cpp}", f"-I{CORE_INCLUDE}", *inc, str(src), CORE_LIB,
-         "-pthread", "-o", str(exe)],
-        check=True, capture_output=True, text=True)
+        [
+            "g++",
+            "-std=c++17",
+            f"-I{cpp}",
+            f"-I{CORE_INCLUDE}",
+            *inc,
+            str(src),
+            CORE_LIB,
+            "-pthread",
+            "-o",
+            str(exe),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
     assert proc.stdout == "0\n0\nthrew\n"
 
@@ -642,6 +738,7 @@ def test_py_bridge_refuses_a_slot_too_small_and_a_descriptor_past_the_frame(tmp_
     from sensor_msgs.msg import PointCloud2, PointField
 
     from flux_gen.wire import WireError
+
     _, py = _ros_bridges(tmp_path, ("sensor_msgs/PointCloud2",), py=True)
     open(os.path.join(py, "sensor_msgs_flux", "__init__.py"), "a").close()
     sys.path.insert(0, py)
@@ -659,9 +756,9 @@ def test_py_bridge_refuses_a_slot_too_small_and_a_descriptor_past_the_frame(tmp_
         b = pc2_ros.Builder(buf)
         pc2_ros.msg_to_frame(pc, b)
         at = _fields_desc_offset() + 4
-        buf[at:at + 4] = _BAD_FIELDS_LEN.to_bytes(4, "little")
+        buf[at : at + 4] = _BAD_FIELDS_LEN.to_bytes(4, "little")
         with pytest.raises(WireError):
-            pc2_ros.frame_to_msg(pc2_ros.View(memoryview(buf)[:b.size__]))
+            pc2_ros.frame_to_msg(pc2_ros.View(memoryview(buf)[: b.size__]))
     finally:
         sys.path.remove(py)
 
@@ -737,11 +834,27 @@ def test_cpp_build_loans_from_a_publisher_and_commits(built, tmp_path):
         '  std::printf("%d\\n", static_cast<bool>(full) ? 1 : 0);\n'
         '  std::printf("%d\\n", full.commit__() == flux::Published::Backpressure ? 1 : 0);\n'
         "  return 0;\n"
-        "}\n")
+        "}\n"
+    )
     subprocess.run(
-        ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
-         f"-I{cpp_root}", f"-I{CORE_INCLUDE}", str(src), CORE_LIB, "-pthread", "-o", str(exe)],
-        check=True, capture_output=True, text=True)
+        [
+            "g++",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{cpp_root}",
+            f"-I{CORE_INCLUDE}",
+            str(src),
+            CORE_LIB,
+            "-pthread",
+            "-o",
+            str(exe),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
     assert proc.stdout == "1\n1\n1\n0\n1\n"
 
@@ -764,11 +877,27 @@ def test_cpp_hands_over_string_bytes_that_are_not_utf8_unchanged(built, tmp_path
         '  std::printf("%d %zu %02x\\n", v.ok__() ? 1 : 0, v.label().size(),\n'
         "              static_cast<unsigned char>(v.label()[4]));\n"
         "  return 0;\n"
-        "}\n")
+        "}\n"
+    )
     subprocess.run(
-        ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
-         f"-I{cpp_root}", f"-I{CORE_INCLUDE}", str(src), CORE_LIB, "-pthread", "-o", str(exe)],
-        check=True, capture_output=True, text=True)
+        [
+            "g++",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{cpp_root}",
+            f"-I{CORE_INCLUDE}",
+            str(src),
+            CORE_LIB,
+            "-pthread",
+            "-o",
+            str(exe),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
     assert proc.stdout == "1 5 95\n"
 
@@ -793,11 +922,27 @@ def test_cpp_builder_refuses_to_commit_after_a_failed_write(built, tmp_path):
         '  std::printf("%d\\n", b.commit__() == flux::Published::TooLarge ? 1 : 0);\n'
         '  std::printf("%d\\n", static_cast<bool>(ch.take()) ? 1 : 0);\n'
         "  return 0;\n"
-        "}\n")
+        "}\n"
+    )
     subprocess.run(
-        ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
-         f"-I{cpp_root}", f"-I{CORE_INCLUDE}", str(src), CORE_LIB, "-pthread", "-o", str(exe)],
-        check=True, capture_output=True, text=True)
+        [
+            "g++",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            f"-I{cpp_root}",
+            f"-I{CORE_INCLUDE}",
+            str(src),
+            CORE_LIB,
+            "-pthread",
+            "-o",
+            str(exe),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
     assert proc.stdout == "0\n1\n0\n"
 
@@ -818,19 +963,35 @@ def test_cpp_fixed_length_arrays_take_no_count(built, tmp_path):
             "  unsigned char buf[8192];\n"
             "  test::flux_msg::FixedNames::Builder b(buf, sizeof buf);\n"
             f"  {body}\n"
-            "}\n")
+            "}\n"
+        )
         exe = tmp_path / "fixed"
         return subprocess.run(
-            ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror", f"-I{cpp_root}",
-             f"-I{CORE_INCLUDE}", str(src), CORE_LIB, "-pthread", "-o", str(exe)],
-            capture_output=True, text=True), exe
+            [
+                "g++",
+                "-std=c++17",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                f"-I{cpp_root}",
+                f"-I{CORE_INCLUDE}",
+                str(src),
+                CORE_LIB,
+                "-pthread",
+                "-o",
+                str(exe),
+            ],
+            capture_output=True,
+            text=True,
+        ), exe
 
     for wrong in ("b.alloc__names(3);", "b.alloc__pair(3);"):
         compiled, _ = build(wrong)
         assert compiled.returncode != 0, f"{wrong} compiled"
     compiled, exe = build(
-        'b.alloc__names(); auto a = b.alloc__pair(); '
-        'std::printf("%zu %d\\n", a.size(), b.ok__() ? 1 : 0); return 0;')
+        "b.alloc__names(); auto a = b.alloc__pair(); "
+        'std::printf("%zu %d\\n", a.size(), b.ok__() ? 1 : 0); return 0;'
+    )
     assert compiled.returncode == 0, compiled.stderr
     proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
     assert proc.stdout == "2 1\n"

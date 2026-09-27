@@ -147,7 +147,8 @@ def test_every_exported_name_is_in_the_document():
         documented |= documented_symbols(text)
         paths |= documented_paths(text)
     missing = sorted(
-        dotted for dotted, name, as_path in _exported()
+        dotted
+        for dotted, name, as_path in _exported()
         if dotted not in UNDOCUMENTED
         and (dotted not in paths if as_path else name not in documented)
     )

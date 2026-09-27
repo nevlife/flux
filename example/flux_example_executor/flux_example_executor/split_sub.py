@@ -24,7 +24,6 @@ from sensor_msgs_flux.image import Image
 
 
 class SplitSubscriber(Node):
-
     TOPIC = "image"
     DEPTH = 8
 
@@ -45,7 +44,7 @@ class SplitSubscriber(Node):
 
     def on_flux(self, view):
         width = Image.View(view).width
-        with self.lock:               # the rclpy thread reads these too
+        with self.lock:  # the rclpy thread reads these too
             self.flux_width = width
             self.flux_seen += 1
 

@@ -20,8 +20,16 @@ from .layout import walk
 # array.array typecodes rosidl_generator_py uses for a primitive sequence. Bool sequences are
 # plain lists there, so BOOL is absent.
 ARRAY_TYPECODE = {
-    DType.U8: "B", DType.I8: "b", DType.U16: "H", DType.I16: "h", DType.U32: "I",
-    DType.I32: "i", DType.U64: "Q", DType.I64: "q", DType.F32: "f", DType.F64: "d",
+    DType.U8: "B",
+    DType.I8: "b",
+    DType.U16: "H",
+    DType.I16: "h",
+    DType.U32: "I",
+    DType.I32: "i",
+    DType.U64: "Q",
+    DType.I64: "q",
+    DType.F32: "f",
+    DType.F64: "d",
 }
 
 RECORDS = (LeafKind.RECORD_COLUMN, LeafKind.JAGGED)
@@ -63,17 +71,21 @@ def element_types(layout):
 
 # --- C++ ------------------------------------------------------------------------------------ #
 
+
 def _cpp_to_frame(block, out, ind, msg, bld, depth):
     for p in block.placed:
         n, src = cpp_ident(p.name), _access(msg, p.path)
         if p.kind == LeafKind.FIXED and p.count == 1:
             out.append(f"{ind}{bld}.set__{n}({src});")
         elif p.kind == LeafKind.FIXED:
-            out.append(f"{ind}{{ auto s = {bld}.{n}(); "
-                       f"std::copy_n({src}.begin(), s.size(), s.begin()); }}")
+            out.append(
+                f"{ind}{{ auto s = {bld}.{n}(); std::copy_n({src}.begin(), s.size(), s.begin()); }}"
+            )
         elif p.kind == LeafKind.COLUMN:
-            out.append(f"{ind}{{ auto s = {bld}.alloc__{n}({src}.size()); "
-                       f"std::copy_n({src}.begin(), s.size(), s.begin()); }}")
+            out.append(
+                f"{ind}{{ auto s = {bld}.alloc__{n}({src}.size()); "
+                f"std::copy_n({src}.begin(), s.size(), s.begin()); }}"
+            )
         elif p.kind == LeafKind.STRING:
             out.append(f"{ind}{bld}.set__{n}({src});")
         elif p.kind == LeafKind.STRING_ARRAY:
@@ -106,8 +118,9 @@ def _cpp_to_msg(block, out, ind, msg, view, depth, tn):
         if p.kind == LeafKind.FIXED and p.count == 1:
             out.append(f"{ind}{dst} = {view}.{n}();")
         elif p.kind == LeafKind.FIXED:
-            out.append(f"{ind}{{ auto s = {view}.{n}(); "
-                       f"std::copy(s.begin(), s.end(), {dst}.begin()); }}")
+            out.append(
+                f"{ind}{{ auto s = {view}.{n}(); std::copy(s.begin(), s.end(), {dst}.begin()); }}"
+            )
         elif p.kind == LeafKind.COLUMN:
             out.append(f"{ind}{{ auto s = {view}.{n}(); {dst}.assign(s.begin(), s.end()); }}")
         elif p.kind == LeafKind.STRING:
@@ -133,7 +146,8 @@ def _cpp_to_msg(block, out, ind, msg, view, depth, tn):
                 out.append(f"{ind}  if ({cnt} != {p.count}) {{")
                 out.append(
                     f'{ind}    throw std::length_error("flux: {tn}.{label}: frame holds " + '
-                    f'std::to_string({cnt}) + " elements, schema fixes {p.count}");')
+                    f'std::to_string({cnt}) + " elements, schema fixes {p.count}");'
+                )
                 out.append(f"{ind}  }}")
             out.append(f"{ind}  for (std::size_t {i} = 0; {i} < {cnt}; ++{i}) {{")
             if p.kind == LeafKind.STRING_ARRAY:
@@ -153,8 +167,7 @@ def emit_cpp(layout, source):
     guard = f"{ns.upper()}__FLUX__{snake(layout.name).upper()}_ROS_HPP_"
     ros = ros_cpp_type(layout.type_name)
 
-    includes = "".join(
-        f'#include "{ros_cpp_header(t)}"\n' for t in element_types(layout))
+    includes = "".join(f'#include "{ros_cpp_header(t)}"\n' for t in element_types(layout))
     to_frame, to_msg = [], []
     _cpp_to_frame(layout.root, to_frame, "  ", "m", "b", 0)
     _cpp_to_msg(layout.root, to_msg, "  ", "m", "v", 0, layout.type_name)
@@ -207,6 +220,7 @@ inline {ros} frame_to_msg(const {layout.name}::View & v)
 
 # --- Python --------------------------------------------------------------------------------- #
 
+
 def _py_to_frame(block, out, ind, msg, bld, depth):
     for p in block.placed:
         n, src = py_ident(p.name), _access(msg, p.path)
@@ -241,8 +255,10 @@ def _py_to_msg(block, out, ind, msg, view, depth, alias, tn):
             tmp, label = f"_t{depth}", _access("", p.path).lstrip(".")
             out.append(f"{ind}{tmp} = {view}.{n}")
             out.append(f"{ind}if len({tmp}) != {p.count}:")
-            out.append(f'{ind}    raise ValueError(f"flux: {tn}.{label}: '
-                       f'frame holds {{len({tmp})}} elements, schema fixes {p.count}")')
+            out.append(
+                f'{ind}    raise ValueError(f"flux: {tn}.{label}: '
+                f'frame holds {{len({tmp})}} elements, schema fixes {p.count}")'
+            )
             out.append(f"{ind}{dst} = {tmp}")
         elif p.kind == LeafKind.FIXED and p.count == 1:
             # A numpy integer is not a PyLong; rosidl's C converter asserts on it at serialize
@@ -251,7 +267,9 @@ def _py_to_msg(block, out, ind, msg, view, depth, alias, tn):
         elif p.kind == LeafKind.COLUMN and p.dtype in ARRAY_TYPECODE:
             # rclpy's setter rebuilds an array.array from whatever it is given, and from an
             # ndarray that is one Python call per element. From bytes it is one memcpy.
-            out.append(f'{ind}{dst} = array.array("{ARRAY_TYPECODE[p.dtype]}", {view}.{n}.tobytes())')
+            out.append(
+                f'{ind}{dst} = array.array("{ARRAY_TYPECODE[p.dtype]}", {view}.{n}.tobytes())'
+            )
         elif p.kind == LeafKind.COLUMN:
             out.append(f"{ind}{dst} = {view}.{n}.tolist()")
         elif p.kind in (LeafKind.FIXED, LeafKind.STRING, LeafKind.STRING_ARRAY):
@@ -269,8 +287,10 @@ def _py_to_msg(block, out, ind, msg, view, depth, alias, tn):
             if not p.is_dynamic:
                 label = _access("", p.path).lstrip(".")
                 out.append(f"{ind}if len({seq}) != {p.count}:")
-                out.append(f'{ind}    raise ValueError(f"flux: {tn}.{label}: '
-                           f'frame holds {{len({seq})}} elements, schema fixes {p.count}")')
+                out.append(
+                    f'{ind}    raise ValueError(f"flux: {tn}.{label}: '
+                    f'frame holds {{len({seq})}} elements, schema fixes {p.count}")'
+                )
             out.append(f"{ind}{lst} = [{cls}() for _ in range(len({seq}))]")
             out.append(f"{ind}for {i}, {elem} in enumerate({seq}):")
             _py_to_msg(p.elem, out, ind + "    ", f"{lst}[{i}]", elem, depth + 1, alias, tn)

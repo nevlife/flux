@@ -72,12 +72,15 @@ def test_a_name_matching_two_channels_is_refused_rather_than_guessed(capsys):
 
 def test_endpoint_summary_counts_roles_and_says_nothing_when_empty():
     assert endpoint_summary(FakeTopic("/t")) == "-"
-    assert endpoint_summary(
-        FakeTopic("/t", endpoints=[FakeEndpoint(True), FakeEndpoint(False)])) == "1 pub, 1 sub"
-    assert endpoint_summary(
-        FakeTopic("/t", endpoints=[FakeEndpoint(True), FakeEndpoint(True)])) == "2 pub"
-    assert endpoint_summary(
-        FakeTopic("/t", endpoints=[FakeEndpoint(False)])) == "1 sub"
+    assert (
+        endpoint_summary(FakeTopic("/t", endpoints=[FakeEndpoint(True), FakeEndpoint(False)]))
+        == "1 pub, 1 sub"
+    )
+    assert (
+        endpoint_summary(FakeTopic("/t", endpoints=[FakeEndpoint(True), FakeEndpoint(True)]))
+        == "2 pub"
+    )
+    assert endpoint_summary(FakeTopic("/t", endpoints=[FakeEndpoint(False)])) == "1 sub"
 
 
 def test_table_sizes_columns_to_their_contents():
@@ -111,11 +114,14 @@ def test_storage_name_reports_an_unknown_kind_as_itself():
 
 # --domain and --all-domains belong to the verbs, not the root: `flux topic list --all-domains` is
 # where people type them, and a root-level flag would only be accepted before the subcommand.
-@pytest.mark.parametrize("argv", [
-    ["topic", "list", "--all-domains"],
-    ["topic", "info", "/x", "--all-domains"],
-    ["topic", "hz", "/x", "--all-domains"],
-])
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["topic", "list", "--all-domains"],
+        ["topic", "info", "/x", "--all-domains"],
+        ["topic", "hz", "/x", "--all-domains"],
+    ],
+)
 def test_domain_flags_are_accepted_after_the_verb(argv):
     args = build_parser().parse_args(argv)
     assert args.all_domains is True
@@ -168,7 +174,8 @@ def test_domain_list_names_the_split_when_there_is_more_than_one(monkeypatch, ca
     topics = [FakeTopic("/a", domain="0"), FakeTopic("/b", domain="7")]
     monkeypatch.setattr(main_module.flux, "enumerate_topics", lambda: topics)
     monkeypatch.setattr(
-        main_module.flux, "read_channel_stats", lambda _signpost: FakeStats(live=True))
+        main_module.flux, "read_channel_stats", lambda _signpost: FakeStats(live=True)
+    )
     args = build_parser().parse_args(["domain", "list"])
     args.domain = "7"
     assert main_module.cmd_domain_list(args) == 0
@@ -184,7 +191,8 @@ def test_domain_flag_takes_the_canonical_integer(monkeypatch, capsys):
     topics = [FakeTopic("/a", domain="7"), FakeTopic("/b", domain="0")]
     monkeypatch.setattr(main_module.flux, "enumerate_topics", lambda: topics)
     monkeypatch.setattr(
-        main_module.flux, "read_channel_stats", lambda _signpost: FakeStats(live=True))
+        main_module.flux, "read_channel_stats", lambda _signpost: FakeStats(live=True)
+    )
     assert main_module.main(["topic", "list", "--domain", "007"]) == 0
     out = capsys.readouterr().out
     assert "/a" in out and "/b" not in out

@@ -47,6 +47,5 @@ def canonical(leaves, type_name):
 
 
 def fingerprint(leaves, type_name):
-    digest = hashlib.blake2b(
-        canonical(leaves, type_name).encode("utf-8"), digest_size=8).digest()
+    digest = hashlib.blake2b(canonical(leaves, type_name).encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "little")

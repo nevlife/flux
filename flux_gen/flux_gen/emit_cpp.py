@@ -12,21 +12,28 @@ from .layout import elem_class_name as _elem_class
 
 CPP_TYPE = {
     DType.BOOL: "bool",
-    DType.U8: "std::uint8_t", DType.I8: "std::int8_t",
-    DType.U16: "std::uint16_t", DType.I16: "std::int16_t",
-    DType.U32: "std::uint32_t", DType.I32: "std::int32_t",
-    DType.U64: "std::uint64_t", DType.I64: "std::int64_t",
-    DType.F32: "float", DType.F64: "double",
+    DType.U8: "std::uint8_t",
+    DType.I8: "std::int8_t",
+    DType.U16: "std::uint16_t",
+    DType.I16: "std::int16_t",
+    DType.U32: "std::uint32_t",
+    DType.I32: "std::int32_t",
+    DType.U64: "std::uint64_t",
+    DType.I64: "std::int64_t",
+    DType.F32: "float",
+    DType.F64: "double",
 }
 
-CPP_KEYWORDS = frozenset("""
+CPP_KEYWORDS = frozenset(
+    """
 alignas alignof and asm auto bool break case catch char class const consteval constexpr
 continue decltype default delete do double dynamic_cast else enum explicit export extern false
 float for friend goto if inline int long mutable namespace new noexcept not nullptr operator or
 private protected public register return short signed sizeof static struct switch template this
 throw true try typedef typeid typename union unsigned using virtual void volatile wchar_t while
 xor
-""".split())
+""".split()
+)
 
 
 def ident(name):
@@ -36,8 +43,11 @@ def ident(name):
 def snake(name):
     out = []
     for i, c in enumerate(name):
-        if c.isupper() and i and (not name[i - 1].isupper() or
-                                  (i + 1 < len(name) and name[i + 1].islower())):
+        if (
+            c.isupper()
+            and i
+            and (not name[i - 1].isupper() or (i + 1 < len(name) and name[i + 1].islower()))
+        ):
             out.append("_")
         out.append(c.lower())
     return "".join(out)
@@ -45,8 +55,10 @@ def snake(name):
 
 def offset_at(base):
     """Offset expressions for a block reached through `base` ("" for the root block)."""
+
     def at(off):
         return f"{base}{off}" if base else str(off)
+
     return at
 
 
@@ -56,7 +68,8 @@ def cpp_type(dtype):
     if dtype is DType.F16:
         raise ValueError(
             "f16 has no standard C++17 type, so the C++ adapter refuses it; "
-            "use float32 in the schema, or uint16 if raw bits are intended")
+            "use float32 in the schema, or uint16 if raw bits are intended"
+        )
     if dtype not in CPP_TYPE:
         raise ValueError(f"no C++ type for {dtype}")
     return CPP_TYPE[dtype]
@@ -98,47 +111,59 @@ def _view_accessors(block, base, out, prefix=(), recv="r_.", reader="r_", ind=" 
             else:
                 out.append(
                     f"{ind}flux::wire::Span<const {t}> {n}() const noexcept "
-                    f"{{ return {recv}block<{t}>({at(o)}, {p.count}); }}")
+                    f"{{ return {recv}block<{t}>({at(o)}, {p.count}); }}"
+                )
         elif p.kind == LeafKind.COLUMN:
             t = cpp_type(p.dtype)
             out.append(
                 f"{ind}flux::wire::Span<const {t}> {n}() const noexcept "
-                f"{{ return {recv}span<{t}>({at(o)}); }}")
+                f"{{ return {recv}span<{t}>({at(o)}); }}"
+            )
         elif p.kind == LeafKind.STRING:
             out.append(
-                f"{ind}std::string_view {n}() const noexcept {{ return {recv}str({at(o)}); }}")
+                f"{ind}std::string_view {n}() const noexcept {{ return {recv}str({at(o)}); }}"
+            )
         elif p.kind == LeafKind.STRING_ARRAY:
             out.append(
                 f"{ind}std::size_t {n}__size() const noexcept "
-                f"{{ return {recv}len({at(o)}, sizeof(flux::wire::Desc), alignof(flux::wire::Desc)); }}")
+                f"{{ return {recv}len({at(o)}, sizeof(flux::wire::Desc), alignof(flux::wire::Desc)); }}"
+            )
             out.append(
                 f"{ind}std::string_view {n}(std::size_t i) const noexcept "
-                f"{{ return {recv}str_at({at(o)}, i); }}")
+                f"{{ return {recv}str_at({at(o)}, i); }}"
+            )
         elif p.kind == LeafKind.STAMP:
             out.append(
                 f"{ind}std::int32_t {n}__sec() const noexcept "
-                f"{{ return {recv}get<std::int32_t>({at(o)}); }}")
+                f"{{ return {recv}get<std::int32_t>({at(o)}); }}"
+            )
             out.append(
                 f"{ind}std::uint32_t {n}__nanosec() const noexcept "
-                f"{{ return {recv}get<std::uint32_t>({at(o + 4)}); }}")
+                f"{{ return {recv}get<std::uint32_t>({at(o + 4)}); }}"
+            )
         elif p.kind == LeafKind.HEADER:
             out.append(
                 f"{ind}std::int32_t {n}__sec() const noexcept "
-                f"{{ return {recv}get<std::int32_t>({at(o)}); }}")
+                f"{{ return {recv}get<std::int32_t>({at(o)}); }}"
+            )
             out.append(
                 f"{ind}std::uint32_t {n}__nanosec() const noexcept "
-                f"{{ return {recv}get<std::uint32_t>({at(o + 4)}); }}")
+                f"{{ return {recv}get<std::uint32_t>({at(o + 4)}); }}"
+            )
             out.append(
                 f"{ind}std::string_view {n}__frame_id() const noexcept "
-                f"{{ return {recv}str({at(p.frame_id_offset)}); }}")
+                f"{{ return {recv}str({at(p.frame_id_offset)}); }}"
+            )
         else:  # RECORD_COLUMN / JAGGED
             cls = _elem_class(prefix + (p,))
             out.append(
                 f"{ind}std::size_t {n}__size() const noexcept "
-                f"{{ return {recv}len({at(o)}, {p.elem.stride}, {p.elem.align}); }}")
+                f"{{ return {recv}len({at(o)}, {p.elem.stride}, {p.elem.align}); }}"
+            )
             out.append(
                 f"{ind}{cls} {n}(std::size_t i) const noexcept "
-                f"{{ return {cls}({reader}, {recv}elem({at(o)}, i, {p.elem.stride}, {p.elem.align})); }}")
+                f"{{ return {cls}({reader}, {recv}elem({at(o)}, i, {p.elem.stride}, {p.elem.align})); }}"
+            )
 
 
 def _builder_accessors(block, base, out, prefix=(), recv="w_.", writer="w_", ind="    "):
@@ -148,43 +173,48 @@ def _builder_accessors(block, base, out, prefix=(), recv="w_.", writer="w_", ind
         if p.kind == LeafKind.FIXED:
             t = cpp_type(p.dtype)
             if p.count == 1:
-                out.append(
-                    f"{ind}void set__{n}({t} v) noexcept {{ {recv}put<{t}>({at(o)}, v); }}")
+                out.append(f"{ind}void set__{n}({t} v) noexcept {{ {recv}put<{t}>({at(o)}, v); }}")
             else:
                 out.append(
                     f"{ind}flux::wire::Span<{t}> {n}() noexcept "
-                    f"{{ return {recv}block<{t}>({at(o)}, {p.count}); }}")
+                    f"{{ return {recv}block<{t}>({at(o)}, {p.count}); }}"
+                )
         elif p.kind == LeafKind.COLUMN:
             t = cpp_type(p.dtype)
             out.append(
                 f"{ind}flux::wire::Span<{t}> alloc__{n}(std::size_t n) noexcept "
-                f"{{ return {recv}alloc<{t}>({at(o)}, n); }}")
+                f"{{ return {recv}alloc<{t}>({at(o)}, n); }}"
+            )
         elif p.kind == LeafKind.STRING:
             out.append(
-                f"{ind}void set__{n}(std::string_view s) noexcept "
-                f"{{ {recv}put_str({at(o)}, s); }}")
+                f"{ind}void set__{n}(std::string_view s) noexcept {{ {recv}put_str({at(o)}, s); }}"
+            )
         elif p.kind == LeafKind.STRING_ARRAY:
             # A fixed T[N] takes no count: N is the schema's, so a wrong one cannot be written.
             if p.count != DYNAMIC_COUNT:
                 out.append(
-                    f"{ind}void alloc__{n}() noexcept "
-                    f"{{ {recv}alloc_strs({at(o)}, {p.count}); }}")
+                    f"{ind}void alloc__{n}() noexcept {{ {recv}alloc_strs({at(o)}, {p.count}); }}"
+                )
             else:
                 out.append(
                     f"{ind}void alloc__{n}(std::size_t n) noexcept "
-                    f"{{ {recv}alloc_strs({at(o)}, n); }}")
+                    f"{{ {recv}alloc_strs({at(o)}, n); }}"
+                )
             out.append(
                 f"{ind}void set__{n}(std::size_t i, std::string_view s) noexcept "
-                f"{{ {recv}put_str_at({at(o)}, i, s); }}")
+                f"{{ {recv}put_str_at({at(o)}, i, s); }}"
+            )
         elif p.kind in (LeafKind.STAMP, LeafKind.HEADER):
             out.append(
                 f"{ind}void set__{n}__stamp(std::int32_t sec, std::uint32_t nanosec) noexcept "
                 f"{{ {recv}put<std::int32_t>({at(o)}, sec); "
-                f"{recv}put<std::uint32_t>({at(o + 4)}, nanosec); }}")
+                f"{recv}put<std::uint32_t>({at(o + 4)}, nanosec); }}"
+            )
             if p.kind == LeafKind.HEADER:
                 out.append(
                     f"{ind}void set__{n}__frame_id(std::string_view s) noexcept "
-                    f"{{ {recv}put_str({at(p.frame_id_offset)}, s); }}")
+                    f"{{ {recv}put_str({at(p.frame_id_offset)}, s); }}"
+                )
         else:  # RECORD_COLUMN / JAGGED
             cls = _elem_class(prefix + (p,))
             fixed = p.count != DYNAMIC_COUNT
@@ -192,7 +222,8 @@ def _builder_accessors(block, base, out, prefix=(), recv="w_.", writer="w_", ind
             out.append(
                 f"{ind}{cls}Array alloc__{n}({param}) noexcept "
                 f"{{ return {cls}Array({writer}, {recv}alloc_elems("
-                f"{at(o)}, {n_arg}, {p.elem.stride}, {p.elem.align}), {n_arg}); }}")
+                f"{at(o)}, {n_arg}, {p.elem.stride}, {p.elem.align}), {n_arg}); }}"
+            )
 
 
 def _elem_classes(block, out, prefix=()):
@@ -206,7 +237,7 @@ def _elem_classes(block, out, prefix=()):
         body = []
         _view_accessors(p.elem, "at_ + ", body, path, recv="r_->", reader="*r_")
         out.append(f"""
-  // one element of `{'.'.join(x.name for x in path)}`
+  // one element of `{".".join(x.name for x in path)}`
   class {cls}
   {{
 public:

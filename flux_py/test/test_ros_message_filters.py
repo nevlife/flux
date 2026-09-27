@@ -134,8 +134,9 @@ def test_two_flux_inputs_pair_on_the_header_stamp(node, adapters):
 def test_a_frame_that_does_not_read_is_counted_not_forwarded(node, adapters):
     # As C++ MessageFilters.AFrameThatDoesNotReadIsCountedNotForwarded.
     Stamped, _ = adapters
-    pub = flux.Publisher("/pytest/mf/bad", slot_size=4096, slot_count=8,
-                         fingerprint=Stamped.FINGERPRINT__)
+    pub = flux.Publisher(
+        "/pytest/mf/bad", slot_size=4096, slot_count=8, fingerprint=Stamped.FINGERPRINT__
+    )
     sub = fmf.Subscriber(node, Stamped, "/pytest/mf/bad")
     ex = flux.ros.Executor()
     ex.add(sub)
@@ -217,7 +218,9 @@ def test_a_queued_frame_outlives_the_callback_that_delivered_it(node, adapters):
     # Read every frame only now, long after its callback returned and out of delivery order.
     assert [m.view().seq for m in reversed(held[:3])] == [2, 1, 0]
     assert [(m.header.stamp.sec, m.header.stamp.nanosec) for m in held[:3]] == [
-        (300, 0), (301, 1), (302, 2)
+        (300, 0),
+        (301, 1),
+        (302, 2),
     ]
 
 

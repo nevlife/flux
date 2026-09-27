@@ -104,12 +104,15 @@ def test_colliding_flattened_names_are_rejected(reg):
     # Nesting is joined with '_', so `a.b` and a sibling literally named `a_b` land on one
     # accessor. Rejecting beats emitting a header that will not compile.
     reg2 = dict(reg)
-    reg2["test/Inner"] = Message("Inner", [Field("b", "float64", ArrayKind.SCALAR)],
-                                 package="test")
-    msg = Message("Clash", [
-        Field("a", "test/Inner", ArrayKind.SCALAR),
-        Field("a_b", "float64", ArrayKind.SCALAR),
-    ], package="test")
+    reg2["test/Inner"] = Message("Inner", [Field("b", "float64", ArrayKind.SCALAR)], package="test")
+    msg = Message(
+        "Clash",
+        [
+            Field("a", "test/Inner", ArrayKind.SCALAR),
+            Field("a_b", "float64", ArrayKind.SCALAR),
+        ],
+        package="test",
+    )
     with pytest.raises(LayoutError, match="collide"):
         build_layout(flatten_message(msg, reg2))
 
@@ -125,13 +128,19 @@ def test_a_constant_may_carry_a_name_the_adapter_defines(reg):
     # The adapter's own module-level names end in `__`, which no .msg constant can spell, so
     # FINGERPRINT__ sits beside FINGERPRINT__ rather than redeclaring it.
     from flux_gen.model import Constant
-    msg = Message("C", [Field("x", "float64", ArrayKind.SCALAR)], package="test",
-                  constants=[Constant("FINGERPRINT__", "uint8", 1)])
+
+    msg = Message(
+        "C",
+        [Field("x", "float64", ArrayKind.SCALAR)],
+        package="test",
+        constants=[Constant("FINGERPRINT__", "uint8", 1)],
+    )
     assert build_layout(flatten_message(msg, reg)).constants[0].name == "FINGERPRINT__"
 
 
 def test_fingerprint_travels_with_the_layout(reg):
     from flux_gen import fingerprint
+
     flat = flatten_message(reg["Pose"], reg)
     assert build_layout(flat).fingerprint == fingerprint(flat.leaves, flat.type_name)
 
@@ -148,8 +157,11 @@ def test_a_derived_accessor_cannot_collide_with_a_sibling_field(reg):
     # The Builder's allocator for `xs` is alloc__xs, so a sibling literally named alloc_xs is a
     # different name. Before the doubled underscore the two defined the same Python method and
     # the later one silently won.
-    msg = Message("D", [Field("xs", "float32", ArrayKind.DYNAMIC),
-                        Field("alloc_xs", "uint32", ArrayKind.SCALAR)], package="test")
+    msg = Message(
+        "D",
+        [Field("xs", "float32", ArrayKind.DYNAMIC), Field("alloc_xs", "uint32", ArrayKind.SCALAR)],
+        package="test",
+    )
     names = {p.name for p in build_layout(flatten_message(msg, reg)).root.placed}
     assert names == {"xs", "alloc_xs"}
 
@@ -158,6 +170,7 @@ def test_a_nested_dimension_field_still_flattens():
     # std_msgs/MultiArrayDimension puts a `size` field inside every MultiArray type; it has to
     # keep flattening whether it is nested or published on its own.
     from flux_gen import Registry, parse_msg
+
     r = Registry()
     dim = parse_msg("uint32 size\nfloat32[] xs\n", "Dim", package="t")
     arr = parse_msg("t/Dim[] dim\n", "Arr", package="t")
@@ -170,10 +183,14 @@ def test_colliding_element_class_names_are_rejected():
     # Camel-casing erases '_' against '.', so `foo_bar` and `foo.bar` both name FooBarElem --
     # silent aliasing in Python, a redefinition error in C++.
     from flux_gen import Registry, parse_msg
+
     r = Registry()
     msgs = {}
-    for name, text in (("Inner", "float32[] xs\n"), ("Foo", "t/Inner[] bar\n"),
-                       ("Top", "t/Inner[] foo_bar\nt/Foo[] foo\n")):
+    for name, text in (
+        ("Inner", "float32[] xs\n"),
+        ("Foo", "t/Inner[] bar\n"),
+        ("Top", "t/Inner[] foo_bar\nt/Foo[] foo\n"),
+    ):
         msgs[name] = parse_msg(text, name, package="t")
         r.add(msgs[name])
     with pytest.raises(LayoutError, match="FooBarElem"):

@@ -633,9 +633,7 @@ class PartitionedExecutor:
             for subscription, callback, priority in subs:
                 flux_ex.add(subscription, callback, priority)
             name = f"flux-part-g{index}"
-            self._start(
-                _FluxChild(flux_ex, tick_ns, self._fail, name, self._init_for(group)), name
-            )
+            self._start(_FluxChild(flux_ex, tick_ns, self._fail, name, self._init_for(group)), name)
 
         for index, node in enumerate(self._nodes):
             ros_ex = SingleThreadedExecutor()
@@ -647,8 +645,14 @@ class PartitionedExecutor:
             name = f"flux-part-n{index}"
             self._start(
                 _RosChild(
-                    ros_ex, node, tick_ns, self._fail, self._child_running, self._shutdown_seen,
-                    name, self._init_for(node),
+                    ros_ex,
+                    node,
+                    tick_ns,
+                    self._fail,
+                    self._child_running,
+                    self._shutdown_seen,
+                    name,
+                    self._init_for(node),
                 ),
                 name,
             )

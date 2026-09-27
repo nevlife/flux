@@ -15,7 +15,6 @@ from sensor_msgs_flux.image import Image
 
 
 class MergedSubscriber(Node):
-
     TOPIC = "image"
     DEPTH = 8
 
@@ -44,8 +43,7 @@ class MergedSubscriber(Node):
 
     def report(self):
         self.get_logger().info(
-            f"flux {self.flux_seen} (w={self.flux_width})  "
-            f"ros {self.ros_seen} (w={self.ros_width})"
+            f"flux {self.flux_seen} (w={self.flux_width})  ros {self.ros_seen} (w={self.ros_width})"
         )
 
 

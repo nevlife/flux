@@ -5,6 +5,12 @@ repos:
       - id: clang-format
         types_or: [c++, c]
 
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-format
+        types: [python]  # not the python fences in docs/, whose trailing comments run long
+
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.41.0
     hooks:

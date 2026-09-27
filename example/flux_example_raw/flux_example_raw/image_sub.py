@@ -11,7 +11,6 @@ from rclpy.node import Node
 
 
 class ImageRawSubscriber(Node):
-
     TOPIC = "image_raw"
 
     def __init__(self):

@@ -23,8 +23,7 @@ CPP_TESTS = [ROOT / "flux_core" / "test", ROOT / "flux_cpp" / "test"]
 PY_TESTS = [ROOT / "flux_py" / "test", ROOT / "flux_gen" / "test"]
 
 ROW = re.compile(r"^\|\s*(X-\d{3})\s*\|(.+?)\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*$")
-SPLIT_ROW = re.compile(
-    r"^\|\s*(S-\d{3})\s*\|(.+?)\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*$")
+SPLIT_ROW = re.compile(r"^\|\s*(S-\d{3})\s*\|(.+?)\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*$")
 GTEST = re.compile(r"^\s*TEST(?:_F)?\(\s*([A-Za-z_][\w]*)\s*,\s*([A-Za-z_][\w]*)\s*\)")
 PYTEST = re.compile(r"^def (test_\w+)\s*\(")
 
@@ -49,7 +48,6 @@ def _pytests(dirs):
                 if m:
                     found.add(m.group(1))
     return found
-
 
 
 def _check(doc, cpp, py):
@@ -78,7 +76,9 @@ def _check(doc, cpp, py):
         if cpp_name not in cpp:
             errors.append(f"{doc}:{lineno}: {cid} names C++ test {cpp_name}, which does not exist")
         if py_name not in py:
-            errors.append(f"{doc}:{lineno}: {cid} names Python test {py_name}, which does not exist")
+            errors.append(
+                f"{doc}:{lineno}: {cid} names Python test {py_name}, which does not exist"
+            )
 
     for lineno, sid, cpp_name, py_name in splits:
         # `-` is the deliberate "this side has nowhere to put a test". Both sides `-` would be a
@@ -89,7 +89,8 @@ def _check(doc, cpp, py):
             errors.append(f"{doc}:{lineno}: {sid} names C++ test {cpp_name}, which does not exist")
         if py_name != "-" and py_name not in py:
             errors.append(
-                f"{doc}:{lineno}: {sid} names Python test {py_name}, which does not exist")
+                f"{doc}:{lineno}: {sid} names Python test {py_name}, which does not exist"
+            )
     return errors, rows, splits
 
 

@@ -65,8 +65,8 @@ def doc_enumerate():
         name = topic.key if topic.key_exact else topic.signpost
         for ep in topic.endpoints:
             role = "pub" if ep.publisher else "sub"
-            _sink(name, topic.domain, topic.fingerprint, role, ep.owner.pid, ep.owner.starttime,
-                  ep.label)
+            pid, start = ep.owner.pid, ep.owner.starttime
+            _sink(name, topic.domain, topic.fingerprint, role, pid, start, ep.label)
     # [doc:/py_enumerate]
 
 

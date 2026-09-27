@@ -21,7 +21,6 @@ except ImportError:
 
 
 class GpuImagePublisher(Node):
-
     TOPIC = "image_gpu"
     WIDTH = 1920
     HEIGHT = 1200

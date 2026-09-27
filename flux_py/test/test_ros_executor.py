@@ -336,7 +336,8 @@ def test_spin_once_returns_on_the_first_work_of_either_transport(node):
     got = {"flux": 0, "ros": 0}
     ros_pub = node.create_publisher(Int32, "/pytest/rosex/first_ros", 10)
     node.create_subscription(
-        Int32, "/pytest/rosex/first_ros", lambda m: got.__setitem__("ros", got["ros"] + 1), 10)
+        Int32, "/pytest/rosex/first_ros", lambda m: got.__setitem__("ros", got["ros"] + 1), 10
+    )
     ex = flux.ros.Executor()
     ex.add_ros_node(node)
     ex.add(sub, lambda v: got.__setitem__("flux", got["flux"] + 1))
@@ -418,15 +419,19 @@ def test_frames_arrive_under_the_events_executor(node):
 def test_priority_reaches_the_core(node):
     # As C++ FluxExecutor.PriorityReachesTheCore: added first at the default priority, `lo` is
     # still visited after `hi` when both are ready in one pass.
-    lo_pub = flux.ros.create_publisher(node, "/pytest/rex/prio_lo", fingerprint=FP, slot_size=256,
-                                       slot_count=4)
-    hi_pub = flux.ros.create_publisher(node, "/pytest/rex/prio_hi", fingerprint=FP, slot_size=256,
-                                       slot_count=4)
+    lo_pub = flux.ros.create_publisher(
+        node, "/pytest/rex/prio_lo", fingerprint=FP, slot_size=256, slot_count=4
+    )
+    hi_pub = flux.ros.create_publisher(
+        node, "/pytest/rex/prio_hi", fingerprint=FP, slot_size=256, slot_count=4
+    )
     order = []
-    lo = flux.ros.create_subscription(node, "/pytest/rex/prio_lo", lambda v: order.append("lo"),
-                                      fingerprint=FP)
-    hi = flux.ros.create_subscription(node, "/pytest/rex/prio_hi", lambda v: order.append("hi"),
-                                      fingerprint=FP)
+    lo = flux.ros.create_subscription(
+        node, "/pytest/rex/prio_lo", lambda v: order.append("lo"), fingerprint=FP
+    )
+    hi = flux.ros.create_subscription(
+        node, "/pytest/rex/prio_hi", lambda v: order.append("hi"), fingerprint=FP
+    )
     ex = flux.ros.Executor()
     ex.add(lo)
     ex.add(hi, priority=10)

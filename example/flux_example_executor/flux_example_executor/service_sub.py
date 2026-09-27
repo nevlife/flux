@@ -19,7 +19,6 @@ from std_srvs.srv import Trigger
 
 
 class ServiceSubscriber(Node):
-
     TOPIC = "image"
     SERVICE = "frame_count"
 

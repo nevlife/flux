@@ -20,11 +20,17 @@ _DESC = np.dtype([("off", np.uint32), ("len", np.uint32)])
 
 # flux_gen.DType.value -> numpy dtype. Native byte order: the two ends are the same host.
 NUMPY_DTYPE = {
-    "u8": np.uint8, "i8": np.int8,
-    "u16": np.uint16, "i16": np.int16,
-    "u32": np.uint32, "i32": np.int32,
-    "u64": np.uint64, "i64": np.int64,
-    "f16": np.float16, "f32": np.float32, "f64": np.float64,
+    "u8": np.uint8,
+    "i8": np.int8,
+    "u16": np.uint16,
+    "i16": np.int16,
+    "u32": np.uint32,
+    "i32": np.int32,
+    "u64": np.uint64,
+    "i64": np.int64,
+    "f16": np.float16,
+    "f32": np.float32,
+    "f64": np.float64,
 }
 
 
@@ -88,7 +94,7 @@ class Reader:
         self._region(at, n, 1, 1)
         # As rclpy decodes a string field: bytes that are not UTF-8 become U+FFFD, and the frame
         # stays readable. C++ hands the bytes over unchecked, as rclcpp does.
-        return str(self._buf[at:at + n], "utf-8", "replace")
+        return str(self._buf[at : at + n], "utf-8", "replace")
 
     def strings(self, off):
         at, n = self.desc(off)
@@ -241,7 +247,7 @@ class Writer:
         np.frombuffer(self._buf, dtype=_DESC, count=1, offset=off)[0] = (start, n)
         self._used = start + n * esize
         if zero:
-            self._buf[start:self._used] = b"\0" * (n * esize)
+            self._buf[start : self._used] = b"\0" * (n * esize)
         return start
 
     def alloc(self, off, n, dtype):
@@ -257,7 +263,7 @@ class Writer:
     def put_str(self, off, s):
         b = s.encode("utf-8") if isinstance(s, str) else bytes(s)
         start = self._reserve(off, len(b), 1, 1, False)
-        self._buf[start:start + len(b)] = b
+        self._buf[start : start + len(b)] = b
 
     def put_strs(self, off, items):
         items = list(items)

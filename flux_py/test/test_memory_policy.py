@@ -51,7 +51,10 @@ def test_default_is_off():
 def test_precommit_reaches_the_mapping():
     topic = "/pytest/mem/precommit"
     pub = flux.Publisher(
-        topic, fingerprint=FP, slot_size=SLOT, slot_count=SLOTS,
+        topic,
+        fingerprint=FP,
+        slot_size=SLOT,
+        slot_count=SLOTS,
         memory=flux.MemoryPolicy(precommit=True),
     )
     assert _resident_kb(_needle(topic)) >= PAYLOAD_KB
@@ -91,7 +94,10 @@ def test_a_refused_lock_raises_rather_than_downgrading():
     try:
         with pytest.raises(OSError):
             flux.Publisher(
-                "/pytest/mem/refuse", fingerprint=FP, slot_size=SLOT, slot_count=SLOTS,
+                "/pytest/mem/refuse",
+                fingerprint=FP,
+                slot_size=SLOT,
+                slot_count=SLOTS,
                 memory=flux.MemoryPolicy(lock=True),
             )
     finally:
