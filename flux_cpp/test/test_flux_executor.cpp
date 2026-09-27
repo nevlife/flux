@@ -949,6 +949,86 @@ TEST(FluxExecutor, AStopBeforeSpinEndsItAndIsClearedOnTheWayOut)
   rclcpp::shutdown();
 }
 
+namespace
+{
+
+// Spins `ex` on a thread until one frame published on `pub` reaches `seen`, then stops it.
+bool spin_until_delivered(
+  flux::ros::Executor & ex, flux::ros::Publisher & pub, std::atomic<int> & seen)
+{
+  const int before = seen.load();
+  auto spun = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+  const std::uint8_t byte = 1;
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (seen.load() == before && std::chrono::steady_clock::now() < deadline) {
+    (void)pub.publish(&byte, 1);
+    std::this_thread::sleep_for(10ms);
+  }
+  ex.stop();
+  spun.get();
+  return seen.load() > before;
+}
+
+}  // namespace
+
+TEST(FluxExecutor, AStoppedExecutorSpinsAgain)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_again_node");
+  flux::ros::Publisher pub(*node, "/exec/again", kFingerprint, 256, 4);
+  std::atomic<int> seen{0};
+  flux::ros::Subscription sub(
+    *node, "/exec/again", kFingerprint, flux::QoS{}, [&](const flux::FrameView &) { ++seen; });
+  flux::ros::Executor ex;
+  ex.add(sub);
+  ex.add_ros_node(node);
+  EXPECT_TRUE(spin_until_delivered(ex, pub, seen));
+  EXPECT_TRUE(spin_until_delivered(ex, pub, seen));
+  rclcpp::shutdown();
+}
+
+TEST(FluxExecutor, ACallbackExceptionEndsSpinAndTheNextSpinDelivers)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_raise_node");
+  flux::ros::Publisher pub(*node, "/exec/raise", kFingerprint, 256, 4);
+  std::atomic<bool> raising{true};
+  std::atomic<int> seen{0};
+  flux::ros::Subscription sub(
+    *node, "/exec/raise", kFingerprint, flux::QoS{}, [&](const flux::FrameView &) {
+      if (raising.load()) throw std::runtime_error("boom");
+      ++seen;
+    });
+  flux::ros::Executor ex;
+  ex.add(sub);
+  ex.add_ros_node(node);
+  for (int i = 0; i < 2; ++i) {
+    auto spun = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+    const std::uint8_t byte = 1;
+    ASSERT_EQ(pub.publish(&byte, 1), flux::Published::Ok);
+    ASSERT_EQ(spun.wait_for(5s), std::future_status::ready);
+    EXPECT_THROW(spun.get(), std::runtime_error);
+  }
+  raising.store(false);
+  EXPECT_TRUE(spin_until_delivered(ex, pub, seen));
+  rclcpp::shutdown();
+}
+
+TEST(FluxExecutor, ASecondSpinIsRefused)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_twice_node");
+  flux::ros::Executor ex;
+  ex.add_ros_node(node);
+  auto spun = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+  std::this_thread::sleep_for(100ms);
+  EXPECT_THROW(ex.spin(20'000'000), std::logic_error);
+  EXPECT_EQ(spun.wait_for(0s), std::future_status::timeout) << "the refusal ended the first spin";
+  ex.stop();
+  spun.get();
+  rclcpp::shutdown();
+}
+
 // spin_once(t) waits for the first work of either transport, not for the one the core happens to
 // watch: a ROS message that arrives inside the wait ends it, as a flux frame does.
 TEST(FluxExecutor, ASpinOnceReturnsOnTheFirstWorkOfEitherTransport)

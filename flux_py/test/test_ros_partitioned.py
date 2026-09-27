@@ -7,6 +7,7 @@ quietly -- rclpy has no add_callback_group, so a flux group that also holds ROS 
 have its mutual exclusion broken with nothing said.
 """
 
+import gc
 import threading
 import time
 
@@ -153,6 +154,34 @@ def test_pure_ros_node_is_served(node):
         t.join(timeout=10.0)
 
 
+# As C++ PartitionedExecutor.GroupCreatedAfterSpinGetsAChild, the case of a lifecycle
+# on_configure or a service that turns a stream on: a group and a subscription made while spin()
+# runs. rclpy gives the node one thread, so that thread serves the new group (S-003).
+def test_a_ros_subscription_created_after_spin_is_served(node):
+    from std_msgs.msg import UInt64
+
+    pub = node.create_publisher(UInt64, "/pytest/part/late", 10)
+    ex = flux.ros.PartitionedExecutor()
+    ex.add_ros_node(node)
+    t = spin_in_thread(ex)
+    try:
+        time.sleep(0.1)  # spin is up before the group exists
+        got = []
+        node.create_subscription(
+            UInt64, "/pytest/part/late", lambda m: got.append(m.data), 10,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+        deadline = time.monotonic() + 5.0
+        while not got and time.monotonic() < deadline:
+            pub.publish(UInt64(data=3))
+            time.sleep(0.02)
+        assert got and got[0] == 3
+    finally:
+        ex.stop()
+        t.join(timeout=10.0)
+    assert not t.is_alive()
+
+
 # The node's ROS callbacks and a flux group run on different threads: that is the isolation the
 # single flux.ros.Executor cannot give, since it merges both onto the rclpy spin thread.
 def test_ros_node_and_flux_group_do_not_share_a_thread(node):
@@ -268,6 +297,76 @@ def test_add_after_spin_raises(node):
         t.join(timeout=10.0)
 
 
+def test_priority_orders_within_a_group(node):
+    # As C++ PartitionedExecutor.PriorityOrdersWithinAGroup: two subscriptions in one group share
+    # a pass, and the higher priority is visited first whatever order they were added in. Both
+    # frames are in the ring before spin(), so the first pass sees them together.
+    lo_pub = flux.Publisher("/pytest/part/prio_lo", slot_size=4096, slot_count=4, fingerprint=FP)
+    hi_pub = flux.Publisher("/pytest/part/prio_hi", slot_size=4096, slot_count=4, fingerprint=FP)
+    lo_sub = flux.Subscription("/pytest/part/prio_lo", fingerprint=FP)
+    hi_sub = flux.Subscription("/pytest/part/prio_hi", fingerprint=FP)
+    order = []
+    both = threading.Event()
+
+    def note(who):
+        order.append(who)
+        if len(order) == 2:
+            both.set()
+
+    group = MutuallyExclusiveCallbackGroup()
+    ex = flux.ros.PartitionedExecutor()
+    ex.add(lo_sub, group, lambda v: note("lo"))
+    ex.add(hi_sub, group, lambda v: note("hi"), priority=10)
+    assert lo_pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+    assert hi_pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+
+    t = spin_in_thread(ex)
+    try:
+        assert both.wait(timeout=5.0)
+    finally:
+        ex.stop()
+        t.join(timeout=5.0)
+    assert order == ["hi", "lo"]
+
+
+def test_a_callback_exception_does_not_leak_its_frame(node):
+    # The view a raising callback held was kept borrowed by a reference cycle through the
+    # re-raised exception until the collector ran. Two such spins used up max_borrow (2), and the
+    # subscription then refused every frame. gc is off so the collector cannot hide it.
+    pub = flux.Publisher("/pytest/part/raise", slot_size=4096, slot_count=4, fingerprint=FP)
+    sub = flux.Subscription("/pytest/part/raise", fingerprint=FP)
+    raising = [True]
+    got = threading.Event()
+
+    def cb(_view):
+        if raising[0]:
+            raise ValueError("boom")
+        got.set()
+
+    ex = flux.ros.PartitionedExecutor()
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), cb)
+    gc.disable()
+    try:
+        for _ in range(2):
+            t = threading.Thread(target=lambda: pytest.raises(ValueError, ex.spin, 20_000_000))
+            t.start()
+            time.sleep(0.1)
+            assert pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+            t.join(timeout=5.0)
+            assert not t.is_alive()
+        raising[0] = False
+        t = spin_in_thread(ex)
+        try:
+            time.sleep(0.1)
+            assert pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+            assert got.wait(timeout=5.0), f"refused {sub.refused}"
+        finally:
+            ex.stop()
+            t.join(timeout=5.0)
+    finally:
+        gc.enable()
+
+
 def test_rejects_a_subscription_assigned_twice(node):
     sub = flux.Subscription("/pytest/part/dup", fingerprint=FP)
     ex = flux.ros.PartitionedExecutor()
@@ -326,6 +425,21 @@ def test_stop_ends_spin_and_a_stopped_executor_spins_again(node):
         ex.stop()
         t.join(timeout=5.0)
         assert not t.is_alive()
+
+
+def test_a_second_partitioned_spin_is_refused(node):
+    sub = flux.Subscription("/pytest/part/twice", fingerprint=FP)
+    ex = flux.ros.PartitionedExecutor()
+    ex.add(sub, MutuallyExclusiveCallbackGroup(), lambda v: None)
+    t = spin_in_thread(ex)
+    try:
+        time.sleep(0.1)
+        with pytest.raises(RuntimeError, match="already spinning"):
+            ex.spin()
+        assert t.is_alive()
+    finally:
+        ex.stop()
+        t.join(timeout=5.0)
 
 
 # Shutting the context down ends the spin with no error. The teardown then wakes a node child

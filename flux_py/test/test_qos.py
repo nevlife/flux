@@ -52,6 +52,30 @@ def test_depth_n_catches_up_in_order():
     assert seen == [0, 1, 2, 3, 4]
 
 
+def test_depth_pulls_the_cursor_forward_and_counts_lost():
+    # As C++ Channel.DepthPullsCursorForwardAndReportsLost.
+    pub = flux.Publisher("/pytest/qos/window", slot_size=4096, slot_count=8, fingerprint=FP)
+    sub = flux.Subscription("/pytest/qos/window", fingerprint=FP, qos=flux.QoS(depth=2))
+    for i in range(1, 6):
+        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.OK
+    assert int(sub.take()[0]) == 4
+    assert sub.lost == 3
+    assert int(sub.take()[0]) == 5
+    assert sub.lost == 3  # cumulative
+    assert sub.take() is None
+
+
+def test_the_ring_caps_depth():
+    # As C++ Channel.RingCapsDepth: a depth past slot_count is not an error, and the shortfall
+    # shows in lost.
+    pub = flux.Publisher("/pytest/qos/cap", slot_size=4096, slot_count=2, fingerprint=FP)
+    sub = flux.Subscription("/pytest/qos/cap", fingerprint=FP, qos=flux.QoS(depth=8))
+    for i in range(1, 6):
+        assert pub.publish(np.full(8, i, dtype=np.uint8)) == flux.Published.OK
+    assert int(sub.take()[0]) == 4
+    assert sub.lost == 3
+
+
 def test_volatile_skips_the_backlog_and_transient_local_replays_it():
     pub = flux.Publisher("/pytest/qos/dur", slot_size=4096, slot_count=8, fingerprint=FP)
     for i in range(3):

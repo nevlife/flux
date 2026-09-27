@@ -45,6 +45,21 @@ C++과 Python은 같은 엔진(`flux_core`)을 부르지만 서로 다른 코드
 | X-035 | 있지만 읽을 수 없는 signpost는 발행자 없음으로 읽지 않고 던진다 | `PullSurface.ASignpostThatCannotBeReadThrows` | `test_a_signpost_that_cannot_be_read_raises` |
 | X-036 | 185자를 넘는 토픽은 자르지 않고 생성 때 거절한다 | `PullSurface.ATopicPastTheNameLimitIsRefused` | `test_a_key_past_the_name_limit_is_refused` |
 | X-037 | 0차원 배열은 원소 하나다 | `Channel.AZeroDimensionalFrameCarriesOneElement` | `test_a_zero_dimensional_array_round_trips` |
+| X-038 | 한 pass 안에서 `priority`가 높은 쪽을 먼저 부른다(`Executor`) | `FluxExecutor.PriorityReachesTheCore` | `test_priority_reaches_the_core` |
+| X-039 | `PartitionedExecutor`의 한 group 안에서 `priority`가 높은 쪽을 먼저 부른다 | `PartitionedExecutor.PriorityOrdersWithinAGroup` | `test_priority_orders_within_a_group` |
+| X-040 | 멈춘 executor는 다시 spin해서 받는다 | `FluxExecutor.AStoppedExecutorSpinsAgain` | `test_a_stopped_executor_spins_again` |
+| X-041 | 콜백 예외는 `spin`을 끝내고, 다음 `spin`은 다시 받는다 | `FluxExecutor.ACallbackExceptionEndsSpinAndTheNextSpinDelivers` | `test_a_callback_exception_ends_spin_and_the_next_spin_delivers` |
+| X-042 | 두 번째 `spin`은 거절되고 돌던 것은 계속 돈다 | `FluxExecutor.ASecondSpinIsRefused` | `test_a_second_spin_is_refused` |
+| X-043 | 같은 subscription을 `PartitionedExecutor`의 두 group에 넘기면 그 호출에서 거절한다 | `PartitionedExecutor.RejectsASubscriptionAssignedTwice` | `test_rejects_a_subscription_assigned_twice` |
+| X-044 | 빈 슬롯이 없으면 loan이 실패하고 `dropped`가 센다 | `Channel.LoanDropsWhenAllSlotsBorrowed` | `test_a_loan_with_no_free_slot_is_none` |
+| X-045 | abort한 loan은 발행되지 않고, 덮어쓴 frame도 건너뛴다 | `Channel.LoanAbortDoesNotPublishOrResurrectTheOverwrittenFrame` | `test_an_aborted_loan_is_not_delivered` |
+| X-046 | loan은 그것을 내준 publisher보다 오래 살 수 있다 | `Channel.LoanOutlivesTheChannelThatIssuedIt` | `test_a_loan_outlives_its_publisher` |
+| X-047 | `depth`보다 뒤처진 reader는 앞으로 당겨지고 건너뛴 frame은 `lost`에 들어간다 | `Channel.DepthPullsCursorForwardAndReportsLost` | `test_depth_pulls_the_cursor_forward_and_counts_lost` |
+| X-048 | ring이 `depth`의 상한이고, 모자란 만큼 `lost`에 보인다 | `Channel.RingCapsDepth` | `test_the_ring_caps_depth` |
+| X-049 | 스키마대로 읽히지 않는 message_filters frame은 `unreadable`에 세고 넘기지 않는다 | `MessageFilters.AFrameThatDoesNotReadIsCountedNotForwarded` | `test_a_frame_that_does_not_read_is_counted_not_forwarded` |
+| X-050 | 큐에 든 `StampedFrame`은 그것을 전달한 콜백이 끝난 뒤에도 읽힌다 | `MessageFilters.AQueuedFrameOutlivesTheCallbackThatDeliveredIt` | `test_a_queued_frame_outlives_the_callback_that_delivered_it` |
+| X-051 | `enumerate_topics`는 살아 있는 publisher를 key·fingerprint·소유자와 함께 나열한다 | `Enumerate.AnnouncedEndpointsComeBackWithTheirKeyAndLabel` | `test_enumerate_topics_lists_a_live_publisher` |
+| X-052 | `read_channel_stats`는 살아 있는 채널의 모양을 보고하고 발행 수를 정확히 센다 | `ChannelStats.ALiveChannelReportsItsShapeAndCountsPublishes` | `test_read_channel_stats_reports_shape_and_counts_publishes` |
 
 ## 2. 한쪽만 지키는 것
 
@@ -74,6 +89,7 @@ C++과 Python은 같은 엔진(`flux_core`)을 부르지만 서로 다른 코드
 | S-010 | `flux.ros.Executor`가 두 transport를 합치는 방식과, 그래서 없는 직접 루프 호출(`dispatch`, `wait_for_work`, `pump_ros`, 예산) | `FluxExecutor.TheInheritedSpinOnceServicesRosEntities` | `test_spin_once_returns_on_the_first_work_of_either_transport` |
 | S-011 | message_filters `Subscriber`를 나중에 붙이기(기본 생성, `subscribe`, `unsubscribe`) | `MessageFilters.SubscribesLate` | `-` |
 | S-012 | `flux.Frame`과 `.bits` 뷰(`Loan.bits`, `Frame.bits`) | `-` | `test_a_device_subscription_hands_back_a_scoped_frame` |
+| S-013 | UTF-8이 아닌 string 바이트 | `-` | `test_a_string_that_is_not_utf8_reads_as_rclpy_reads_it` |
 
 S-001은 dGPU 슬롯이 VRAM인 데서 온다. host 배열을 받으면 H2D 복사가 필요한데 `flux_core`는 복사 primitive를 두지 않으므로 양쪽 다 거절한다. 갈린 것은 거절의 형태다. C++은 `Published`로 돌려주고 Python은 던진다.
 
@@ -98,5 +114,7 @@ S-010은 rclpy에서 온다. C++이 io_uring에 거는 on-new-message 콜백을 
 S-011은 upstream message_filters를 따른다. upstream C++ `Subscriber`는 나중에 붙일 수 있고 Python `Subscriber`는 그렇지 않다. 안쪽 구독의 이름도 각 언어의 upstream대로 C++은 `getSubscriber()`, Python은 `.sub`다.
 
 S-012는 numpy에서 온다. numpy 배열은 GPU 메모리와 bf16을 담지 못한다. 그래서 Python에서 device frame은 `flux.Frame`으로 오고, `with` 안에서만 GPU 배열로 열린다. bf16 payload는 같은 바이트의 unsigned 뷰인 `.bits`로 읽고 쓴다(`test_bfloat16_roundtrips_through_bits`). C++은 둘 다 `FrameView`에서 바로 읽으므로(`device_ptr()`, `data()`) 둘 다 없다. ROS에는 두 언어 모두 대응하는 것이 없다.
+
+S-013은 각 언어의 ROS를 따른다. rclcpp는 string 필드를 `std::string`의 바이트로 두고, flux C++ View는 그 바이트를 검사 없이 `std::string_view`로 준다(`test_cpp_hands_over_string_bytes_that_are_not_utf8_unchanged`). rclpy는 string 필드를 `errors="replace"`로 디코드하고 flux Python도 같다. UTF-8이 아닌 바이트는 U+FFFD가 되고 프레임의 나머지는 읽힌다.
 
 S-002의 C++이 `-`인 것은 검사를 빠뜨린 것이 아니다. `Channel::create`/`open`의 인자는 ROS 토픽이 아니라 채널 키이고 core는 ROS 없이 선다. 거절은 `flux::ros::Publisher`/`Subscription`이 노드로 resolve하는 자리에 있다.

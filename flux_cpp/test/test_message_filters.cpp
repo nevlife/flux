@@ -19,9 +19,11 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 // flux topics inside a message_filters graph. The claim under test is that a flux topic and a
 // ROS topic can be synchronized in one Synchronizer without the payload being copied: what the
@@ -131,6 +133,80 @@ TEST(MessageFilters, SynchronizesTwoFluxTopics)
   EXPECT_EQ(right_tag.load(), 0xB0);
   EXPECT_EQ(left.unreadable(), 0u);
   EXPECT_EQ(right.unreadable(), 0u);
+}
+
+// A frame with the right fingerprint whose bytes do not read as the schema is counted and
+// dropped: the synchronizer never sees it, and the next good frame still goes through.
+TEST(MessageFilters, AFrameThatDoesNotReadIsCountedNotForwarded)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_mf_unreadable");
+  const std::string topic = uniq("/mf/unreadable");
+  flux::ros::Publisher pub(*node, topic, Image::kFingerprint, kSlotSize, kSlots);
+  fmf::Subscriber<Image> sub(*node, topic);  // after the publisher: volatile joins where it is
+
+  flux::ros::Executor ex;
+  ex.add(sub);
+  std::atomic<bool> run{true};
+  std::thread spinner([&] { ex.spin(run, 10'000'000); });
+
+  const std::uint8_t garbage[3] = {0xFF, 0xFF, 0xFF};
+  ASSERT_EQ(pub.publish(garbage, sizeof garbage), flux::Published::Ok);
+  const bool counted = wait_until([&] { return sub.unreadable() == 1; });
+  publish_at(pub, 7, 0xC0);
+  const bool forwarded = wait_until([&] { return sub.forwarded() == 1; });
+
+  ex.stop();
+  spinner.join();
+  rclcpp::shutdown();
+
+  EXPECT_TRUE(counted) << "unreadable=" << sub.unreadable();
+  EXPECT_TRUE(forwarded) << "forwarded=" << sub.forwarded();
+  EXPECT_EQ(sub.unreadable(), 1u);
+}
+
+// What a filter queues must stay readable after the callback that delivered it has returned, and
+// after the executor has stopped: a StampedFrame holds the borrow, not a copy.
+TEST(MessageFilters, AQueuedFrameOutlivesTheCallbackThatDeliveredIt)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_mf_hold");
+  const std::string topic = uniq("/mf/hold");
+  flux::ros::Publisher pub(*node, topic, Image::kFingerprint, kSlotSize, kSlots);
+  flux::QoS qos;
+  qos.keep_last(8);
+  qos.max_borrow(8);
+  fmf::Subscriber<Image> sub(*node, topic, qos);
+
+  std::mutex m;
+  std::vector<std::shared_ptr<const Frame>> held;
+  sub.registerCallback([&](const std::shared_ptr<const Frame> & f) {
+    std::lock_guard<std::mutex> lock(m);
+    held.push_back(f);
+  });
+
+  flux::ros::Executor ex;
+  ex.add(sub);
+  std::atomic<bool> run{true};
+  std::thread spinner([&] { ex.spin(run, 10'000'000); });
+  for (std::uint8_t i = 0; i < 3; ++i) publish_at(pub, 300 + i, i);
+  const bool all = wait_until([&] {
+    std::lock_guard<std::mutex> lock(m);
+    return held.size() >= 3;
+  });
+  ex.stop();
+  spinner.join();
+
+  ASSERT_TRUE(all);
+  // Lap the ring twice: a slot the queue had let go of would now hold 0xEE.
+  for (std::uint32_t k = 0; k < 2 * kSlots; ++k) publish_at(pub, 900, 0xEE);
+  for (int i = 2; i >= 0; --i) {  // read now, and out of delivery order
+    const Frame & f = *held[static_cast<std::size_t>(i)];
+    EXPECT_EQ(static_cast<const std::uint8_t *>(f.view().data().data())[0], i);
+    EXPECT_EQ(f.header.stamp.sec, 300 + i);
+  }
+  held.clear();
+  rclcpp::shutdown();
 }
 
 // The headline: one synchronizer whose inputs are a flux topic and an ordinary ROS topic. Both

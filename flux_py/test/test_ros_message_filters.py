@@ -131,6 +131,25 @@ def test_two_flux_inputs_pair_on_the_header_stamp(node, adapters):
     assert left.unreadable == 0 and right.unreadable == 0
 
 
+def test_a_frame_that_does_not_read_is_counted_not_forwarded(node, adapters):
+    # As C++ MessageFilters.AFrameThatDoesNotReadIsCountedNotForwarded.
+    Stamped, _ = adapters
+    pub = flux.Publisher("/pytest/mf/bad", slot_size=4096, slot_count=8,
+                         fingerprint=Stamped.FINGERPRINT__)
+    sub = fmf.Subscriber(node, Stamped, "/pytest/mf/bad")
+    ex = flux.ros.Executor()
+    ex.add(sub)
+    spin_in_thread(ex, 20_000_000)
+    try:
+        assert pub.publish(np.full(3, 0xFF, np.uint8)) == flux.Published.OK
+        assert wait_for(lambda: sub.unreadable == 1)
+        assert publish(pub, Stamped, 7, 0, 1) == flux.Published.OK
+        assert wait_for(lambda: sub.forwarded == 1)
+    finally:
+        ex.stop()
+    assert sub.unreadable == 1
+
+
 # The mixed graph: one flux topic, one DDS topic, one synchronizer, one thread. This is the
 # arrangement Python had no way to express at all before.
 def test_flux_and_dds_inputs_pair_in_one_synchronizer(node, adapters):

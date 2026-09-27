@@ -45,6 +45,21 @@ C++ and Python call the same engine (`flux_core`), but different code calls it. 
 | X-035 | A signpost that exists but cannot be read throws instead of reading as no publisher | `PullSurface.ASignpostThatCannotBeReadThrows` | `test_a_signpost_that_cannot_be_read_raises` |
 | X-036 | A topic past 185 characters is refused at construction instead of cut | `PullSurface.ATopicPastTheNameLimitIsRefused` | `test_a_key_past_the_name_limit_is_refused` |
 | X-037 | A 0-d array is one element | `Channel.AZeroDimensionalFrameCarriesOneElement` | `test_a_zero_dimensional_array_round_trips` |
+| X-038 | Within one pass a higher `priority` is visited first (`Executor`) | `FluxExecutor.PriorityReachesTheCore` | `test_priority_reaches_the_core` |
+| X-039 | Within one `PartitionedExecutor` group a higher `priority` is visited first | `PartitionedExecutor.PriorityOrdersWithinAGroup` | `test_priority_orders_within_a_group` |
+| X-040 | A stopped executor spins again and delivers | `FluxExecutor.AStoppedExecutorSpinsAgain` | `test_a_stopped_executor_spins_again` |
+| X-041 | A callback exception ends `spin`, and the next `spin` delivers | `FluxExecutor.ACallbackExceptionEndsSpinAndTheNextSpinDelivers` | `test_a_callback_exception_ends_spin_and_the_next_spin_delivers` |
+| X-042 | A second `spin` is refused and the running one keeps running | `FluxExecutor.ASecondSpinIsRefused` | `test_a_second_spin_is_refused` |
+| X-043 | A subscription handed to two `PartitionedExecutor` groups is refused at the call | `PartitionedExecutor.RejectsASubscriptionAssignedTwice` | `test_rejects_a_subscription_assigned_twice` |
+| X-044 | With no free slot a loan fails and `dropped` counts it | `Channel.LoanDropsWhenAllSlotsBorrowed` | `test_a_loan_with_no_free_slot_is_none` |
+| X-045 | An aborted loan is not published, and the frame it overwrote is skipped | `Channel.LoanAbortDoesNotPublishOrResurrectTheOverwrittenFrame` | `test_an_aborted_loan_is_not_delivered` |
+| X-046 | A loan may outlive the publisher that issued it | `Channel.LoanOutlivesTheChannelThatIssuedIt` | `test_a_loan_outlives_its_publisher` |
+| X-047 | A reader behind `depth` is pulled forward and the skipped frames go to `lost` | `Channel.DepthPullsCursorForwardAndReportsLost` | `test_depth_pulls_the_cursor_forward_and_counts_lost` |
+| X-048 | The ring caps `depth`, and the shortfall shows in `lost` | `Channel.RingCapsDepth` | `test_the_ring_caps_depth` |
+| X-049 | A message_filters frame that does not read as the schema is counted in `unreadable` and not forwarded | `MessageFilters.AFrameThatDoesNotReadIsCountedNotForwarded` | `test_a_frame_that_does_not_read_is_counted_not_forwarded` |
+| X-050 | A queued `StampedFrame` stays readable after the callback that delivered it | `MessageFilters.AQueuedFrameOutlivesTheCallbackThatDeliveredIt` | `test_a_queued_frame_outlives_the_callback_that_delivered_it` |
+| X-051 | `enumerate_topics` lists a live publisher with its key, fingerprint and owner | `Enumerate.AnnouncedEndpointsComeBackWithTheirKeyAndLabel` | `test_enumerate_topics_lists_a_live_publisher` |
+| X-052 | `read_channel_stats` reports a live channel's shape and counts publishes exactly | `ChannelStats.ALiveChannelReportsItsShapeAndCountsPublishes` | `test_read_channel_stats_reports_shape_and_counts_publishes` |
 
 ## 2. What only one side keeps
 
@@ -74,6 +89,7 @@ A row holds only the name of the divergence and the tests on both sides. The rea
 | S-010 | How `flux.ros.Executor` merges the two transports, and the direct-loop calls (`dispatch`, `wait_for_work`, `pump_ros`, budgets) it therefore lacks | `FluxExecutor.TheInheritedSpinOnceServicesRosEntities` | `test_spin_once_returns_on_the_first_work_of_either_transport` |
 | S-011 | Subscribing a message_filters `Subscriber` late (default construction, `subscribe`, `unsubscribe`) | `MessageFilters.SubscribesLate` | `-` |
 | S-012 | `flux.Frame` and the `.bits` views (`Loan.bits`, `Frame.bits`) | `-` | `test_a_device_subscription_hands_back_a_scoped_frame` |
+| S-013 | String bytes that are not UTF-8 | `-` | `test_a_string_that_is_not_utf8_reads_as_rclpy_reads_it` |
 
 S-001 comes from dGPU slots being VRAM. Accepting a host array would require an H2D copy, and `flux_core` has no copy primitive, so both sides refuse. What diverges is the form of the refusal. C++ returns `Published` and Python raises.
 
@@ -98,5 +114,7 @@ S-010 comes from rclpy. rclpy does not expose the on-new-message callback that C
 S-011 follows upstream message_filters, whose C++ `Subscriber` subscribes late and whose Python `Subscriber` does not. The inner subscription is named the upstream way in each language too: `getSubscriber()` in C++, `.sub` in Python.
 
 S-012 comes from numpy. A numpy array cannot hold GPU memory or bf16. So a device frame arrives in Python as a `flux.Frame`, which opens as a GPU array only inside `with`, and a bf16 payload is read and written through `.bits`, an unsigned view of the same bytes (`test_bfloat16_roundtrips_through_bits`). C++ reads both straight from `FrameView` (`device_ptr()`, `data()`), so it has neither. ROS has no counterpart in either language.
+
+S-013 follows each language's ROS. rclcpp keeps a string field as the bytes in a `std::string`, and a flux C++ View returns them unchecked as a `std::string_view` (`test_cpp_hands_over_string_bytes_that_are_not_utf8_unchanged`). rclpy decodes a string field with `errors="replace"`, and flux Python does the same: a byte that is not UTF-8 becomes U+FFFD and the rest of the frame reads.
 
 The C++ `-` in S-002 is not a missing check. The argument of `Channel::create`/`open` is a channel key, not a ROS topic, and core stands without ROS. The refusal lives where `flux::ros::Publisher`/`Subscription` resolve through the node.

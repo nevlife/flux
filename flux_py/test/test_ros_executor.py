@@ -141,6 +141,76 @@ def test_stop_ends_spin(node):
     t.join(timeout=5.0)
 
 
+def _spin_and_deliver(ex, pub, got):
+    got.clear()
+    t = spin_in_thread(ex)
+    try:
+        deadline = time.monotonic() + 5.0
+        while not got and time.monotonic() < deadline:
+            assert pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+            time.sleep(0.02)
+    finally:
+        ex.stop()
+        t.join(timeout=5.0)
+    return bool(got)
+
+
+def test_a_stopped_executor_spins_again(node):
+    pub = flux.Publisher("/pytest/rosex/again", slot_size=4096, slot_count=4, fingerprint=FP)
+    sub = flux.Subscription("/pytest/rosex/again", fingerprint=FP)
+    got = []
+    ex = flux.ros.Executor()
+    ex.add(sub, got.append)
+    ex.add_ros_node(node)
+    assert _spin_and_deliver(ex, pub, got)
+    assert _spin_and_deliver(ex, pub, got)
+
+
+def test_a_callback_exception_ends_spin_and_the_next_spin_delivers(node):
+    pub = flux.Publisher("/pytest/rosex/raise", slot_size=4096, slot_count=4, fingerprint=FP)
+    sub = flux.Subscription("/pytest/rosex/raise", fingerprint=FP)
+    raising = [True]
+    got = []
+
+    def cb(view):
+        if raising[0]:
+            raise ValueError("boom")
+        got.append(view)
+
+    ex = flux.ros.Executor()
+    ex.add(sub, cb)
+    ex.add_ros_node(node)
+    # Each raising callback's view was kept borrowed by a cycle through the rclpy Task until gc
+    # ran; two used up max_borrow (2). gc is off so the collector cannot hide it.
+    gc.disable()
+    try:
+        for _ in range(2):
+            t = threading.Thread(target=lambda: pytest.raises(ValueError, ex.spin, 20_000_000))
+            t.start()
+            time.sleep(0.1)
+            assert pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+            t.join(timeout=5.0)
+            assert not t.is_alive()
+        raising[0] = False
+        assert _spin_and_deliver(ex, pub, got), f"refused {sub.refused}"
+    finally:
+        gc.enable()
+
+
+def test_a_second_spin_is_refused(node):
+    ex = flux.ros.Executor()
+    ex.add_ros_node(node)
+    t = spin_in_thread(ex)
+    try:
+        time.sleep(0.1)
+        with pytest.raises(RuntimeError, match="already running"):
+            ex.spin()
+        assert t.is_alive()
+    finally:
+        ex.stop()
+        t.join(timeout=5.0)
+
+
 def test_add_ros_node_is_idempotent(node):
     # rclpy writes node.executor on add_node, so adding the same node twice through two
     # executors silently steals it from the first. Adding it twice here must be a no-op rather
@@ -343,6 +413,31 @@ def test_frames_arrive_under_the_events_executor(node):
     finally:
         ex.stop()
         t.join(timeout=5.0)
+
+
+def test_priority_reaches_the_core(node):
+    # As C++ FluxExecutor.PriorityReachesTheCore: added first at the default priority, `lo` is
+    # still visited after `hi` when both are ready in one pass.
+    lo_pub = flux.ros.create_publisher(node, "/pytest/rex/prio_lo", fingerprint=FP, slot_size=256,
+                                       slot_count=4)
+    hi_pub = flux.ros.create_publisher(node, "/pytest/rex/prio_hi", fingerprint=FP, slot_size=256,
+                                       slot_count=4)
+    order = []
+    lo = flux.ros.create_subscription(node, "/pytest/rex/prio_lo", lambda v: order.append("lo"),
+                                      fingerprint=FP)
+    hi = flux.ros.create_subscription(node, "/pytest/rex/prio_hi", lambda v: order.append("hi"),
+                                      fingerprint=FP)
+    ex = flux.ros.Executor()
+    ex.add(lo)
+    ex.add(hi, priority=10)
+    assert lo_pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+    assert hi_pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+
+    for _ in range(10):
+        ex.spin_once(timeout_ns=200_000_000)
+        if len(order) == 2:
+            break
+    assert order == ["hi", "lo"]
 
 
 def test_stop_is_idempotent_and_shutdown_detaches(node):

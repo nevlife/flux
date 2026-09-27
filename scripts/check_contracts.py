@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 DOCS = [ROOT / "docs" / "en" / "contracts.en.md", ROOT / "docs" / "ko" / "contracts.ko.md"]
 CPP_TESTS = [ROOT / "flux_core" / "test", ROOT / "flux_cpp" / "test"]
-PY_TESTS = [ROOT / "flux_py" / "test"]
+PY_TESTS = [ROOT / "flux_py" / "test", ROOT / "flux_gen" / "test"]
 
 ROW = re.compile(r"^\|\s*(X-\d{3})\s*\|(.+?)\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*$")
 SPLIT_ROW = re.compile(

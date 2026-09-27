@@ -503,6 +503,107 @@ TEST(PartitionedExecutor, AStopBeforeSpinEndsItAndIsClearedOnTheWayOut)
   rclcpp::shutdown();
 }
 
+namespace
+{
+
+struct OneGroup
+{
+  rclcpp::Node::SharedPtr node = std::make_shared<rclcpp::Node>("cie_again_node");
+  rclcpp::CallbackGroup::SharedPtr group =
+    node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  flux::ros::Publisher pub{*node, "/part/again", kFingerprint, 256, 4};
+};
+
+bool spin_until_delivered(
+  flux::ros::PartitionedExecutor & ex, flux::ros::Publisher & pub, std::atomic<int> & seen)
+{
+  const int before = seen.load();
+  auto spun = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+  const std::uint8_t byte = 1;
+  const auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (seen.load() == before && std::chrono::steady_clock::now() < deadline) {
+    (void)pub.publish(&byte, 1);
+    std::this_thread::sleep_for(10ms);
+  }
+  ex.stop();
+  spun.get();
+  return seen.load() > before;
+}
+
+}  // namespace
+
+TEST(PartitionedExecutor, AStoppedExecutorSpinsAgain)
+{
+  rclcpp::init(0, nullptr);
+  OneGroup g;
+  std::atomic<int> seen{0};
+  flux::ros::Subscription sub(
+    *g.node, "/part/again", kFingerprint, flux::QoS{}, [&](const flux::FrameView &) { ++seen; });
+  flux::ros::PartitionedExecutor ex;
+  ex.add_ros_node(g.node);
+  ex.add(sub, g.group);
+  EXPECT_TRUE(spin_until_delivered(ex, g.pub, seen));
+  EXPECT_TRUE(spin_until_delivered(ex, g.pub, seen));
+  rclcpp::shutdown();
+}
+
+TEST(PartitionedExecutor, ACallbackExceptionEndsSpinAndTheNextSpinDelivers)
+{
+  rclcpp::init(0, nullptr);
+  OneGroup g;
+  std::atomic<bool> raising{true};
+  std::atomic<int> seen{0};
+  flux::ros::Subscription sub(
+    *g.node, "/part/again", kFingerprint, flux::QoS{}, [&](const flux::FrameView &) {
+      if (raising.load()) throw std::runtime_error("boom");
+      ++seen;
+    });
+  flux::ros::PartitionedExecutor ex;
+  ex.add_ros_node(g.node);
+  ex.add(sub, g.group);
+  for (int i = 0; i < 2; ++i) {
+    auto spun = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+    std::this_thread::sleep_for(100ms);
+    const std::uint8_t byte = 1;
+    ASSERT_EQ(g.pub.publish(&byte, 1), flux::Published::Ok);
+    ASSERT_EQ(spun.wait_for(5s), std::future_status::ready);
+    EXPECT_THROW(spun.get(), std::runtime_error);
+  }
+  raising.store(false);
+  EXPECT_TRUE(spin_until_delivered(ex, g.pub, seen));
+  rclcpp::shutdown();
+}
+
+// Two groups would put two threads on one channel. Refused at the call, as in Python.
+TEST(PartitionedExecutor, RejectsASubscriptionAssignedTwice)
+{
+  rclcpp::init(0, nullptr);
+  OneGroup g;
+  auto other = g.node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  flux::ros::Subscription sub(
+    *g.node, "/part/again", kFingerprint, flux::QoS{}, [](const flux::FrameView &) {});
+  flux::ros::PartitionedExecutor ex;
+  ex.add(sub, g.group);
+  EXPECT_THROW(ex.add(sub, other), std::invalid_argument);
+  EXPECT_THROW(ex.add(sub, g.group), std::invalid_argument);
+  rclcpp::shutdown();
+}
+
+TEST(PartitionedExecutor, ASecondSpinIsRefused)
+{
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("cie_twice_node");
+  flux::ros::PartitionedExecutor ex;
+  ex.add_ros_node(node);
+  auto spun = std::async(std::launch::async, [&] { ex.spin(20'000'000); });
+  std::this_thread::sleep_for(100ms);
+  EXPECT_THROW(ex.spin(20'000'000), std::logic_error);
+  EXPECT_EQ(spun.wait_for(0s), std::future_status::timeout) << "the refusal ended the first spin";
+  ex.stop();
+  spun.get();
+  rclcpp::shutdown();
+}
+
 // A sub-millisecond tick is a wait of that length, not a busy loop: the rescan thread must not
 // turn 0.5 ms into 0 ms by converting it to whole milliseconds.
 TEST(PartitionedExecutor, ASubMillisecondTickIsWaitedNotSpun)

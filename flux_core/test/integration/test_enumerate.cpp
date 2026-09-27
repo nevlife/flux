@@ -1,3 +1,4 @@
+#include "flux/channel.hpp"
 #include "flux/discovery.hpp"
 #include "flux/owner.hpp"
 #include "flux/segment_layout.hpp"
@@ -180,6 +181,27 @@ TEST(ChannelStats, ReadingAnAbsentChannelCreatesNothing)
   EXPECT_FALSE(flux::read_channel_stats(sp).live);
   EXPECT_LT(::shm_open(sp.c_str(), O_RDONLY, 0), 0);
   EXPECT_EQ(errno, ENOENT);
+}
+
+// A live channel reports the shape it was created with, and publish_seq counts every publish
+// exactly, so two reads bracket a frame count.
+TEST(ChannelStats, ALiveChannelReportsItsShapeAndCountsPublishes)
+{
+  const std::string sp = flux::signpost_name("/" + uniq("stats/live"), 0xabc);
+  {
+    flux::Channel ch = flux::Channel::create(sp, 256, 4, 0xabc);
+    const flux::ChannelStats before = flux::read_channel_stats(sp);
+    ASSERT_TRUE(before.live);
+    EXPECT_EQ(before.slot_size, 256u);
+    EXPECT_EQ(before.slot_count, 4u);
+    EXPECT_EQ(before.fingerprint, 0xabcu);
+    const std::uint8_t byte = 1;
+    for (int i = 0; i < 3; ++i) ASSERT_EQ(ch.publish(&byte, 1), flux::Published::Ok);
+    const flux::ChannelStats after = flux::read_channel_stats(sp);
+    EXPECT_EQ(after.publish_seq - before.publish_seq, 3u);
+    EXPECT_EQ(after.epoch, before.epoch);
+  }
+  ::shm_unlink(sp.c_str());
 }
 
 // Absent is the one failure that means "no publisher yet". Anything else no retry fixes, so it

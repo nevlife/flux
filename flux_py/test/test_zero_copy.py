@@ -158,6 +158,70 @@ def test_uncommitted_loan_is_safe_to_drop():
     scope()  # both die here; the test failing means the process crashed
 
 
+def test_an_aborted_loan_is_not_delivered():
+    # As C++ Channel.LoanAbortDoesNotPublishOrResurrectTheOverwrittenFrame: the loan lands on the
+    # oldest pending frame and overwrites it, so abort skips that frame too rather than revive it.
+    pub = flux.Publisher("/pytest/loan/abort", slot_size=128, slot_count=4, fingerprint=FP)
+    sub = flux.Subscription("/pytest/loan/abort", fingerprint=FP, qos=flux.QoS(depth=8))
+    for i in range(1, 5):
+        assert pub.publish(np.full(128, i, np.uint8)) == flux.Published.OK
+    loan = pub.loan()
+    loan.array[:] = 0xEE
+    loan.abort()
+
+    got = []
+    while (v := sub.take()) is not None:
+        got.append(int(v[0]))
+        del v
+    assert got == [2, 3, 4]
+
+
+def test_a_loan_with_no_free_slot_is_none():
+    # As C++ Channel.LoanDropsWhenAllSlotsBorrowed: a held view pins the only slot.
+    pub = flux.Publisher("/pytest/loan/full", slot_size=64, slot_count=1, fingerprint=FP)
+    sub = flux.Subscription("/pytest/loan/full", fingerprint=FP)
+    assert pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+    held = sub.take()
+    assert held is not None
+    assert pub.loan((8,)) is None
+    assert pub.dropped == 1
+    del held
+    loan = pub.loan((8,))
+    assert loan and loan.commit() == flux.Published.OK
+
+
+def test_commit_nbytes_publishes_a_prefix_and_refuses_misuse():
+    pub = flux.Publisher("/pytest/loan/prefix", slot_size=64, slot_count=2, fingerprint=FP)
+    sub = flux.Subscription("/pytest/loan/prefix", fingerprint=FP)
+    loan = pub.loan((16,), dtype="uint16")
+    loan.array[:] = np.arange(16, dtype=np.uint16)
+    with pytest.raises(ValueError, match="multiple of 2"):
+        loan.commit(nbytes=3)
+    with pytest.raises(ValueError, match="at most the 32 bytes"):
+        loan.commit(nbytes=34)
+    assert loan  # a refused commit leaves the loan held (S-007)
+    assert loan.commit(nbytes=8) == flux.Published.OK
+    v = sub.take()
+    assert v.dtype == np.uint16 and list(v) == [0, 1, 2, 3]
+    del v
+
+    loan = pub.loan((2, 4))
+    with pytest.raises(ValueError, match="needs a 1-D loan"):
+        loan.commit(nbytes=4)
+    loan.abort()
+
+
+def test_a_loan_outlives_its_publisher():
+    # As C++ Channel.LoanOutlivesTheChannelThatIssuedIt: the loan keeps the mapping alive.
+    pub = flux.Publisher("/pytest/loan/outlive", slot_size=64, slot_count=2, fingerprint=FP)
+    sub = flux.Subscription("/pytest/loan/outlive", fingerprint=FP)
+    loan = pub.loan((8,))
+    del pub
+    loan.array[:] = 5
+    assert loan.commit() == flux.Published.OK
+    assert int(sub.take()[0]) == 5
+
+
 def test_a_loan_is_truthy_until_released_and_reports_its_capacity():
     # As C++ WriteSlot: operator bool and capacity().
     pub = flux.Publisher("/pytest/loan/truthy", slot_size=4096, slot_count=4, fingerprint=FP)
@@ -646,3 +710,33 @@ def test_signpost_name_is_the_name_a_publisher_reports_and_stats_read():
     assert name == pub.signpost_name
     assert name == flux.signpost_name("/pytest/signpost", FP, flux.process_domain())
     assert flux.read_channel_stats(name).live
+
+
+def test_enumerate_topics_lists_a_live_publisher():
+    # As C++ Enumerate.AnnouncedEndpointsComeBackWithTheirKeyAndLabel. flux_py has no node, so
+    # it announces an empty label.
+    pub = flux.Publisher("/pytest/enum/pub", fingerprint=FP, slot_size=4096, slot_count=2)
+    topics = [t for t in flux.enumerate_topics() if t.signpost == pub.signpost_name]
+    assert len(topics) == 1
+    t = topics[0]
+    assert t.key == "/pytest/enum/pub" and t.key_exact
+    assert t.fingerprint == FP and t.domain == flux.process_domain()
+    mine = [e for e in t.endpoints if e.owner.pid == os.getpid()]
+    assert len(mine) == 1 and mine[0].publisher and mine[0].label == ""
+
+
+def test_read_channel_stats_reports_shape_and_counts_publishes():
+    pub = flux.Publisher("/pytest/stats/live", fingerprint=FP, slot_size=4096, slot_count=4)
+    before = flux.read_channel_stats(pub.signpost_name)
+    assert before.live
+    assert (before.slot_size, before.slot_count, before.fingerprint) == (4096, 4, FP)
+    for _ in range(3):
+        assert pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+    after = flux.read_channel_stats(pub.signpost_name)
+    assert after.publish_seq - before.publish_seq == 3  # exact, not an estimate
+    assert after.epoch == before.epoch
+
+
+def test_flatten_key_maps_every_non_alnum_character_to_a_dot():
+    assert flux.flatten_key("/a/b-c") == ".a.b.c"
+    assert flux.flatten_key(".a.b.c") == flux.flatten_key("/a/b-c")

@@ -86,10 +86,9 @@ class Reader:
     def string(self, off):
         at, n = self.desc(off)
         self._region(at, n, 1, 1)
-        try:
-            return str(self._buf[at:at + n], "utf-8")
-        except UnicodeDecodeError as e:
-            raise WireError(f"string at {at} is not UTF-8: {e.reason}") from e
+        # As rclpy decodes a string field: bytes that are not UTF-8 become U+FFFD, and the frame
+        # stays readable. C++ hands the bytes over unchecked, as rclcpp does.
+        return str(self._buf[at:at + n], "utf-8", "replace")
 
     def strings(self, off):
         at, n = self.desc(off)

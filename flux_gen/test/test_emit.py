@@ -134,18 +134,17 @@ def test_a_builder_with_no_free_slot_is_false_and_harmless(built):
     assert b2.commit__() == flux.Published.BACKPRESSURE
 
 
-def test_a_string_that_is_not_utf8_is_a_wire_error(built):
-    # Bytes another process wrote are not trusted to be UTF-8. A string that does not decode is
-    # an unreadable frame like any other, so it raises the one error a reader already catches.
-    from flux_gen.wire import WireError
-
+def test_a_string_that_is_not_utf8_reads_as_rclpy_reads_it(built):
+    # rclpy decodes a string field with errors="replace": a byte that is not UTF-8 becomes U+FFFD
+    # and the rest of the message still reads. A C++ publisher does not check what it wrote.
     m = module("Labeled")
     buf = bytearray(4096)
     b = m.Builder(buf)
-    b.label = b"\xff\xfe"
+    b.label = b"ok \xed\x95"  # U+D55C cut after two of its three bytes
+    b.alloc__values(1)[:] = [2.5]
     v = m.View(memoryview(buf)[:b.size__])
-    with pytest.raises(WireError):
-        v.label
+    assert v.label == "ok \ufffd"
+    assert list(v.values) == [2.5]
 
 
 def test_string_and_stamp_round_trip(built):
@@ -745,6 +744,62 @@ def test_cpp_build_loans_from_a_publisher_and_commits(built, tmp_path):
         check=True, capture_output=True, text=True)
     proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
     assert proc.stdout == "1\n1\n1\n0\n1\n"
+
+
+@needs_link
+def test_cpp_hands_over_string_bytes_that_are_not_utf8_unchanged(built, tmp_path):
+    # The C++ half of test_a_string_that_is_not_utf8_reads_as_rclpy_reads_it: as rclcpp keeps a
+    # std::string, the View returns the bytes as written and the frame stays ok__().
+    cpp_root, _ = built
+    src, exe = tmp_path / "not_utf8.cpp", tmp_path / "not_utf8"
+    src.write_text(
+        '#include "test/flux/labeled.hpp"\n'
+        "#include <cstdio>\n"
+        "int main()\n"
+        "{\n"
+        "  unsigned char buf[4096];\n"
+        "  test::flux_msg::Labeled::Builder b(buf, sizeof buf);\n"
+        '  b.set__label(std::string_view("ok \\xed\\x95", 5));\n'
+        "  test::flux_msg::Labeled::View v(buf, b.size__());\n"
+        '  std::printf("%d %zu %02x\\n", v.ok__() ? 1 : 0, v.label().size(),\n'
+        "              static_cast<unsigned char>(v.label()[4]));\n"
+        "  return 0;\n"
+        "}\n")
+    subprocess.run(
+        ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+         f"-I{cpp_root}", f"-I{CORE_INCLUDE}", str(src), CORE_LIB, "-pthread", "-o", str(exe)],
+        check=True, capture_output=True, text=True)
+    proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+    assert proc.stdout == "1 5 95\n"
+
+
+@needs_link
+def test_cpp_builder_refuses_to_commit_after_a_failed_write(built, tmp_path):
+    # The C++ half of test_py_builder_refuses_to_commit_after_a_failed_write: a write past the
+    # slot latches ok__() false, and commit__() reports TooLarge and publishes nothing.
+    cpp_root, _ = built
+    src, exe = tmp_path / "too_large.cpp", tmp_path / "too_large"
+    src.write_text(
+        '#include "test/flux/point_cloud.hpp"\n'
+        '#include "flux/channel.hpp"\n'
+        "#include <cstdio>\n"
+        "int main()\n"
+        "{\n"
+        "  flux::Channel ch(64, 2);\n"
+        "  auto b = test::flux_msg::PointCloud::build__(ch);\n"
+        "  b.set__width(3);\n"
+        "  b.alloc__x(1000);\n"
+        '  std::printf("%d\\n", b.ok__() ? 1 : 0);\n'
+        '  std::printf("%d\\n", b.commit__() == flux::Published::TooLarge ? 1 : 0);\n'
+        '  std::printf("%d\\n", static_cast<bool>(ch.take()) ? 1 : 0);\n'
+        "  return 0;\n"
+        "}\n")
+    subprocess.run(
+        ["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
+         f"-I{cpp_root}", f"-I{CORE_INCLUDE}", str(src), CORE_LIB, "-pthread", "-o", str(exe)],
+        check=True, capture_output=True, text=True)
+    proc = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+    assert proc.stdout == "0\n1\n0\n"
 
 
 @needs_link

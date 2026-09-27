@@ -89,6 +89,7 @@ class Executor:
         self._stop_requested = False  # held from stop() to the end of the spin it ends
         self._shut_down = False
         self._thread = None
+        self._callback_error = None  # a flux callback's exception, raised by the spin thread
         # One callable, reused for every task: rclpy allocates a Task per create_task and there
         # is no way around that (a Task is one-shot and refuses to run again once finished),
         # but the body it carries need not be a new object. Weak, because a task queued just as
@@ -158,6 +159,7 @@ class Executor:
             try:
                 while self._running and not self._stop_requested:
                     self._exec.spin_once(timeout_sec=_sec(tick_ns))
+                    self._raise_callback_error()
             finally:
                 self._stop_bridge()
         finally:
@@ -270,10 +272,23 @@ class Executor:
 
     def _dispatch_on_spin(self):
         # Runs on the rclpy spin thread: the only thread allowed to touch flux channels.
+        # A callback's exception is held here rather than left in the rclpy Task: the Task keeps
+        # it, its traceback keeps the Task's frame, and that cycle kept the callback's view
+        # borrowed until gc ran. Two such views used up max_borrow and the channel went silent.
         try:
             self._flux.dispatch()
+        except BaseException as exc:  # noqa: BLE001 - raised by spin() on this same thread
+            self._callback_error = exc
         finally:
             self._drained.set()  # release the bridge even if a callback raised
+
+    def _raise_callback_error(self):
+        error, self._callback_error = self._callback_error, None
+        if error is not None:
+            try:
+                raise error
+            finally:
+                error = None  # a local naming it while its traceback holds this frame is a cycle
 
     def _bridge(self):
         _name_this_thread("flux-bridge")
@@ -516,13 +531,17 @@ class PartitionedExecutor:
         self._running = False
         self._stop_requested = False
 
-        if scan_error is not None:
-            raise scan_error
         with self._error_lock:
             child_error = self._error
             self._error = None
-        if child_error is not None:
-            raise child_error
+        error = scan_error or child_error
+        if error is not None:
+            # Cleared on the way out: a local naming the exception while its traceback holds this
+            # frame is a cycle, and it kept a raising callback's view borrowed until gc ran.
+            try:
+                raise error
+            finally:
+                error = scan_error = child_error = None
 
     def stop(self):
         """End spin(). Safe from a callback or another thread. Idempotent.

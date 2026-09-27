@@ -77,6 +77,26 @@ TEST(Channel, OversizedPublishRejected)
   EXPECT_EQ(v.size(), 64u);
 }
 
+// A shape flux cannot carry is refused, not counted as a dropped frame, and leaves the channel
+// usable. Python raises ValueError for the same calls (contracts S-007).
+TEST(Channel, ARankPastEightOrAnOverflowingShapeIsTooLarge)
+{
+  flux::Channel ch(64, 4);
+  const std::uint8_t byte = 1;
+  const std::uint64_t nine[9] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
+  EXPECT_EQ(ch.publish(&byte, flux::DType::U8, nine, 9), flux::Published::TooLarge);
+
+  const std::uint64_t huge[2] = {std::uint64_t{1} << 32, std::uint64_t{1} << 32};
+  flux::WriteSlot w = ch.loan(flux::DType::U8, huge, 2);
+  ASSERT_TRUE(w);  // the shape is judged at commit, where the caller already reads the outcome
+  EXPECT_EQ(w.commit(), flux::Published::TooLarge);
+
+  EXPECT_EQ(ch.dropped(), 0u);
+  EXPECT_FALSE(ch.peek());
+  ASSERT_EQ(ch.publish(&byte, 1), flux::Published::Ok);
+  EXPECT_TRUE(ch.peek());
+}
+
 // active => byte-locked, at the API level: a held view is never overwritten even as
 // the publisher keeps publishing.
 TEST(Channel, HeldFrameNotOverwritten)
