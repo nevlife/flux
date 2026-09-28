@@ -67,6 +67,8 @@ sampling /cam/left every 1s (Ctrl-C to stop)
 
 `epoch`가 바뀌면 발행자 그룹이 재시작한 것이다. 카운터가 새것이라 그 경계를 넘는 차는 프레임 수가 아니므로 세지 않고 알린다.
 
+`--window`는 `ros2 topic`의 rate 인자처럼 0보다 큰 초를 받는다. `ros2 topic hz_flux`는 다른 것을 잰다. bridge가 DDS로 실제 전달한 메시지다([bridge.md](bridge.ko.md)). 발행률 자체는 `flux topic hz`로 본다. bridge도 ROS도 필요 없다.
+
 ## domain list
 
 ```text

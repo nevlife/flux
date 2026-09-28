@@ -27,7 +27,9 @@ def find_channel(name, domain=None):
     for topic in flux.enumerate_topics():
         if topic.domain != domain:
             continue
-        if topic.key == name or flux.flatten_key(topic.key) == flat:
+        if topic.key != name and flux.flatten_key(topic.key) != flat:
+            continue
+        if flux.read_channel_stats(topic.signpost).live:
             return topic
     return None
 

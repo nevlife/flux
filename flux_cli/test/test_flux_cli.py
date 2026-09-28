@@ -138,6 +138,15 @@ def test_hz_window_defaults_to_one_second():
     assert build_parser().parse_args(["topic", "hz", "/x", "--window", "0.25"]).window == 0.25
 
 
+# As ros2topic's positive_float: zero or less is refused before the command runs. A tiny positive
+# window is accepted, as ros2 accepts `--rate 10000000`.
+@pytest.mark.parametrize("window", ["0", "-1"])
+def test_a_window_that_is_not_positive_is_refused(window, capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["topic", "hz", "/x", "--window", window])
+    assert "Value must be positive" in capsys.readouterr().err
+
+
 def test_a_bare_invocation_is_refused_rather_than_doing_something():
     with pytest.raises(SystemExit):
         build_parser().parse_args([])

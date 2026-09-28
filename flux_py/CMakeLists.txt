@@ -63,6 +63,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_ros_message_filters test/test_ros_message_filters.py)
   ament_add_pytest_test(test_doc_examples test/test_doc_examples.py)
   ament_add_pytest_test(test_doc_adapter test/test_doc_adapter.py)
+  ament_add_pytest_test(test_api_pairs test/test_api_pairs.py)
   ament_add_pytest_test(test_gpu test/test_gpu.py)
   # Compiles a C++ driver and runs it against a Python process, so it needs longer than
   # the 60s default and libflux_core from this same build.

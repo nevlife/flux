@@ -311,18 +311,8 @@ flux::DType flux_from_dl(nb::dlpack::dtype dt)
     " bits=" + std::to_string(dt.bits) + ")");
 }
 
-// Owner of a returned view. The borrowed FrameView aliases the subscriber's mmap, so the
-// view must not outlive that mapping: `keepalive` pins the Subscription python object (and
-// thus its Channel/Segment) for the view's lifetime. Declaration order matters. Members
-// destroy in reverse, so `view` (the borrow) releases BEFORE `keepalive` drops the mapping.
-struct Held
-{
-  nb::object keepalive;
-  flux::FrameView view;
-};
-
-// Read-only numpy view over already-borrowed bytes. `owner` (a capsule holding the Held)
-// keeps both the borrow and the mapping alive until the array is collected.
+// Read-only numpy view over already-borrowed bytes. `owner` (a capsule holding the FrameView)
+// keeps the borrow, and through it the mapping, alive until the array is collected.
 template <typename T>
 nb::object typed_view(
   const void * data, std::size_t ndim, const std::size_t * shape, nb::handle owner)
@@ -384,15 +374,18 @@ std::size_t checked_frame_shape(const flux::FrameView & v, std::size_t * shape)
   return ndim;
 }
 
-nb::object view_from_frame(flux::FrameView && v, nb::handle keepalive)
+// The owner holds the FrameView alone, never the Subscription: a numpy array is invisible to the
+// cycle collector, so an edge from it to the Subscription would make any cycle through the
+// Subscription's callback uncollectable.
+nb::object view_from_frame(flux::FrameView && v)
 {
   const flux::DType dtype = v.meta().dtype;
   std::size_t shape[flux::kMaxDims];
   const std::size_t ndim = checked_frame_shape(v, shape);
 
-  auto * held = new Held{nb::borrow(keepalive), std::move(v)};
-  const void * data = held->view.data();
-  nb::capsule owner(held, [](void * p) noexcept { delete static_cast<Held *>(p); });
+  auto * held = new flux::FrameView(std::move(v));
+  const void * data = held->data();
+  nb::capsule owner(held, [](void * p) noexcept { delete static_cast<flux::FrameView *>(p); });
 
   switch (dtype) {
     case flux::DType::U8:
@@ -429,6 +422,21 @@ nb::object view_from_frame(flux::FrameView && v, nb::handle keepalive)
 }
 
 // Map a numpy dtype (object, type, or string: anything np.dtype() accepts) to a flux DType.
+// One loan shape entry, refused with np.empty's exception and words so the mistake reads as
+// numpy's.
+std::size_t shape_dim(nb::handle v)
+{
+  if (!PyIndex_Check(v.ptr())) {
+    throw nb::type_error(("flux: '" + std::string(nb::type_name(v.type()).c_str()) +
+                          "' object cannot be interpreted as an integer")
+                           .c_str());
+  }
+  const Py_ssize_t d = PyNumber_AsSsize_t(v.ptr(), PyExc_OverflowError);
+  if (d == -1 && PyErr_Occurred()) throw nb::python_error();
+  if (d < 0) throw std::invalid_argument("flux: negative dimensions are not allowed");
+  return static_cast<std::size_t>(d);
+}
+
 std::pair<flux::DType, std::uint32_t> flux_from_np_dtype(nb::handle dt)
 {
   // bfloat16 first, and by name. np.dtype("bfloat16") raises unless ml_dtypes is installed, so
@@ -563,10 +571,9 @@ class Loan
 {
 public:
   Loan(
-    flux::WriteSlot && ws, nb::object keepalive, std::vector<std::size_t> shape, flux::DType dtype,
+    flux::WriteSlot && ws, std::vector<std::size_t> shape, flux::DType dtype,
     std::uint32_t itemsize, std::uint64_t nbytes)
-  : keepalive_(std::move(keepalive)),
-    ws_(std::move(ws)),
+  : ws_(std::move(ws)),
     shape_(std::move(shape)),
     dtype_(dtype),
     itemsize_(itemsize),
@@ -700,9 +707,6 @@ public:
   }
 
 private:
-  // Declaration order matters. Members destroy in reverse, so `ws_` (which writes to the slot
-  // on abort) must go BEFORE `keepalive_` drops the publisher's mapping. Same rule as Held.
-  nb::object keepalive_;
   flux::WriteSlot ws_;
   std::vector<std::size_t> shape_;
   flux::DType dtype_;
@@ -722,14 +726,13 @@ private:
 class Frame
 {
 public:
-  Frame(flux::FrameView && v, nb::object keepalive)
-  : held_(std::make_shared<Held>(Held{std::move(keepalive), std::move(v)}))
+  explicit Frame(flux::FrameView && v) : held_(std::make_shared<flux::FrameView>(std::move(v)))
   {
-    ndim_ = checked_frame_shape(held_->view, shape_);
-    dtype_ = held_->view.meta().dtype;
-    nbytes_ = held_->view.meta().nbytes;
-    stream_ = held_->view.stream();
-    host_addressable_ = held_->view.host_addressable();
+    ndim_ = checked_frame_shape(*held_, shape_);
+    dtype_ = held_->meta().dtype;
+    nbytes_ = held_->meta().nbytes;
+    stream_ = held_->stream();
+    host_addressable_ = held_->host_addressable();
   }
 
   nb::object enter(nb::handle self)
@@ -751,7 +754,7 @@ public:
       // that must land where the caller put it. A host borrow ends when the last share dies.
       if (scoped()) {
         nb::gil_scoped_release unlocked;  // the release fence, same reason as Loan::commit
-        held_->view.release();
+        held_->release();
       }
       held_.reset();
     }
@@ -761,7 +764,7 @@ public:
   nb::dict cai() const
   {
     require_readable();
-    const void * p = held_->view.device_ptr();
+    const void * p = held_->device_ptr();
     if (p == nullptr) throw std::runtime_error("flux: this frame has no device address");
     return cuda_array_interface(p, ndim_, shape_, dtype_, /*read_only=*/true);
   }
@@ -769,9 +772,9 @@ public:
   nb::object dlpack(nb::handle self) const
   {
     require_readable();
-    const void * dev = held_->view.device_ptr();
+    const void * dev = held_->device_ptr();
     return dlpack_capsule(
-      dev != nullptr ? dev : held_->view.data(), ndim_, shape_, dtype_, anchor(self),
+      dev != nullptr ? dev : held_->data(), ndim_, shape_, dtype_, anchor(self),
       dev != nullptr ? nb::device::cuda::value : nb::device::cpu::value,
       dev != nullptr ? cuda_device_id() : 0);
   }
@@ -780,7 +783,7 @@ public:
   {
     require_readable();
     if (!host_addressable_) device_payload_has_no_host_view("Frame.bits");
-    return bits_view(held_->view.data(), ndim_, shape_, dtype_, anchor(self));
+    return bits_view(held_->data(), ndim_, shape_, dtype_, anchor(self));
   }
 
   nb::object dlpack_device() const
@@ -815,9 +818,9 @@ private:
   nb::object anchor(nb::handle self) const
   {
     if (scoped()) return nb::borrow(self);
-    auto * share = new std::shared_ptr<Held>(held_);
+    auto * share = new std::shared_ptr<flux::FrameView>(held_);
     return nb::capsule(
-      share, [](void * p) noexcept { delete static_cast<std::shared_ptr<Held> *>(p); });
+      share, [](void * p) noexcept { delete static_cast<std::shared_ptr<flux::FrameView> *>(p); });
   }
 
   void require_readable() const
@@ -831,9 +834,7 @@ private:
     }
   }
 
-  // Declaration order matters. Members destroy in reverse, so `held_` (whose release touches
-  // the segment) must go before `keepalive_` drops the mapping. Same rule as Held and Loan.
-  std::shared_ptr<Held> held_;
+  std::shared_ptr<flux::FrameView> held_;
   flux::gpu::Stream stream_;
   bool host_addressable_ = false;
   std::size_t shape_[flux::kMaxDims];
@@ -906,17 +907,17 @@ public:
     return ch_.publish(arr.data(), flux_from_dl(arr.dtype()), dims.data(), dims.size());
   }
 
-  nb::object loan(nb::handle self, nb::object shape, nb::handle dtype)
+  nb::object loan(nb::object shape, nb::handle dtype)
   {
     auto [dt, itemsize] = flux_from_np_dtype(dtype);
     std::vector<std::size_t> shp;
     if (shape.is_none()) {
       shp.push_back(slot_size_ / itemsize);
-    } else if (nb::isinstance<nb::int_>(shape)) {
-      shp.push_back(nb::cast<std::size_t>(shape));
+    } else if (!PySequence_Check(shape.ptr())) {
+      shp.push_back(shape_dim(shape));
     } else {
       const std::size_t n = nb::len(shape);
-      for (std::size_t i = 0; i < n; ++i) shp.push_back(nb::cast<std::size_t>(shape[i]));
+      for (std::size_t i = 0; i < n; ++i) shp.push_back(shape_dim(shape[i]));
     }
     if (shp.size() > flux::kMaxDims) {
       throw std::invalid_argument(
@@ -937,7 +938,7 @@ public:
     std::vector<std::uint64_t> dims(shp.begin(), shp.end());
     flux::WriteSlot ws = ch_.loan(dt, dims.data(), dims.size());
     if (!ws) return nb::none();  // all slots borrowed -> dropped
-    return nb::cast(Loan(std::move(ws), nb::borrow(self), std::move(shp), dt, itemsize, nbytes));
+    return nb::cast(Loan(std::move(ws), std::move(shp), dt, itemsize, nbytes));
   }
 
   std::uint64_t dropped() const { return ch_.dropped(); }
@@ -975,26 +976,23 @@ public:
                // a late publisher is normal and retried on every call.
   }
 
-  // `self` is the python Subscription object; the returned view pins it so the mmap the
-  // view aliases cannot be unmapped while the view is alive.
-
-  nb::object peek(nb::handle self)
+  nb::object peek()
   {
     if (!attach()) return nb::none();
     flux::FrameView v = ch_->peek();
     if (!v) return nb::none();
-    return wrap(std::move(v), self);
+    return wrap(std::move(v));
   }
 
-  nb::object take(nb::handle self)
+  nb::object take()
   {
     if (!attach()) return nb::none();
     flux::FrameView v = ch_->take();
     if (!v) return nb::none();
-    return wrap(std::move(v), self);
+    return wrap(std::move(v));
   }
 
-  nb::object take_blocking(nb::handle self, std::int64_t timeout_ns)
+  nb::object take_blocking(std::int64_t timeout_ns)
   {
     if (!attach()) return nb::none();
     const bool infinite = timeout_ns < 0;
@@ -1002,7 +1000,7 @@ public:
     for (;;) {
       const std::uint32_t wseq = ch_->wake_seq();  // sample, then look for a frame
       flux::FrameView v = ch_->take();
-      if (v) return wrap(std::move(v), self);
+      if (v) return wrap(std::move(v));
       if (!ch_->can_borrow()) return nb::none();  // only the caller can free a lease
       std::int64_t rel = -1;
       if (!infinite) {
@@ -1078,12 +1076,12 @@ private:
   // A frame numpy cannot name comes back as flux.Frame for the same reason a GPU frame does:
   // the object is what carries __dlpack__. Such a host frame needs no `with`: ending
   // a host borrow is a decrement, so it releases on collection like the numpy view.
-  nb::object wrap(flux::FrameView && v, nb::handle self)
+  nb::object wrap(flux::FrameView && v)
   {
     if (stream_.declared() || v.meta().dtype == flux::DType::BF16) {
-      return nb::cast(Frame(std::move(v), nb::borrow(self)));
+      return nb::cast(Frame(std::move(v)));
     }
-    return view_from_frame(std::move(v), self);
+    return view_from_frame(std::move(v));
   }
 
   std::string seg_name_;
@@ -1133,7 +1131,7 @@ public:
 
   int deliver_one() override
   {
-    nb::object v = sub_->take(obj_);
+    nb::object v = sub_->take();
     if (v.is_none()) return 0;
     cb_(v);
     return 1;
@@ -1169,6 +1167,7 @@ public:
   void spin(std::int64_t tick_ns) { core_.spin(tick_ns); }
   void stop() noexcept { core_.stop(); }
   void interrupt() noexcept { core_.interrupt(); }
+  void clear_interrupt() noexcept { core_.clear_interrupt(); }
   bool is_spinning() const noexcept { return core_.is_spinning(); }
   int dispatch() { return core_.dispatch(); }
   bool has_more() const noexcept { return core_.has_more(); }
@@ -1509,11 +1508,7 @@ NB_MODULE(_flux, m)
       "device, the channel's slots are GPU memory, the rank exceeds 8, or the array exceeds "
       "slot_size.")
     .def(
-      "loan",
-      [](nb::handle self, nb::object shape, nb::handle dtype) {
-        return nb::cast<Publisher &>(self).loan(self, shape, dtype);
-      },
-      nb::arg("shape") = nb::none(), nb::arg("dtype") = "uint8",
+      "loan", &Publisher::loan, nb::arg("shape") = nb::none(), nb::arg("dtype") = "uint8",
       "Reserve a free slot and return a Loan whose .array writes straight into shared memory "
       "(0-copy publish). Call commit() to publish. Returns None if every slot is borrowed "
       "(dropped; delivery is best-effort). With no shape the loan is the whole slot, as C++ "
@@ -1567,21 +1562,17 @@ NB_MODULE(_flux, m)
       nb::arg("topic"), nb::arg("fingerprint") = flux::kNoSchema, nb::arg("qos") = flux::QoS{},
       nb::arg("device") = nb::none(), nb::arg("memory") = flux::MemoryPolicy{})
     .def(
-      "peek", [](nb::handle self) { return nb::cast<Subscription &>(self).peek(self); },
+      "peek", &Subscription::peek,
       "The newest frame as a read-only zero-copy numpy view, without consuming it. Returns the "
       "same frame again until something new is published; None only if nothing ever was. Use "
       "this to read current state on your own schedule.")
     .def(
-      "take", [](nb::handle self) { return nb::cast<Subscription &>(self).take(self); },
+      "take", &Subscription::take,
       "The next frame in publish order, consumed, as a read-only zero-copy view. None once "
       "caught up. qos.depth bounds how far behind this may fall; frames dropped by that window "
       "or lapped by the ring are counted in .lost.")
     .def(
-      "take_blocking",
-      [](nb::handle self, std::int64_t timeout_ns) {
-        return nb::cast<Subscription &>(self).take_blocking(self, timeout_ns);
-      },
-      nb::arg("timeout_ns") = -1,
+      "take_blocking", &Subscription::take_blocking, nb::arg("timeout_ns") = -1,
       "take(), parking on the futex until a frame arrives or timeout_ns elapses (negative = "
       "forever). Near-zero CPU. Returns None on timeout. Prefer this over polling take().")
     .def_prop_ro(
@@ -1682,6 +1673,12 @@ NB_MODULE(_flux, m)
       "wait_for_work", &Executor::wait_for_work, nb::arg("timeout_ns") = -1,
       "Block until some channel is woken, interrupt()/stop() is called, or timeout_ns elapses. "
       "Dispatches nothing; call dispatch() afterwards. Releases the GIL while blocked.")
+    .def(
+      "clear_interrupt", &Executor::clear_interrupt,
+      "Drop an interrupt() no call consumed. A loop built on wait_for_work()/dispatch() never "
+      "reads that flag, so it calls this on the way out; left set, the flag ends a later "
+      "spin_once() nobody interrupted.")
+    .def("size", &Executor::size, "Registered flux subscriptions.")
     .def_prop_ro(
       "has_more", &Executor::has_more,
       "True if the last dispatch() stopped on pass_budget with frames still ready. Driving "

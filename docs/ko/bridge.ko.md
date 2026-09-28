@@ -13,7 +13,7 @@ ros2 run flux_bridge bridge
 매초(`--poll`) 한 번 지나간다.
 
 1. `flux.enumerate_topics()`. 자기 도메인이고, 발행자가 살아 있고, 키가 정확한 채널만 남긴다.
-2. 채널의 fingerprint로 설치된 어댑터를 찾는다. 어댑터가 없는 채널은 한 번 로그를 남기고 건너뛴다. 설치돼 있지만 import가 실패하는 어댑터 모듈(예: 옛 `flux_gen`으로 생성한 것)은 에러를 담은 `flux: skipped adapter module` 한 줄을 stderr에 남기고 건너뛴다.
+2. 채널의 fingerprint로 설치된 어댑터를 찾는다. 어댑터가 없는 채널은 한 번 로그를 남기고 건너뛴다. 설치돼 있지만 import가 실패하는 어댑터 모듈(예: 옛 `flux_gen`으로 생성한 것)과, `_ros` 모듈이 ROS 메시지 패키지를 import하지 못하는 어댑터는 에러를 담은 `flux: skipped adapter module` 한 줄을 stderr에 남기고 건너뛴다. 둘 다 bridge가 시작할 때 import하므로 다른 채널은 계속 중계된다.
 3. ROS graph에 `get_subscriptions_info_by_topic()`을 묻는다. bridge 자신의 노드는 뺀다. 외부 구독자가 하나라도 있으면 그 채널은 필요한 채널이다.
 4. 필요한데 relay가 없는 채널은 relay를 시작하고, 더는 필요하지 않거나 발행자가 죽은 채널의 relay는 멈춘다.
 

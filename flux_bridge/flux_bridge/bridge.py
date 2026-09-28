@@ -148,13 +148,15 @@ class Bridge:
 
 
 def build_parser():
+    from ros2topic.api import positive_float
+
     parser = argparse.ArgumentParser(
         prog="ros2 run flux_bridge bridge",
         description="Republish flux channels as DDS topics while a ROS 2 subscriber wants them.",
     )
     parser.add_argument(
         "--poll",
-        type=float,
+        type=positive_float,
         default=DEFAULT_POLL,
         help="seconds between graph checks (default: %(default)s)",
     )

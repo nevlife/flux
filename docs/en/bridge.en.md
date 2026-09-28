@@ -13,7 +13,7 @@ One node, `flux_bridge_<pid>`, started by hand. It is not forked by an applicati
 Every second (`--poll`) the bridge does one pass:
 
 1. `flux.enumerate_topics()`, kept to channels in its domain with a live publisher and an exact key.
-2. For each, the installed adapter for the channel's fingerprint. A channel whose adapter is not installed is logged once and skipped. An adapter module that is installed but fails to import (for example, built against an older `flux_gen`) is skipped with a `flux: skipped adapter module` line on stderr naming the error.
+2. For each, the installed adapter for the channel's fingerprint. A channel whose adapter is not installed is logged once and skipped. An adapter module that is installed but fails to import (for example, built against an older `flux_gen`), or whose `_ros` module cannot import its ROS message package, is skipped with a `flux: skipped adapter module` line on stderr naming the error. Both are imported when the bridge starts, so the other channels keep relaying.
 3. `get_subscriptions_info_by_topic()` on the ROS graph, the bridge's own node excluded. One or more external subscribers means the channel is wanted.
 4. A relay starts for every wanted channel that has none, and stops for every relay whose channel is no longer wanted or no longer live.
 

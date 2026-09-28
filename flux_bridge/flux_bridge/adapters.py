@@ -71,20 +71,31 @@ def _candidate_modules(paths):
                 yield f"{pkg}.{stem}"
 
 
+def _skipped(name, e):
+    print(f"flux: skipped adapter module '{name}': {type(e).__name__}: {e}", file=sys.stderr)
+
+
 def discover(paths=None):
-    """fingerprint -> Adapter for every adapter importable from `paths` (default: sys.path)."""
+    """fingerprint -> Adapter for every adapter on `paths` (default: sys.path) whose frame module
+    and ROS message module both import."""
     found = {}
     for name in _candidate_modules(sys.path if paths is None else paths):
         try:
             module = importlib.import_module(name)
         except Exception as e:  # noqa: BLE001 - one broken package must not hide the others
-            print(
-                f"flux: skipped adapter module '{name}': {type(e).__name__}: {e}", file=sys.stderr
-            )
+            _skipped(name, e)
             continue
         fingerprint = getattr(module, "FINGERPRINT__", None)
         type_name = getattr(module, "TYPE_NAME__", None)
         if not isinstance(fingerprint, int) or not isinstance(type_name, str):
             continue
-        found.setdefault(fingerprint, Adapter(name, type_name, fingerprint))
+        adapter = Adapter(name, type_name, fingerprint)
+        # Now rather than at the first subscriber, where a ROS message package that is not
+        # installed raised out of the bridge's tick and ended every relay with it.
+        try:
+            adapter.message
+        except Exception as e:  # noqa: BLE001 - same reason as above
+            _skipped(name + "_ros", e)
+            continue
+        found.setdefault(fingerprint, adapter)
     return found

@@ -217,6 +217,7 @@ ex.stop()
 ex.interrupt()
 merged = ex.uses_io_uring
 busy = ex.is_spinning
+channels = ex.size()
 ```
 
 If `uses_io_uring` is false, the kernel is older than Linux 6.7 or the host forbids io_uring (a seccomp profile, `kernel.io_uring_disabled`), and it runs on the per-channel thread fallback. The forbidden case prints one line to stderr per process. Any other io_uring setup failure makes the constructor throw.
@@ -227,11 +228,12 @@ If `uses_io_uring` is false, the kernel is older than Linux 6.7 or the host forb
 
 `spin_once(timeout_ns)` handles what is ready and waits if nothing is. It returns the number handled. `interrupt()` leaves the loop in place and wakes only the current wait. It ends exactly one call at a time.
 
-To embed in another event loop, use the two halves separately. The two must not run concurrently.
+To embed in another event loop, use the two halves separately. The two must not run concurrently. As in C++, such a loop never reads the `interrupt()` flag, so it calls `clear_interrupt()` on the way out. Left set, the flag ends a later `spin_once()` that nobody interrupted.
 
 ```python doc:py_split_wait
 ex.wait_for_work(timeout_ns=-1)
 delivered = ex.dispatch()
+ex.clear_interrupt()  # on the way out of the loop
 ```
 
 ## 9. Enumeration (for tools)

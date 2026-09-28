@@ -80,11 +80,12 @@ def doc_ros_executor(node, sub):
     ex.spin_once(timeout_ns=100_000_000)
     merged = ex.uses_io_uring
     spinning = ex.is_spinning  # as rclpy
+    channels = ex.size()  # registered flux subscriptions
     ex.interrupt()  # wakes the wait without ending the loop
     ex.stop()
     ex.shutdown()  # before destroying the node
     # [doc:/py_ros_executor]
-    _sink(merged, spinning)
+    _sink(merged, spinning, channels)
 
 
 def doc_partitioned(node, sub_a, sub_b):

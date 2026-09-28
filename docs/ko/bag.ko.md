@@ -3,9 +3,9 @@
 `flux_bag`은 flux 채널을 rosbag2 bag에 녹화하고 flux로 다시 재생한다. 프레임은 양방향 모두 DDS를 거치지 않는다. 같은 bag의 ROS 토픽은 stock rosbag2 recorder와 player가 맡으므로 bag 하나에 둘이 같이 들어간다.
 
 ```bash
-ros2 run flux_bag record -a                       # 모든 flux 채널과 모든 ROS 토픽
-ros2 run flux_bag record /cam/left /cam/right     # 이름으로. flux와 ROS 이름은 한 목록이다
-ros2 run flux_bag play rosbag2_2026_09_17-16_35_31
+ros2 bag record_flux -a                           # 모든 flux 채널과 모든 ROS 토픽
+ros2 bag record_flux /cam/left /cam/right         # 이름으로. flux와 ROS 이름은 한 목록이다
+ros2 bag play_flux rosbag2_2026_09_17-16_35_31
 ```
 
 ## bag에 무엇이 들어가나
@@ -28,7 +28,7 @@ uint8[] data                # raw: slot에 있던 프레임 바이트 그대로
 ## record
 
 ```bash
-ros2 run flux_bag record [-a] [TOPIC ...] [-e REGEX] [-x REGEX] [--exclude-topics TOPIC ...] [-o OUT] [--poll SEC]
+ros2 bag record_flux [-a] [TOPIC ...] [-e REGEX] [-x REGEX] [--exclude-topics TOPIC ...] [-o OUT] [--poll SEC]
 ```
 
 | 항목 | 값 |
@@ -45,7 +45,7 @@ Orin에서 1920x1200 bgr8 채널 하나 30 Hz(프레임당 6.9 MB)로 측정: 20
 ## play
 
 ```bash
-ros2 run flux_bag play BAG [-r RATE]
+ros2 bag play_flux BAG [-r RATE]
 ```
 
 `FluxFrame` 토픽은 파일에서 읽어 `flux_topic`의 채널에 기록된 fingerprint, `slot_size`, `slot_count` 그대로 발행한다. flux로 쓴 구독자는 라이브 채널을 받던 것과 똑같이 재생을 받는다. 나머지 토픽은 `FluxFrame` 토픽을 제외한 `rosbag2_transport::Player`가 맡으므로 프레임은 DDS에 닿지 않는다. 양쪽 다 bag 시작 시각 기준으로 같은 clock에서 페이싱한다.

@@ -547,3 +547,43 @@ def test_a_queued_task_does_not_pin_the_executor(node):
     gc.collect()
     assert ref() is None, "a queued task kept the executor alive past shutdown()"
     stranded()  # and running it afterwards is a no-op, not an attribute error on a dead object
+
+
+def test_frames_a_node_keeps_do_not_pin_it(node):
+    """A node that stores the frames its callback received still goes away when dropped.
+
+    node -> subscription -> callback (a method of the node) -> node is an ordinary cycle, and the
+    stored frames join it. numpy arrays are not tracked by the collector, so a frame that held
+    its Subscription would hide that edge and keep the cycle, borrows included, forever.
+    """
+    pub = flux.Publisher("/pytest/rosex/keep", slot_size=4096, slot_count=1, fingerprint=FP)
+
+    class Keeper:
+        def __init__(self):
+            self.frames = []
+            self.sub = flux.ros.Subscription(
+                node, "/pytest/rosex/keep", self.on_frame, fingerprint=FP
+            )
+
+        def on_frame(self, view):
+            self.frames.append(view)
+
+    k = Keeper()
+    assert pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+    k.sub.callback(k.sub.take())
+    assert pub.publish(np.zeros(8, np.uint8)) == flux.Published.BACKPRESSURE
+
+    ref = weakref.ref(k)
+    del k
+    gc.collect()
+    assert ref() is None, "a stored frame kept its node alive"
+    assert pub.publish(np.zeros(8, np.uint8)) == flux.Published.OK
+
+
+def test_size_counts_the_registered_flux_subscriptions(node):
+    # As C++ flux::ros::Executor::size(): flux subscriptions only, not ROS nodes.
+    ex = flux.ros.Executor()
+    ex.add_ros_node(node)
+    assert ex.size() == 0
+    ex.add(flux.Subscription("/pytest/rosex/size", fingerprint=FP), lambda v: None)
+    assert ex.size() == 1

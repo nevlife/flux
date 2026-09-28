@@ -3,10 +3,10 @@
 Records flux channels into a rosbag2 bag and plays them back onto flux, without DDS in either direction. ROS topics in the same bag go through the stock `rosbag2_transport::Recorder` and `Player`. The user document is [`docs/en/bag.en.md`](../docs/en/bag.en.md).
 
 ```bash
-ros2 run flux_bag record -a                       # every flux channel and every ROS topic
-ros2 run flux_bag record /cam/left /cam/right     # by name; flux and ROS names share one list
-ros2 run flux_bag record -e '^/cam/' -x depth -o run1 --poll 0.5
-ros2 run flux_bag play run1 -r 0.5
+ros2 bag record_flux -a                           # every flux channel and every ROS topic
+ros2 bag record_flux /cam/left /cam/right         # by name; flux and ROS names share one list
+ros2 bag record_flux -e '^/cam/' -x depth -o run1 --poll 0.5
+ros2 bag play_flux run1 -r 0.5
 ```
 
 | Item | Value |
@@ -20,6 +20,7 @@ ros2 run flux_bag play run1 -r 0.5
 
 | File | Content |
 | --- | --- |
+| `flux_bag/verb/` | `ros2 bag record_flux` and `play_flux`: parse the options as `ros2 bag` does, then exec `record` or `play` |
 | `src/record.cpp` | `record`: option parsing, the shared writer, one `ChannelRecorder` thread per flux channel |
 | `src/play.cpp` | `play`: `FluxPlayer` reads the `FluxFrame` topics from the file onto flux; the stock `Player` gets the rest |
 | `include/flux_bag/flux_frame_cdr.hpp` | `FluxFrame` CDR encoder and decoder. `test/test_flux_frame_cdr.cpp` holds the encoder byte-equal to `rclcpp::Serialization` |

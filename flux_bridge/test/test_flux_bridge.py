@@ -4,13 +4,15 @@ Relaying itself is flux.Subscription plus rclpy publish, both covered elsewhere.
 here is which channels get a relay and which adapter a fingerprint selects.
 """
 
+import gc
 import os
 import textwrap
+import types
 
 import pytest
 
 from flux_bridge import adapters
-from flux_bridge.bridge import plan
+from flux_bridge.bridge import build_parser, plan
 
 
 def test_plan_starts_wanted_live_channels_and_stops_the_rest():
@@ -23,6 +25,13 @@ def test_plan_starts_wanted_live_channels_and_stops_the_rest():
 def test_plan_is_idle_when_nothing_changes():
     assert plan({"/a"}, {"/a"}, {"/a"}) == ([], [])
     assert plan(set(), set(), set()) == ([], [])
+
+
+@pytest.mark.parametrize("poll", ["0", "-1"])
+def test_a_poll_that_is_not_positive_is_refused(poll, capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--poll", poll])
+    assert "Value must be positive" in capsys.readouterr().err
 
 
 def _fake_adapter_package(root, pkg, modules):
@@ -61,6 +70,26 @@ def test_discover_maps_fingerprints_to_installed_adapters(tmp_path, monkeypatch,
     assert adapter.view.__name__ == "View"
 
 
+# The ROS side is imported here, not when the first subscriber arrives: there a missing ROS message
+# package raised out of the bridge's tick and ended every relay with it.
+def test_discover_skips_an_adapter_whose_ros_message_is_missing(tmp_path, monkeypatch, capsys):
+    path = _fake_adapter_package(
+        tmp_path,
+        "part_flux",
+        {
+            "__init__": "",
+            "good": 'TYPE_NAME__ = "part/Good"\nFINGERPRINT__ = 0x20\nclass View: pass\n',
+            "good_ros": 'MESSAGE = "ros-good"\ndef frame_to_msg(v): return v\n',
+            "thing": 'TYPE_NAME__ = "part/Thing"\nFINGERPRINT__ = 0x21\nclass View: pass\n',
+            "thing_ros": "from nonexistent_msgs.msg import Thing\n",
+        },
+    )
+    monkeypatch.syspath_prepend(path)
+    assert list(adapters.discover([path])) == [0x20]
+    err = capsys.readouterr().err
+    assert "part_flux.thing_ros" in err and "nonexistent_msgs" in err
+
+
 def test_discover_ignores_directories_that_are_not_adapter_packages(tmp_path):
     (tmp_path / "other").mkdir()
     (tmp_path / "loose_flux.py").write_text("FINGERPRINT__ = 1\n")
@@ -77,13 +106,29 @@ def test_find_channel_accepts_the_flattened_spelling(monkeypatch, name):
         def __init__(self, key, domain):
             self.key = key
             self.domain = domain
+            self.signpost = key
 
     monkeypatch.setattr(
         flux, "enumerate_topics", lambda: [Topic("/cam/left", "0"), Topic("/cam/left", "1")]
     )
     monkeypatch.setattr(flux, "flatten_key", lambda k: k.replace("/", "."))
+    monkeypatch.setattr(flux, "read_channel_stats", lambda _: types.SimpleNamespace(live=True))
     assert find_channel(name, domain="1").domain == "1"
     assert find_channel("/nothing", domain="1") is None
+
+
+# A channel whose publisher is gone is still enumerated, under the flattened key that no ROS topic
+# name accepts. Returning it made `ros2 topic hz_flux` die in create_subscription.
+def test_find_channel_skips_a_channel_whose_publisher_is_gone():
+    import flux
+
+    from flux_bridge.activate import find_channel
+
+    pub = flux.Publisher("/pytest/bridge/gone", slot_size=64, slot_count=2)
+    assert find_channel("/pytest/bridge/gone") is not None
+    del pub
+    gc.collect()
+    assert find_channel("/pytest/bridge/gone") is None
 
 
 def test_a_relay_skips_an_unreadable_frame_and_keeps_relaying():

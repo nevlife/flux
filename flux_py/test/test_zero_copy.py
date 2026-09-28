@@ -7,6 +7,7 @@ the view aliases the shared segment and that the borrow is tied to the array's l
 import gc
 import os
 import time
+import weakref
 
 import numpy as np
 import pytest
@@ -68,9 +69,9 @@ def test_take_empty_returns_none():
 
 
 def test_view_outlives_subscription():
-    # The returned view pins its Subscription (keepalive), so it stays valid even after the
-    # Subscription goes out of scope. Without that, the view would alias an unmapped segment
-    # and reading it (or its GC) would crash.
+    # As C++ Channel.ViewOutlivesTheChannelThatIssuedIt: the view keeps the mapping alive by
+    # itself, so it stays valid after its Subscription is collected. Without that, it would
+    # alias an unmapped segment and reading it (or its GC) would crash.
     pub = flux.Publisher("/pytest/outlive", slot_size=4096, slot_count=4, fingerprint=FP)
     a = np.arange(256, dtype=np.uint8)
     assert pub.publish(a) == flux.Published.OK
@@ -82,7 +83,7 @@ def test_view_outlives_subscription():
     assert v is not None
 
     del sub
-    gc.collect()  # Subscription is pinned by v, so its mapping survives
+    gc.collect()
 
     np.testing.assert_array_equal(v, a)
     del v
@@ -147,9 +148,9 @@ def test_config_mismatch_is_distinct_from_an_absent_segment():
 
 
 def test_uncommitted_loan_is_safe_to_drop():
-    # Loan pins the Publisher through a keepalive, but members destroy in reverse declaration
-    # order: with the WriteSlot declared first it was destroyed LAST, so abort() wrote the slot
-    # after the mapping was already gone. Dropping a loan the documented way segfaulted.
+    # Dropping an uncommitted loan aborts it, and abort() writes the slot. When the Publisher held
+    # the mapping and died first, that write landed on unmapped memory and segfaulted; the loan
+    # now holds the mapping itself.
     def scope():
         pub = flux.Publisher("/pytest/loan/drop", slot_size=4096, slot_count=4, fingerprint=FP)
         loan = pub.loan((16,), dtype="uint8")
@@ -175,6 +176,26 @@ def test_an_aborted_loan_is_not_delivered():
         got.append(int(v[0]))
         del v
     assert got == [2, 3, 4]
+
+
+# A shape entry is checked as np.empty checks it, with the same exception and the same words, so
+# a mistake reads as it would in numpy rather than as a C++ cast failure.
+@pytest.mark.parametrize(
+    "shape, error, words",
+    [
+        ("abc", TypeError, "cannot be interpreted as an integer"),
+        ((2.0,), TypeError, "cannot be interpreted as an integer"),
+        (3.5, TypeError, "cannot be interpreted as an integer"),
+        ((-1,), ValueError, "negative dimensions are not allowed"),
+        (-4, ValueError, "negative dimensions are not allowed"),
+    ],
+)
+def test_a_bad_loan_shape_is_refused_as_numpy_refuses_it(shape, error, words):
+    pub = flux.Publisher("/pytest/loan/badshape", slot_size=64, slot_count=2, fingerprint=FP)
+    with pytest.raises(error, match=words):
+        pub.loan(shape)
+    with pytest.raises(error):
+        np.empty(shape)
 
 
 def test_a_loan_with_no_free_slot_is_none():
@@ -213,11 +234,18 @@ def test_commit_nbytes_publishes_a_prefix_and_refuses_misuse():
 
 
 def test_a_loan_outlives_its_publisher():
-    # As C++ Channel.LoanOutlivesTheChannelThatIssuedIt: the loan keeps the mapping alive.
-    pub = flux.Publisher("/pytest/loan/outlive", slot_size=64, slot_count=2, fingerprint=FP)
+    # As C++ Channel.LoanOutlivesTheChannelThatIssuedIt: the loan keeps the mapping alive by
+    # itself, so the Publisher is really collected while the loan still commits.
+    class Pub(flux.Publisher):  # a Python subclass can be weakly referenced
+        pass
+
+    pub = Pub("/pytest/loan/outlive", slot_size=64, slot_count=2, fingerprint=FP)
     sub = flux.Subscription("/pytest/loan/outlive", fingerprint=FP)
     loan = pub.loan((8,))
+    ref = weakref.ref(pub)
     del pub
+    gc.collect()
+    assert ref() is None, "the loan kept its Publisher alive"
     loan.array[:] = 5
     assert loan.commit() == flux.Published.OK
     assert int(sub.take()[0]) == 5

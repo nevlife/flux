@@ -48,13 +48,16 @@ def doc_core_executor(sub, callback):
     ex.interrupt()
     merged = ex.uses_io_uring
     busy = ex.is_spinning
+    channels = ex.size()
     # [doc:/py_core_executor]
     _sink(merged)
     _sink(busy)
+    _sink(channels)
 
     # [doc:py_split_wait]
     ex.wait_for_work(timeout_ns=-1)
     delivered = ex.dispatch()
+    ex.clear_interrupt()  # on the way out of the loop
     # [doc:/py_split_wait]
     _sink(delivered)
 

@@ -114,6 +114,10 @@ class Executor:
         subscription = _flux_source_of(subscription)
         self._flux.add(subscription, _callback_of(subscription, callback), priority)
 
+    def size(self):
+        """Registered flux subscriptions, not ROS nodes: C++ `size()`."""
+        return self._flux.size()
+
     def add_ros_node(self, node):
         """Register a node: its ROS callbacks run on this executor's spin thread.
 

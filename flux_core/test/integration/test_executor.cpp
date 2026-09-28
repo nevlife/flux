@@ -692,6 +692,44 @@ TEST_P(ExecutorTest, AnInterruptEndsExactlyOneWait)
   EXPECT_GE(ms_since(t0), 250) << "the consumed interrupt ended a second wait too";
 }
 
+// A loop built on wait_for_work()/dispatch() never reads the interrupt() flag. Left set, it ends a
+// later spin_once() at its first early wake; clear_interrupt() is how that loop drops it on the way
+// out. The source never attaches, because the fallback's attach retry is what wakes a wait early.
+TEST_P(ExecutorTest, ClearInterruptDropsAnInterruptNoCallConsumed)
+{
+  FakeSource s{nullptr};
+  s.attachable.store(false);
+  flux::Executor ex;
+  ex.add(s);
+
+  std::thread poke([&] {
+    std::this_thread::sleep_for(100ms);
+    ex.interrupt();
+  });
+  const auto loop_start = std::chrono::steady_clock::now();
+  while (ms_since(loop_start) < 200) {
+    ex.wait_for_work(/*timeout_ns=*/20'000'000);
+    ex.dispatch();
+  }
+  poke.join();
+  ex.clear_interrupt();
+
+  const auto t0 = std::chrono::steady_clock::now();
+  EXPECT_EQ(ex.spin_once(/*timeout_ns=*/300'000'000), 0);
+  EXPECT_GE(ms_since(t0), 250) << "an interrupt the loop did not consume ended a later wait";
+}
+
+TEST_P(ExecutorTest, SizeCountsTheRegisteredSources)
+{
+  FakeSource a;
+  FakeSource b;
+  flux::Executor ex;
+  EXPECT_EQ(ex.size(), 0u);
+  ex.add(a);
+  ex.add(b);
+  EXPECT_EQ(ex.size(), 2u);
+}
+
 // waker() is the seam an embedder merges its own readiness through: it ends the blocking half so
 // the next pass runs, which is where that embedder's work gets serviced.
 TEST_P(ExecutorTest, TheWakerBreaksTheWaitAndSurvivesTheExecutor)

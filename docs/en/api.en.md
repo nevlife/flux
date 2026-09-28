@@ -651,6 +651,7 @@ ex.spin()                         # until stop(). tick_ns defaults to 100 ms
 ex.spin_once(timeout_ns=100_000_000)
 merged = ex.uses_io_uring
 spinning = ex.is_spinning         # True while spin() runs, as rclpy
+channels = ex.size()              # number of registered flux subscriptions, as C++
 ex.interrupt()                    # keeps the loop, wakes only the wait
 ex.stop()
 ex.shutdown()                     # before destroying the node

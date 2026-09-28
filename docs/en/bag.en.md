@@ -3,9 +3,9 @@
 `flux_bag` records flux channels into a rosbag2 bag and plays them back onto flux. The frames do not pass through DDS in either direction. ROS topics in the same bag are handled by the stock rosbag2 recorder and player, so one bag holds both.
 
 ```bash
-ros2 run flux_bag record -a                       # every flux channel and every ROS topic
-ros2 run flux_bag record /cam/left /cam/right     # by name; flux and ROS names share one list
-ros2 run flux_bag play rosbag2_2026_09_17-16_35_31
+ros2 bag record_flux -a                           # every flux channel and every ROS topic
+ros2 bag record_flux /cam/left /cam/right         # by name; flux and ROS names share one list
+ros2 bag play_flux rosbag2_2026_09_17-16_35_31
 ```
 
 ## What a bag holds
@@ -28,7 +28,7 @@ uint8[] data                # raw: the frame bytes as they were in the slot
 ## record
 
 ```bash
-ros2 run flux_bag record [-a] [TOPIC ...] [-e REGEX] [-x REGEX] [--exclude-topics TOPIC ...] [-o OUT] [--poll SEC]
+ros2 bag record_flux [-a] [TOPIC ...] [-e REGEX] [-x REGEX] [--exclude-topics TOPIC ...] [-o OUT] [--poll SEC]
 ```
 
 | Item | Value |
@@ -45,7 +45,7 @@ Measured on an Orin with one 1920x1200 bgr8 channel at 30 Hz (6.9 MB per frame):
 ## play
 
 ```bash
-ros2 run flux_bag play BAG [-r RATE]
+ros2 bag play_flux BAG [-r RATE]
 ```
 
 Every `FluxFrame` topic is read from the file and published on the channel named in `flux_topic`, with the recorded fingerprint and the recorded `slot_size` and `slot_count`. A subscriber written against flux receives the replay exactly as it received the live channel. Every other topic goes to `rosbag2_transport::Player` with the `FluxFrame` topics excluded, so nothing of the frames reaches DDS. Both sides pace from the bag's start time on the same clock.

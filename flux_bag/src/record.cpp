@@ -42,7 +42,7 @@ struct Options
 {
   rosbag2_storage::StorageOptions storage;
   rosbag2_transport::RecordOptions record;
-  std::chrono::milliseconds poll{1000};
+  std::chrono::duration<double> poll{1.0};
 };
 
 const char * kUsage =
@@ -81,7 +81,18 @@ Options parse(const std::vector<std::string> & args)
     } else if (a == "-o" || a == "--output") {
       o.storage.uri = value();
     } else if (a == "--poll") {
-      o.poll = std::chrono::milliseconds(static_cast<int>(std::stod(value()) * 1000));
+      // Strict as Python float(): std::stod would read "1s" as 1 and name itself in the error.
+      const std::string & text = value();
+      const std::invalid_argument not_a_number("argument --poll: Expects a floating point number");
+      std::size_t used = 0;
+      try {
+        o.poll = std::chrono::duration<double>(std::stod(text, &used));
+      } catch (const std::logic_error &) {
+        throw not_a_number;
+      }
+      if (used != text.size()) throw not_a_number;
+      if (o.poll.count() <= 0.0)
+        throw std::invalid_argument("argument --poll: Value must be positive");
     } else if (!a.empty() && a[0] == '-') {
       throw std::invalid_argument("unknown option " + a);
     } else {

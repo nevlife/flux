@@ -463,3 +463,33 @@ def test_concurrent_spin_is_refused():
         ex.stop()
         assert done.wait(timeout=5.0)
         t.join(timeout=5.0)
+
+
+# As C++ ExecutorTest.ClearInterruptDropsAnInterruptNoCallConsumed. Forced onto the fallback, the
+# path that keeps the flag: there a later spin_once(300 ms) returned after 2 ms.
+def test_clear_interrupt_drops_an_interrupt_no_call_consumed(monkeypatch):
+    monkeypatch.setenv("FLUX_DISABLE_IO_URING", "1")
+    sub = flux.Subscription("/pytest/ex/clear_interrupt", fingerprint=FP)
+    ex = flux.Executor()
+    ex.add(sub, lambda v: None)
+
+    poke = threading.Timer(0.1, ex.interrupt)
+    poke.start()
+    loop_start = time.monotonic()
+    while time.monotonic() - loop_start < 0.2:
+        ex.wait_for_work(20_000_000)
+        ex.dispatch()
+    poke.join()
+    ex.clear_interrupt()
+
+    t0 = time.monotonic()
+    assert ex.spin_once(300_000_000) == 0
+    assert time.monotonic() - t0 >= 0.25, "an interrupt the loop did not consume ended a later wait"
+
+
+def test_size_counts_the_registered_subscriptions():
+    ex = flux.Executor()
+    assert ex.size() == 0
+    ex.add(flux.Subscription("/pytest/ex/size_a", fingerprint=FP), lambda v: None)
+    ex.add(flux.Subscription("/pytest/ex/size_b", fingerprint=FP), lambda v: None)
+    assert ex.size() == 2

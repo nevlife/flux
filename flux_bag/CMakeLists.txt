@@ -12,6 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(flux_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rcutils REQUIRED)
@@ -47,8 +48,25 @@ if(BUILD_TESTING)
   target_include_directories(test_flux_frame_cdr PRIVATE include)
   target_link_libraries(test_flux_frame_cdr flux_cpp::flux_cpp rclcpp::rclcpp
     ${flux_msgs_TARGETS})
+
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_verbs test/test_verbs.py)
+
+  foreach(poll 0 -1)
+    add_test(NAME record_refuses_poll_${poll} COMMAND record --poll ${poll})
+    set_tests_properties(record_refuses_poll_${poll} PROPERTIES
+      PASS_REGULAR_EXPRESSION "argument --poll: Value must be positive" TIMEOUT 10)
+  endforeach()
+  foreach(poll abc 1s)
+    add_test(NAME record_refuses_poll_${poll} COMMAND record --poll ${poll})
+    set_tests_properties(record_refuses_poll_${poll} PROPERTIES
+      PASS_REGULAR_EXPRESSION "argument --poll: Expects a floating point number" TIMEOUT 10)
+  endforeach()
 endif()
 
 install(TARGETS record play DESTINATION lib/${PROJECT_NAME})
+
+# The ros2 bag verbs (setup.cfg) are how a person runs the two programs above.
+ament_python_install_package(${PROJECT_NAME})
 
 ament_package()

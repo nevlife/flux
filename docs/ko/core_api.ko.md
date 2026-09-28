@@ -217,6 +217,7 @@ ex.stop()
 ex.interrupt()
 merged = ex.uses_io_uring
 busy = ex.is_spinning
+channels = ex.size()
 ```
 
 `uses_io_uring`이 false면 리눅스 6.7 미만이거나 호스트가 io_uring을 금지한 것(seccomp 프로파일, `kernel.io_uring_disabled`)이라 채널당 스레드 폴백으로 돈다. 금지된 경우는 프로세스당 한 번 stderr에 한 줄 찍는다. 그 밖의 io_uring 준비 실패는 생성자가 던진다.
@@ -227,11 +228,12 @@ busy = ex.is_spinning
 
 `spin_once(timeout_ns)`는 준비된 것을 처리하고 없으면 대기한다. 처리한 개수를 돌려준다. `interrupt()`는 루프를 두고 지금 대기만 깨며, 한 번에 호출 하나만 끝낸다.
 
-다른 이벤트 루프에 끼워 넣으려면 둘로 나눠 쓴다. 둘이 동시에 돌면 안 된다.
+다른 이벤트 루프에 끼워 넣으려면 둘로 나눠 쓴다. 둘이 동시에 돌면 안 된다. C++과 같이 이런 루프는 `interrupt()` 플래그를 읽지 않으므로 끝날 때 `clear_interrupt()`를 부른다. 남겨 두면 그 플래그가 아무도 interrupt하지 않은 나중 `spin_once()`를 끝낸다.
 
 ```python doc:py_split_wait
 ex.wait_for_work(timeout_ns=-1)
 delivered = ex.dispatch()
+ex.clear_interrupt()  # on the way out of the loop
 ```
 
 ## 9. 열거 (도구용)

@@ -9,7 +9,7 @@ import re
 
 ACCESS = ("public", "private", "protected")
 TYPE_HEAD = re.compile(r"\b(class|struct|union)\s+(?:alignas\s*\([^)]*\)\s*)?([A-Za-z_]\w*)\s*$")
-ENUM_HEAD = re.compile(r"\benum\s+(?:class|struct)?\s*([A-Za-z_]\w*)")
+ENUM_HEAD = re.compile(r"\benum\s+(?:class|struct)?\s*(?:\[\[[^\]]*\]\]\s*)?([A-Za-z_]\w*)")
 NAMESPACE_HEAD = re.compile(r"\bnamespace\s+([A-Za-z_][\w:]*)\s*$")
 USING_ALIAS = re.compile(r"\busing\s+([A-Za-z_]\w*)\s*=")
 IDENT = re.compile(r"[A-Za-z_]\w*")

@@ -505,29 +505,20 @@ void sp_unlock(int fd) noexcept
 
 struct MappedSp
 {
-  Signpost * sp = nullptr;
-  std::byte * base = nullptr;
-  int fd = -1;
+  Signpost * sp;
+  std::byte * base;
+  int fd;
 
   MappedSp(Signpost * s, std::byte * b, int f) noexcept : sp(s), base(b), fd(f) {}
-  MappedSp(MappedSp && o) noexcept : sp(o.sp), base(o.base), fd(o.fd)
-  {
-    o.sp = nullptr;
-    o.base = nullptr;
-    o.fd = -1;
-  }
   MappedSp(const MappedSp &) = delete;
   MappedSp & operator=(const MappedSp &) = delete;
-  MappedSp & operator=(MappedSp &&) = delete;
   // Closing the fd also drops any OFD lock still held on it, so an exception thrown while the
   // signpost write lock is held (e.g. OwnerFile::ensure) cannot block the topic's bootstrap
   // forever.
   ~MappedSp()
   {
-    if (base != nullptr) {
-      munmap(base, kSignpostBytes);
-      ::close(fd);
-    }
+    munmap(base, kSignpostBytes);
+    ::close(fd);
   }
 };
 

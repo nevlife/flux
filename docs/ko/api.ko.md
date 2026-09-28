@@ -651,6 +651,7 @@ ex.spin()                         # stop()까지. tick_ns 기본값 100 ms
 ex.spin_once(timeout_ns=100_000_000)
 merged = ex.uses_io_uring
 spinning = ex.is_spinning         # spin() 중에 True. rclpy와 같다
+channels = ex.size()              # 등록된 flux 구독 수. C++과 같다
 ex.interrupt()                    # 루프는 두고 대기만 깬다
 ex.stop()
 ex.shutdown()                     # 노드를 destroy하기 전에

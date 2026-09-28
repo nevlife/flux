@@ -67,6 +67,8 @@ It reads `publish_seq` in the segment header twice and takes the difference. Tha
 
 If `epoch` changes, the publisher group restarted. The counter is new, so a difference across that boundary is not a frame count. It is not counted and is reported instead.
 
+`--window` takes seconds greater than 0, as `ros2 topic` takes its rates. `ros2 topic hz_flux` measures something else: the messages the bridge actually delivers over DDS ([bridge.md](bridge.en.md)). Use `flux topic hz` for the publish rate itself. It needs no bridge and no ROS.
+
 ## domain list
 
 ```text

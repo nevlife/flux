@@ -14,6 +14,17 @@ import flux
 from .format import display_name, endpoint_summary, human_bytes, storage_name, table
 
 
+def _positive_float(text):
+    """ros2topic.api.positive_float, restated because this tool needs no ROS."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError("Expects a floating point number")
+    if value <= 0.0:
+        raise argparse.ArgumentTypeError("Value must be positive")
+    return value
+
+
 def _topics(args):
     """Every topic, filtered to one domain unless --all-domains. Sorted so output is stable."""
     found = flux.enumerate_topics()
@@ -203,7 +214,7 @@ def build_parser():
     hz.add_argument("channel")
     hz.add_argument(
         "--window",
-        type=float,
+        type=_positive_float,
         default=1.0,
         metavar="SEC",
         help="Seconds between samples (default: 1.0).",
