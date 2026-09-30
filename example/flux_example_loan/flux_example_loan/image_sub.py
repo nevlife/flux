@@ -24,6 +24,7 @@ class ImageSubscriber(Node):
         self.subscription = flux.ros.create_subscription(
             self, self.TOPIC, callback=self.on_frame, fingerprint=Image.FINGERPRINT__
         )
+        self.timer = self.create_timer(1.0, self.report)
 
     def on_frame(self, view):
         v = Image.View(view)
@@ -32,6 +33,12 @@ class ImageSubscriber(Node):
         self.encoding = v.encoding
         self.data_bytes = v.data.size
         self.seen += 1
+
+    def report(self):
+        self.get_logger().info(
+            f"seen {self.seen}  {self.width}x{self.height} {self.encoding}  "
+            f"bytes {self.data_bytes}  lost {self.subscription.lost}"
+        )
 
 
 def main(args=None):

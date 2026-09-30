@@ -5,6 +5,7 @@
 
 #include "sensor_msgs/flux/image.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -18,6 +19,7 @@ public:
     sub_ = flux::ros::create_subscription(
       *this, kTopic, Image::kFingerprint, flux::QoS{},
       [this](const flux::FrameView & f) { on_frame(f); });
+    timer_ = create_wall_timer(std::chrono::seconds(1), [this]() { report(); });
   }
 
   flux::ros::Subscription & subscription() { return *sub_; }
@@ -44,7 +46,15 @@ private:
     ++seen_;
   }
 
+  void report()
+  {
+    RCLCPP_INFO(
+      get_logger(), "seen %lu  %ux%u %s  bytes %zu  lost %lu", seen_, width_, height_,
+      encoding_.c_str(), data_bytes_, sub_->lost());
+  }
+
   std::shared_ptr<flux::ros::Subscription> sub_;
+  rclcpp::TimerBase::SharedPtr timer_;
   std::uint64_t seen_ = 0;
   std::uint32_t width_ = 0;
   std::uint32_t height_ = 0;
