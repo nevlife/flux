@@ -98,7 +98,7 @@ sink(ch.lost(), ch.refused().total());
 
 `qos()` is given after construction. `depth`, `durability`, and `max_borrow` mean the same as in [qos.md](qos.en.md).
 
-`peek()` returns the newest frame without consuming it. `take()` consumes the next one in publish order. `take_blocking(timeout_ns)` waits until one arrives.
+`peek()` returns the newest frame without consuming it. `take()` consumes the next one in publish order. `take_blocking(timeout_ns)` waits until one arrives, including for a publisher that has not started yet.
 
 ## 6. Waiting
 
@@ -259,7 +259,7 @@ for topic in flux.enumerate_topics():
         _sink(name, topic.domain, topic.fingerprint, role, pid, start, ep.label)
 ```
 
-If `key_exact` is False, `key` was read back from the name, not from a live participant. The name replaces every non-alphanumeric character with `.`, so `/a/b` and `.a.b` are one name. What is visible then is the spelling of the name, not the key the peers actually agreed on. A channel with no participants at all is that case (the signpost is permanent, so only the name remains).
+If `key_exact` is False, `key` was read back from the name, not from a live participant. The name replaces every character other than alphanumerics and `_` with `.`, so `/a/b` and `.a.b` are one name. What is visible then is the spelling of the name, not the key the peers actually agreed on. A channel with no participants at all is that case (the signpost is permanent, so only the name remains).
 
 `flux.flatten_key(key)` is that transformation. A tool that must match a user-typed name against enumeration results compares through it. If a tool restates the rule, the format silently diverges. This is how `flux topic info` finds a channel whose publisher has died by its original name.
 

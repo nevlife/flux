@@ -220,6 +220,135 @@ TEST(CrashReclaim, AClaimWithNoIdentityIsGivenBack)
   ::shm_unlink(name.c_str());
 }
 
+namespace
+{
+struct ForkedHelper
+{
+  flux::OwnerId owner{};
+  pid_t helper = -1;
+};
+}  // namespace
+
+// A helper forked off a subscriber shares the subscriber's owner file description, so if it kept
+// that fd the subscriber would probe alive for the helper's whole life after dying. The helper
+// here never touches flux and outlives the subscriber; the slot must still come back at once.
+TEST(CrashReclaim, AForkedHelperDoesNotKeepADeadSubscriberAlive)
+{
+  const std::uint64_t fp = 0xC0FFE6u;
+  const std::string name = flux::signpost_name(uniq("/flux_fork_sub_test"), fp);
+  ::shm_unlink(name.c_str());
+  flux::Channel pub = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/1, fp);
+  std::vector<std::byte> buf(64, std::byte{1});
+  ASSERT_EQ(publish_id(pub, buf.data(), buf.size(), 1), flux::Published::Ok);
+
+  int up[2], hold[2];
+  ASSERT_EQ(::pipe(up), 0);
+  ASSERT_EQ(::pipe(hold), 0);
+  const pid_t pid = ::fork();
+  ASSERT_GE(pid, 0);
+  if (pid == 0) {
+    flux::Channel sub = flux::Channel::open(name, fp);
+    flux::FrameView v = sub.peek();
+    ForkedHelper r;
+    r.owner = v ? flux::OwnerFile::self() : flux::OwnerId{};
+    r.helper = ::fork();
+    if (r.helper == 0) {
+      ::close(hold[1]);  // or the read below never sees EOF
+      char go = 0;
+      [[maybe_unused]] ssize_t n = ::read(hold[0], &go, 1);
+      _exit(0);
+    }
+    [[maybe_unused]] ssize_t w = ::write(up[1], &r, sizeof(r));
+    _exit(0);  // dies holding the borrow; the helper lives on
+  }
+  ::close(up[1]);
+  ::close(hold[0]);
+  ForkedHelper r;
+  ASSERT_EQ(::read(up[0], &r, sizeof(r)), static_cast<ssize_t>(sizeof(r)));
+  ::close(up[0]);
+  int status = 0;
+  ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+  ASSERT_NE(r.owner.pid, 0u);
+  ASSERT_GT(r.helper, 0);
+
+  EXPECT_EQ(publish_id(pub, buf.data(), buf.size(), 2), flux::Published::Ok)
+    << "the helper kept the dead subscriber's owner lock";
+
+  ::close(hold[1]);  // the helper's read returns and it exits
+  ::shm_unlink(flux::owner_file_name(r.owner).c_str());
+  ::shm_unlink(name.c_str());
+}
+
+// The same for a publisher: the segment fd carries its liveness lock. A helper that kept it made
+// a crashed publisher look alive, so a restart with a new config was refused as a mismatch.
+TEST(CrashReclaim, AForkedHelperDoesNotKeepADeadPublisherAlive)
+{
+  const std::uint64_t fp = 0xC0FFE7u;
+  const std::string name = flux::signpost_name(uniq("/flux_fork_pub_test"), fp);
+  ::shm_unlink(name.c_str());
+
+  int up[2], hold[2];
+  ASSERT_EQ(::pipe(up), 0);
+  ASSERT_EQ(::pipe(hold), 0);
+  const pid_t pid = ::fork();
+  ASSERT_GE(pid, 0);
+  if (pid == 0) {
+    flux::Channel pub = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/4, fp);
+    ForkedHelper r;
+    r.owner = flux::OwnerFile::self();
+    r.helper = ::fork();
+    if (r.helper == 0) {
+      ::close(hold[1]);  // or the read below never sees EOF
+      char go = 0;
+      [[maybe_unused]] ssize_t n = ::read(hold[0], &go, 1);
+      _exit(0);
+    }
+    [[maybe_unused]] ssize_t w = ::write(up[1], &r, sizeof(r));
+    _exit(0);  // crash-like: no destructor, the segment stays bound
+  }
+  ::close(up[1]);
+  ::close(hold[0]);
+  ForkedHelper r;
+  ASSERT_EQ(::read(up[0], &r, sizeof(r)), static_cast<ssize_t>(sizeof(r)));
+  ::close(up[0]);
+  int status = 0;
+  ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+  ASSERT_GT(r.helper, 0);
+
+  EXPECT_FALSE(flux::read_channel_stats(name).live);
+  EXPECT_NO_THROW({ flux::Channel restarted = flux::Channel::create(name, 128, 4, fp); });
+
+  ::close(hold[1]);
+  flux::sweep_dead();
+  ::shm_unlink(flux::owner_file_name(r.owner).c_str());
+  ::shm_unlink(name.c_str());
+}
+
+// A forked child that ends normally destroys its copy of the parent's publisher. That copy must
+// not act as the last publisher out and unlink the segment the parent is still publishing on.
+TEST(CrashReclaim, AForkedChildThatExitsLeavesTheParentsSegment)
+{
+  const std::uint64_t fp = 0xC0FFE8u;
+  const std::string name = flux::signpost_name(uniq("/flux_fork_exit_test"), fp);
+  ::shm_unlink(name.c_str());
+  flux::Channel pub = flux::Channel::create(name, /*slot_size=*/64, /*slot_count=*/4, fp);
+
+  const pid_t pid = ::fork();
+  ASSERT_GE(pid, 0);
+  if (pid == 0) {
+    {
+      flux::Channel gone = std::move(pub);
+    }
+    _exit(0);
+  }
+  int status = 0;
+  ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+
+  EXPECT_TRUE(flux::read_channel_stats(name).live);
+  EXPECT_NO_THROW({ flux::Channel sub = flux::Channel::open(name, fp); });
+  ::shm_unlink(name.c_str());
+}
+
 // Concurrent reclaimers must not double-subtract a dead holder's count.
 // With multiple publishers, several can be starved at once and all run reclaim over the same dead
 // holder table. If two subtract the same entry's count from the slot refcount, the u32 underflows

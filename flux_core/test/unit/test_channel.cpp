@@ -206,7 +206,7 @@ TEST(Channel, ViewIsMoveOnly)
   flux::FrameView a = ch.peek();
   ASSERT_TRUE(a);
   flux::FrameView b = std::move(a);
-  EXPECT_FALSE(a);
+  EXPECT_FALSE(a);  // NOLINT(bugprone-use-after-move): the moved-from state is under test
   ASSERT_TRUE(b);
   EXPECT_EQ(static_cast<const std::uint8_t *>(b.data())[0], 9u);
 }
@@ -528,7 +528,7 @@ TEST(Channel, ALappedRingRetainsTheNewestSlotCountFrames)
   ch.qos(q);
 
   std::vector<std::byte> buf(64);
-  for (std::uint64_t f = 1; f <= 3 * kSlots; ++f) {
+  for (std::uint64_t f = 1; f <= std::uint64_t{3} * kSlots; ++f) {
     ASSERT_EQ(publish_id(ch, buf.data(), buf.size(), f), flux::Published::Ok);
   }
 
@@ -538,7 +538,9 @@ TEST(Channel, ALappedRingRetainsTheNewestSlotCountFrames)
   }
 
   std::vector<std::uint64_t> want;
-  for (std::uint64_t f = 2 * kSlots + 1; f <= 3 * kSlots; ++f) want.push_back(f);
+  for (std::uint64_t f = std::uint64_t{2} * kSlots + 1; f <= std::uint64_t{3} * kSlots; ++f) {
+    want.push_back(f);
+  }
   EXPECT_EQ(retained, want);
 }
 

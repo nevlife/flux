@@ -3,6 +3,7 @@
 
 #include "flux/channel.hpp"
 #include "flux/discovery.hpp"
+#include "flux/owner.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -114,6 +115,7 @@ private:
   std::string topic_;
   std::string seg_name_;
   Channel ch_;
+  Announcement announced_;
 };
 
 // The rclcpp::create_publisher() form. The constructor stays public, as rclcpp's does.

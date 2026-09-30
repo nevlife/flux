@@ -5,6 +5,9 @@ from the name alone -- peek() does not consume, depth is a lag bound rather than
 volatile is measured from where the subscription joined the stream.
 """
 
+import threading
+import time
+
 import numpy as np
 import pytest
 
@@ -100,6 +103,29 @@ def test_unhonourable_qos_is_rejected():
         flux.QoS(max_borrow=0)
     with pytest.raises(TypeError):
         flux.QoS(reliability="reliable")  # delivery is best-effort; there is no knob to turn
+
+
+def test_take_blocking_waits_for_a_publisher_that_starts_later():
+    # As C++ PullSurface.TakeBlockingWaitsForAPublisherThatStartsLater.
+    sub = flux.Subscription("/pytest/qos/late", fingerprint=FP)
+    t0 = time.monotonic()
+    assert sub.take_blocking(timeout_ns=150_000_000) is None
+    assert time.monotonic() - t0 >= 0.14, "it returned without waiting"
+
+    def publish_later():
+        time.sleep(0.2)
+        pub = flux.Publisher("/pytest/qos/late", slot_size=4096, slot_count=4, fingerprint=FP)
+        for _ in range(50):
+            pub.publish(np.full(8, 7, dtype=np.uint8))
+            time.sleep(0.02)
+
+    writer = threading.Thread(target=publish_later)
+    writer.start()
+    v = sub.take_blocking(timeout_ns=3_000_000_000)
+    got = None if v is None else int(v[0])
+    del v
+    writer.join()
+    assert got == 7, "the publisher appeared but the wait never attached"
 
 
 def test_take_blocking_waits_for_the_next_frame():

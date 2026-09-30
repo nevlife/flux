@@ -6,7 +6,7 @@ def display_name(topic):
     """The channel name to print.
 
     A topic with no live participant has no one to ask for the real key, so what comes back is
-    the name's spelling with every non-alnum character flattened to '.'. Marking it is the point:
+    the name's spelling with every character but alnum and '_' flattened to '.'. Marking it is the point:
     an unmarked `.a.b` reads as a topic literally called that.
     """
     return topic.key if topic.key_exact else topic.key + " (from name)"

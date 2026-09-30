@@ -7,8 +7,11 @@
 
 #include <rclcpp/node.hpp>
 
+#include <algorithm>
+#include <chrono>
 #include <stdexcept>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 namespace flux::ros
@@ -26,7 +29,7 @@ Subscription::Subscription(
   mem_(mem)
 {
   qos_.validate();  // fail at construction, not inside a callback, and before announcing
-  detail::announce(node, seg_name_, topic_, /*publisher=*/false);
+  announced_ = detail::announce(node, seg_name_, topic_, /*publisher=*/false);
   attach();  // volatile counts from where this subscription joined, not from the first wake
 }
 
@@ -50,7 +53,25 @@ FrameView Subscription::take()
 
 FrameView Subscription::take_blocking(std::int64_t timeout_ns)
 {
-  if (!attach()) return FrameView{};
+  // Before the publisher exists there is no wake word to park on, so look for it at the same
+  // cadence an executor does, until the deadline.
+  constexpr auto kAttachPoll = std::chrono::milliseconds(100);
+  const bool infinite = timeout_ns < 0;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout_ns);
+  while (!attach()) {
+    auto park = std::chrono::steady_clock::duration(kAttachPoll);
+    if (!infinite) {
+      const auto rel = deadline - std::chrono::steady_clock::now();
+      if (rel <= std::chrono::steady_clock::duration::zero()) return FrameView{};
+      park = std::min(park, rel);
+    }
+    std::this_thread::sleep_for(park);
+  }
+  if (!infinite) {
+    const auto rel = deadline - std::chrono::steady_clock::now();
+    timeout_ns =
+      std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::nanoseconds>(rel).count());
+  }
   FrameView v = ch_->take_blocking(timeout_ns);
   if (!v && ch_->orphaned()) ch_.reset();
   return v;

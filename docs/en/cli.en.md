@@ -28,7 +28,7 @@ CHANNEL        DOMAIN  SEGMENT  ENDPOINTS
 
 A `SEGMENT` of `down` is not a fault. The signpost is permanent, so the name remains even with no publisher.
 
-If `(from name)` follows the channel name, that name was read back from the `/dev/shm` name rather than from a live participant. Names replace every non-alnum character with `.`, so `/a/b` and `.a.b` are one name. Without the marker it is the real key.
+If `(from name)` follows the channel name, that name was read back from the `/dev/shm` name rather than from a live participant. Names replace every character other than alnum and `_` with `.`, so `/a/b` and `.a.b` are one name. Without the marker it is the real key.
 
 Lookup accepts both. Giving `/cam/left` or `.cam.left` to `info` and `hz` finds the same channel. A channel whose publisher died is visible only in the read-back spelling, and that is usually the situation in which one looks up a channel.
 
@@ -38,7 +38,7 @@ Lookup accepts both. Giving `/cam/left` or `.cam.left` to `info` and `hz` finds 
 channel      /cam/left
 domain        12
 fingerprint  0x0000000000000abc
-signpost     /flux.v7.s12..cam.left.0000000000000abc
+signpost     /flux.v8.s12..cam.left.0000000000000abc
 segment      up, epoch 1
 slots        8 x 1 MiB
 storage      host

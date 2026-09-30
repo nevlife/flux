@@ -2,6 +2,8 @@
 
 #include "flux/owner.hpp"
 
+#include <utility>
+
 namespace flux::ros::detail
 {
 
@@ -10,7 +12,7 @@ std::string resolve(rclcpp::Node & node, const std::string & topic)
   return node.get_node_topics_interface()->resolve_topic_name(topic);
 }
 
-void announce(
+flux::Announcement announce(
   rclcpp::Node & node, const std::string & signpost, const std::string & key, bool publisher)
 {
   flux::ManifestEntry e;
@@ -18,7 +20,7 @@ void announce(
   e.key = key;
   e.label = node.get_fully_qualified_name();
   e.publisher = publisher;
-  flux::OwnerFile::announce(e);
+  return flux::Announcement(std::move(e));
 }
 
 }  // namespace flux::ros::detail

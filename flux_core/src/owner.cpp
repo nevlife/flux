@@ -10,12 +10,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <iterator>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -111,9 +113,26 @@ thread_local OwnerId t_self;
 thread_local std::uint32_t t_self_gen = 0;    // generation t_self was filled at; 0 = empty
 thread_local std::uint32_t t_ensure_gen = 0;  // generation ensure() last completed at
 
+// g_mtx is held across fork, so the child sees g_owner_fd whole and can take the lock itself.
+void on_fork_prepare() noexcept
+{
+  g_mtx.lock();
+}
+void on_fork_parent() noexcept
+{
+  g_mtx.unlock();
+}
+
 void on_fork_child() noexcept
 {
+  // The inherited owner fd shares the parent's open file description, and the OFD lock with it.
+  // Kept open, it made a dead parent probe alive for as long as this child lived. Waiting for the
+  // child's first flux call to close it was not enough: a helper that never calls flux never does.
+  if (g_owner_fd >= 0) ::close(g_owner_fd);
+  g_owner_fd = -1;
+  g_owner_pid = 0;
   g_identity_gen.fetch_add(1, std::memory_order_relaxed);
+  g_mtx.unlock();
 }
 
 // Caller holds g_mtx. Registered once, from the slow path, so the fast path stays branch-free.
@@ -121,7 +140,7 @@ void register_atfork_locked()
 {
   if (g_atfork_registered) return;
   g_atfork_registered = true;
-  ::pthread_atfork(nullptr, nullptr, &on_fork_child);
+  ::pthread_atfork(&on_fork_prepare, &on_fork_parent, &on_fork_child);
 }
 
 // Caller holds g_mtx. Refresh identity when the pid changed (first call, or after fork -- a
@@ -279,6 +298,30 @@ std::string one_line(const std::string & raw)
   return out;
 }
 
+// A retraction is the entry's own line with the role prefixed by '-'.
+std::string manifest_line(const ManifestEntry & entry, bool retract)
+{
+  std::string line = one_line(entry.signpost);
+  line += '\t';
+  if (retract) line += '-';
+  line += entry.publisher ? "pub" : "sub";
+  line += '\t';
+  line += one_line(entry.key);
+  line += '\t';
+  line += one_line(entry.label);
+  line += '\n';
+  return line;
+}
+
+// Caller holds g_mtx, so two threads cannot interleave halves of a line. A short write leaves a
+// partial tail, which the reader drops for want of a newline.
+void append_locked(const std::string & line) noexcept
+{
+  if (g_owner_fd < 0) return;
+  if (::lseek(g_owner_fd, 0, SEEK_END) < 0) return;
+  [[maybe_unused]] ssize_t w = ::write(g_owner_fd, line.data(), line.size());
+}
+
 }  // namespace
 
 void OwnerFile::announce(const ManifestEntry & entry) noexcept
@@ -288,23 +331,44 @@ void OwnerFile::announce(const ManifestEntry & entry) noexcept
   } catch (...) {
     return;  // no owner file means no manifest; the caller's channel is unaffected
   }
-  std::string line = one_line(entry.signpost);
-  line += '\t';
-  line += entry.publisher ? "pub" : "sub";
-  line += '\t';
-  line += one_line(entry.key);
-  line += '\t';
-  line += one_line(entry.label);
-  line += '\n';
-
+  const std::string line = manifest_line(entry, false);
   std::lock_guard<std::mutex> lk(g_mtx);
-  if (g_owner_fd < 0) return;
-  // Appended under the same mutex that guards the fd, so two threads opening channels at once
-  // cannot interleave halves of a line. A short write leaves a partial tail, which the reader
-  // drops for want of a newline.
-  const off_t end = ::lseek(g_owner_fd, 0, SEEK_END);
-  if (end < 0) return;
-  [[maybe_unused]] ssize_t w = ::write(g_owner_fd, line.data(), line.size());
+  append_locked(line);
+}
+
+void OwnerFile::withdraw(const ManifestEntry & entry) noexcept
+{
+  const std::string line = manifest_line(entry, true);
+  // No ensure(): a process without an owner file announced nothing that could be retracted.
+  std::lock_guard<std::mutex> lk(g_mtx);
+  append_locked(line);
+}
+
+Announcement::Announcement(ManifestEntry entry) noexcept : entry_(std::move(entry)), live_(true)
+{
+  OwnerFile::announce(entry_);
+}
+
+Announcement::~Announcement()
+{
+  if (live_) OwnerFile::withdraw(entry_);
+}
+
+Announcement::Announcement(Announcement && other) noexcept
+: entry_(std::move(other.entry_)), live_(other.live_)
+{
+  other.live_ = false;
+}
+
+Announcement & Announcement::operator=(Announcement && other) noexcept
+{
+  if (this != &other) {
+    if (live_) OwnerFile::withdraw(entry_);
+    entry_ = std::move(other.entry_);
+    live_ = other.live_;
+    other.live_ = false;
+  }
+  return *this;
 }
 
 std::vector<ManifestEntry> OwnerFile::read_manifest(const std::string & name) noexcept
@@ -338,11 +402,21 @@ std::vector<ManifestEntry> OwnerFile::read_manifest(const std::string & name) no
       }
     }
     if (f < 2 || field[0].empty()) continue;  // signpost and role are the required pair
+    const bool retract = field[1].size() > 1 && field[1][0] == '-';
     ManifestEntry e;
     e.signpost = field[0];
-    e.publisher = field[1] == "pub";
+    e.publisher = field[1].compare(retract ? 1 : 0, std::string::npos, "pub") == 0;
     e.key = field[2];
     e.label = field[3];
+    if (retract) {
+      const auto same = [&e](const ManifestEntry & a) {
+        return a.signpost == e.signpost && a.publisher == e.publisher && a.key == e.key &&
+               a.label == e.label;
+      };
+      const auto it = std::find_if(out.rbegin(), out.rend(), same);
+      if (it != out.rend()) out.erase(std::next(it).base());
+      continue;
+    }
     out.push_back(std::move(e));
   }
   return out;

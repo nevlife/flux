@@ -140,6 +140,31 @@ TEST_F(PullSurface, TakeBlockingReturnsEmptyOnTimeoutAndTheFrameWhenOneArrives)
   EXPECT_EQ(first_byte(got), 0x22) << "the park did not wake on the publish";
 }
 
+// A subscription made before its publisher waits for it, as a ROS 2 wait set does, instead of
+// returning at once for want of a wake word.
+TEST_F(PullSurface, TakeBlockingWaitsForAPublisherThatStartsLater)
+{
+  const std::string topic = uniq("take_blocking_late_");
+  flux::ros::Subscription sub(*node_, topic, kFingerprint);
+
+  const auto t0 = std::chrono::steady_clock::now();
+  EXPECT_FALSE(sub.take_blocking(150'000'000).valid());
+  EXPECT_GE(std::chrono::steady_clock::now() - t0, 140ms) << "it returned without waiting";
+
+  std::thread writer([&] {
+    std::this_thread::sleep_for(200ms);
+    flux::ros::Publisher pub(*node_, topic, kFingerprint, kSlotSize, kSlots);
+    const std::uint8_t v[4] = {0x33, 0x33, 0x33, 0x33};
+    for (int i = 0; i < 50; ++i) {
+      (void)pub.publish(v, sizeof(v));
+      std::this_thread::sleep_for(20ms);
+    }
+  });
+  const flux::FrameView got = sub.take_blocking(3'000'000'000);
+  EXPECT_EQ(first_byte(got), 0x33) << "the publisher appeared but the wait never attached";
+  writer.join();
+}
+
 TEST_F(PullSurface, TakeFollowsPublishOrderAndCountsWhatTheRingLapped)
 {
   const std::string topic = uniq("take_order_");

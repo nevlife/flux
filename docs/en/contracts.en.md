@@ -60,6 +60,8 @@ C++ and Python call the same engine (`flux_core`), but different code calls it. 
 | X-050 | A queued `StampedFrame` stays readable after the callback that delivered it | `MessageFilters.AQueuedFrameOutlivesTheCallbackThatDeliveredIt` | `test_a_queued_frame_outlives_the_callback_that_delivered_it` |
 | X-051 | `enumerate_topics` lists a live publisher with its key, fingerprint and owner | `Enumerate.AnnouncedEndpointsComeBackWithTheirKeyAndLabel` | `test_enumerate_topics_lists_a_live_publisher` |
 | X-052 | `read_channel_stats` reports a live channel's shape and counts publishes exactly | `ChannelStats.ALiveChannelReportsItsShapeAndCountsPublishes` | `test_read_channel_stats_reports_shape_and_counts_publishes` |
+| X-053 | A closed endpoint is no longer listed while its process lives | `Enumerate.AClosedEndpointIsNoLongerListedWhileItsProcessLives` | `test_a_closed_endpoint_is_no_longer_listed_while_its_process_lives` |
+| X-054 | `take_blocking` also waits for a publisher that has not started yet | `PullSurface.TakeBlockingWaitsForAPublisherThatStartsLater` | `test_take_blocking_waits_for_a_publisher_that_starts_later` |
 
 ## 2. What only one side keeps
 

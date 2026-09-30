@@ -60,14 +60,14 @@ std::int64_t mono_ns()
 
 // Enumeration metadata only. flux_py has no node, so the label stays empty; the key is what
 // makes a tool able to print the real topic name rather than the name's punctuation-flattened
-// spelling.
-void announce(const std::string & signpost, const std::string & key, bool publisher)
+// spelling. Withdrawn when the returned value is destroyed.
+flux::Announcement announce(const std::string & signpost, const std::string & key, bool publisher)
 {
   flux::ManifestEntry e;
   e.signpost = signpost;
   e.key = key;
   e.publisher = publisher;
-  flux::OwnerFile::announce(e);
+  return flux::Announcement(std::move(e));
 }
 
 const std::string & require_absolute(const std::string & topic)
@@ -861,7 +861,7 @@ public:
         seg_name_, slot_size, slot_count, fingerprint, device_from(device)),
       flux::gpu::stream_for(device_from(device)), mem)
   {
-    announce(seg_name_, topic, /*publisher=*/true);
+    announced_ = announce(seg_name_, topic, /*publisher=*/true);
   }
 
   // The device restriction is stated here rather than in the signature so the refusal can name
@@ -956,6 +956,7 @@ private:
   std::string seg_name_;
   std::uint32_t slot_size_;
   flux::Channel ch_;
+  flux::Announcement announced_;
 };
 
 class Subscription
@@ -971,7 +972,7 @@ public:
     stream_(flux::gpu::stream_for(device_from(device))),
     mem_(mem)
   {
-    announce(seg_name_, topic, /*publisher=*/false);
+    announced_ = announce(seg_name_, topic, /*publisher=*/false);
     attach();  // volatile counts from where this subscription joined, not from the first take;
                // a late publisher is normal and retried on every call.
   }
@@ -994,9 +995,24 @@ public:
 
   nb::object take_blocking(std::int64_t timeout_ns)
   {
-    if (!attach()) return nb::none();
+    // Bounded park: re-running take() is what lets a re-attach happen after a publisher
+    // restart, whose new segment nothing will bump the old wake word for. The same bound paces
+    // the search for a publisher that does not exist yet, which has no wake word at all.
+    constexpr std::int64_t kMaxParkNs = 100'000'000;
     const bool infinite = timeout_ns < 0;
     const std::int64_t deadline = infinite ? 0 : mono_ns() + timeout_ns;
+    while (!attach()) {
+      std::int64_t rel = kMaxParkNs;
+      if (!infinite) {
+        rel = std::min(rel, deadline - mono_ns());
+        if (rel <= 0) return nb::none();  // timeout
+      }
+      {
+        nb::gil_scoped_release unlocked;
+        std::this_thread::sleep_for(std::chrono::nanoseconds(rel));
+      }
+      if (PyErr_CheckSignals() != 0) throw nb::python_error();
+    }
     for (;;) {
       const std::uint32_t wseq = ch_->wake_seq();  // sample, then look for a frame
       flux::FrameView v = ch_->take();
@@ -1008,9 +1024,6 @@ public:
         if (rel <= 0) return nb::none();  // timeout
       }
       {
-        // Bounded park: re-running take() is what lets a re-attach happen after a publisher
-        // restart, whose new segment nothing will bump the old wake word for.
-        constexpr std::int64_t kMaxParkNs = 100'000'000;
         nb::gil_scoped_release unlocked;
         ch_->wait(wseq, (rel < 0 || rel > kMaxParkNs) ? kMaxParkNs : rel);
       }
@@ -1090,6 +1103,7 @@ private:
   flux::gpu::Stream stream_;
   flux::MemoryPolicy mem_;  // same reason as stream_: declared once, re-applied per attach
   std::optional<flux::Channel> ch_;
+  flux::Announcement announced_;
 };
 
 // One wait for many subscriptions, the Python counterpart of flux::ros::Executor.
@@ -1250,7 +1264,7 @@ NB_MODULE(_flux, m)
   // translator, an attach that can never succeed would arrive as a bare RuntimeError, losing the
   // distinction between "not up yet" and "will never work" that C++ callers get for free
   // (docs/en/contracts.en.md 1, X-019).
-  nb::exception<flux::SegmentMismatch>(m, "SegmentMismatch", PyExc_RuntimeError);
+  nb::exception<flux::SegmentMismatch>(m, "SegmentMismatch", PyExc_RuntimeError);  // NOLINT
 
   // A refused mlock or page commit carries an errno, and errno failures are OSError in Python.
   // Without this nanobind lands them on RuntimeError, where `except OSError`, the thing a
@@ -1574,7 +1588,8 @@ NB_MODULE(_flux, m)
     .def(
       "take_blocking", &Subscription::take_blocking, nb::arg("timeout_ns") = -1,
       "take(), parking on the futex until a frame arrives or timeout_ns elapses (negative = "
-      "forever). Near-zero CPU. Returns None on timeout. Prefer this over polling take().")
+      "forever). Near-zero CPU. Returns None on timeout. With no publisher yet it waits for one "
+      "too, checking every 100 ms. Prefer this over polling take().")
     .def_prop_ro(
       "lost", &Subscription::lost,
       "Frames never delivered since this subscription joined the stream: lapped by the ring, or "
@@ -1785,7 +1800,7 @@ NB_MODULE(_flux, m)
 
   m.def(
     "flatten_key", &flux::flatten_key, nb::arg("key"),
-    "The key as a shm name spells it: every non-alnum character becomes '.', so '/a/b' and "
+    "The key as a shm name spells it: every character but alnum and '_' becomes '.', so '/a/b' and "
     "'.a.b' flatten alike. A channel with no live participant reports this spelling rather than "
     "its real key (Topic.key_exact is False), so a tool resolving a user-typed name compares "
     "through this instead of restating the rule.");

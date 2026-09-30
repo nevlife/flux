@@ -153,7 +153,7 @@ TEST(MultiPublisher, ConcurrentTwoPublishersCoherent)
     stderr, "  coverage: borrows=%llu from_pub1=%llu from_pub2=%llu dropped=%llu\n",
     static_cast<unsigned long long>(borrows.load()), static_cast<unsigned long long>(from_a.load()),
     static_cast<unsigned long long>(from_b.load()),
-    static_cast<unsigned long long>(pub1.dropped() + pub2.dropped()));
+    static_cast<unsigned long long>(pub1.dropped()) + pub2.dropped());
 
   ::shm_unlink(name.c_str());
 }

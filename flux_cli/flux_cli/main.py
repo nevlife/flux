@@ -30,7 +30,7 @@ def _topics(args):
     found = flux.enumerate_topics()
     if not args.all_domains:
         found = [t for t in found if t.domain == args.domain]
-    return sorted(found, key=lambda t: (t.domain, t.key))
+    return sorted(found, key=lambda t: (int(t.domain), t.key))
 
 
 def _match(topics, name):
@@ -171,7 +171,7 @@ def cmd_domain_list(args):
 
     rows = [
         [domain + (" (here)" if domain == args.domain else ""), str(c[0]), str(c[1]), str(c[2])]
-        for domain, c in sorted(counts.items())
+        for domain, c in sorted(counts.items(), key=lambda kv: int(kv[0]))
     ]
     print("\n".join(table(rows, ["DOMAIN", "CHANNELS", "UP", "ENDPOINTS"])))
     if len(counts) > 1:

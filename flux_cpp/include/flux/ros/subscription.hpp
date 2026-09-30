@@ -4,6 +4,7 @@
 #include "flux/channel.hpp"
 #include "flux/discovery.hpp"
 #include "flux/executor.hpp"
+#include "flux/owner.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -58,7 +59,8 @@ public:
   FrameView take();
 
   // take(), parking on the futex until a frame arrives or `timeout_ns` elapses (negative =
-  // forever). Near-zero CPU. Prefer this over polling take().
+  // forever). Near-zero CPU. Prefer this over polling take(). With no publisher yet it waits
+  // for one too, checking every 100 ms.
   FrameView take_blocking(std::int64_t timeout_ns = -1);
 
   // ---- state ----
@@ -128,6 +130,7 @@ private:
   gpu::Stream stream_;
   MemoryPolicy mem_;  // same reason as stream_: declared here, re-applied per attach
   std::optional<Channel> ch_;
+  Announcement announced_;
 };
 
 // The rclcpp::create_subscription() form. The constructor stays public, as rclcpp's does.

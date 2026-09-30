@@ -98,7 +98,7 @@ sink(ch.lost(), ch.refused().total());
 
 `qos()`는 생성 뒤에 준다. `depth`·`durability`·`max_borrow`의 뜻은 [qos.md](qos.ko.md)와 같다.
 
-`peek()`은 최신 프레임을 소비하지 않고 준다. `take()`는 발행 순서로 다음 것을 소비한다. `take_blocking(timeout_ns)`은 올 때까지 기다린다.
+`peek()`은 최신 프레임을 소비하지 않고 준다. `take()`는 발행 순서로 다음 것을 소비한다. `take_blocking(timeout_ns)`은 올 때까지 기다린다. 아직 뜨지 않은 발행자도 기다린다.
 
 ## 6. 기다리기
 
@@ -259,7 +259,7 @@ for topic in flux.enumerate_topics():
         _sink(name, topic.domain, topic.fingerprint, role, pid, start, ep.label)
 ```
 
-`key_exact`가 False면 `key`는 산 참가자가 아니라 이름에서 되읽은 것이다. 이름은 alnum이 아닌 문자를 전부 `.`으로 바꾸므로 `/a/b`와 `.a.b`가 한 이름이다. 그때 보이는 것은 peer가 실제로 합의한 key가 아니라 이름의 철자다. 참가자가 하나도 없는 채널이 그 경우다(signpost는 영구라 이름만 남는다).
+`key_exact`가 False면 `key`는 산 참가자가 아니라 이름에서 되읽은 것이다. 이름은 alnum과 `_`가 아닌 문자를 전부 `.`으로 바꾸므로 `/a/b`와 `.a.b`가 한 이름이다. 그때 보이는 것은 peer가 실제로 합의한 key가 아니라 이름의 철자다. 참가자가 하나도 없는 채널이 그 경우다(signpost는 영구라 이름만 남는다).
 
 `flux.flatten_key(key)`가 그 변환이다. 사용자가 친 이름을 열거 결과와 맞춰야 하는 도구는 이것을 통해 비교한다. 규칙을 도구가 다시 적으면 포맷이 조용히 갈라진다. `flux topic info`가 발행자가 죽은 채널을 원래 이름으로 찾는 것이 이것이다.
 

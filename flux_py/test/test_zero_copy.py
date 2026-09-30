@@ -6,6 +6,7 @@ the view aliases the shared segment and that the borrow is tied to the array's l
 
 import gc
 import os
+import signal
 import time
 import weakref
 
@@ -756,6 +757,25 @@ def test_enumerate_topics_lists_a_live_publisher():
     assert len(mine) == 1 and mine[0].publisher and mine[0].label == ""
 
 
+def test_a_closed_endpoint_is_no_longer_listed_while_its_process_lives():
+    # As C++ Enumerate.AClosedEndpointIsNoLongerListedWhileItsProcessLives.
+    pub = flux.Publisher("/pytest/enum/closed", fingerprint=FP, slot_size=4096, slot_count=2)
+
+    def subs():
+        topics = [t for t in flux.enumerate_topics() if t.signpost == pub.signpost_name]
+        return sum(1 for e in topics[0].endpoints if e.owner.pid == os.getpid() and not e.publisher)
+
+    a = flux.Subscription("/pytest/enum/closed", fingerprint=FP)
+    b = flux.Subscription("/pytest/enum/closed", fingerprint=FP)
+    assert subs() == 2
+    del b
+    gc.collect()
+    assert subs() == 1
+    del a
+    gc.collect()
+    assert subs() == 0
+
+
 def test_read_channel_stats_reports_shape_and_counts_publishes():
     pub = flux.Publisher("/pytest/stats/live", fingerprint=FP, slot_size=4096, slot_count=4)
     before = flux.read_channel_stats(pub.signpost_name)
@@ -768,6 +788,27 @@ def test_read_channel_stats_reports_shape_and_counts_publishes():
     assert after.epoch == before.epoch
 
 
-def test_flatten_key_maps_every_non_alnum_character_to_a_dot():
+def test_a_subscription_made_right_after_its_publisher_crashed_waits_instead_of_raising():
+    # The crashed publisher's segment stays bound while another subscriber maps it. Attaching then
+    # is "no publisher yet", not an error: the subscriber must survive to meet the restart.
+    topic = "/pytest/crashed_pub/%d" % os.getpid()
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        flux.Publisher(topic, fingerprint=FP, slot_size=4096, slot_count=2)
+        os.write(w, b"x")
+        time.sleep(30)
+        os._exit(0)
+    os.read(r, 1)
+    early = flux.Subscription(topic, fingerprint=FP)
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    late = flux.Subscription(topic, fingerprint=FP)
+    assert late.take() is None
+    assert early.take() is None
+
+
+def test_flatten_key_maps_every_character_but_alnum_and_underscore_to_a_dot():
     assert flux.flatten_key("/a/b-c") == ".a.b.c"
+    assert flux.flatten_key("/cam_left") == ".cam_left"
     assert flux.flatten_key(".a.b.c") == flux.flatten_key("/a/b-c")

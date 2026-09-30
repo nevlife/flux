@@ -167,6 +167,12 @@ TEST(DomainTest, DistinctDomainsNeverShareAName)
   EXPECT_NE(flux::signpost_name("/t", kFp, "0"), flux::signpost_name("/t", kFp, "1"));
 }
 
+// ROS names are alnum, '_' and '/'. Only '/' has to go, so '_' stays and the two never meet.
+TEST(DomainTest, UnderscoreAndSlashNeverShareAName)
+{
+  EXPECT_NE(flux::signpost_name("/cam_left", kFp, "0"), flux::signpost_name("/cam/left", kFp, "0"));
+}
+
 TEST(DomainTest, NameCarriesTheDomainAndStaysAValidShmName)
 {
   const std::string name = flux::signpost_name("/camera/image_raw", kFp, "7");

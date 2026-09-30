@@ -369,11 +369,11 @@ ex.stop();                       // spin을 끝낸다. 콜백에서 불러도 �
 
 `add`의 둘째 인자는 우선순위다. 큰 것이 먼저 가고 같으면 등록순으로 시작해 한 프레임씩 번갈아 가며, 음수도 쓴다. 선택은 콜백마다 다시 한다 -- 낮은 채널의 콜백이 도는 중에 높은 채널로 프레임이 오면 낮은 채널의 다음 프레임보다 그것이 먼저 돈다. 선점 우선순위는 아니다. 이미 도는 콜백은 밀리지 않고, 한 pass의 상한도 안 바뀐다. 정렬되는 것은 flux 채널뿐이다. 같은 executor의 ROS entity는 `pump_ros()`가 rclcpp 순서로 돌린다.
 
-등록은 spin 전에만 한다. spin 중 `add`/`add_ros_node`/`add_ros_callback_group`은 throw — spin 스레드가 락 없이 등록 목록을 순회한다. spin이 반환한 뒤에는 다시 등록할 수 있다. 노드에 늦게 생긴 ROS 구독은 예외로, 다음 pass가 자동으로 잇는다(아래).
+등록은 spin 전에만 한다. spin 중 `add`/`add_ros_node`/`add_ros_callback_group`은 throw — spin 스레드가 락 없이 등록 목록을 순회한다. spin이 반환한 뒤에는 다시 등록할 수 있다. 노드에 늦게 생긴 ROS 구독은 예외로, 재스캔이 자동으로 잇는다(아래).
 
 `add_ros_node`는 노드를 rclcpp에 등록하고, 그 노드의 구독마다 on-new-message 콜백을 걸어 readiness를 이 executor의 eventfd로 보낸다. 기다리는 것은 flux이고 꺼내는 것은 rclcpp다 -- 직렬화 구독·intra-process·loaned message 분기를 rclcpp가 이미 갖고 있고, 손으로 꺼내면 그걸 전부 다시 짜야 한다. 그 대가로 타이머·서비스도 같이 돈다.
 
-호출 시점에 없던 구독은 다음 spin pass 초입의 재스캔이 잇는다. 두 콜백 다 설정될 때 밀린 count를 재생하므로 다리가 걸리기 전에 도착한 메시지도 그 pass에서 깨운다. 감지 지연 상한은 tick 하나다.
+호출 시점에 없던 구독·타이머 등은 재스캔이 잇는다. 재스캔은 노드의 엔티티를 전부 훑으므로 `spin()`은 pass마다가 아니라 tick마다 한 번 돌리고, 다음 재스캔이 늦지 않게 대기를 자른다. `interrupt()`가 깨운 pass는 바로 재스캔하고, `spin_once()`는 호출마다 재스캔한다. 두 콜백 다 설정될 때 밀린 count를 재생하므로 다리가 걸리기 전에 도착한 메시지도 그 pass에서 깨운다. 감지 지연 상한은 tick 하나다.
 
 `tick_ns`는 폴링 주기가 아니다. stop 재확인과 늦게 뜬 발행자 attach를 위한 대기 상한이다. 노드에 tick보다 짧은 주기의 타이머가 있으면 대기는 그 deadline까지만 잡으므로, tick을 길게 줘도 타이머 주기는 안 늘어난다.
 

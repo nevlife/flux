@@ -19,7 +19,7 @@ Publisher::Publisher(
     open_publisher_segment(seg_name_, slot_size, slot_count, fingerprint, device),
     gpu::stream_for(device), mem)
 {
-  detail::announce(node, seg_name_, topic_, /*publisher=*/true);
+  announced_ = detail::announce(node, seg_name_, topic_, /*publisher=*/true);
 }
 
 Published Publisher::publish(const void * data, std::size_t nbytes) noexcept

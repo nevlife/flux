@@ -57,6 +57,14 @@ public:
   // when no publisher holds a read lock (the (re)initializer, and the last one out).
   static bool lock_read(int fd) noexcept;
   static bool lock_write(int fd) noexcept;
+  // Whether a publisher's read lock is on `fd`'s segment. Takes no lock; works on a read-only fd.
+  static bool publisher_holds(int fd) noexcept;
+
+  // mmap `fd`'s object through a description of its own. A mapping keeps its description, and
+  // with it any OFD lock taken there, alive; a forked child inherits the mapping. Mapped through
+  // the lock's own description, a crashed publisher stayed alive for as long as any child did.
+  // Returns MAP_FAILED with errno set, as mmap does.
+  static void * map_apart(int fd, std::size_t bytes) noexcept;
 
   // Take ownership of a finished shm mapping. `fd` < 0 means this participant holds no liveness
   // lock (a subscriber). `unlink_on_last_out` asks the destructor to remove the name if it can
@@ -122,6 +130,7 @@ private:
   SegmentLayout layout_{};
   Backing backing_ = kNone;
   int fd_ = -1;       // publisher: kept open holding an OFD read lock (liveness); -1 otherwise
+  int lock_pid_ = 0;  // process that took fd_'s lock; a forked child's copy is not it
   std::string name_;  // shm name
   SegmentId id_{};    // the shm object behind name_ at the time we mapped it
   bool unlink_on_last_out_ = false;     // publisher: remove the name if we are the last one out

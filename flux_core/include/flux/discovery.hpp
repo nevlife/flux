@@ -75,8 +75,8 @@ std::string signpost_name(
   const std::string & key, std::uint64_t fingerprint,
   const std::string & domain = process_domain());
 
-// The key as a name spells it: every non-alnum character mapped to '.', so `/a/b` and `.a.b`
-// flatten alike. What a reader with no live participant to ask gets back (Topic::key_exact),
+// The key as a name spells it: every character but alnum and '_' mapped to '.', so `/a/b` and
+// `.a.b` flatten alike. What a reader with no live participant to ask gets back (Topic::key_exact),
 // so a tool matching a user-typed name against one must compare through this rather than restate
 // the rule.
 std::string flatten_key(const std::string & key);
@@ -106,7 +106,7 @@ struct Topic
   std::string key;
   std::uint64_t fingerprint = 0;
   // False when `key` came from the name rather than from a live participant's manifest. The name
-  // maps every non-alnum key character to '.', so `/a/b` and `.a.b` are one name: what is
+  // maps every key character but alnum and '_' to '.', so `/a/b` and `.a.b` are one name: what is
   // reported then is the name's spelling, not the key the peers actually agreed on.
   bool key_exact = false;
   std::vector<Endpoint> endpoints;
@@ -119,7 +119,7 @@ struct Topic
 // the difference is an exact frame count over that interval rather than an estimate.
 struct ChannelStats
 {
-  bool live = false;  // false when the signpost advertises no readable segment right now
+  bool live = false;  // a publisher holds the advertised segment; a crashed one's is not live
   std::uint32_t slot_size = 0;
   std::uint32_t slot_count = 0;
   std::uint32_t storage_kind = 0;

@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -70,6 +71,39 @@ TEST(Enumerate, AnnouncedEndpointsComeBackWithTheirKeyAndLabel)
   ::shm_unlink(sp.c_str());
 }
 
+// A process that closes an endpoint and lives on stops listing it. Two identical endpoints (one
+// process opening the same channel twice) retract one at a time.
+TEST(Enumerate, AClosedEndpointIsNoLongerListedWhileItsProcessLives)
+{
+  const std::string key = "/" + uniq("enum/closed");
+  const std::string sp = flux::signpost_name(key, 0xfeed, "0");
+  int fd = ::shm_open(sp.c_str(), O_CREAT | O_RDWR, 0600);
+  ASSERT_GE(fd, 0);
+  ::close(fd);
+
+  flux::ManifestEntry e;
+  e.signpost = sp;
+  e.key = key;
+  e.label = "/listener";
+  const auto mine = [&] {
+    const flux::Topic * t = find(flux::enumerate_topics(), sp);
+    return t == nullptr ? std::size_t{0} : t->endpoints.size();
+  };
+  {
+    flux::Announcement a(e);
+    flux::Announcement moved;
+    {
+      flux::Announcement b(e);
+      EXPECT_EQ(mine(), 2u);
+      moved = std::move(b);
+    }
+    EXPECT_EQ(mine(), 2u);  // b was moved from, so leaving its scope retracted nothing
+  }
+  EXPECT_EQ(mine(), 0u);
+
+  ::shm_unlink(sp.c_str());
+}
+
 // A channel nobody holds is still a name: signposts are persistent. What it cannot give
 // back is the key's punctuation, and it says so rather than inventing it.
 TEST(Enumerate, AChannelWithNoLiveParticipantReportsAnInexactKey)
@@ -85,7 +119,7 @@ TEST(Enumerate, AChannelWithNoLiveParticipantReportsAnInexactKey)
   ASSERT_NE(t, nullptr);
   EXPECT_TRUE(t->endpoints.empty());
   EXPECT_FALSE(t->key_exact);
-  EXPECT_NE(t->key, key);  // the name's spelling, with every non-alnum character flattened
+  EXPECT_NE(t->key, key);  // the name's spelling, with '/' and the like flattened
   // What a tool needs to resolve this channel by the name its publisher used: the two spellings
   // meet under flatten_key, and it is core's rule rather than a copy in the tool.
   EXPECT_EQ(t->key, flux::flatten_key(key));
@@ -201,6 +235,25 @@ TEST(ChannelStats, ALiveChannelReportsItsShapeAndCountsPublishes)
     EXPECT_EQ(after.publish_seq - before.publish_seq, 3u);
     EXPECT_EQ(after.epoch, before.epoch);
   }
+  ::shm_unlink(sp.c_str());
+}
+
+// A crashed publisher leaves its segment bound until a sweep. `live` asks whether a publisher
+// holds it, not whether the object is still there: a subscriber attaching in that window takes
+// "not live" as "retry later" instead of raising.
+TEST(ChannelStats, ACrashedPublishersSegmentIsNotLive)
+{
+  const std::string sp = flux::signpost_name("/" + uniq("stats/crashed"), 0xabc);
+  const pid_t pid = ::fork();
+  ASSERT_GE(pid, 0);
+  if (pid == 0) {
+    flux::Channel ch = flux::Channel::create(sp, 256, 4, 0xabc);
+    _exit(0);  // crash-like: the segment stays bound
+  }
+  int status = 0;
+  ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+  EXPECT_FALSE(flux::read_channel_stats(sp).live);
+  flux::sweep_dead();
   ::shm_unlink(sp.c_str());
 }
 

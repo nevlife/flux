@@ -81,10 +81,15 @@ public:
   // newlines in `key` or `label` become spaces, so one entry is always one line.
   static void announce(const ManifestEntry & entry) noexcept;
 
+  // Retract one endpoint announce() added, for an endpoint closed while its process lives on.
+  // Appends a retraction line instead of rewriting, so a reader never sees a half-rewritten
+  // manifest. Writes only to an owner file this process already holds. Never throws.
+  static void withdraw(const ManifestEntry & entry) noexcept;
+
   // Read the manifest out of the owner file `name`, which is another process's in every
   // interesting case. Empty when there is none. A trailing line with no newline is dropped: the
   // writer may have died mid-append. Fields past the fourth are ignored, so the format can grow
-  // without this reader changing.
+  // without this reader changing. A retraction removes the latest earlier entry equal to it.
   static std::vector<ManifestEntry> read_manifest(const std::string & name) noexcept;
 
   OwnerFile(const OwnerFile &) = delete;
@@ -92,6 +97,24 @@ public:
 
 private:
   OwnerFile() = default;
+};
+
+// An announced endpoint for as long as this value lives: destruction withdraws it. Move-only, so
+// a moved-from value retracts nothing.
+class Announcement
+{
+public:
+  Announcement() = default;
+  explicit Announcement(ManifestEntry entry) noexcept;
+  ~Announcement();
+  Announcement(Announcement && other) noexcept;
+  Announcement & operator=(Announcement && other) noexcept;
+  Announcement(const Announcement &) = delete;
+  Announcement & operator=(const Announcement &) = delete;
+
+private:
+  ManifestEntry entry_;
+  bool live_ = false;
 };
 
 }  // namespace flux

@@ -10,6 +10,7 @@
 
 #include <cctype>
 #include <cerrno>
+#include <cinttypes>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -89,16 +90,17 @@ std::string flatten_key(const std::string & key)
 {
   std::string out;
   out.reserve(key.size());
-  for (char c : key) out += std::isalnum(static_cast<unsigned char>(c)) ? c : '.';
+  for (char c : key) out += (std::isalnum(static_cast<unsigned char>(c)) || c == '_') ? c : '.';
   return out;
 }
 
 std::string signpost_name(
   const std::string & key, std::uint64_t fingerprint, const std::string & domain)
 {
-  // POSIX shm names allow one leading '/' and no other '/'. Map every non-alnum
-  // key character (including '/') to '.', then append the full 64-bit fingerprint
-  // (schema digest from flux_gen) so distinct schemas never collide on one segment.
+  // POSIX shm names allow one leading '/' and no other '/'. Map every key character but alnum
+  // and '_' (including '/') to '.', then append the full 64-bit fingerprint (schema digest from
+  // flux_gen) so distinct schemas never collide on one segment. '_' stays because a ROS name is
+  // alnum, '_' and '/': mapping '_' too made `/cam_left` and `/cam/left` one segment.
   //
   // The layout version and the domain lead for the same reason the fingerprint trails: all three
   // are compatibility axes, and an object written under a different one is not ours to read.
@@ -221,10 +223,7 @@ std::vector<Topic> enumerate_topics() noexcept
     OwnerId id{};
     // `/flux.owner.<pid>.<starttime>`: recover the identity the reader reports, from the one
     // place it is written down.
-    if (
-      std::sscanf(
-        owner.c_str(), "/flux.owner.%u.%llu", &id.pid,
-        reinterpret_cast<unsigned long long *>(&id.starttime)) != 2) {
+    if (std::sscanf(owner.c_str(), "/flux.owner.%u.%" SCNu64, &id.pid, &id.starttime) != 2) {
       continue;
     }
     for (const ManifestEntry & e : OwnerFile::read_manifest(owner)) {
@@ -430,7 +429,7 @@ MappedSeg map_wait_validate(
   if (!sized) throw std::runtime_error("flux: segment never sized '" + name + "'");
 
   const std::size_t bytes = static_cast<std::size_t>(st.st_size);
-  void * p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  void * p = Segment::map_apart(fd, bytes);
   if (p == MAP_FAILED) fail("mmap", name, errno);
 
   auto * base = static_cast<std::byte *>(p);
@@ -774,7 +773,7 @@ Segment open_publisher_segment(
       ::close(fd);
       fail("ftruncate", seg, e);
     }
-    void * p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    void * p = Segment::map_apart(fd, bytes);
     if (p == MAP_FAILED) {
       int e = errno;
       ::close(fd);
@@ -921,13 +920,14 @@ ChannelStats read_channel_stats(const std::string & signpost)
   }
   p = ::mmap(nullptr, sizeof(ControlHeader), PROT_READ, MAP_SHARED, fd, 0);
   const int seg_map_err = errno;
+  const bool held = Segment::publisher_holds(fd);
   ::close(fd);
   if (p == MAP_FAILED) fail("segment mmap", seg, seg_map_err);
 
   const auto * ctrl = static_cast<const ControlHeader *>(p);
   if (
-    ctrl->init_state.load(std::memory_order_acquire) == kInitReady && ctrl->magic == kMagic &&
-    ctrl->version == kLayoutVersion) {
+    held && ctrl->init_state.load(std::memory_order_acquire) == kInitReady &&
+    ctrl->magic == kMagic && ctrl->version == kLayoutVersion) {
     out.live = true;
     out.slot_size = ctrl->slot_size;
     out.slot_count = ctrl->slot_count;

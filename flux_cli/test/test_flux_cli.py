@@ -32,7 +32,7 @@ class FakeTopic:
         self.fingerprint = fingerprint
         self.endpoints = list(endpoints)
         self.domain = domain
-        self.signpost = "/flux.v7.s" + domain + "." + key.strip("/").replace("/", ".")
+        self.signpost = "/flux.v8.s" + domain + "." + key.strip("/").replace("/", ".")
 
 
 class FakeStats:
@@ -40,7 +40,7 @@ class FakeStats:
         self.live = live
 
 
-# The name flattens every non-alnum character, so an unmarked `.a.b` reads as a channel actually
+# The name flattens every character but alnum and '_', so an unmarked `.a.b` reads as a channel actually
 # called that. Marking it is the whole point of key_exact.
 def test_an_inexact_key_is_marked_as_coming_from_the_name():
     assert display_name(FakeTopic("/a/b")) == "/a/b"
@@ -192,6 +192,20 @@ def test_domain_list_names_the_split_when_there_is_more_than_one(monkeypatch, ca
     assert "7 (here)" in out
     assert "\n0 " in out and "(here)" not in out.split("\n0 ")[1].split("\n")[0]
     assert "more than one domain" in out
+
+
+# Domains are integers, so 7 comes before 10 and 91 before 901.
+def test_domain_list_orders_domains_as_numbers(monkeypatch, capsys):
+    topics = [FakeTopic("/a", domain=d) for d in ("901", "10", "91", "7")]
+    monkeypatch.setattr(main_module.flux, "enumerate_topics", lambda: topics)
+    monkeypatch.setattr(
+        main_module.flux, "read_channel_stats", lambda _signpost: FakeStats(live=True)
+    )
+    args = build_parser().parse_args(["domain", "list"])
+    args.domain = "7"
+    assert main_module.cmd_domain_list(args) == 0
+    rows = capsys.readouterr().out.splitlines()[2:6]
+    assert [r.split()[0] for r in rows] == ["7", "10", "91", "901"]
 
 
 # A domain is an integer, rendered the way a node renders it, so `--domain 007` looks where a

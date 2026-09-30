@@ -28,7 +28,7 @@ CHANNEL        DOMAIN  SEGMENT  ENDPOINTS
 
 `SEGMENT`가 `down`인 것은 고장이 아니다. signpost는 영구라 발행자가 없어도 이름은 남는다.
 
-채널 이름 뒤에 `(from name)`이 붙으면 그 이름은 산 참가자가 아니라 `/dev/shm` 이름에서 되읽은 것이다. 이름은 alnum이 아닌 문자를 전부 `.`으로 바꾸므로 `/a/b`와 `.a.b`가 한 이름이다. 표시가 없으면 진짜 key다.
+채널 이름 뒤에 `(from name)`이 붙으면 그 이름은 산 참가자가 아니라 `/dev/shm` 이름에서 되읽은 것이다. 이름은 alnum과 `_`가 아닌 문자를 전부 `.`으로 바꾸므로 `/a/b`와 `.a.b`가 한 이름이다. 표시가 없으면 진짜 key다.
 
 조회는 둘 다 받는다. `info`와 `hz`에 `/cam/left`를 줘도 `.cam.left`를 줘도 같은 채널을 찾는다. 발행자가 죽은 채널은 되읽은 철자로만 보이는데, 채널을 조회하는 상황이 대개 그 상황이다.
 
@@ -38,7 +38,7 @@ CHANNEL        DOMAIN  SEGMENT  ENDPOINTS
 channel      /cam/left
 domain        12
 fingerprint  0x0000000000000abc
-signpost     /flux.v7.s12..cam.left.0000000000000abc
+signpost     /flux.v8.s12..cam.left.0000000000000abc
 segment      up, epoch 1
 slots        8 x 1 MiB
 storage      host

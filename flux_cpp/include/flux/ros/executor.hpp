@@ -55,8 +55,8 @@ public:
   // Drive a ROS node: rclcpp services its entities as its own executor would, while readiness
   // reaches the merged wait through the wake fd. Every entity with a readiness callback is
   // hooked; timers have none and are answered by shortening the wait to the nearest deadline.
-  // Entities created after this call are bridged at the top of the next spin pass. Do not also
-  // hand the node to an rclcpp executor.
+  // Entities created after this call are bridged within one tick, or on the pass after
+  // interrupt(). Do not also hand the node to an rclcpp executor.
   void add_ros_node(const rclcpp::Node::SharedPtr & node);
 
   // Drive one callback group instead of a whole node: the group is claimed
@@ -122,8 +122,13 @@ public:
   // than lost, and cleared on the way out so this executor can be spun again.
   void stop() noexcept;
 
-  // End the current wait without ending the loop. Safe from another thread.
-  void interrupt() noexcept { core_.interrupt(); }
+  // End the current wait without ending the loop. Safe from another thread. The pass it wakes
+  // also bridges ROS entities created since the last rescan.
+  void interrupt() noexcept
+  {
+    rescan_.store(true, std::memory_order_release);
+    core_.interrupt();
+  }
 
   // One pass without looping: deliver ready flux frames, wait up to `timeout_ns` if none were,
   // then service whatever ROS reports ready. Returns flux callbacks run. Throws std::logic_error
@@ -188,11 +193,15 @@ private:
   flux::Executor core_;
   // Shared: a hook runs on an rmw listener thread and can outlive this executor.
   std::shared_ptr<std::atomic<bool>> ros_ready_ = std::make_shared<std::atomic<bool>>(false);
+  // Built once: building these per rescan allocated per group.
+  std::function<void(std::size_t)> poke_;
+  std::function<void(std::size_t, int)> poke_waitable_;
   int ros_budget_ = kDefaultRosBudget;
   // Nothing pokes the ring again for a message rclcpp already holds, so a pump that stopped on
   // the budget must keep the next pass from blocking.
   bool ros_backlog_ = false;
   std::atomic<bool> stop_requested_{false};
+  std::atomic<bool> rescan_{false};
   rclcpp::OnShutdownCallbackHandle on_shutdown_;  // context shutdown ends spin(), as in rclcpp
   // A spin loop owns the entry lists. rclcpp's `spinning` cannot say this: it is that library's
   // cancel mechanism and every ROS pass has to raise it, spin_once included.
@@ -208,6 +217,7 @@ private:
   std::unordered_map<const rclcpp::ServiceBase *, rclcpp::ServiceBase::WeakPtr> ros_services_;
   std::unordered_map<const rclcpp::ClientBase *, rclcpp::ClientBase::WeakPtr> ros_clients_;
   std::unordered_map<const rclcpp::Waitable *, rclcpp::Waitable::WeakPtr> ros_waitables_;
+  std::unordered_map<const rclcpp::TimerBase *, rclcpp::TimerBase::WeakPtr> ros_timers_;
 };
 
 }  // namespace flux::ros

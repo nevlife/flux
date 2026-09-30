@@ -5,17 +5,22 @@
 #include "flux/segment.hpp"
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 // Mechanics only: mapping, OFD locks, writing a fresh header. Which name to use, whether to
 // create or join, whether to reinitialize or adopt, and when to unlink are rendezvous policy and
@@ -37,6 +42,45 @@ bool ofd_setlk(int fd, short type) noexcept
   fl.l_len = 1;
   return ::fcntl(fd, F_OFD_SETLK, &fl) == 0;
 }
+
+// Every liveness fd this process holds. A forked child shares each one's open file description,
+// and with it the OFD lock, so a child that kept them would make a dead publisher look alive for
+// as long as the child lives. The child closes them at fork; liveness belongs to the process that
+// took the lock. The mutex is held across fork so the child never sees the list mid-edit.
+std::mutex g_live_mtx;
+std::vector<int> g_live_fds;
+bool g_live_atfork_registered = false;
+
+void live_fork_prepare() noexcept
+{
+  g_live_mtx.lock();
+}
+void live_fork_parent() noexcept
+{
+  g_live_mtx.unlock();
+}
+void live_fork_child() noexcept
+{
+  for (int fd : g_live_fds) ::close(fd);
+  g_live_fds.clear();
+  g_live_mtx.unlock();
+}
+
+void hold_liveness_fd(int fd) noexcept
+{
+  std::lock_guard<std::mutex> lk(g_live_mtx);
+  if (!g_live_atfork_registered) {
+    g_live_atfork_registered = true;
+    ::pthread_atfork(&live_fork_prepare, &live_fork_parent, &live_fork_child);
+  }
+  g_live_fds.push_back(fd);
+}
+
+void drop_liveness_fd(int fd) noexcept
+{
+  std::lock_guard<std::mutex> lk(g_live_mtx);
+  g_live_fds.erase(std::remove(g_live_fds.begin(), g_live_fds.end(), fd), g_live_fds.end());
+}
 }  // namespace
 
 bool Segment::lock_read(int fd) noexcept
@@ -47,6 +91,33 @@ bool Segment::lock_read(int fd) noexcept
 bool Segment::lock_write(int fd) noexcept
 {
   return ofd_setlk(fd, F_WRLCK);
+}
+
+void * Segment::map_apart(int fd, std::size_t bytes) noexcept
+{
+  char path[32];
+  std::snprintf(path, sizeof(path), "/proc/self/fd/%d", fd);
+  const int own = ::open(path, O_RDWR | O_CLOEXEC);
+  if (own < 0) return MAP_FAILED;
+  void * p = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, own, 0);
+  const int e = errno;
+  ::close(own);
+  errno = e;
+  return p;
+}
+
+bool Segment::publisher_holds(int fd) noexcept
+{
+  // Asks what a write lock would collide with, taking nothing. A read lock is a live publisher.
+  // A write lock on a ready segment is a prober, a sweep or the last publisher leaving, none of
+  // which is a publisher to attach to.
+  struct flock fl;
+  std::memset(&fl, 0, sizeof(fl));
+  fl.l_type = F_WRLCK;
+  fl.l_whence = SEEK_SET;
+  fl.l_start = 0;
+  fl.l_len = 1;
+  return ::fcntl(fd, F_OFD_GETLK, &fl) == 0 && fl.l_type == F_RDLCK;
 }
 
 void Segment::init_header(
@@ -190,6 +261,10 @@ Segment Segment::adopt_shm(
   s.layout_ = layout;
   s.backing_ = kShm;
   s.fd_ = fd;  // >= 0 keeps the liveness read lock held
+  if (fd >= 0) {
+    s.lock_pid_ = ::getpid();
+    hold_liveness_fd(fd);
+  }
   s.name_ = std::move(name);
   s.id_ = id;
   s.unlink_on_last_out_ = unlink_on_last_out;
@@ -218,8 +293,10 @@ void Segment::reset() noexcept
   // that opened this object just before the unlink still holds a fd to it, but it does not adopt
   // the orphan: open_publisher_segment rechecks, after it locks, that the name still resolves to
   // its fd (discovery.cpp name_still_bound). Subscribers hold no lock (fd_ < 0) and never unlink.
-  // A crash skips this entirely.
-  if (fd_ >= 0) {
+  // A crash skips this entirely. So does a forked child's copy: its fd was closed at fork, and
+  // the lock is the parent's to give up.
+  if (fd_ >= 0 && lock_pid_ == ::getpid()) {
+    drop_liveness_fd(fd_);
     if (unlink_on_last_out_ && backing_ == kShm && !name_.empty() && ofd_setlk(fd_, F_WRLCK)) {
       ::shm_unlink(name_.c_str());
     }
@@ -230,6 +307,7 @@ void Segment::reset() noexcept
   ctrl_ = nullptr;
   backing_ = kNone;
   fd_ = -1;
+  lock_pid_ = 0;
   name_.clear();
   id_ = SegmentId{};
   unlink_on_last_out_ = false;
@@ -260,6 +338,7 @@ Segment & Segment::operator=(Segment && o) noexcept
     layout_ = o.layout_;
     backing_ = o.backing_;
     fd_ = o.fd_;
+    lock_pid_ = o.lock_pid_;
     name_ = std::move(o.name_);
     id_ = o.id_;
     unlink_on_last_out_ = o.unlink_on_last_out_;
@@ -273,6 +352,7 @@ Segment & Segment::operator=(Segment && o) noexcept
     o.ctrl_ = nullptr;
     o.backing_ = kNone;
     o.fd_ = -1;
+    o.lock_pid_ = 0;
     o.id_ = SegmentId{};
     o.unlink_on_last_out_ = false;
     o.payload_readonly_ = false;

@@ -75,7 +75,7 @@ TEST(GpuHostRegister, TheDeviceAddressIsNotTheHostAddress)
 {
   if (!registered_route())
     GTEST_SKIP() << "flux-cap:gpu-shm-registered host does not take the ShmRegistered route";
-  std::vector<std::uint8_t> buffer(64 * 1024);
+  std::vector<std::uint8_t> buffer(std::size_t{64} * 1024);
   const auto reg = flux::gpu::HostRegistration::create(buffer.data(), buffer.size(), false);
   ASSERT_TRUE(static_cast<bool>(reg));
   EXPECT_NE(reg.device_base(), static_cast<void *>(buffer.data()));

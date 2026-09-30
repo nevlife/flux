@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -15,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <thread>
@@ -416,9 +418,9 @@ TEST(FluxExecutor, DeliversIntraProcessWithoutATick)
   EXPECT_GT(delivered, 0) << "an intra-process message did not wake the executor";
 }
 
-// A subscription created after add_ros_node() has no hook yet; the next spin pass must pick it
-// up. signal() forces that pass, then delivery must be event-driven -- the 30 s tick means a
-// message that only surfaces on the tick fails the 5 s deadline.
+// A subscription created after add_ros_node() has no hook yet; the pass interrupt() wakes must
+// pick it up. Delivery must then be event-driven -- the 30 s tick means a message that only
+// surfaces on the tick fails the 5 s deadline.
 TEST(FluxExecutor, BridgesASubscriptionCreatedAfterAdd)
 {
   FLUX_REQUIRE_IO_URING();
@@ -459,6 +461,66 @@ TEST(FluxExecutor, BridgesASubscriptionCreatedAfterAdd)
   rclcpp::shutdown();
 
   EXPECT_GT(delivered, 0) << "a subscription created after add_ros_node was never bridged";
+}
+
+// Without interrupt() the rescan runs once per tick, not per pass. A subscription nobody announced
+// is bridged within one tick; after that each message wakes the executor on arrival. Unbridged,
+// a message waits for the next tick's ROS pass, so a 1 s tick puts most of five 50 ms-spaced
+// sends far past the 100 ms bound.
+TEST(FluxExecutor, BridgesAnUnannouncedSubscriptionWithinATick)
+{
+  FLUX_REQUIRE_IO_URING();
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("flux_tick_rescan_node");
+  auto pub = node->create_publisher<std_msgs::msg::UInt64>("/exec/tick_rescan", 10);
+
+  flux::ros::Executor exec;
+  exec.add_ros_node(node);
+
+  std::atomic<bool> run{true};
+  std::thread spinner([&] { exec.spin(run, 1'000'000'000); });
+  std::this_thread::sleep_for(100ms);
+
+  std::atomic<int> got{0};
+  std::atomic<std::int64_t> last_ns{0};
+  auto sub = node->create_subscription<std_msgs::msg::UInt64>(
+    "/exec/tick_rescan", 10, [&](const std_msgs::msg::UInt64 &) {
+      last_ns.store(std::chrono::steady_clock::now().time_since_epoch().count());
+      got.fetch_add(1);
+    });
+
+  std_msgs::msg::UInt64 m;
+  m.data = 1;
+  auto deadline = std::chrono::steady_clock::now() + 5s;
+  while (got.load() == 0 && std::chrono::steady_clock::now() < deadline) {
+    pub->publish(m);
+    std::this_thread::sleep_for(20ms);
+  }
+  std::this_thread::sleep_for(1200ms);  // past one tick: the rescan has run
+
+  std::int64_t worst_ns = 0;
+  for (int i = 0; i < 5; ++i) {
+    const int before = got.load();
+    const auto sent = std::chrono::steady_clock::now();
+    pub->publish(m);
+    deadline = sent + 2s;
+    while (got.load() == before && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(1ms);
+    }
+    const std::int64_t lat = got.load() == before
+                               ? std::numeric_limits<std::int64_t>::max()
+                               : last_ns.load() - sent.time_since_epoch().count();
+    worst_ns = std::max(worst_ns, lat);
+    std::this_thread::sleep_for(50ms);
+  }
+
+  run.store(false);
+  exec.stop();
+  spinner.join();
+  rclcpp::shutdown();
+
+  EXPECT_LT(worst_ns, 100'000'000) << "a message waited for the tick: the subscription was never "
+                                      "bridged by the per-tick rescan";
 }
 
 // The fallback the kernel selects below 6.7 (no io_uring FUTEX_WAIT). It cannot be

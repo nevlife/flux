@@ -4,9 +4,6 @@ An opt-in library that moves large data between C++ and Python ROS 2 nodes on th
 
 It is not a new middleware. It is called per topic inside an existing `rclcpp`/`rclpy` node, and every other topic keeps flowing over DDS as usual.
 
-> [!WARNING]
-> Alpha. The API, the `.msg` layout rules, and the shared-memory segment format can all change without notice, and real-world testing is still limited.
-
 ## Build
 
 Place it under `src/` of a colcon workspace and build there. nanobind is a submodule, so fetch submodules too, and build with symlinks.
@@ -50,16 +47,15 @@ colcon test
 | discovery | O |
 | crash reclaim | O |
 | multiple publishers | O |
-| enumeration and the `flux` CLI | △ |
+| enumeration and the `flux` CLI | O |
 | page pre-commit, mlock | O |
 | per-thread setup hook (`on_thread_start`) | O |
 | GPU `ShmDirect` | △ |
-| GPU `ShmRegistered` | △ |
+| GPU `ShmRegistered` | O |
 | GPU `DeviceHandle` | △ |
-| Cross-container transport (`--ipc=host --pid=host`) | △ |
-| overflow policy (overwrite / block the publisher) | X |
-| rviz2, rqt, ros2 bridge | △ |
-| bag record and play (`flux_bag`) | △ |
+| Cross-container transport (`--ipc=host --pid=host`, and `--net=host` for GPU `DeviceHandle`) | O |
+| rviz2, rqt, ros2 bridge | O |
+| bag record and play (`flux_bag`) | O |
 
 ## Documents
 

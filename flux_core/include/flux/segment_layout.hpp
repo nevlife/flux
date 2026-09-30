@@ -20,7 +20,7 @@ namespace flux
 
 inline constexpr std::uint32_t kMagic = 0x464C5558u;  // 'FLUX'
 inline constexpr std::uint32_t kLayoutVersion =
-  7u;  // v7: payload offset/stride page-aligned so a subscriber mapping can drop payload writes
+  8u;  // v8: '_' kept in names; v7: payload offset/stride page-aligned
 inline constexpr std::size_t kCacheLine = 64;
 // Payload region alignment: one page, so a subscriber can mprotect(PROT_READ) everything from
 // payload_offset() to the end of its mapping while the headers it writes (refcount, holders,

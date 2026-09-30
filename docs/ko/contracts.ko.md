@@ -60,6 +60,8 @@ C++과 Python은 같은 엔진(`flux_core`)을 부르지만 서로 다른 코드
 | X-050 | 큐에 든 `StampedFrame`은 그것을 전달한 콜백이 끝난 뒤에도 읽힌다 | `MessageFilters.AQueuedFrameOutlivesTheCallbackThatDeliveredIt` | `test_a_queued_frame_outlives_the_callback_that_delivered_it` |
 | X-051 | `enumerate_topics`는 살아 있는 publisher를 key·fingerprint·소유자와 함께 나열한다 | `Enumerate.AnnouncedEndpointsComeBackWithTheirKeyAndLabel` | `test_enumerate_topics_lists_a_live_publisher` |
 | X-052 | `read_channel_stats`는 살아 있는 채널의 모양을 보고하고 발행 수를 정확히 센다 | `ChannelStats.ALiveChannelReportsItsShapeAndCountsPublishes` | `test_read_channel_stats_reports_shape_and_counts_publishes` |
+| X-053 | 프로세스가 살아 있어도 닫힌 endpoint는 목록에서 빠진다 | `Enumerate.AClosedEndpointIsNoLongerListedWhileItsProcessLives` | `test_a_closed_endpoint_is_no_longer_listed_while_its_process_lives` |
+| X-054 | `take_blocking`은 아직 뜨지 않은 발행자도 기다린다 | `PullSurface.TakeBlockingWaitsForAPublisherThatStartsLater` | `test_take_blocking_waits_for_a_publisher_that_starts_later` |
 
 ## 2. 한쪽만 지키는 것
 
