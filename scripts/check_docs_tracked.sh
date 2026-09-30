@@ -9,6 +9,6 @@ cd "$(git rev-parse --show-toplevel)"
 untracked=$(git ls-files --others --exclude-standard -- docs/)
 if [ -n "$untracked" ]; then
   echo "untracked files under docs/ -- git add them, or ignore them deliberately:" >&2
-  echo "$untracked" | sed 's/^/  /' >&2
+  echo "${untracked//$'\n'/$'\n'  }" | sed '1s/^/  /' >&2
   exit 1
 fi

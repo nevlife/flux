@@ -1,0 +1,25 @@
+# Defect classes only: style and the Core Guidelines Bounds/Type profiles are off, since a shm
+# engine cannot avoid casts and pointer arithmetic over mapped bytes. Each disabled check below
+# was run over the tree and every hit was a false positive or intended.
+# Only flux's own headers: the vendored nanobind under thirdparty/ is not ours to change.
+HeaderFilterRegex: '.*/flux_[a-z]+/include/.*'
+Checks: >
+  -*,
+  bugprone-*,
+  concurrency-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-branch-clone,
+  -bugprone-switch-missing-default-case,
+  -bugprone-empty-catch,
+  -bugprone-unchecked-optional-access,
+  -bugprone-unchecked-string-to-number-conversion,
+  -bugprone-return-const-ref-from-parameter,
+  -concurrency-mt-unsafe,
+  -performance-no-int-to-ptr,
+  -performance-enum-size,
+  -performance-inefficient-string-concatenation
+CheckOptions:
+  # Stream copies touch a shared_ptr, but only where a channel is built, never per frame.
+  performance-unnecessary-value-param.AllowedTypes: '::flux::gpu::Stream;^::nanobind::'

@@ -1,0 +1,3 @@
+# The document examples copy where a copy reads plainer; they run once, not per frame.
+InheritParentConfig: true
+Checks: -performance-*

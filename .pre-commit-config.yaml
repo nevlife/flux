@@ -1,3 +1,4 @@
+exclude: ^thirdparty/  # vendored nanobind stays pristine
 repos:
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.6
@@ -10,6 +11,17 @@ repos:
     hooks:
       - id: ruff-format
         types: [python]  # not the python fences in docs/, whose trailing comments run long
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.37.1
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint.yaml]
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.41.0
@@ -25,6 +37,20 @@ repos:
         language: script
         types: [text]
 
+      - id: hangul-md-only
+        name: hangul only in .md files
+        entry: scripts/check_hangul_md_only.sh
+        language: script
+        types: [text]
+
+      # Needs the build's compile commands (scripts/check_clang_tidy.py says where it looks).
+      - id: clang-tidy
+        name: clang-tidy defect classes (.clang-tidy)
+        entry: scripts/check_clang_tidy.py
+        language: python
+        additional_dependencies: [clang-tidy==22.1.8]
+        types_or: [c++, c]
+
       - id: docs-tracked
         name: no untracked files under docs/
         entry: scripts/check_docs_tracked.sh
@@ -33,9 +59,9 @@ repos:
         always_run: true
 
       # always_run rather than files:. Both checkers read the whole document set -- api.en.md,
-      # raw_api.en.md and core_api.en.md, and the examples of all three packages -- so a pattern naming
-      # a subset of that would let an edit to the rest skip the gate. A checker that runs on some
-      # edits is a checker whose verdict depends on which file you touched.
+      # raw_api.en.md and core_api.en.md, and the examples of all three packages -- so a pattern
+      # naming a subset of that would let an edit to the rest skip the gate. A checker that runs on
+      # some edits is a checker whose verdict depends on which file you touched.
       - id: doc-examples
         name: user document fences match the compiled examples
         entry: scripts/check_doc_examples.py

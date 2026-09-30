@@ -1,0 +1,4 @@
+# Tests copy for readability and take rclcpp callback arguments the rclcpp way; nothing here runs
+# per frame. A throw from a static in a test binary fails the run at start, where it is seen.
+InheritParentConfig: true
+Checks: -performance-*,-bugprone-throwing-static-initialization
