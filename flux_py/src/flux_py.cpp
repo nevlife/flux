@@ -10,6 +10,7 @@
 #include "flux/owner.hpp"
 #include "flux/segment.hpp"
 #include "flux/segment_layout.hpp"
+#include "flux/trace.h"
 #include "flux/version.hpp"
 
 #include <nanobind/nanobind.h>
@@ -1119,8 +1120,11 @@ public:
 
   void wait_for_work(std::int64_t timeout_ns) override
   {
-    nb::gil_scoped_release unlocked;
-    flux::Executor::wait_for_work(timeout_ns);
+    {
+      nb::gil_scoped_release unlocked;
+      flux::Executor::wait_for_work(timeout_ns);
+    }
+    FLUX_TRACE(flux_trace_py_gil(static_cast<const flux::Executor *>(this)));
   }
 
 protected:
@@ -1147,6 +1151,7 @@ public:
   {
     nb::object v = sub_->take();
     if (v.is_none()) return 0;
+    FLUX_TRACE(flux_trace_py_ready(sub_->channel()->wait_handle().get()));
     cb_(v);
     return 1;
   }

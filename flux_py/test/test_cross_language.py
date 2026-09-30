@@ -42,6 +42,18 @@ def _core_lib():
 
 CORE_LIB = _core_lib()
 
+
+def _trace_libs():
+    # A flux_core built with FLUX_TRACING calls into the libflux_tracetools.so beside it.
+    if CORE_LIB is None:
+        return []
+    lib_dir = os.path.dirname(CORE_LIB)
+    so = os.path.join(lib_dir, "libflux_tracetools.so")
+    return [so, f"-Wl,-rpath,{lib_dir}"] if os.path.isfile(so) else []
+
+
+TRACE_LIBS = _trace_libs()
+
 needs_cxx = pytest.mark.skipif(
     shutil.which("g++") is None or not os.path.isdir(CORE_INCLUDE) or CORE_LIB is None,
     reason="flux-cap:cxx-toolchain",
@@ -129,6 +141,7 @@ def _build(tmp_path, source, name):
             f"-I{CORE_INCLUDE}",
             str(src),
             CORE_LIB,
+            *TRACE_LIBS,
             "-pthread",
             "-o",
             str(exe),

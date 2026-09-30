@@ -1,5 +1,7 @@
 #include "flux/executor.hpp"
 
+#include "flux/trace.h"
+
 #include <poll.h>
 #include <unistd.h>
 
@@ -262,7 +264,9 @@ int Executor::dispatch(const std::function<bool()> & yield)
     Entry & e = *entries_[pick];
     const std::uint64_t tag = make_tag(EventKind::channel, static_cast<std::uint32_t>(pick));
     e.probed = true;
+    FLUX_TRACE(flux_trace_callback_start(this, static_cast<std::uint32_t>(pick)));
     const int n = e.src->deliver_one();
+    FLUX_TRACE(flux_trace_callback_end(this, static_cast<std::uint32_t>(pick), n));
     dispatched += n;
     if (n > 0) {
       // Equal priorities take turns: the source just served goes behind its peers.
@@ -333,6 +337,7 @@ void Executor::wait_for_work(std::int64_t timeout_ns)
           break;
       }
     }
+    FLUX_TRACE(flux_trace_wake(this, static_cast<std::uint32_t>(events_.size())));
     return;
   }
   // Fallback: the parker threads started by dispatch() poke the wake fd, so this is one blocking
@@ -356,6 +361,7 @@ void Executor::wait_for_work(std::int64_t timeout_ns)
   p.revents = 0;
   ::poll(&p, 1, ms);
   if (p.revents & POLLIN) ctl_.drain();
+  FLUX_TRACE(flux_trace_wake(this, (p.revents & POLLIN) ? 1u : 0u));
 }
 
 int Executor::spin_once(std::int64_t timeout_ns, const std::function<bool()> & woken)

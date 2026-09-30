@@ -64,6 +64,36 @@ configure_file(
   ${CMAKE_CURRENT_BINARY_DIR}/include/flux/version.hpp
   @ONLY)
 
+# Trace events are functions exported from a shared library of their own (include/flux/trace.h),
+# which uprobe, LD_PRELOAD and LTTng all attach to. OFF removes every call site at compile time.
+option(FLUX_TRACING "Emit flux trace events (needs LTTng-UST headers)" ON)
+set(flux_core_export_targets flux_core)
+if(FLUX_TRACING)
+  enable_language(C)
+  find_path(FLUX_LTTNG_INCLUDE_DIR lttng/tracepoint.h)
+  find_library(FLUX_LTTNG_UST_LIB lttng-ust)
+  if(NOT FLUX_LTTNG_INCLUDE_DIR OR NOT FLUX_LTTNG_UST_LIB)
+    message(FATAL_ERROR
+      "FLUX_TRACING=ON needs LTTng-UST (apt: liblttng-ust-dev), or configure with -DFLUX_TRACING=OFF")
+  endif()
+  add_library(flux_tracetools SHARED src/trace/tracetools.c)
+  target_include_directories(flux_tracetools
+    PUBLIC
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/trace
+      ${FLUX_LTTNG_INCLUDE_DIR})
+  target_link_libraries(flux_tracetools PRIVATE ${CMAKE_DL_LIBS})
+  target_compile_options(flux_tracetools PRIVATE -Wall -Wextra)
+  add_library(flux_trace_provider SHARED src/trace/provider.c)
+  target_include_directories(flux_trace_provider PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/trace
+    ${FLUX_LTTNG_INCLUDE_DIR})
+  target_link_libraries(flux_trace_provider PRIVATE ${FLUX_LTTNG_UST_LIB})
+  list(APPEND flux_core_export_targets flux_tracetools)
+endif()
+
 add_library(flux_core
   src/version.cpp
   src/channel.cpp
@@ -99,6 +129,11 @@ target_include_directories(flux_core
 target_compile_options(flux_core PRIVATE -Wall -Wextra -Wpedantic)
 if(FLUX_HAS_IO_URING_FUTEX)
   target_compile_definitions(flux_core PRIVATE FLUX_HAS_IO_URING_FUTEX=1)
+endif()
+if(FLUX_TRACING)
+  target_link_libraries(flux_core PUBLIC flux_tracetools)
+  target_compile_definitions(flux_core PUBLIC FLUX_TRACING=1)
+  install(TARGETS flux_trace_provider LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()
 
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
@@ -136,6 +171,17 @@ set(flux_core_test_srcs
 #   default          linked against a replay main() and run over a fixed corpus by ctest, so the
 #                    harnesses cannot rot between fuzzing sessions
 set(flux_core_fuzzers fuzz_wire fuzz_frame)
+# The trace test runs with a counting library in LD_PRELOAD, the way armo attaches. ASan refuses
+# to start unless its runtime is first in the preload list, so the sanitizer builds waive that.
+if(FLUX_TRACING)
+  add_library(flux_trace_counter SHARED test/trace/trace_counter.c)
+  target_include_directories(flux_trace_counter PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(flux_trace_counter PRIVATE ${CMAKE_DL_LIBS})
+  target_compile_definitions(flux_trace_counter PRIVATE _GNU_SOURCE)  # RTLD_NEXT
+  set(flux_trace_test_env
+    "LD_PRELOAD=$<TARGET_FILE:flux_trace_counter>" "ASAN_OPTIONS=verify_asan_link_order=0")
+endif()
+
 function(flux_add_fuzzer name)
   if(FLUX_FUZZER)
     add_executable(${name} test/fuzz/${name}.cpp)
@@ -147,7 +193,7 @@ function(flux_add_fuzzer name)
 endfunction()
 
 if(ament_cmake_FOUND)
-  install(TARGETS flux_core
+  install(TARGETS ${flux_core_export_targets}
     EXPORT export_flux_core
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
@@ -172,6 +218,11 @@ if(ament_cmake_FOUND)
       target_link_libraries(test_flux_core flux_core Threads::Threads)
       target_include_directories(test_flux_core PRIVATE test)
     endif()
+    if(FLUX_TRACING)
+      ament_add_gtest(test_flux_trace test/trace/test_trace.cpp ENV ${flux_trace_test_env})
+      target_link_libraries(test_flux_trace flux_core ${CMAKE_DL_LIBS})
+      target_include_directories(test_flux_trace PRIVATE test)
+    endif()
     foreach(f IN LISTS flux_core_fuzzers)
       flux_add_fuzzer(${f})
       if(NOT FLUX_FUZZER)  # a libFuzzer binary would fuzz forever; only the replay build is a test
@@ -183,7 +234,7 @@ if(ament_cmake_FOUND)
   ament_package()
 else()
   include(CMakePackageConfigHelpers)
-  install(TARGETS flux_core
+  install(TARGETS ${flux_core_export_targets}
     EXPORT flux_coreTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -220,6 +271,14 @@ else()
     target_link_libraries(test_flux_core PRIVATE flux_core GTest::gtest GTest::gtest_main Threads::Threads)
     target_include_directories(test_flux_core PRIVATE test)
     add_test(NAME test_flux_core COMMAND test_flux_core)
+    if(FLUX_TRACING)
+      add_executable(test_flux_trace test/trace/test_trace.cpp)
+      target_link_libraries(test_flux_trace PRIVATE
+        flux_core GTest::gtest GTest::gtest_main ${CMAKE_DL_LIBS})
+      target_include_directories(test_flux_trace PRIVATE test)
+      add_test(NAME test_flux_trace COMMAND test_flux_trace)
+      set_tests_properties(test_flux_trace PROPERTIES ENVIRONMENT "${flux_trace_test_env}")
+    endif()
     foreach(f IN LISTS flux_core_fuzzers)
       flux_add_fuzzer(${f})
       if(NOT FLUX_FUZZER)  # a libFuzzer binary would fuzz forever; only the replay build is a test

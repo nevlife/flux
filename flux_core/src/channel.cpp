@@ -1,6 +1,7 @@
 #include "flux/channel.hpp"
 
 #include "flux/futex.hpp"
+#include "flux/trace.h"
 
 #include <atomic>
 #include <cerrno>
@@ -28,6 +29,13 @@ namespace
 {
 
 constexpr std::int64_t kNsPerSec = 1'000'000'000;
+
+void trace_channel_init([[maybe_unused]] const ChannelShared & sh) noexcept
+{
+  FLUX_TRACE(flux_trace_channel_init(
+    &sh, sh.seg.id().dev, sh.seg.id().ino, sh.seg.name().c_str(), sh.seg.holds_liveness_lock(),
+    sh.layout.slot_count, sh.layout.slot_size));
+}
 
 // The seqlock's plain stores, isolated so test/tsan.supp names them and not the atomics around
 // them. noinline is load bearing: an inlined leaf leaves no frame for a suppression to match,
@@ -221,7 +229,10 @@ void FrameView::release() noexcept
     // A failed fence leaves the borrow standing on purpose: the publisher must not regain a slot
     // a kernel may still be reading. The handle is consumed either way so a second release
     // cannot double-count, and the leak is visible through Channel::fence_failed().
-    if (sh_->fence(ChannelShared::Seam::Release)) {
+    const bool fenced = sh_->fence(ChannelShared::Seam::Release);
+    // Before end_borrow: once the borrow is returned a publisher may rewrite the ticket.
+    FLUX_TRACE(flux_trace_release(sh_.get(), slot_->commit_ticket, fenced));
+    if (fenced) {
       sh_->end_borrow(holder_, slot_);  // sh_ outlives the Channel, so this is always safe
     } else {
       sh_->leases_leaked.fetch_add(1, std::memory_order_release);  // never returned; see Refused
@@ -243,6 +254,7 @@ Channel::Channel(Segment segment) noexcept
 : sh_(std::make_shared<ChannelShared>(std::move(segment)))
 {
   position_cursor();
+  trace_channel_init(*sh_);
 }
 
 Channel::Channel(Segment segment, gpu::Stream stream, const MemoryPolicy & mem)
@@ -254,6 +266,7 @@ Channel::Channel(Segment segment, gpu::Stream stream, const MemoryPolicy & mem)
   mem_ = mem;
   apply_memory_policy();  // before any frame crosses: the bound is on the hot path, not on init
   position_cursor();
+  trace_channel_init(*sh_);
 }
 
 Channel::Channel(
@@ -470,7 +483,8 @@ SlotHeader * Channel::claim_slot(std::uint32_t & s, std::uint64_t & even) noexce
   const std::uint32_t n = sh_->layout.slot_count;
   // Two passes: on the first, select a free slot as usual; if none is free, reclaim slots
   // held by dead subscribers and retry once. The second pass drops.
-  for (int pass = 0; pass < 2; ++pass) {
+  int pass = 0;
+  for (; pass < 2; ++pass) {
     // Scan from just past the latest slot. With multiple publishers this is only a hint;
     // the CAS claim below resolves any collision.
     const std::uint64_t l = sh_->ctrl->latest.load(std::memory_order_relaxed);
@@ -494,10 +508,14 @@ SlotHeader * Channel::claim_slot(std::uint32_t & s, std::uint64_t & even) noexce
         sl->seq.store(even + 2, std::memory_order_seq_cst);     // borrowed under us: revert
         continue;                                               // reselect
       }
-      if (stamp_writer(sl, even + 1)) return sl;  // identity recorded for crash recovery
+      if (stamp_writer(sl, even + 1)) {  // identity recorded for crash recovery
+        FLUX_TRACE(flux_trace_claim(sh_.get(), s, FLUX_TRACE_CLAIM_OK, pass));
+        return sl;
+      }
       // No identity to recover a crash by: give the claim back and drop, not lose the slot.
       sl->seq.store(even + 2, std::memory_order_seq_cst);
       sh_->dropped.fetch_add(1, std::memory_order_relaxed);
+      FLUX_TRACE(flux_trace_claim(sh_.get(), s, FLUX_TRACE_CLAIM_NO_IDENTITY, pass));
       return nullptr;
     }
 
@@ -510,6 +528,7 @@ SlotHeader * Channel::claim_slot(std::uint32_t & s, std::uint64_t & even) noexce
   }
 
   sh_->dropped.fetch_add(1, std::memory_order_relaxed);  // all slots held by live borrowers
+  FLUX_TRACE(flux_trace_claim(sh_.get(), n, FLUX_TRACE_CLAIM_BACKPRESSURE, pass > 0));
   return nullptr;
 }
 
@@ -519,6 +538,7 @@ void ChannelShared::finish_commit(SlotHeader * sl, std::uint32_t s, std::uint64_
   // take() consumer reads commit_ticket under the same seqlock as the payload/meta.
   const std::uint64_t ticket = ctrl->publish_seq.fetch_add(1, std::memory_order_relaxed);
   store_commit_ticket(sl, ticket);
+  [[maybe_unused]] const std::uint64_t nbytes = sl->meta.nbytes;  // the slot is not ours after
   sl->seq.store(even + 2, std::memory_order_release);  // commit: publishes payload+meta+ticket
 
   // publish latest: move `latest` to (ticket, slot) only if this commit is newer -- so
@@ -537,7 +557,9 @@ void ChannelShared::finish_commit(SlotHeader * sl, std::uint32_t s, std::uint64_
   // wait()'s (announce waiters, read wakeup), so a subscriber racing to park is never
   // left asleep. Skipping the syscall when waiters==0 keeps the no-listener hot path free.
   ctrl->wakeup.fetch_add(1, std::memory_order_seq_cst);
-  if (ctrl->waiters.load(std::memory_order_seq_cst) > 0) futex_wake(&ctrl->wakeup, INT_MAX);
+  const bool woke = ctrl->waiters.load(std::memory_order_seq_cst) > 0;
+  if (woke) futex_wake(&ctrl->wakeup, INT_MAX);
+  FLUX_TRACE(flux_trace_commit(this, ticket, s, nbytes, woke));
 }
 
 WriteSlot Channel::loan() noexcept
@@ -778,8 +800,10 @@ bool Channel::begin_borrow() noexcept
     // recover by releasing anything. Reporting that as max_borrow points at the wrong knob.
     if (sh_->leases_leaked.load(std::memory_order_acquire) >= qos_.max_borrow()) {
       ++refused_.fence;
+      FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_FENCE));
     } else {
       ++refused_.max_borrow;
+      FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_MAX_BORROW));
     }
     return false;
   }
@@ -789,6 +813,7 @@ bool Channel::begin_borrow() noexcept
   } catch (...) {
     sh_->outstanding.fetch_sub(1, std::memory_order_release);
     ++refused_.no_owner_file;
+    FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_NO_OWNER_FILE));
     return false;
   }
   return true;
@@ -810,6 +835,7 @@ FrameView Channel::peek() noexcept
     // refcount++ outside the mapping. Same reason the meta bounds are rechecked below.
     if (s >= sh_->layout.slot_count) {
       ++refused_.bad_frame;
+      FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_BAD_FRAME));
       break;
     }
     SlotHeader * sl = slot(s);
@@ -832,6 +858,7 @@ FrameView Channel::peek() noexcept
     if (nbytes > sh_->layout.slot_size || sl->meta.ndim > kMaxDims) {
       sl->refcount.fetch_sub(1, std::memory_order_release);
       ++refused_.bad_frame;
+      FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_BAD_FRAME));
       break;  // out-of-bounds meta: drop rather than hand out a view that reads past the slot
     }
     // A claim that was aborted or remotely recovered leaves the slot with no valid frame while
@@ -840,6 +867,7 @@ FrameView Channel::peek() noexcept
     if (seen == 0) {
       sl->refcount.fetch_sub(1, std::memory_order_release);
       ++refused_.bad_frame;
+      FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_BAD_FRAME));
       break;
     }
     // Stamp holder identity for crash cleanup AFTER refcount++ (safe ordering).
@@ -849,13 +877,17 @@ FrameView Channel::peek() noexcept
     if (h == nullptr) {
       sl->refcount.fetch_sub(1, std::memory_order_release);
       ++refused_.holder_table;
+      FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_HOLDER_TABLE));
       break;
     }
     note_stall(seen != last_seen_ticket_);  // same ticket again => no new frame
     last_seen_ticket_ = seen;
     return FrameView{sh_, sl, h, payload(static_cast<std::uint32_t>(s)), nbytes};
   }
-  if (attempt == kMaxRetries) ++refused_.contended;
+  if (attempt == kMaxRetries) {
+    ++refused_.contended;
+    FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_CONTENDED));
+  }
   sh_->outstanding.fetch_sub(1, std::memory_order_release);  // no view returned: release the lease
   note_stall(false);
   return FrameView{};
@@ -915,6 +947,7 @@ bool Channel::reattach_if_replaced() noexcept
   } catch (...) {
     return false;  // the replacement is not ready yet; try again on a later poll
   }
+  trace_channel_init(*sh_);
   position_cursor();  // the new stream restarts its tickets
   lost_ = 0;          // and its own loss count
   orphaned_ = false;  // attached to a live current again
@@ -967,6 +1000,7 @@ bool Channel::ready() const noexcept
 FrameView Channel::take() noexcept
 {
   if (!begin_borrow()) return FrameView{};
+  [[maybe_unused]] const std::uint64_t lost_before = lost_;
 
   const std::uint32_t n = sh_->layout.slot_count;
   constexpr int kMaxRetries = 64;
@@ -1032,21 +1066,27 @@ FrameView Channel::take() noexcept
     if (nbytes > sh_->layout.slot_size || sl->meta.ndim > kMaxDims) {
       sl->refcount.fetch_sub(1, std::memory_order_release);
       ++refused_.bad_frame;
+      FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_BAD_FRAME));
       break;
     }
     SlotHolder * h = holder_acquire(best_s);
     if (h == nullptr) {
       sl->refcount.fetch_sub(1, std::memory_order_release);
       ++refused_.holder_table;
+      FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_HOLDER_TABLE));
       break;
     }
     if (t > cursor_ + 1) lost_ += t - cursor_ - 1;  // lapped by the ring
     cursor_ = t;
     note_stall(true);  // take() only returns a frame newer than the cursor
     last_seen_ticket_ = t;
+    FLUX_TRACE(flux_trace_take(sh_.get(), t, best_s, lost_ - lost_before));
     return FrameView{sh_, sl, h, payload(best_s), nbytes};
   }
-  if (attempt == kMaxRetries) ++refused_.contended;
+  if (attempt == kMaxRetries) {
+    ++refused_.contended;
+    FLUX_TRACE(flux_trace_refused(sh_.get(), FLUX_TRACE_REFUSED_CONTENDED));
+  }
   sh_->outstanding.fetch_sub(1, std::memory_order_release);
   note_stall(false);
   return FrameView{};
