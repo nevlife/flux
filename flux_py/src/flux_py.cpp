@@ -1401,17 +1401,19 @@ NB_MODULE(_flux, m)
     .def(
       "__init__",
       [](
-        flux::QoS * self, std::uint32_t depth, const flux::Durability & durability,
+        flux::QoS * self, std::uint32_t depth, const std::optional<flux::Durability> & durability,
         std::uint32_t max_borrow) {
         flux::QoS q(depth);
-        q.transient_local(durability.replay).max_borrow(max_borrow);
+        q.transient_local(durability.value_or(flux::Durability::Volatile()).replay)
+          .max_borrow(max_borrow);
         q.validate();  // every field is in hand here, so the two-field check need not wait
         new (self) flux::QoS(q);
       },
-      nb::arg("depth") = 1u, nb::arg("durability") = flux::Durability::Volatile(),
-      nb::arg("max_borrow") = 2u,
+      // None, not a Durability object: on Python 3.14 that default outlived nanobind's exit leak
+      // check and every process printed a leak report.
+      nb::arg("depth") = 1u, nb::arg("durability") = nb::none(), nb::arg("max_borrow") = 2u,
       "Consumer QoS. depth: frames this subscription may fall behind the newest (1 = newest "
-      "only). durability: Volatile() or TransientLocal(n) for the backlog on attach. "
+      "only). durability: Volatile() (the default) or TransientLocal(n) for the backlog on attach. "
       "max_borrow: views held at once. Delivery is always best-effort.")
     .def_prop_ro("depth", [](const flux::QoS & q) { return q.depth(); })
     .def_prop_ro("durability", [](const flux::QoS & q) { return q.durability(); })
