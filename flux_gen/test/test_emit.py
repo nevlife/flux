@@ -58,6 +58,20 @@ def _core_lib():
 
 CORE_LIB = _core_lib()
 
+
+def _core_link(lib):
+    """libflux_core.a, plus the trace library its FLUX_TRACING build calls into. That one is
+    shared, so the driver also needs its directory as an rpath to run."""
+    if lib is None:
+        return []
+    tools = os.path.join(os.path.dirname(lib), "libflux_tracetools.so")
+    if not os.path.isfile(tools):
+        return [lib]
+    return [lib, tools, f"-Wl,-rpath,{os.path.dirname(lib)}"]
+
+
+CORE_LINK = _core_link(CORE_LIB)
+
 needs_link = pytest.mark.skipif(
     shutil.which("g++") is None or not os.path.isdir(CORE_INCLUDE) or CORE_LIB is None,
     reason="needs g++, flux_core headers and a built libflux_core",
@@ -432,7 +446,7 @@ def test_cpp_and_python_agree_on_the_bytes(built, tmp_path):
             f"-I{cpp_root}",
             f"-I{CORE_INCLUDE}",
             str(src),
-            CORE_LIB,
+            *CORE_LINK,
             "-pthread",
             "-o",
             str(exe),
@@ -658,7 +672,7 @@ def test_cpp_bridge_writes_nothing_into_a_slot_too_small_for_the_message(tmp_pat
             f"-I{CORE_INCLUDE}",
             *inc,
             str(src),
-            CORE_LIB,
+            *CORE_LINK,
             "-pthread",
             "-o",
             str(exe),
@@ -719,7 +733,7 @@ def test_cpp_bridge_refuses_a_descriptor_that_runs_past_the_frame(tmp_path):
             f"-I{CORE_INCLUDE}",
             *inc,
             str(src),
-            CORE_LIB,
+            *CORE_LINK,
             "-pthread",
             "-o",
             str(exe),
@@ -846,7 +860,7 @@ def test_cpp_build_loans_from_a_publisher_and_commits(built, tmp_path):
             f"-I{cpp_root}",
             f"-I{CORE_INCLUDE}",
             str(src),
-            CORE_LIB,
+            *CORE_LINK,
             "-pthread",
             "-o",
             str(exe),
@@ -889,7 +903,7 @@ def test_cpp_hands_over_string_bytes_that_are_not_utf8_unchanged(built, tmp_path
             f"-I{cpp_root}",
             f"-I{CORE_INCLUDE}",
             str(src),
-            CORE_LIB,
+            *CORE_LINK,
             "-pthread",
             "-o",
             str(exe),
@@ -934,7 +948,7 @@ def test_cpp_builder_refuses_to_commit_after_a_failed_write(built, tmp_path):
             f"-I{cpp_root}",
             f"-I{CORE_INCLUDE}",
             str(src),
-            CORE_LIB,
+            *CORE_LINK,
             "-pthread",
             "-o",
             str(exe),
@@ -976,7 +990,7 @@ def test_cpp_fixed_length_arrays_take_no_count(built, tmp_path):
                 f"-I{cpp_root}",
                 f"-I{CORE_INCLUDE}",
                 str(src),
-                CORE_LIB,
+                *CORE_LINK,
                 "-pthread",
                 "-o",
                 str(exe),
