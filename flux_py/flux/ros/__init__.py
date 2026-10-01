@@ -96,6 +96,9 @@ class Executor:
         # the context goes down is never run and never dropped, and a strong reference there
         # would keep this executor's channels mapped for the life of the process.
         self._dispatch_task = _weak_dispatch(weakref.ref(self))
+        self._watch = _Watch()
+        self._watcher = None
+        weakref.finalize(self, _quit_watch, self._watch)
 
     # ---- registration ----
 
@@ -177,7 +180,11 @@ class Executor:
 
         rclpy's wait cannot see a flux frame, so a watcher thread waits on the io_uring for the
         length of the pass and wakes rclpy when one arrives. It only waits: the frames are
-        dispatched here, after the watcher has been joined, so the two never share the ring.
+        dispatched here, after the watcher has finished its pass, so the two never share the ring.
+
+        The watcher is one thread kept across passes. The io_uring delivers a completion to the
+        thread that submitted the wait, and a wait whose submitter has exited completes
+        milliseconds late, so a thread per pass put that delay on every frame.
         """
         if self._running:
             # dispatch() would race the bridge's wait_for_work() on the shared io_uring.
@@ -193,20 +200,21 @@ class Executor:
         def woke():
             wake["ran"] = True
 
-        def watch():
-            self._flux.wait_for_work(timeout_ns)
-            if wake["watching"]:
-                wake["queued"] = True
-                self._exec.create_task(woke)  # wake the rclpy wait below
-
-        watcher = threading.Thread(target=watch, daemon=True, name="flux-watch")
-        watcher.start()
+        watch = self._watch
+        watch.timeout_ns, watch.wake, watch.woke = timeout_ns, wake, woke
+        watch.done.clear()
+        if self._watcher is None or not self._watcher.is_alive():
+            self._watcher = threading.Thread(
+                target=_watch_loop, args=(weakref.ref(self), watch), daemon=True, name="flux-watch"
+            )
+            self._watcher.start()
+        watch.go.set()
         try:
             self._exec.spin_once(timeout_sec=_sec(timeout_ns))
         finally:
             wake["watching"] = False
             self._flux.interrupt()
-            watcher.join()
+            watch.done.wait()
         # rclpy may have returned on a ROS callback with the wake task still queued. Run it now:
         # left queued, it would end the next spin_once() before anything arrived.
         while wake["queued"] and not wake["ran"]:
@@ -249,6 +257,10 @@ class Executor:
         self._stop_bridge()
         if self._thread is not None:
             return False
+        if self._watcher is not None:
+            _quit_watch(self._watch)
+            self._watcher.join(timeout=2.0)
+            self._watcher = None
         if not self._shut_down:
             self._shut_down = True
             for node in self._nodes:
@@ -797,6 +809,43 @@ def _sec(timeout_ns):
 
 def _nothing():
     """Task body whose only effect is waking the executor out of its wait."""
+
+
+class _Watch:
+    """spin_once()'s handshake with its watcher, held apart so the thread does not pin the
+    Executor."""
+
+    def __init__(self):
+        self.go = threading.Event()
+        self.done = threading.Event()
+        self.quit = False
+        self.timeout_ns = -1
+        self.wake = None
+        self.woke = None
+
+
+def _watch_loop(ref, watch):
+    _name_this_thread("flux-watch")
+    while True:
+        watch.go.wait()
+        watch.go.clear()
+        executor = ref()
+        if watch.quit or executor is None:
+            watch.done.set()
+            return
+        try:
+            executor._flux.wait_for_work(watch.timeout_ns)
+            if watch.wake["watching"]:
+                watch.wake["queued"] = True
+                executor._exec.create_task(watch.woke)  # wake the rclpy wait in spin_once()
+        finally:
+            executor = None
+            watch.done.set()
+
+
+def _quit_watch(watch):
+    watch.quit = True
+    watch.go.set()
 
 
 def _weak_dispatch(ref):

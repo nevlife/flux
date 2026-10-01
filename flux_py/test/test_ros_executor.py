@@ -370,6 +370,59 @@ def test_spin_once_returns_on_the_first_work_of_either_transport(node):
         ex.shutdown()
 
 
+def test_spin_once_wakes_on_a_frame_within_a_millisecond_or_two(node):
+    # A wait submitted to the io_uring by a thread that has since exited completes milliseconds
+    # late. A watcher thread per pass put that delay on every frame: p50 6 ms on a 250 Hz kernel.
+    pub = flux.Publisher("/pytest/rosex/wake", slot_size=64, slot_count=4, fingerprint=FP)
+    sub = flux.Subscription("/pytest/rosex/wake", fingerprint=FP)
+    ages = []
+    ex = flux.ros.Executor()
+    ex.add_ros_node(node)
+    ex.add(sub, lambda v: ages.append(time.monotonic_ns() - int(np.asarray(v).view(np.int64)[0])))
+
+    def send():
+        for _ in range(40):
+            time.sleep(0.02)
+            pub.publish(np.array([time.monotonic_ns()], np.int64).view(np.uint8))
+
+    sender = threading.Thread(target=send, daemon=True)
+    sender.start()
+    try:
+        deadline = time.monotonic() + 10.0
+        while len(ages) < 40 and time.monotonic() < deadline:
+            ex.spin_once(timeout_ns=100_000_000)
+    finally:
+        sender.join(timeout=5.0)
+        ex.shutdown()
+    assert len(ages) >= 30
+    p50 = sorted(ages[5:])[len(ages[5:]) // 2]  # the first frames include attaching
+    assert p50 < 2_000_000, f"spin_once woke {p50 / 1e6:.2f} ms after the frame (p50)"
+
+
+def test_spin_once_watcher_ends_with_the_executor(node):
+    sub = flux.Subscription("/pytest/rosex/watcher", fingerprint=FP)
+
+    def used_executor():
+        ex = flux.ros.Executor()
+        ex.add_ros_node(node)
+        ex.add(sub, lambda v: None)
+        ex.spin_once(timeout_ns=0)
+        return ex, ex._watcher
+
+    ex, watcher = used_executor()
+    assert watcher.is_alive()
+    ex.shutdown()
+    assert not watcher.is_alive(), "shutdown() left the spin_once watcher running"
+
+    ex, watcher = used_executor()  # dropped without shutdown(), as a script may do
+    ref = weakref.ref(ex)
+    del ex
+    gc.collect()
+    assert ref() is None, "the spin_once watcher kept the executor alive"
+    watcher.join(timeout=2.0)
+    assert not watcher.is_alive(), "the spin_once watcher outlived its executor"
+
+
 def test_a_stop_before_spin_ends_it_and_is_cleared_on_the_way_out(node):
     # A stop() that lands before spin() starts is the one a caller on another thread sends when
     # it cannot know the spin has begun. Losing it leaves a spin nobody will end.
