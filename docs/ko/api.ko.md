@@ -47,6 +47,23 @@ uint32 width
 string label
 ```
 
+표준 메시지는 `flux_std_adapters`가 미리 만들어 설치한다. 그 타입을 쓰는 패키지는 어댑터를 따로 만들지 않는다. 같은 타입의 어댑터를 패키지마다 만들어 설치하면 Python 모듈은 경로에서 앞선 하나만 보이고, C++ 정의가 둘이 된다.
+
+| 패키지 | 타입 |
+| --- | --- |
+| `sensor_msgs` | `CameraInfo` · `CompressedImage` · `Image` · `Imu` · `LaserScan` · `PointCloud2` |
+| `stereo_msgs` | `DisparityImage` |
+| `nav_msgs` | `OccupancyGrid` · `Odometry` |
+
+```cmake
+find_package(flux_std_adapters REQUIRED)
+ament_target_dependencies(my_node rclcpp flux_std_adapters)   # sensor_msgs/flux/image.hpp
+```
+
+```xml
+<depend>flux_std_adapters</depend>   <!-- Python: sensor_msgs_flux.image -->
+```
+
 타입마다 셋이 나온다.
 
 | | 뜻 |

@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flux_std_adapters</name>
+  <version>0.0.0</version>
+  <description>
+    flux adapters for common standard ROS messages, generated at build time from the installed
+    .msg files. Installs the C++ headers and the Python modules once, so consumers of the same
+    type share one definition and one fingerprint.
+  </description>
+  <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>flux_gen</build_depend>
+  <build_export_depend>flux_core</build_export_depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>stereo_msgs</depend>
+
+  <exec_depend>flux_gen</exec_depend>
+  <exec_depend>flux_py</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

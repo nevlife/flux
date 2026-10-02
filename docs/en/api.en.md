@@ -47,6 +47,23 @@ uint32 width
 string label
 ```
 
+Standard messages are generated and installed by `flux_std_adapters`. A package that uses one of these types does not generate its own adapter. If several packages each generate and install an adapter for the same type, Python sees only the first module on the path and C++ gets two definitions.
+
+| Package | Types |
+| --- | --- |
+| `sensor_msgs` | `CameraInfo` · `CompressedImage` · `Image` · `Imu` · `LaserScan` · `PointCloud2` |
+| `stereo_msgs` | `DisparityImage` |
+| `nav_msgs` | `OccupancyGrid` · `Odometry` |
+
+```cmake
+find_package(flux_std_adapters REQUIRED)
+ament_target_dependencies(my_node rclcpp flux_std_adapters)   # sensor_msgs/flux/image.hpp
+```
+
+```xml
+<depend>flux_std_adapters</depend>   <!-- Python: sensor_msgs_flux.image -->
+```
+
 Each type produces three things.
 
 | | Meaning |
