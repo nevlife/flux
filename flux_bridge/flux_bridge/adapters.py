@@ -50,7 +50,11 @@ class Adapter:
 
 
 def _candidate_modules(paths):
-    """`pkg.module` names of every adapter on `paths`, the `_ros` bridges excluded."""
+    """`pkg.module` names of every adapter on `paths`, the `_ros` bridges excluded.
+
+    Every path entry is scanned, not only the first holding a package: one `<pkg>_flux` can be
+    split across install prefixes (flux_std_adapters plus a package adding its own types).
+    """
     seen = set()
     for entry in paths:
         try:
@@ -58,17 +62,19 @@ def _candidate_modules(paths):
         except OSError:
             continue
         for pkg in sorted(names):
-            if not pkg.endswith(_SUFFIX) or pkg in seen:
+            if not pkg.endswith(_SUFFIX):
                 continue
             pkg_dir = os.path.join(entry, pkg)
             if not os.path.isdir(pkg_dir):
                 continue
-            seen.add(pkg)
             for file in sorted(os.listdir(pkg_dir)):
                 stem, ext = os.path.splitext(file)
                 if ext != ".py" or stem == "__init__" or stem.endswith("_ros"):
                     continue
-                yield f"{pkg}.{stem}"
+                name = f"{pkg}.{stem}"
+                if name not in seen:
+                    seen.add(name)
+                    yield name
 
 
 def _skipped(name, e):

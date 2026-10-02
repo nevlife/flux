@@ -90,6 +90,25 @@ def test_discover_skips_an_adapter_whose_ros_message_is_missing(tmp_path, monkey
     assert "part_flux.thing_ros" in err and "nonexistent_msgs" in err
 
 
+def test_discover_reads_a_package_split_across_path_entries(tmp_path, monkeypatch):
+    adapter = 'TYPE_NAME__ = "split/{0}"\nFINGERPRINT__ = {1}\nclass View: pass\n'
+    bridge = 'MESSAGE = "ros"\ndef frame_to_msg(v): return v\n'
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    paths = [
+        _fake_adapter_package(
+            first, "split_flux", {"a": adapter.format("A", 0x30), "a_ros": bridge}
+        ),
+        _fake_adapter_package(
+            second, "split_flux", {"b": adapter.format("B", 0x31), "b_ros": bridge}
+        ),
+    ]
+    for p in reversed(paths):
+        monkeypatch.syspath_prepend(p)
+    assert sorted(adapters.discover(paths)) == [0x30, 0x31]
+
+
 def test_discover_ignores_directories_that_are_not_adapter_packages(tmp_path):
     (tmp_path / "other").mkdir()
     (tmp_path / "loose_flux.py").write_text("FINGERPRINT__ = 1\n")
