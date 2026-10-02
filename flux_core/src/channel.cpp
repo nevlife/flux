@@ -30,6 +30,18 @@ namespace
 
 constexpr std::int64_t kNsPerSec = 1'000'000'000;
 
+}  // namespace
+
+ChannelShared::~ChannelShared()
+{
+#ifdef FLUX_TRACING
+  OwnerFile::forget_channel(this);
+#endif
+}
+
+namespace
+{
+
 void trace_channel_init([[maybe_unused]] const ChannelShared & sh) noexcept
 {
   FLUX_TRACE(flux_trace_channel_init(

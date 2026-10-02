@@ -95,6 +95,9 @@ public:
     const void * handle, std::uint64_t dev, std::uint64_t ino, const std::string & segment,
     bool publisher, std::uint32_t slot_count, std::uint32_t slot_size) noexcept;
 
+  // The channel at `handle` is gone: the next compaction of the owner file drops its record.
+  static void forget_channel(const void * handle) noexcept;
+
   // Read the manifest out of the owner file `name`, which is another process's in every
   // interesting case. Empty when there is none. A trailing line with no newline is dropped: the
   // writer may have died mid-append. Fields past the fourth are ignored, so the format can grow

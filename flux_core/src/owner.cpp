@@ -22,6 +22,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -102,6 +103,19 @@ OwnerId g_self;                 // valid when g_self.pid == getpid()
 bool g_atexit_registered = false;
 bool g_atfork_registered = false;
 
+// The manifest lines still true, which a compaction rewrites the owner file to. Appending alone
+// grows the file with every re-attach and withdrawal until read_manifest() stops at its cap.
+// Never freed: a ChannelShared can be destroyed during static destruction.
+struct LiveLines
+{
+  std::vector<std::string> announced;
+  std::unordered_map<const void *, std::string> channels;
+  std::size_t appended = 0;  // bytes appended since the file last held only live lines
+  std::size_t compact_at = 0;
+};
+LiveLines * g_live = nullptr;  // under g_mtx
+constexpr std::size_t kCompactAfter = std::size_t{64} * 1024;
+
 // Identity is constant for the life of a process, and every borrow needs it (holder stamping).
 // Reading it through the mutex meant a getpid() syscall and a shared lock on every borrow, so
 // cache it per thread and invalidate on the one event that changes it.
@@ -132,6 +146,11 @@ void on_fork_child() noexcept
   if (g_owner_fd >= 0) ::close(g_owner_fd);
   g_owner_fd = -1;
   g_owner_pid = 0;
+  if (g_live != nullptr) {  // the parent's endpoints, not this child's
+    g_live->announced.clear();
+    g_live->channels.clear();
+    g_live->appended = 0;
+  }
   g_identity_gen.fetch_add(1, std::memory_order_relaxed);
   g_mtx.unlock();
 }
@@ -314,6 +333,25 @@ std::string manifest_line(const ManifestEntry & entry, bool retract)
   return line;
 }
 
+LiveLines & live_locked()  // caller holds g_mtx
+{
+  if (g_live == nullptr) g_live = new LiveLines{{}, {}, 0, kCompactAfter};
+  return *g_live;
+}
+
+// Truncate and rewrite in place: the OFD lock lives on this file, so a renamed replacement would
+// drop it. A reader in the gap sees fewer lines, which costs visibility and nothing else.
+void compact_locked(LiveLines & live)
+{
+  std::string text;
+  for (const std::string & l : live.announced) text += l;
+  for (const auto & kv : live.channels) text += kv.second;
+  if (::ftruncate(g_owner_fd, 0) != 0) return;
+  [[maybe_unused]] ssize_t w = ::pwrite(g_owner_fd, text.data(), text.size(), 0);
+  live.appended = 0;
+  live.compact_at = std::max(kCompactAfter, text.size());
+}
+
 // Caller holds g_mtx, so two threads cannot interleave halves of a line. A short write leaves a
 // partial tail, which the reader drops for want of a newline.
 void append_locked(const std::string & line) noexcept
@@ -321,6 +359,12 @@ void append_locked(const std::string & line) noexcept
   if (g_owner_fd < 0) return;
   if (::lseek(g_owner_fd, 0, SEEK_END) < 0) return;
   [[maybe_unused]] ssize_t w = ::write(g_owner_fd, line.data(), line.size());
+  try {
+    LiveLines & live = live_locked();
+    live.appended += line.size();
+    if (live.appended > live.compact_at) compact_locked(live);
+  } catch (...) {
+  }
 }
 
 }  // namespace
@@ -334,6 +378,10 @@ void OwnerFile::announce(const ManifestEntry & entry) noexcept
   }
   const std::string line = manifest_line(entry, false);
   std::lock_guard<std::mutex> lk(g_mtx);
+  try {
+    live_locked().announced.push_back(line);
+  } catch (...) {
+  }
   append_locked(line);
 }
 
@@ -342,6 +390,11 @@ void OwnerFile::withdraw(const ManifestEntry & entry) noexcept
   const std::string line = manifest_line(entry, true);
   // No ensure(): a process without an owner file announced nothing that could be retracted.
   std::lock_guard<std::mutex> lk(g_mtx);
+  if (g_live != nullptr) {
+    auto & a = g_live->announced;
+    const auto it = std::find(a.begin(), a.end(), manifest_line(entry, false));
+    if (it != a.end()) a.erase(it);
+  }
   append_locked(line);
 }
 
@@ -365,7 +418,17 @@ void OwnerFile::record_channel(
   line += one_line(segment);
   line += '\n';
   std::lock_guard<std::mutex> lk(g_mtx);
+  try {
+    live_locked().channels[handle] = line;
+  } catch (...) {
+  }
   append_locked(line);
+}
+
+void OwnerFile::forget_channel(const void * handle) noexcept
+{
+  std::lock_guard<std::mutex> lk(g_mtx);
+  if (g_live != nullptr) g_live->channels.erase(handle);
 }
 
 Announcement::Announcement(ManifestEntry entry) noexcept : entry_(std::move(entry)), live_(true)

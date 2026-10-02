@@ -64,6 +64,9 @@ struct ChannelShared
     stream(st)
   {
   }
+  ~ChannelShared();
+  ChannelShared(const ChannelShared &) = delete;
+  ChannelShared & operator=(const ChannelShared &) = delete;
 
   // Which of the two seams a fence closes. They block different threads (commit blocks whoever
   // publishes, release blocks whoever drops the view), so their waits are accumulated apart.

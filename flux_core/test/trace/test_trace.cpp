@@ -185,4 +185,39 @@ TEST_F(Trace, HeapChannelIsRecordedWithoutASegment)
   ::shm_unlink(sp.c_str());
 }
 
+// Every channel and every withdrawal appends a line. The file is rewritten to the live ones well
+// before read_manifest() stops at its cap, so a withdrawn endpoint does not come back.
+TEST_F(Trace, OwnerFileIsCompactedToLiveLines)
+{
+  const std::string key = "/flux_test/trace_compact." + std::to_string(::getpid());
+  const std::string sp = flux::signpost_name(key, 0x7AE);
+  flux::ManifestEntry kept{sp, key, "/kept", true};
+  flux::ManifestEntry gone{sp, key, "/gone", false};
+  flux::Announcement keep(kept);
+  {
+    flux::Announcement drop(gone);
+  }
+  for (int i = 0; i < 4000; ++i) {
+    flux::Channel ch(64, 4);
+  }
+  flux::Channel last(64, 4);
+  const std::string text = read_owner_file();
+  EXPECT_LT(text.size(), 80u * 1024);
+
+  char head[64];
+  std::snprintf(
+    head, sizeof(head), "\tch\t%" PRIxPTR "\t",
+    reinterpret_cast<std::uintptr_t>(last.trace_handle()));
+  EXPECT_NE(text.rfind(head), std::string::npos);
+
+  const auto manifest =
+    flux::OwnerFile::read_manifest(flux::owner_file_name(flux::OwnerFile::self()));
+  int kept_n = 0;
+  for (const auto & e : manifest) {
+    EXPECT_NE(e.label, "/gone");
+    kept_n += e.label == "/kept" ? 1 : 0;
+  }
+  EXPECT_EQ(kept_n, 1);
+}
+
 }  // namespace
