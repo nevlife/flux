@@ -522,6 +522,9 @@ public:
   // this Channel re-attaches or is destroyed; compare attach_generation() to notice the swap.
   std::shared_ptr<ChannelShared> wait_handle() const noexcept { return sh_; }
 
+  // The handle the trace events carry (include/flux/trace.h), without wait_handle()'s refcount.
+  const void * trace_handle() const noexcept { return sh_.get(); }
+
   // Changes on every re-attach and is unique within the process, so a Channel built in place of
   // another never repeats a value. Not the wake_word() address: a fresh mapping can reuse it.
   std::uint32_t attach_generation() const noexcept { return attach_gen_; }

@@ -86,6 +86,15 @@ public:
   // manifest. Writes only to an owner file this process already holds. Never throws.
   static void withdraw(const ManifestEntry & entry) noexcept;
 
+  // Record what flux_trace_channel_init reports, so a tracer that attaches later can still map a
+  // trace handle to its segment. The line's first field is empty, which read_manifest() skips.
+  // A heap channel (empty segment) is recorded only into an owner file that already exists: it
+  // can reuse the address of a recorded shm channel, and the newer line has to say so.
+  // Best-effort and never throws, like announce().
+  static void record_channel(
+    const void * handle, std::uint64_t dev, std::uint64_t ino, const std::string & segment,
+    bool publisher, std::uint32_t slot_count, std::uint32_t slot_size) noexcept;
+
   // Read the manifest out of the owner file `name`, which is another process's in every
   // interesting case. Empty when there is none. A trailing line with no newline is dropped: the
   // writer may have died mid-append. Fields past the fourth are ignored, so the format can grow

@@ -36,9 +36,14 @@ void flux_trace_release(const void * channel, uint64_t ticket, int fenced);
 void flux_trace_refused(const void * channel, int reason);
 void flux_trace_wake(const void * executor, uint32_t events);
 void flux_trace_callback_start(const void * executor, uint32_t entry);
-void flux_trace_callback_end(const void * executor, uint32_t entry, int delivered);
+void flux_trace_callback_end(
+  const void * executor, uint32_t entry, int delivered, const void * channel);
 void flux_trace_py_gil(const void * executor);
 void flux_trace_py_ready(const void * channel);
+
+// Emits nothing. A tool checks for this name before attaching: the number changes whenever an
+// event's name or arguments change, so a library from another version is refused, not misread.
+void flux_trace_contract_2(void);
 
 #ifdef __cplusplus
 }

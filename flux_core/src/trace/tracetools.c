@@ -53,14 +53,19 @@ FLUX_TRACE_EXPORT void flux_trace_callback_start(const void * executor, uint32_t
   lttng_ust_tracepoint(flux, callback_start, executor, entry);
 }
 
-FLUX_TRACE_EXPORT void flux_trace_callback_end(const void * executor, uint32_t entry, int delivered)
+FLUX_TRACE_EXPORT void flux_trace_callback_end(
+  const void * executor, uint32_t entry, int delivered, const void * channel)
 {
-  lttng_ust_tracepoint(flux, callback_end, executor, entry, delivered);
+  lttng_ust_tracepoint(flux, callback_end, executor, entry, delivered, channel);
 }
 
 FLUX_TRACE_EXPORT void flux_trace_py_gil(const void * executor)
 {
   lttng_ust_tracepoint(flux, py_gil, executor);
+}
+
+FLUX_TRACE_EXPORT void flux_trace_contract_2(void)
+{
 }
 
 FLUX_TRACE_EXPORT void flux_trace_py_ready(const void * channel)

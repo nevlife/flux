@@ -35,6 +35,11 @@ void trace_channel_init([[maybe_unused]] const ChannelShared & sh) noexcept
   FLUX_TRACE(flux_trace_channel_init(
     &sh, sh.seg.id().dev, sh.seg.id().ino, sh.seg.name().c_str(), sh.seg.holds_liveness_lock(),
     sh.layout.slot_count, sh.layout.slot_size));
+#ifdef FLUX_TRACING
+  OwnerFile::record_channel(
+    &sh, sh.seg.id().dev, sh.seg.id().ino, sh.seg.name(), sh.seg.holds_liveness_lock(),
+    sh.layout.slot_count, sh.layout.slot_size);
+#endif
 }
 
 // The seqlock's plain stores, isolated so test/tsan.supp names them and not the atomics around

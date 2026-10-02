@@ -100,11 +100,13 @@ void flux_trace_callback_start(const void * executor, uint32_t entry)
   if (next != 0) next(executor, entry);
 }
 
-void flux_trace_callback_end(const void * executor, uint32_t entry, int delivered)
+void flux_trace_callback_end(
+  const void * executor, uint32_t entry, int delivered, const void * channel)
 {
   ++counter.callback_end;
   if (delivered > 0) counter.callback_delivered += delivered;
+  counter.callback_channel = channel;
   static __typeof__(&flux_trace_callback_end) next;
   if (next == 0) next = NEXT(flux_trace_callback_end);
-  if (next != 0) next(executor, entry, delivered);
+  if (next != 0) next(executor, entry, delivered, channel);
 }

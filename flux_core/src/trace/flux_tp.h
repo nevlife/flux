@@ -76,10 +76,12 @@ LTTNG_UST_TRACEPOINT_EVENT(
 
 LTTNG_UST_TRACEPOINT_EVENT(
   flux, callback_end,
-  LTTNG_UST_TP_ARGS(const void *, executor_arg, uint32_t, entry_arg, int, delivered_arg),
+  LTTNG_UST_TP_ARGS(
+    const void *, executor_arg, uint32_t, entry_arg, int, delivered_arg, const void *, channel_arg),
   LTTNG_UST_TP_FIELDS(lttng_ust_field_integer_hex(uintptr_t, executor, (uintptr_t)executor_arg)
-                        lttng_ust_field_integer(uint32_t, entry, entry_arg)
-                          lttng_ust_field_integer(int, delivered, delivered_arg)))
+                        lttng_ust_field_integer(uint32_t, entry, entry_arg) lttng_ust_field_integer(
+                          int, delivered, delivered_arg)
+                          lttng_ust_field_integer_hex(uintptr_t, channel, (uintptr_t)channel_arg)))
 
 LTTNG_UST_TRACEPOINT_EVENT(
   flux, py_gil, LTTNG_UST_TP_ARGS(const void *, executor_arg),

@@ -266,7 +266,10 @@ int Executor::dispatch(const std::function<bool()> & yield)
     e.probed = true;
     FLUX_TRACE(flux_trace_callback_start(this, static_cast<std::uint32_t>(pick)));
     const int n = e.src->deliver_one();
-    FLUX_TRACE(flux_trace_callback_end(this, static_cast<std::uint32_t>(pick), n));
+    // Read after delivery: a re-attach inside deliver_one() replaces the channel.
+    Channel * ch = e.src->channel();
+    FLUX_TRACE(flux_trace_callback_end(
+      this, static_cast<std::uint32_t>(pick), n, ch != nullptr ? ch->trace_handle() : nullptr));
     dispatched += n;
     if (n > 0) {
       // Equal priorities take turns: the source just served goes behind its peers.
@@ -274,7 +277,6 @@ int Executor::dispatch(const std::function<bool()> & yield)
       while (end < order_.size() && entries_[order_[end]]->priority == e.priority) ++end;
       std::rotate(order_.begin() + at, order_.begin() + at + 1, order_.begin() + end);
     }
-    Channel * ch = e.src->channel();
     if (ch == nullptr) {  // orphan drop inside the callback: the entry restarts next pass
       detach_entry(e, tag);
       e.blocked = true;

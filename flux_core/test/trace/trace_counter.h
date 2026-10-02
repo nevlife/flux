@@ -25,6 +25,7 @@ struct flux_trace_counter
   const void * wake_executor;
   const void * callback_executor;
   int callback_delivered;
+  const void * callback_channel;
 };
 
 #endif  // FLUX_TEST_TRACE_COUNTER_H

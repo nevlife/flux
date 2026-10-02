@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -340,6 +341,29 @@ void OwnerFile::withdraw(const ManifestEntry & entry) noexcept
 {
   const std::string line = manifest_line(entry, true);
   // No ensure(): a process without an owner file announced nothing that could be retracted.
+  std::lock_guard<std::mutex> lk(g_mtx);
+  append_locked(line);
+}
+
+void OwnerFile::record_channel(
+  const void * handle, std::uint64_t dev, std::uint64_t ino, const std::string & segment,
+  bool publisher, std::uint32_t slot_count, std::uint32_t slot_size) noexcept
+{
+  if (!segment.empty()) {
+    try {
+      ensure();
+    } catch (...) {
+      return;
+    }
+  }
+  char head[160];
+  std::snprintf(
+    head, sizeof(head),
+    "\tch\t%" PRIxPTR "\t%" PRIu64 "\t%" PRIu64 "\t%d\t%" PRIu32 "\t%" PRIu32 "\t",
+    reinterpret_cast<std::uintptr_t>(handle), dev, ino, publisher ? 1 : 0, slot_count, slot_size);
+  std::string line = head;
+  line += one_line(segment);
+  line += '\n';
   std::lock_guard<std::mutex> lk(g_mtx);
   append_locked(line);
 }
