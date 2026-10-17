@@ -1,0 +1,72 @@
+#include "flux2_tools/rviz/point_cloud2_display.hpp"
+
+#include "flux2_tools/cloud_from_frame.hpp"
+#include "rviz_common/properties/status_property.hpp"
+
+#include <QString>
+#include <pluginlib/class_list_macros.hpp>
+
+#include "sensor_msgs/flux2/point_cloud2.hpp"
+
+#include <memory>
+#include <string>
+
+namespace flux2_tools::rviz
+{
+
+using rviz_common::properties::StatusProperty;
+
+PointCloud2Display::PointCloud2Display()
+: ChannelDisplay(
+    "flux2 channel carrying sensor_msgs/PointCloud2 frames.",
+    sensor_msgs::flux2_msg::PointCloud2::kFingerprint)
+{
+  common_ = std::make_unique<rviz_default_plugins::PointCloudCommon>(this);
+}
+
+void PointCloud2Display::onInitialize()
+{
+  ChannelDisplay::onInitialize();
+  common_->initialize(context_, scene_node_);
+}
+
+void PointCloud2Display::onDisable()
+{
+  ChannelDisplay::onDisable();
+  common_->onDisable();
+}
+
+void PointCloud2Display::reset()
+{
+  ChannelDisplay::reset();
+  common_->reset();
+}
+
+sensor_msgs::msg::PointCloud2::SharedPtr PointCloud2Display::takeFrame()
+{
+  const flux2::FrameView frame = take();
+  if (!frame) {
+    return nullptr;
+  }
+  std::string error;
+  sensor_msgs::msg::PointCloud2::SharedPtr msg =
+    cloud_from_frame(frame.data(), frame.size(), error);
+  if (!msg) {
+    setStatus(StatusProperty::Error, "Message", QString::fromStdString(error));
+    return nullptr;
+  }
+  shown();
+  return msg;
+}
+
+void PointCloud2Display::update(UpdateDt wall_dt, UpdateDt ros_dt)
+{
+  if (sensor_msgs::msg::PointCloud2::SharedPtr msg = takeFrame()) {
+    common_->addMessage(msg);
+  }
+  common_->update(wall_dt, ros_dt);
+}
+
+}  // namespace flux2_tools::rviz
+
+PLUGINLIB_EXPORT_CLASS(flux2_tools::rviz::PointCloud2Display, rviz_common::Display)

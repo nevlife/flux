@@ -1,0 +1,8 @@
+readers/readers_model
+readers/readers_model_*
+*.out
+wake/wake_model
+wake/wake_model_*
+sweep/sweep_model
+sweep/sweep_model_*
+litmus/*.bin

@@ -1,0 +1,1391 @@
+// Python over flux2's C ABI, through the same RAII layer as flux2_cpp (flux2::detail). The ROS
+// half (node names, the rclpy executor bridge) is Python, in flux2/__init__.py.
+#define FLUX2_PY_IMPORT_NUMPY
+#include "bind_wire.hpp"
+#include "flux2/channel.hpp"
+#include "flux2/detail/executor.hpp"
+#include "flux2/detail/manifest.hpp"
+#include "flux2/detail/subscriber.hpp"
+#include "flux2/schemas.hpp"
+#include "flux2/topics.hpp"
+#include "flux2/trace.h"
+#include "numpy_api.hpp"
+
+#include <nanobind/nanobind.h>
+#include <nanobind/ndarray.h>
+#include <nanobind/stl/array.h>
+#include <nanobind/stl/optional.h>
+#include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
+#include <unistd.h>
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace nb = nanobind;
+using namespace nb::literals;
+using nb::dlpack::dtype_code;
+
+namespace
+{
+
+bool finalizing()
+{
+#if PY_VERSION_HEX >= 0x030D0000
+  return Py_IsFinalizing() != 0;
+#else
+  return _Py_IsFinalizing() != 0;
+#endif
+}
+
+// Threads that have decided to take the GIL back and do not hold it yet, and whether the
+// interpreter is on its way out (set at exit, before finalization begins).
+std::atomic<int> & regaining()
+{
+  static std::atomic<int> n{0};
+  return n;
+}
+
+std::atomic<bool> & exiting()
+{
+  static std::atomic<bool> on{false};
+  return on;
+}
+
+// Before 3.14, a thread that takes the GIL back while Python finalizes is ended by pthread_exit,
+// which aborts as it unwinds through noexcept frames. 3.14 parks the thread; so does this. A thread
+// already waiting for the GIL when finalization begins would still be ended, so before_exit()
+// lets every such thread through first.
+void take_gil_back(PyThreadState * ts)
+{
+  flux2_trace_py_gil(0);
+  regaining().fetch_add(1);
+  if (exiting().load() || (PY_VERSION_HEX < 0x030E0000 && finalizing())) {
+    regaining().fetch_sub(1);
+    for (;;) pause();
+  }
+  PyEval_RestoreThread(ts);
+  flux2_trace_py_gil(1);
+  regaining().fetch_sub(1);
+}
+
+// From atexit, with the GIL.
+void before_exit()
+{
+  exiting().store(true);
+  Py_BEGIN_ALLOW_THREADS;
+  while (regaining().load() != 0) std::this_thread::yield();
+  Py_END_ALLOW_THREADS;
+}
+
+class Unlocked
+{
+public:
+  Unlocked() noexcept : ts_(PyEval_SaveThread()) {}
+  ~Unlocked() { take_gil_back(ts_); }
+
+  // Runs f with the GIL, which f must not leave by an exception.
+  template <class F>
+  auto with_gil(F f)
+  {
+    take_gil_back(ts_);
+    const auto r = f();
+    ts_ = PyEval_SaveThread();
+    return r;
+  }
+  Unlocked(const Unlocked &) = delete;
+  Unlocked & operator=(const Unlocked &) = delete;
+  Unlocked(Unlocked &&) = delete;
+  Unlocked & operator=(Unlocked &&) = delete;
+
+private:
+  PyThreadState * ts_;
+};
+
+// Runs f without the GIL, as a wait on a stream must: work queued on it may need the GIL. Not on
+// the way out, where taking the GIL back would park this thread for good.
+template <class F>
+auto without_gil(F f)
+{
+  if (exiting().load() || finalizing()) return f();
+  const Unlocked unlocked;
+  return f();
+}
+
+nb::dlpack::dtype dl(dtype_code code, std::uint8_t bits)
+{
+  return nb::dlpack::dtype{static_cast<std::uint8_t>(code), bits, 1};
+}
+
+flux2::DType dtype_of(nb::dlpack::dtype t)
+{
+  const auto code = static_cast<dtype_code>(t.code);
+  const std::uint8_t bits = t.bits;
+  if (t.lanes == 1) {
+    if (code == dtype_code::UInt) {
+      if (bits == 8) return flux2::DType::U8;
+      if (bits == 16) return flux2::DType::U16;
+      if (bits == 32) return flux2::DType::U32;
+      if (bits == 64) return flux2::DType::U64;
+    } else if (code == dtype_code::Int) {
+      if (bits == 8) return flux2::DType::I8;
+      if (bits == 16) return flux2::DType::I16;
+      if (bits == 32) return flux2::DType::I32;
+      if (bits == 64) return flux2::DType::I64;
+    } else if (code == dtype_code::Float) {
+      if (bits == 16) return flux2::DType::F16;
+      if (bits == 32) return flux2::DType::F32;
+      if (bits == 64) return flux2::DType::F64;
+    } else if (code == dtype_code::Bfloat && bits == 16) {
+      return flux2::DType::BF16;
+    }
+  }
+  throw nb::type_error("flux2: unsupported dtype; use a numpy integer or float dtype");
+}
+
+flux2::DType dtype_named(const nb::handle & dtype)
+{
+  PyArray_Descr * raw = nullptr;
+  if (PyArray_DescrConverter(dtype.ptr(), &raw) != NPY_SUCCEED) throw nb::python_error();
+  const nb::object d = flux2_py::own(raw);
+  // A TypeError, as publish() gives for such an array.
+  if (!PyArray_ISNBO(raw->byteorder)) {
+    throw nb::type_error("flux2: frames are in native byte order; use a native dtype");
+  }
+  // bfloat16 is a user dtype (ml_dtypes). Builtins skip the name, which numpy builds in Python.
+  if (raw->type_num >= NPY_USERDEF && nb::cast<std::string>(d.attr("name")) == "bfloat16") {
+    return flux2::DType::BF16;
+  }
+  const char kind = raw->kind;
+  const auto bits = static_cast<std::uint8_t>(8 * flux2_py::elsize(raw));
+  const dtype_code code = kind == 'u'   ? dtype_code::UInt
+                          : kind == 'i' ? dtype_code::Int
+                          : kind == 'f' ? dtype_code::Float
+                                        : dtype_code::Complex;
+  return dtype_of(dl(code, bits));
+}
+
+nb::object descr_of(flux2::DType d)
+{
+  return flux2_py::own(PyArray_DescrFromType(flux2_py::npy_type(d)));
+}
+
+// The frame's own shape, checked against its bytes: the view must not reach past them.
+nb::object view_of(flux2::FrameView && v)
+{
+  const flux2::FrameMeta m = v.meta();
+  std::array<npy_intp, flux2::kMaxDims> shape{};
+  std::size_t n = flux2::dtype_size(static_cast<flux2::DType>(m.dtype));
+  for (std::size_t i = 0; i < m.ndim; ++i) {
+    shape.at(i) = static_cast<npy_intp>(m.shape[i]);
+    n *= m.shape[i];
+  }
+  if (n != v.size()) throw std::runtime_error("flux2: frame shape does not match its bytes");
+  auto held = std::make_unique<flux2::FrameView>(std::move(v));
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): numpy's signature; the view is read-only
+  void * data = const_cast<void *>(held->data());
+  const nb::capsule owner(held.release(), [](void * p) noexcept {
+    const std::unique_ptr<flux2::FrameView> gone(static_cast<flux2::FrameView *>(p));
+  });
+  const nb::object descr = descr_of(static_cast<flux2::DType>(m.dtype));
+  return flux2_py::numpy_view(data, m.ndim, shape.data(), flux2_py::as_descr(descr), owner, false);
+}
+
+nb::object view_or_none(flux2::FrameView && v)
+{
+  if (!v) return nb::none();
+  return view_of(std::move(v));
+}
+
+// Device addresses travel as integers through both GPU protocols.
+std::uintptr_t addr_of(const void * p) noexcept
+{
+  return reinterpret_cast<std::uintptr_t>(p);  // NOLINT(*-reinterpret-cast)
+}
+
+void * ptr_of(std::uint64_t a) noexcept
+{
+  return reinterpret_cast<void *>(  // NOLINT(*-reinterpret-cast,performance-no-int-to-ptr)
+    static_cast<std::uintptr_t>(a));
+}
+
+// numpy's spelling, which the CUDA array interface takes; bfloat16 has none.
+const char * typestr(flux2::DType d)
+{
+  switch (d) {
+    case flux2::DType::U8:
+      return "|u1";
+    case flux2::DType::I8:
+      return "|i1";
+    case flux2::DType::U16:
+      return "<u2";
+    case flux2::DType::I16:
+      return "<i2";
+    case flux2::DType::U32:
+      return "<u4";
+    case flux2::DType::I32:
+      return "<i4";
+    case flux2::DType::U64:
+      return "<u8";
+    case flux2::DType::I64:
+      return "<i8";
+    case flux2::DType::F16:
+      return "<f2";
+    case flux2::DType::F32:
+      return "<f4";
+    case flux2::DType::F64:
+      return "<f8";
+    case flux2::DType::BF16:
+      break;
+  }
+  throw nb::type_error(
+    "flux2: bfloat16 has no __cuda_array_interface__ typestr; take it with __dlpack__ "
+    "(torch.from_dlpack)");
+}
+
+nb::dlpack::dtype dl_of(flux2::DType d)
+{
+  const auto bits = static_cast<std::uint8_t>(8 * flux2::dtype_size(d));
+  switch (d) {
+    case flux2::DType::U8:
+    case flux2::DType::U16:
+    case flux2::DType::U32:
+    case flux2::DType::U64:
+      return dl(dtype_code::UInt, bits);
+    case flux2::DType::I8:
+    case flux2::DType::I16:
+    case flux2::DType::I32:
+    case flux2::DType::I64:
+      return dl(dtype_code::Int, bits);
+    case flux2::DType::BF16:
+      return dl(dtype_code::Bfloat, bits);
+    case flux2::DType::F16:
+    case flux2::DType::F32:
+    case flux2::DType::F64:
+      break;
+  }
+  return dl(dtype_code::Float, bits);
+}
+
+// Device memory of a frame or loan, as the two GPU protocols describe it. No stream to sync on:
+// commit and release wait for the channel's stream, so the bytes are complete when handed out.
+struct DeviceArray
+{
+  std::uint64_t ptr;
+  flux2::DType dtype;
+  std::vector<std::size_t> shape;
+  int device;
+  bool readonly;
+};
+
+nb::dict cuda_array_interface(const DeviceArray & a)
+{
+  nb::list shape;
+  for (const std::size_t s : a.shape) shape.append(s);
+  nb::dict d;
+  d["shape"] = nb::tuple(shape);
+  d["typestr"] = typestr(a.dtype);
+  d["data"] = nb::make_tuple(a.ptr, a.readonly);
+  d["strides"] = nb::none();
+  d["stream"] = nb::none();
+  d["version"] = 3;
+  return d;
+}
+
+// A "dltensor" capsule, which nanobind makes of an ndarray cast with no framework. It holds
+// `owner` as long as the consumer's tensor lives. Not marked read-only, which torch refuses: a
+// subscriber's mapping is read-only on the device already.
+nb::object dlpack_of(const DeviceArray & a, nb::handle owner)
+{
+  const nb::ndarray<> arr(
+    ptr_of(a.ptr), a.shape.size(), a.shape.data(), owner, nullptr, dl_of(a.dtype),
+    nb::device::cuda::value, a.device);
+  return nb::cast(arr);
+}
+
+// The stream a DLPack consumer names, which the channel's own fence does not cover. None and -1
+// ask for no ordering, and CUDA orders the legacy default stream (1) with the channel's blocking
+// stream itself.
+void remember_stream(std::vector<flux2::gpu::Stream> & streams, const nb::kwargs & kw)
+{
+  if (!kw.contains("stream") || kw["stream"].is_none()) return;
+  const auto handle = nb::cast<std::intptr_t>(kw["stream"]);
+  if (handle == -1 || handle == 0 || handle == 1) return;
+  void * native = ptr_of(static_cast<std::uint64_t>(handle));
+  for (const flux2::gpu::Stream & s : streams) {
+    if (s.native() == native) return;
+  }
+  streams.push_back(flux2::gpu::Stream::from_native(native));
+}
+
+bool wait_all(const std::vector<flux2::gpu::Stream> & streams)
+{
+  for (const flux2::gpu::Stream & s : streams) {
+    if (!s.wait()) return false;
+  }
+  return true;
+}
+
+// A frame's view and the streams its memory was handed to. It goes when its last holder does: the
+// Frame's scope, or a tensor that outlived it. The release waits for those streams first; one that
+// fails keeps the borrow, as a failed fence does.
+struct FrameHold
+{
+  flux2::FrameView v;
+  std::vector<flux2::gpu::Stream> streams;
+  // The channel defers releases: the consumer streams are ordered before the channel's on the
+  // device instead, and the view's own release returns at once.
+  bool deferred;
+
+  FrameHold(const FrameHold &) = delete;
+  FrameHold & operator=(const FrameHold &) = delete;
+  FrameHold(FrameHold &&) = delete;
+  FrameHold & operator=(FrameHold &&) = delete;
+  FrameHold(flux2::FrameView && view, bool defer) : v(std::move(view)), deferred(defer) {}
+  ~FrameHold()
+  {
+    if (deferred && ordered()) return;
+    if (wait_all(streams)) return;
+    // NOLINTNEXTLINE(bugprone-unused-return-value)
+    std::make_unique<flux2::FrameView>(std::move(v)).release();
+  }
+  bool ordered() const
+  {
+    for (const flux2::gpu::Stream & s : streams) {
+      if (!v.after(s)) return false;
+    }
+    return true;
+  }
+};
+
+std::vector<std::size_t> shape_of(const flux2::FrameMeta & m)
+{
+  return {m.shape, m.shape + m.ndim};
+}
+
+// A frame of a channel that declared a stream. Its device memory is handed out only inside a
+// `with` block or a callback, and the release waits for the stream where the scope ends, unless
+// the memory is still held: a DLPack tensor holds it until the tensor goes, and a CUDA array
+// interface consumer, which holds the Frame itself, until the Frame goes. Shape, dtype and stream
+// are the frame's and the channel's, readable at any time.
+class Frame
+{
+public:
+  Frame(flux2::FrameView && v, int device, bool scoped, bool deferred)
+  : meta_(v.meta()),
+    stream_(addr_of(v.stream())),
+    held_(std::make_shared<FrameHold>(std::move(v), deferred)),
+    device_(device),
+    scoped_(scoped)
+  {
+  }
+  ~Frame()
+  {
+    if (held_) without_gil([this] { held_.reset(); });
+  }
+  Frame(Frame &&) noexcept = default;
+  Frame & operator=(Frame &&) noexcept = default;
+  Frame(const Frame &) = delete;
+  Frame & operator=(const Frame &) = delete;
+
+  void enter()
+  {
+    if (!valid()) throw std::runtime_error("flux2: the frame is already released");
+    scoped_ = true;
+  }
+
+  void release()
+  {
+    scoped_ = false;
+    if (!held_ || cai_out_) return;
+    without_gil([this] { held_.reset(); });
+  }
+
+  nb::dict cai()
+  {
+    nb::dict d = cuda_array_interface(array());
+    cai_out_ = true;
+    return d;
+  }
+
+  nb::object dlpack(const nb::kwargs & kw)
+  {
+    const DeviceArray a = array();
+    remember_stream(held_->streams, kw);
+    return dlpack_of(a, hold());
+  }
+
+  // Holds the frame as a DLPack tensor does.
+  nb::object host()
+  {
+    const flux2::FrameView & v = host_view();
+    const nb::object descr = descr_of(flux2::DType::U8);
+    return flux2_py::numpy_view(v.data(), v.size(), flux2_py::as_descr(descr), hold(), false);
+  }
+
+  // A tensor message's data on the device: its fields are read through the host mapping, and the
+  // device address is the frame's plus the same offset.
+  nb::object tensor_dlpack(const flux2_py::TensorAt & at, const nb::kwargs & kw)
+  {
+    const flux2::FrameView & v = host_view();
+    const DeviceArray a = array();
+    const flux2_py::TensorFields f = flux2_py::read_tensor(v.data(), v.size(), at);
+    remember_stream(held_->streams, kw);
+    const auto offset = f.data - static_cast<const std::uint8_t *>(v.data());
+    const auto addr = static_cast<std::uintptr_t>(a.ptr + static_cast<std::uint64_t>(offset));
+    return flux2_py::tensor_dlpack(f, addr, hold(), nb::device::cuda::value, device_);
+  }
+
+  nb::tuple dlpack_device() const { return nb::make_tuple(nb::device::cuda::value, device_); }
+
+  bool valid() const noexcept { return held_ && held_->v.valid(); }
+  nb::tuple shape() const
+  {
+    nb::list l;
+    for (const std::size_t s : shape_of(meta_)) l.append(s);
+    return nb::tuple(l);
+  }
+  nb::object dtype() const { return descr_of(static_cast<flux2::DType>(meta_.dtype)); }
+  std::uint64_t nbytes() const noexcept { return meta_.nbytes; }
+  std::uintptr_t stream() const noexcept { return stream_; }
+
+private:
+  nb::capsule hold() const
+  {
+    return nb::capsule(new std::shared_ptr<FrameHold>(held_), [](void * p) noexcept {
+      auto * hold = static_cast<std::shared_ptr<FrameHold> *>(p);
+      // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
+      without_gil([hold] { delete hold; });
+    });
+  }
+
+  // The host mapping a generated View reads a frame's fields through, which a route without one
+  // (DeviceHandle) cannot give.
+  const flux2::FrameView & host_view() const
+  {
+    in_scope();
+    if (held_->v.data() == nullptr) {
+      throw std::runtime_error(
+        "flux2: this GPU route has no host mapping to read a frame's fields through");
+    }
+    return held_->v;
+  }
+
+  void in_scope() const
+  {
+    if (!valid()) throw std::runtime_error("flux2: the frame is already released");
+    if (!scoped_) {
+      throw std::runtime_error(
+        "flux2: a CUDA frame's memory is handed out only inside `with sub.take() as frame:` or a "
+        "callback, since its release waits for the stream");
+    }
+  }
+
+  DeviceArray array() const
+  {
+    in_scope();
+    return {
+      addr_of(held_->v.device_ptr()), static_cast<flux2::DType>(meta_.dtype), shape_of(meta_),
+      device_, true};
+  }
+
+  flux2::FrameMeta meta_;
+  std::uintptr_t stream_;
+  std::shared_ptr<FrameHold> held_;
+  int device_;
+  bool scoped_;
+  bool cai_out_ = false;
+};
+
+nb::object frame_or_none(flux2::FrameView && v, int device, bool deferred)
+{
+  if (!v) return nb::none();
+  return nb::cast(Frame(std::move(v), device, false, deferred));
+}
+
+// Writable numpy views of a loaned slot. commit and abort make the arrays `array` handed out
+// read-only; a slice or memoryview taken from one before then can still write to the slot.
+class Loan
+{
+public:
+  Loan(
+    flux2::WriteSlot && w, flux2::DType dtype, const std::vector<std::size_t> & shape, int device)
+  : w_(std::move(w)), dtype_(dtype), shape_(shape.begin(), shape.end()), device_(device)
+  {
+  }
+  // A loan dropped unfinished is aborted only once its tensors' writes are done.
+  ~Loan() { end(); }
+  Loan(Loan &&) noexcept = default;
+  Loan & operator=(Loan &&) noexcept = default;
+  Loan(const Loan &) = delete;
+  Loan & operator=(const Loan &) = delete;
+
+  nb::object array(nb::handle self)
+  {
+    if (!w_) throw std::runtime_error("flux2: the loan is already committed or aborted");
+    if (w_.data() == nullptr) {
+      throw std::runtime_error(
+        "flux2: the loan's payload is device memory; write it through __cuda_array_interface__ "
+        "or __dlpack__");
+    }
+    const nb::object descr = descr_of(dtype_);
+    nb::object a = flux2_py::numpy_view(
+      w_.data(), static_cast<int>(shape_.size()), shape_.data(), flux2_py::as_descr(descr), self,
+      true);
+    issued_.emplace_back(a);
+    return a;
+  }
+
+  // A refused commit ends the loan too, as in C++: commit(nbytes) on a loan that is not 1-D, or
+  // with nbytes past it or not a whole number of items, is TOO_LARGE.
+  flux2::Published commit(std::optional<std::size_t> nbytes)
+  {
+    const std::optional<flux2::Published> p = without_gil([&]() -> std::optional<flux2::Published> {
+      if (!writers_done()) return std::nullopt;
+      return nbytes ? w_.commit(*nbytes) : w_.commit();
+    });
+    if (!p) return flux2::Published::FenceFailed;
+    seal();
+    return *p;
+  }
+
+  // After a commit, w_ keeps the mapping that sealed arrays still read; only the Loan's end
+  // lets go of it.
+  void abort()
+  {
+    end();
+    seal();
+  }
+
+  bool valid() const noexcept { return w_.valid(); }
+  std::size_t capacity() noexcept { return w_.capacity(); }
+
+  nb::dict cai() { return cuda_array_interface(device_array()); }
+  nb::object dlpack(nb::handle self, const nb::kwargs & kw)
+  {
+    const DeviceArray a = device_array();
+    remember_stream(writers_, kw);
+    return dlpack_of(a, self);
+  }
+  nb::tuple dlpack_device() const { return nb::make_tuple(nb::device::cuda::value, device_); }
+  std::uintptr_t stream() const noexcept { return addr_of(w_.stream()); }
+
+private:
+  void end()
+  {
+    without_gil([this] {
+      if (w_.valid() && writers_done()) w_.abort();
+    });
+  }
+
+  // The streams the loan's tensors were handed to, waited for before the slot is published or
+  // given back. One that fails keeps the claim, as a failed commit fence does.
+  bool writers_done()
+  {
+    if (wait_all(writers_)) return true;
+    // NOLINTNEXTLINE(bugprone-unused-return-value)
+    std::make_unique<flux2::WriteSlot>(std::move(w_)).release();
+    return false;
+  }
+
+  DeviceArray device_array()
+  {
+    if (!w_) throw std::runtime_error("flux2: the loan is already committed or aborted");
+    if (w_.device_ptr() == nullptr) {
+      throw std::runtime_error(
+        "flux2: the publisher declared no device; write the loan through .array");
+    }
+    return {
+      addr_of(w_.device_ptr()), dtype_, std::vector<std::size_t>(shape_.begin(), shape_.end()),
+      device_, false};
+  }
+
+  void seal()
+  {
+    for (const nb::weakref & ref : issued_) {
+      const nb::object a = ref();
+      if (!a.is_none()) PyArray_CLEARFLAGS(flux2_py::as_array(a), NPY_ARRAY_WRITEABLE);
+    }
+    issued_.clear();
+  }
+
+  flux2::WriteSlot w_;
+  flux2::DType dtype_;
+  std::vector<npy_intp> shape_;
+  int device_;
+  std::vector<nb::weakref> issued_;
+  std::vector<flux2::gpu::Stream> writers_;
+};
+
+class Publisher
+{
+public:
+  Publisher(
+    const std::string & signpost, const std::string & topic, const std::string & label,
+    std::uint64_t fingerprint, std::uint32_t slot_size, std::uint32_t slot_count,
+    flux2::MemoryPolicy mem, std::uint32_t max_subscribers, bool cuda)
+  : stream_(flux2::gpu::stream_for(cuda ? flux2::Device::Cuda : flux2::Device::Cpu)),
+    ch_(flux2::detail::Channel::create(
+      signpost, slot_size, slot_count, fingerprint, mem, max_subscribers, stream_)),
+    announced_(signpost, topic, label, true)
+  {
+    flux2_trace_endpoint_init(
+      this, label.c_str(), topic.c_str(), signpost.c_str(), fingerprint, FLUX2_TRACE_ROLE_PUBLISHER,
+      FLUX2_TRACE_LANG_PYTHON);
+  }
+
+  // More than kMaxDims dimensions is the channel's TOO_LARGE, as in C++.
+  flux2::Published publish(nb::ndarray<nb::ro, nb::c_contig, nb::device::cpu> a)
+  {
+    const flux2::DType dtype = dtype_of(a.dtype());
+    std::vector<std::uint64_t> shape(a.ndim());
+    for (std::size_t i = 0; i < a.ndim(); ++i) shape[i] = a.shape(i);
+    const Unlocked unlocked;
+    return ch_.publish(a.data(), dtype, shape.data(), a.ndim());
+  }
+
+  // None while every slot is borrowed. Without a shape the loan is the whole slot.
+  std::optional<Loan> loan(std::optional<std::vector<std::size_t>> shape, nb::handle dtype)
+  {
+    const flux2::DType d = dtype_named(dtype);
+    std::vector<std::size_t> dims =
+      shape ? *shape : std::vector<std::size_t>{ch_.slot_size() / flux2::dtype_size(d)};
+    if (dims.size() > flux2::kMaxDims) throw nb::value_error("flux2: more than 8 dimensions");
+    // The numpy view spans the shape, so a shape past the slot would write into the next one.
+    std::uint64_t nbytes = flux2::dtype_size(d);
+    for (const std::size_t s : dims) {
+      if (s != 0 && nbytes > UINT64_MAX / s) throw nb::value_error("flux2: loan shape overflows");
+      nbytes *= s;
+    }
+    if (nbytes > ch_.slot_size()) {
+      throw nb::value_error(("flux2: a loan of " + std::to_string(nbytes) +
+                             " bytes exceeds slot_size " + std::to_string(ch_.slot_size()))
+                              .c_str());
+    }
+    const std::vector<std::uint64_t> wide(dims.begin(), dims.end());
+    flux2::WriteSlot w = ch_.loan(d, wide.data(), wide.size());
+    if (!w) return std::nullopt;
+    return Loan(std::move(w), d, dims, stream_.device());
+  }
+
+  std::uint64_t dropped() const noexcept { return ch_.dropped(); }
+  std::uint32_t slot_size() const noexcept { return ch_.slot_size(); }
+  flux2::detail::Channel & channel() noexcept { return ch_; }
+  const flux2::gpu::Stream & stream() const noexcept { return stream_; }
+
+private:
+  flux2::gpu::Stream stream_;
+  flux2::detail::Channel ch_;
+  flux2::detail::Announcement announced_;
+};
+
+class Subscription
+{
+public:
+  Subscription(
+    const std::string & signpost, const std::string & topic, const std::string & label,
+    std::uint64_t fingerprint, const flux2::QoS & qos, flux2::MemoryPolicy mem, bool cuda)
+  : sub_(
+      signpost, fingerprint, qos, mem,
+      flux2::gpu::stream_for(cuda ? flux2::Device::Cuda : flux2::Device::Cpu)),
+    announced_(signpost, topic, label, false)
+  {
+    flux2_trace_endpoint_init(
+      this, label.c_str(), topic.c_str(), signpost.c_str(), fingerprint,
+      FLUX2_TRACE_ROLE_SUBSCRIPTION, FLUX2_TRACE_LANG_PYTHON);
+    sub_.attach();
+  }
+
+  nb::object take() { return wrap(sub_.take()); }
+
+  // Ctrl-C, and `running` once it returns False, end the wait between its slices.
+  nb::object take_blocking(std::int64_t timeout_ns, const nb::object & running)
+  {
+    // With the GIL. An error is left set, to be raised once the wait is over.
+    const auto stop = [&] {
+      try {
+        if (PyErr_CheckSignals() != 0) return true;
+        return !running.is_none() && PyObject_IsTrue(running().ptr()) != 1;
+      } catch (nb::python_error & e) {
+        e.restore();
+        return true;
+      }
+    };
+    flux2::FrameView v;
+    if (!stop()) {
+      Unlocked unlocked;
+      v = sub_.take_blocking(timeout_ns, [&] { return unlocked.with_gil(stop); });
+    }
+    if (PyErr_Occurred() != nullptr) throw nb::python_error();
+    return wrap(std::move(v));
+  }
+
+  // A numpy view, or a Frame on a channel that declared a stream.
+  nb::object wrap(flux2::FrameView && v)
+  {
+    const flux2::gpu::Stream & s = sub_.stream();
+    const bool deferred = sub_.release_mode() == flux2::gpu::ReleaseMode::Deferred;
+    return s.declared() ? frame_or_none(std::move(v), s.device(), deferred)
+                        : view_or_none(std::move(v));
+  }
+
+  flux2::detail::Subscriber & core() noexcept { return sub_; }
+
+private:
+  flux2::detail::Subscriber sub_;
+  flux2::detail::Announcement announced_;
+};
+
+// The thread state of the serve() on this thread while it runs without the GIL. Its callbacks
+// take the GIL back with it: PyGILState_Ensure would look the thread up again, through state a
+// daemon thread finds freed once Python has finalized, where take_gil_back parks it.
+PyThreadState *& released()
+{
+  thread_local PyThreadState * ts = nullptr;
+  return ts;
+}
+
+class Released
+{
+public:
+  Released() noexcept : outer_(released()) { released() = PyEval_SaveThread(); }
+  ~Released()
+  {
+    take_gil_back(released());
+    released() = outer_;
+  }
+  Released(const Released &) = delete;
+  Released & operator=(const Released &) = delete;
+  Released(Released &&) = delete;
+  Released & operator=(Released &&) = delete;
+
+private:
+  PyThreadState * outer_;
+};
+
+// Threads in serve() waiting for the GIL, which a PartitionedExecutor node thread lets in after
+// each rclpy callback. CPython forces a hand-over only after 5 ms without any switch, and a busy
+// rclpy thread drops and retakes the GIL more often than that, so a waiting thread can starve.
+class Turnstile
+{
+public:
+  void arrive()
+  {
+    const std::lock_guard<std::mutex> l(m_);
+    ++waiting_;
+  }
+
+  void enter()
+  {
+    {
+      const std::lock_guard<std::mutex> l(m_);
+      --waiting_;
+      ++entered_;
+    }
+    cv_.notify_all();
+  }
+
+  // With the GIL: gives it up until a waiting thread has taken it. The GIL comes back after the
+  // mutex is let go, as the thread that took it needs the mutex to say so.
+  void step_aside()
+  {
+    std::unique_lock<std::mutex> l(m_);
+    if (waiting_ == 0) return;
+    const std::uint64_t seen = entered_;
+    const Unlocked unlocked;
+    cv_.wait(l, [&] { return entered_ != seen; });
+    l.unlock();
+  }
+
+private:
+  std::mutex m_;
+  std::condition_variable cv_;
+  int waiting_ = 0;
+  std::uint64_t entered_ = 0;
+};
+
+// Never destroyed: a daemon thread may still wait in it as the process exits.
+Turnstile & turnstile()
+{
+  static auto * t = new Turnstile;  // NOLINT(cppcoreguidelines-owning-memory)
+  return *t;
+}
+
+// The GIL for a callback under serve(). Under dispatch() the caller holds it already.
+class Held
+{
+public:
+  Held() noexcept : ts_(std::exchange(released(), nullptr))
+  {
+    if (ts_ == nullptr) return;
+    turnstile().arrive();
+    take_gil_back(ts_);
+    turnstile().enter();
+  }
+  ~Held()
+  {
+    if (ts_ == nullptr) return;
+    PyEval_SaveThread();
+    released() = ts_;
+  }
+  Held(const Held &) = delete;
+  Held & operator=(const Held &) = delete;
+  Held(Held &&) = delete;
+  Held & operator=(Held &&) = delete;
+
+private:
+  PyThreadState * ts_;
+};
+
+class Source final : public flux2::detail::Source
+{
+public:
+  Source(nb::object sub, nb::callable cb)
+  : sub_(std::move(sub)),
+    endpoint_(&nb::cast<Subscription &>(sub_)),
+    core_(&nb::cast<Subscription &>(sub_).core()),
+    cb_(std::move(cb))
+  {
+  }
+
+  bool attach() override
+  {
+    const bool attached = core_->attach_for_executor();
+    report_refusal();
+    return attached;
+  }
+  bool deliver_one() override
+  {
+    flux2::FrameView v = core_->take_for_executor();
+    report_refusal();
+    if (!v) return false;
+    const Held held;
+    const void * channel = v.trace_channel();
+    const std::uint64_t ticket = v.ticket();
+    const flux2::gpu::Stream & s = core_->stream();
+    if (!s.declared()) {
+      const nb::object view = view_of(std::move(v));
+      flux2_trace_py_ready(channel, ticket);
+      cb_(view);
+      return true;
+    }
+    // The callback is the frame's scope, as a `with` block is for take().
+    const bool deferred = core_->release_mode() == flux2::gpu::ReleaseMode::Deferred;
+    const nb::object frame = nb::cast(Frame(std::move(v), s.device(), true, deferred));
+    flux2_trace_py_ready(channel, ticket);
+    try {
+      cb_(frame);
+    } catch (...) {
+      nb::cast<Frame &>(frame).release();
+      throw;
+    }
+    nb::cast<Frame &>(frame).release();
+    return true;
+  }
+  const flux2::detail::Channel * channel() const override { return core_->channel(); }
+  const flux2::detail::Watch * watch() const override { return core_->watch(); }
+  const void * endpoint() const override { return endpoint_; }
+
+  int traverse(visitproc visit, void * arg) const
+  {
+    Py_VISIT(sub_.ptr());
+    Py_VISIT(cb_.ptr());
+    return 0;
+  }
+
+private:
+  void report_refusal()
+  {
+    const std::string * why = core_->new_refusal();
+    if (why == nullptr) return;
+    const Held held;
+    sub_.attr("_left_out")(*why);
+  }
+
+  nb::object sub_;
+  const void * endpoint_;
+  flux2::detail::Subscriber * core_;
+  nb::callable cb_;
+};
+
+// Runs alone in serve(), or in ROS mode across three threads. There the bridge thread waits for
+// frames without ever taking the GIL, the post thread hands each pass to rclpy as a task, and the
+// spin thread runs that task, or between rclpy callbacks a pass no task was queued for yet: a
+// frame does not wait for another thread to win the GIL. One thread at a time is on the core:
+// the bridge waits only once a pass is over, and a pass is run by whoever claims it.
+class Executor
+{
+public:
+  Executor() : core_(std::in_place), handle_(core_->handle()) {}
+
+  void add(nb::object sub, nb::callable cb, std::int32_t priority)
+  {
+    if (!nb::isinstance<Subscription>(sub)) {
+      throw nb::type_error("flux2: Executor.add takes a flux2 Subscription");
+    }
+    auto src = std::make_unique<Source>(std::move(sub), std::move(cb));
+    core_->add(*src, priority);
+    sources_.push_back(std::move(src));
+  }
+
+  // Held if serve() has not started, so a stop racing its start is not lost.
+  void stop() const noexcept { handle_.stop(); }
+
+  // dispatch and wait in turn until stop(). The GIL is released for the whole loop and taken
+  // per callback, and once a tick to raise a pending signal such as Ctrl-C and to ask `running`,
+  // whose False ends the loop.
+  void serve(const nb::object & running)
+  {
+    auto next = std::chrono::steady_clock::now();
+    core_->on_pass([&] {
+      const auto now = std::chrono::steady_clock::now();
+      if (now < next) return;
+      next = now + std::chrono::nanoseconds(FLUX2_DEFAULT_TICK_NS);
+      const Held held;
+      if (PyErr_CheckSignals() != 0) throw nb::python_error();
+      if (!running.is_none() && !nb::cast<bool>(running())) handle_.stop();
+    });
+    std::exception_ptr error;
+    {
+      const Released unlocked;
+      try {
+        core_->spin(FLUX2_DEFAULT_TICK_NS);
+      } catch (...) {
+        error = std::current_exception();
+      }
+    }
+    if (error) std::rethrow_exception(error);
+  }
+
+  // Returns the generation that tasks pass back to dispatch_posted.
+  std::uint64_t open_bridge()
+  {
+    const std::lock_guard<std::mutex> l(m_);
+    // The spin thread's first pass attaches and samples, which the bridge's first wait relies on.
+    pending_ = true;
+    posted_ = false;
+    closed_ = false;
+    return ++generation_;
+  }
+
+  void close_bridge()
+  {
+    {
+      const std::lock_guard<std::mutex> l(m_);
+      closed_ = true;
+    }
+    cv_.notify_all();
+    handle_.wake();
+  }
+
+  // The bridge thread, until close_bridge().
+  void bridge()
+  {
+    const Unlocked unlocked;
+    std::unique_lock<std::mutex> l(m_);
+    for (;;) {
+      cv_.wait(l, [this] { return closed_ || (!pending_ && !dispatching_); });
+      if (closed_) return;
+      l.unlock();
+      // A pass cut short by its budget leaves frames the wait would not see again.
+      if (!core_->has_more()) core_->wait_for_work(FLUX2_DEFAULT_TICK_NS);
+      l.lock();
+      if (closed_) return;
+      pending_ = true;
+      cv_.notify_all();
+    }
+  }
+
+  // The post thread, until close_bridge(). `post` queues a task that calls dispatch_posted.
+  void poster(const nb::callable & post)
+  {
+    for (;;) {
+      {
+        const Unlocked unlocked;
+        std::unique_lock<std::mutex> l(m_);
+        cv_.wait(l, [this] { return closed_ || (pending_ && !posted_); });
+        if (closed_) return;
+      }
+      // The spin thread may have claimed the pass while this thread waited for the GIL.
+      bool post_it = false;
+      {
+        const std::lock_guard<std::mutex> l(m_);
+        post_it = pending_ && !posted_ && !closed_;
+        posted_ = posted_ || post_it;
+      }
+      if (post_it) post();
+    }
+  }
+
+  // The spin thread, between rclpy callbacks: a pass no task was queued for.
+  std::size_t dispatch_pending(std::int64_t budget_ns)
+  {
+    {
+      const std::lock_guard<std::mutex> l(m_);
+      if (!pending_ || posted_) return 0;
+      pending_ = false;
+      dispatching_ = true;
+    }
+    return run_pass(budget_ns);
+  }
+
+  // A task the bridge queued. One left over from an earlier spin does nothing.
+  std::size_t dispatch_posted(std::int64_t budget_ns, std::uint64_t generation)
+  {
+    {
+      const std::lock_guard<std::mutex> l(m_);
+      if (closed_ || generation != generation_ || !pending_) return 0;
+      pending_ = false;
+      posted_ = false;
+      dispatching_ = true;
+    }
+    return run_pass(budget_ns);
+  }
+
+  std::size_t size() const noexcept { return sources_.size(); }
+
+  // A callback that closes over its executor is the usual case, so the cycle must be
+  // collectable.
+  int traverse(visitproc visit, void * arg) const
+  {
+    for (const auto & s : sources_) {
+      if (const int r = s->traverse(visit, arg); r != 0) return r;
+    }
+    return 0;
+  }
+
+  // The core goes first: it points at the sources.
+  void clear() noexcept
+  {
+    core_.reset();
+    sources_.clear();
+  }
+
+private:
+  // A pass ends once budget_ns has gone by, after at least one frame. The bridge may wait again
+  // once it is over, also after a callback raised.
+  std::size_t run_pass(std::int64_t budget_ns)
+  {
+    const Done done(*this);
+    const auto end = std::chrono::steady_clock::now() + std::chrono::nanoseconds(budget_ns);
+    auto over = [&]() noexcept { return std::chrono::steady_clock::now() >= end; };
+    return core_->dispatch(over);
+  }
+
+  class Done
+  {
+  public:
+    explicit Done(Executor & e) noexcept : e_(e) {}
+    ~Done()
+    {
+      {
+        const std::lock_guard<std::mutex> l(e_.m_);
+        e_.dispatching_ = false;
+      }
+      e_.cv_.notify_all();
+    }
+    Done(const Done &) = delete;
+    Done & operator=(const Done &) = delete;
+    Done(Done &&) = delete;
+    Done & operator=(Done &&) = delete;
+
+  private:
+    Executor & e_;
+  };
+
+  std::optional<flux2::detail::Executor> core_;
+  flux2::detail::ExecutorHandle handle_;
+  std::vector<std::unique_ptr<Source>> sources_;
+  std::mutex m_;
+  std::condition_variable cv_;
+  bool pending_ = false;
+  bool posted_ = false;
+  bool dispatching_ = false;
+  bool closed_ = false;
+  std::uint64_t generation_ = 0;
+};
+
+int executor_traverse(PyObject * self, visitproc visit, void * arg)
+{
+  if (nb::inst_ready(self)) {
+    if (const int r = nb::inst_ptr<Executor>(self)->traverse(visit, arg); r != 0) return r;
+  }
+  Py_VISIT(Py_TYPE(self));
+  return 0;
+}
+
+int executor_clear(PyObject * self)
+{
+  if (nb::inst_ready(self)) nb::inst_ptr<Executor>(self)->clear();
+  return 0;
+}
+
+// NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast): PyType_Slot takes a function as void *.
+const std::array<PyType_Slot, 3> executor_slots{{
+  {Py_tp_traverse, reinterpret_cast<void *>(executor_traverse)},
+  {Py_tp_clear, reinterpret_cast<void *>(executor_clear)},
+  {0, nullptr},
+}};
+// NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
+
+}  // namespace
+
+NB_MODULE(_flux2, m)
+{
+  if (_import_array() < 0) throw nb::python_error();
+  // Objects a daemon thread still holds at exit are not a reference counting bug.
+  nb::set_leak_warnings(false);
+  m.attr("NO_SCHEMA") = flux2::kNoSchema;
+
+  static nb::exception<flux2::Error> error(m, "Error", PyExc_RuntimeError);
+  nb::register_exception_translator([](const std::exception_ptr & p, void *) {
+    try {
+      std::rethrow_exception(p);
+    } catch (const flux2::Error & e) {
+      const nb::object err = error(e.what());
+      err.attr("status") = nb::cast(e.status());
+      PyErr_SetObject(error.ptr(), err.ptr());
+    }
+  });
+
+  nb::enum_<flux2::Status>(m, "Status")
+    .value("OK", FLUX2_OK)
+    .value("INVALID_ARGUMENT", FLUX2_INVALID_ARGUMENT)
+    .value("MISMATCH", FLUX2_MISMATCH)
+    .value("NOT_READY", FLUX2_NOT_READY)
+    .value("PUBLISHER_EXISTS", FLUX2_PUBLISHER_EXISTS)
+    .value("SUBSCRIBERS_FULL", FLUX2_SUBSCRIBERS_FULL)
+    .value("UNSUPPORTED", FLUX2_UNSUPPORTED)
+    .value("CALLBACK", FLUX2_CALLBACK)
+    .value("IO", FLUX2_IO)
+    .value("IN_USE", FLUX2_IN_USE);
+
+  nb::enum_<flux2::Published>(m, "Published")
+    .value("OK", flux2::Published::Ok)
+    .value("BACKPRESSURE", flux2::Published::Backpressure)
+    .value("TOO_LARGE", flux2::Published::TooLarge)
+    .value("NOT_PUBLISHER", flux2::Published::NotPublisher)
+    .value("INVALID_ARGUMENT", flux2::Published::InvalidArgument)
+    .value("IN_USE", flux2::Published::InUse)
+    .value("WRONG_DEVICE", flux2::Published::WrongDevice)
+    .value("FENCE_FAILED", flux2::Published::FenceFailed)
+    .value("GPU_WEDGED", flux2::Published::GpuWedged)
+    .def("__bool__", [](flux2::Published p) { return p == flux2::Published::Ok; });
+  m.def("faulted", &flux2::faulted, "published"_a);
+
+  nb::class_<flux2::QoS>(m, "QoS")
+    .def(
+      "__init__",
+      [](
+        flux2::QoS * q, std::optional<std::uint32_t> depth, std::optional<std::uint32_t> replay,
+        std::optional<std::uint32_t> max_borrow) {
+        new (q) flux2::QoS(depth ? flux2::QoS(*depth) : flux2::QoS());
+        if (replay) {
+          q->transient_local(*replay);
+        }
+        if (max_borrow) {
+          q->max_borrow(*max_borrow);
+        }
+      },
+      "depth"_a = nb::none(), "replay"_a = nb::none(), "max_borrow"_a = nb::none())
+    .def_prop_ro("depth", &flux2::QoS::depth)
+    .def_prop_ro("replay", &flux2::QoS::replay)
+    .def_prop_ro("max_borrow", &flux2::QoS::borrow_limit);
+
+  nb::class_<flux2::MemoryPolicy>(m, "MemoryPolicy")
+    .def(
+      "__init__",
+      [](flux2::MemoryPolicy * p, bool precommit, bool lock) {
+        new (p) flux2::MemoryPolicy{precommit, lock};
+      },
+      "precommit"_a = false, "lock"_a = false)
+    .def_ro("precommit", &flux2::MemoryPolicy::precommit)
+    .def_ro("lock", &flux2::MemoryPolicy::lock);
+
+  nb::class_<flux2::Refused>(m, "Refused")
+    .def_ro("max_borrow", &flux2::Refused::max_borrow)
+    .def_ro("no_reader", &flux2::Refused::no_reader)
+    .def_ro("contended", &flux2::Refused::contended)
+    .def_ro("bad_frame", &flux2::Refused::bad_frame)
+    .def_ro("fence", &flux2::Refused::fence);
+
+  nb::class_<flux2::gpu::FenceWait>(m, "FenceWait")
+    .def_ro("commit_ns", &flux2::gpu::FenceWait::commit_ns)
+    .def_ro("commit_waits", &flux2::gpu::FenceWait::commit_waits)
+    .def_ro("commit_max_ns", &flux2::gpu::FenceWait::commit_max_ns)
+    .def_ro("release_ns", &flux2::gpu::FenceWait::release_ns)
+    .def_ro("release_waits", &flux2::gpu::FenceWait::release_waits)
+    .def_ro("release_max_ns", &flux2::gpu::FenceWait::release_max_ns);
+
+  nb::enum_<flux2::gpu::Route>(m, "Route")
+    .value("NONE", flux2::gpu::Route::None)
+    .value("SHM_DIRECT", flux2::gpu::Route::ShmDirect)
+    .value("SHM_REGISTERED", flux2::gpu::Route::ShmRegistered)
+    .value("DEVICE_HANDLE", flux2::gpu::Route::DeviceHandle);
+
+  nb::class_<flux2::gpu::Platform>(m, "Platform")
+    .def_ro("route", &flux2::gpu::Platform::route)
+    .def_ro("device", &flux2::gpu::Platform::device)
+    .def_ro("integrated", &flux2::gpu::Platform::integrated)
+    .def_ro("pageable_access", &flux2::gpu::Platform::pageable_access)
+    .def_ro("host_register", &flux2::gpu::Platform::host_register)
+    .def_ro("vmm", &flux2::gpu::Platform::vmm)
+    .def_ro("posix_fd_handle", &flux2::gpu::Platform::posix_fd_handle)
+    .def_ro("reason", &flux2::gpu::Platform::reason);
+  m.def("probe", &flux2::gpu::probe, "device"_a = 0);
+  m.def("gpu_wedged", &flux2::gpu::wedged);
+
+  nb::class_<Frame>(m, "Frame")
+    .def(
+      "__enter__",
+      [](nb::handle self) {
+        nb::inst_ptr<Frame>(self)->enter();
+        return nb::borrow(self);
+      })
+    .def("__exit__", [](Frame & f, const nb::args &) { f.release(); })
+    .def("release", &Frame::release)
+    .def_prop_ro("__cuda_array_interface__", &Frame::cai)
+    .def("__dlpack__", [](Frame & f, const nb::kwargs & kw) { return f.dlpack(kw); })
+    .def("__dlpack_device__", &Frame::dlpack_device)
+    .def("_host", &Frame::host)
+    .def(
+      "_tensor_dlpack",
+      [](Frame & f, const flux2_py::TensorAt & at, const nb::kwargs & kw) {
+        return f.tensor_dlpack(at, kw);
+      })
+    .def_prop_ro("valid", &Frame::valid)
+    .def("__bool__", &Frame::valid)
+    .def_prop_ro("shape", &Frame::shape)
+    .def_prop_ro("dtype", &Frame::dtype)
+    .def_prop_ro("nbytes", &Frame::nbytes)
+    .def_prop_ro("stream", &Frame::stream);
+
+  nb::class_<Loan>(m, "Loan")
+    .def_prop_ro("array", [](nb::handle self) { return nb::inst_ptr<Loan>(self)->array(self); })
+    .def("commit", &Loan::commit, "nbytes"_a = nb::none())
+    .def("abort", &Loan::abort)
+    .def_prop_ro("valid", &Loan::valid)
+    .def("__bool__", &Loan::valid)
+    .def_prop_ro("capacity", &Loan::capacity)
+    .def_prop_ro("__cuda_array_interface__", &Loan::cai)
+    .def(
+      "__dlpack__",
+      [](nb::handle self, const nb::kwargs & kw) {
+        return nb::inst_ptr<Loan>(self)->dlpack(self, kw);
+      })
+    .def("__dlpack_device__", &Loan::dlpack_device)
+    .def_prop_ro("stream", &Loan::stream);
+
+  nb::class_<Publisher>(m, "_Publisher")
+    .def(
+      nb::init<
+        const std::string &, const std::string &, const std::string &, std::uint64_t, std::uint32_t,
+        std::uint32_t, flux2::MemoryPolicy, std::uint32_t, bool>(),
+      "signpost"_a, "topic"_a, "label"_a, "fingerprint"_a, "slot_size"_a, "slot_count"_a,
+      "memory"_a, "max_subscribers"_a = FLUX2_DEFAULT_MAX_SUBSCRIBERS, "cuda"_a = false)
+    .def("publish", &Publisher::publish, "array"_a)
+    .def("loan", &Publisher::loan, "shape"_a = nb::none(), "dtype"_a = "uint8")
+    .def_prop_ro("dropped", &Publisher::dropped)
+    .def_prop_ro("slot_size", &Publisher::slot_size)
+    .def_prop_ro("fence_failed", [](Publisher & p) { return p.channel().fence_failed(); })
+    .def_prop_ro("fence_wait", [](Publisher & p) { return p.channel().fence_wait(); })
+    .def_prop_ro("device_backed", [](Publisher & p) { return p.channel().device_backed(); })
+    .def(
+      "_set_fence_timeout",
+      [](Publisher & p, std::int64_t ns) {
+        p.channel().set_fence_timeout(std::chrono::nanoseconds(ns));
+      })
+    .def_prop_ro("stream", [](Publisher & p) { return addr_of(p.stream().native()); });
+
+  nb::class_<Subscription>(m, "_Subscription")
+    .def(
+      nb::init<
+        const std::string &, const std::string &, const std::string &, std::uint64_t,
+        const flux2::QoS &, flux2::MemoryPolicy, bool>(),
+      "signpost"_a, "topic"_a, "label"_a, "fingerprint"_a, "qos"_a, "memory"_a, "cuda"_a = false)
+    .def("take", &Subscription::take)
+    .def(
+      "take_blocking", &Subscription::take_blocking, "timeout_ns"_a = -1, "running"_a = nb::none())
+    .def_prop_ro("attached", [](Subscription & s) { return s.core().attached(); })
+    .def_prop_ro("lost", [](Subscription & s) { return s.core().lost(); })
+    .def_prop_ro("attach_generation", [](Subscription & s) { return s.core().attach_generation(); })
+    .def_prop_ro("refused", [](Subscription & s) { return s.core().refused(); })
+    .def_prop_ro("fence_failed", [](Subscription & s) { return s.core().fence_failed(); })
+    .def_prop_ro("fence_wait", [](Subscription & s) { return s.core().fence_wait(); })
+    .def_prop_ro("stream", [](Subscription & s) { return addr_of(s.core().stream().native()); })
+    .def_prop_ro("qos", [](Subscription & s) { return s.core().qos(); })
+    .def(
+      "_set_fence_timeout",
+      [](Subscription & s, std::int64_t ns) {
+        s.core().set_fence_timeout(std::chrono::nanoseconds(ns));
+      })
+    .def(
+      "_set_release_deferred",
+      [](Subscription & s, bool deferred) {
+        s.core().set_release_mode(
+          deferred ? flux2::gpu::ReleaseMode::Deferred : flux2::gpu::ReleaseMode::Wait);
+      })
+    .def_prop_ro("signpost_name", [](Subscription & s) { return s.core().signpost_name(); })
+    .def("_require_slots", [](Subscription & s, std::uint32_t n) { s.core().require_slots(n); });
+
+  nb::class_<Executor>(m, "_Executor", nb::type_slots(executor_slots.data()))
+    .def(nb::init<>())
+    .def("add", &Executor::add, "sub"_a, "callback"_a, "priority"_a = 0)
+    .def("stop", &Executor::stop)
+    .def("serve", &Executor::serve, "running"_a = nb::none())
+    .def("open_bridge", &Executor::open_bridge)
+    .def("close_bridge", &Executor::close_bridge)
+    .def("bridge", &Executor::bridge)
+    .def("poster", &Executor::poster, "post"_a)
+    .def("dispatch_pending", &Executor::dispatch_pending, "budget_ns"_a)
+    .def("dispatch_posted", &Executor::dispatch_posted, "budget_ns"_a, "generation"_a)
+    .def("__len__", &Executor::size);
+
+  m.def("_step_aside", [] { turnstile().step_aside(); });
+  m.def("_before_exit", &before_exit);
+  m.def("signpost_name", &flux2::detail::signpost_name, "key"_a, "fingerprint"_a);
+  m.def("_register_stamp_offset", &flux2_stamp_offset_register, "fingerprint"_a, "offset"_a);
+
+  nb::class_<flux2::Endpoint>(m, "Endpoint")
+    .def_ro("pid", &flux2::Endpoint::pid)
+    .def_ro("publisher", &flux2::Endpoint::publisher)
+    .def_ro("label", &flux2::Endpoint::label);
+  nb::class_<flux2::Topic>(m, "Topic")
+    .def_ro("signpost", &flux2::Topic::signpost)
+    .def_ro("key", &flux2::Topic::key)
+    .def_ro("fingerprint", &flux2::Topic::fingerprint)
+    .def_ro("key_exact", &flux2::Topic::key_exact)
+    .def_ro("endpoints", &flux2::Topic::endpoints);
+  nb::class_<flux2::ChannelStats>(m, "ChannelStats")
+    .def_ro("live", &flux2::ChannelStats::live)
+    .def_ro("slot_size", &flux2::ChannelStats::slot_size)
+    .def_ro("slot_count", &flux2::ChannelStats::slot_count)
+    .def_ro("max_subscribers", &flux2::ChannelStats::max_subscribers)
+    .def_ro("epoch", &flux2::ChannelStats::epoch)
+    .def_ro("fingerprint", &flux2::ChannelStats::fingerprint)
+    .def_ro("publish_seq", &flux2::ChannelStats::publish_seq)
+    .def_ro("waiters", &flux2::ChannelStats::waiters);
+  m.def("enumerate_topics", &flux2::enumerate_topics);
+  m.def("read_channel_stats", &flux2::read_channel_stats, "signpost"_a);
+  m.def(
+    "ros_type_of",
+    [](std::uint64_t fingerprint) -> std::optional<std::string> {
+      const flux2::Schemas schemas;
+      if (!schemas.contains(fingerprint)) return std::nullopt;
+      return schemas.at(fingerprint).ros_type();
+    },
+    "fingerprint"_a);
+
+  bind_wire(m);
+}

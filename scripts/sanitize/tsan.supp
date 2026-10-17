@@ -1,0 +1,6 @@
+# Races ThreadSanitizer reports that are not races, as race:<function>, each under its reason.
+#
+# ThreadSanitizer does not model a standalone fence. The roster seqlock (manifest.rs) and the
+# parker's aim seqlock (executor.rs) order their data with fence(Release) and fence(Acquire), so a
+# report on those two is a false one and belongs here. The in-process tests raised none
+# (2026-10-11), so nothing is suppressed yet.

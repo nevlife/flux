@@ -1,0 +1,4 @@
+# rviz and Qt own a property or a child through its parent pointer: `new X(..., this)` is the
+# intended form here, not a leak.
+InheritParentConfig: true
+Checks: -cppcoreguidelines-owning-memory

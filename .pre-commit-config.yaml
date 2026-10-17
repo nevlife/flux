@@ -1,0 +1,107 @@
+exclude: ^thirdparty/  # vendored nanobind stays pristine
+repos:
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.6
+    hooks:
+      - id: clang-format
+        types_or: [c++, c]
+        # Generated: c-header compares it byte for byte with cbindgen's output.
+        exclude: ^flux2_ffi/include/flux2\.h$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff-format
+        types: [python]  # not the python fences in docs/, whose trailing comments run long
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.37.1
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint.yaml]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.41.0
+    hooks:
+      - id: markdownlint
+        args: [-c, .markdownlint.yaml, --fix]
+
+  - repo: local
+    hooks:
+      # Whole workspace each time; the fuzz crate is nightly-only and built from fuzz/.
+      - id: rustfmt
+        name: rustfmt
+        entry: cargo fmt --all --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: clippy
+        name: clippy (pedantic, -D warnings)
+        entry: cargo clippy --all-targets --locked -- -D warnings
+        language: system
+        types_or: [rust, toml]
+        pass_filenames: false
+
+      - id: c-header
+        name: flux2.h matches the Rust sources (cbindgen)
+        entry: scripts/gen_c_header.sh --check
+        language: system
+        files: ^flux2_ffi/
+        pass_filenames: false
+
+      # Needs the build's compile commands (scripts/check_clang_tidy.py says where it looks).
+      - id: clang-tidy
+        name: clang-tidy defect classes (.clang-tidy)
+        entry: scripts/check_clang_tidy.py
+        language: python
+        additional_dependencies: [clang-tidy==22.1.8]
+        types_or: [c++, c]
+
+      - id: flake8
+        name: python defect classes (setup.cfg [flake8])
+        entry: python3 -m flake8
+        language: system
+        types: [python]
+
+      # The protocol checks, each only when a file it covers changes (model_checking/README.md).
+      - id: model-readers
+        name: readers model (SC interleavings)
+        entry: make -s -C model_checking/readers all
+        language: system
+        files: ^(flux2_core/src/(channel|reader|segment)\.rs|model_checking/(explore\.h|readers/))
+        pass_filenames: false
+
+      - id: model-wake
+        name: wake model (SC interleavings)
+        entry: make -s -C model_checking/wake all
+        language: system
+        files: ^(flux2_core/src/(channel|executor|segment)\.rs|model_checking/(explore\.h|wake/))
+        pass_filenames: false
+
+      - id: model-sweep
+        name: sweep model (SC interleavings)
+        entry: make -s -C model_checking/sweep all
+        language: system
+        files: ^(flux2_core/src/(discovery|segment)\.rs|model_checking/(explore\.h|sweep/))
+        pass_filenames: false
+
+      # Skips the RC11 runs where GenMC is missing; the native build always runs.
+      - id: litmus
+        name: ordering litmus tests (GenMC)
+        entry: make -s -C model_checking/litmus all
+        language: system
+        files: ^model_checking/(litmus/|tools/mutate_orderings\.py)
+        pass_filenames: false
+
+      - id: miri-orderings
+        name: real orderings under Miri (scripts/miri.sh)
+        entry: scripts/miri.sh
+        language: system
+        files: ^(flux2_core/src/(channel|executor|segment|reader|manifest)\.rs|scripts/miri\.sh)$
+        pass_filenames: false
