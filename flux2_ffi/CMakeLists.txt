@@ -44,3 +44,22 @@ write_basic_package_version_file(${CMAKE_CURRENT_BINARY_DIR}/flux2_ffiConfigVers
   COMPATIBILITY SameMinorVersion)
 install(FILES cmake/flux2_ffiConfig.cmake ${CMAKE_CURRENT_BINARY_DIR}/flux2_ffiConfigVersion.cmake
   DESTINATION share/flux2_ffi/cmake)
+
+include(CTest)
+if(BUILD_TESTING)
+  # The nightly the fuzz crate pins, which scripts/miri.sh uses too.
+  file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/../fuzz/rust-toolchain.toml channel REGEX "^channel")
+  string(REGEX REPLACE "^channel = \"(.*)\"$" "\\1" toolchain "${channel}")
+  set(cargo_home $ENV{CARGO_HOME})
+  if(NOT cargo_home)
+    set(cargo_home $ENV{HOME}/.cargo)
+  endif()
+  execute_process(COMMAND ${cargo_home}/bin/cargo +${toolchain} miri --version
+    RESULT_VARIABLE no_miri OUTPUT_QUIET ERROR_QUIET)
+  if(no_miri EQUAL 0)
+    add_test(NAME miri_orderings COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/miri.sh)
+    set_tests_properties(miri_orderings PROPERTIES TIMEOUT 1800)
+  else()
+    message(WARNING "miri missing for ${toolchain}: the ordering tests are not registered")
+  endif()
+endif()

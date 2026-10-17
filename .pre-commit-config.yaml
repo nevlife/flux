@@ -69,36 +69,6 @@ repos:
         language: system
         types: [python]
 
-      # The protocol checks, each only when a file it covers changes (model_checking/README.md).
-      - id: model-readers
-        name: readers model (SC interleavings)
-        entry: make -s -C model_checking/readers all
-        language: system
-        files: ^(flux2_core/src/(channel|reader|segment)\.rs|model_checking/(explore\.h|readers/))
-        pass_filenames: false
-
-      - id: model-wake
-        name: wake model (SC interleavings)
-        entry: make -s -C model_checking/wake all
-        language: system
-        files: ^(flux2_core/src/(channel|executor|segment)\.rs|model_checking/(explore\.h|wake/))
-        pass_filenames: false
-
-      - id: model-sweep
-        name: sweep model (SC interleavings)
-        entry: make -s -C model_checking/sweep all
-        language: system
-        files: ^(flux2_core/src/(discovery|segment)\.rs|model_checking/(explore\.h|sweep/))
-        pass_filenames: false
-
-      # Skips the RC11 runs where GenMC is missing; the native build always runs.
-      - id: litmus
-        name: ordering litmus tests (GenMC)
-        entry: make -s -C model_checking/litmus all
-        language: system
-        files: ^model_checking/(litmus/|tools/mutate_orderings\.py)
-        pass_filenames: false
-
       - id: miri-orderings
         name: real orderings under Miri (scripts/miri.sh)
         entry: scripts/miri.sh

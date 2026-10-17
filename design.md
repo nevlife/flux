@@ -87,11 +87,11 @@ fallback: parker(word) ── FUTEX_WAIT(word, seen) ── 값이 바뀜 ──
 - 겨냥은 executor 하나가 쓰는 seqlock이다. 바뀐 word의 mapping은 parker가 그 뒤의 겨냥을 읽었다고 표시할 때까지 executor가 쥔다. 그 전에는 parker가 옛 word를 아직 만질 수 있기 때문이다.
 - parker는 겨냥이 바뀔 때마다 merged wait가 넘겼을 값(pass가 샘플한 seq, watch의 armed epoch)에서 시작한다. 그래서 샘플 뒤에 온 프레임은 곧바로 제어 word를 울린다. executor는 제어 word를 마지막으로 들은 값으로 기다리므로, 그 뒤에 울린 것은 대기를 바로 끝낸다. 잃는 wake가 없다.
 - waiter gate, priority, pass 예산, stop·interrupt·tick, source 127개 상한, trace 이벤트(`flux2_trace_wake`의 위치와 값)는 두 경로가 같다. C ABI 위의 층은 어느 경로인지 모른다.
-- parker를 멈추거나 겨냥을 바꿀 때는 표시를 한 뒤 그 word를 futex wake한다. 같은 word를 기다리는 다른 대기는 이를 stray wake로 보고 다시 확인한다. 표시와 parker의 대기 사이에 끼면 parker의 대기 상한(50 ms) 안에 본다. 겨냥을 바꿀 때 이 틈에 끼면 새 word의 프레임은 잃지 않지만 최대 50 ms 늦는다. 옛 word의 futex 대기는 겨냥 word를 함께 비교할 수 없어서 이 틈을 닫지 못한다. 겨냥 word에서 자는 parker에는 겨냥의 틈이 없다. stop의 틈은 어느 word에서든 있다. stop 표시는 futex가 비교하는 word가 아니기 때문이다. 그래서 executor drop은 최대 50 ms 늦는다. 두 틈 모두 의도한 예외이고, `model_checking/wake`의 parked 설정은 이 틈에서만 timeout을 허용한다.
+- parker를 멈추거나 겨냥을 바꿀 때는 표시를 한 뒤 그 word를 futex wake한다. 같은 word를 기다리는 다른 대기는 이를 stray wake로 보고 다시 확인한다. 표시와 parker의 대기 사이에 끼면 parker의 대기 상한(50 ms) 안에 본다. 겨냥을 바꿀 때 이 틈에 끼면 새 word의 프레임은 잃지 않지만 최대 50 ms 늦는다. 옛 word의 futex 대기는 겨냥 word를 함께 비교할 수 없어서 이 틈을 닫지 못한다. 겨냥 word에서 자는 parker에는 겨냥의 틈이 없다. stop의 틈은 어느 word에서든 있다. stop 표시는 futex가 비교하는 word가 아니기 때문이다. 그래서 executor drop은 최대 50 ms 늦는다. 두 틈 모두 의도한 예외이고, flux_model_checking `wake`의 parked 설정은 이 틈에서만 timeout을 허용한다.
 - parker, GPU accept, `flux2-reaper`(아래 "정리 순서") 스레드는 모든 신호를 막은 채 시작한다. 프로세스로 보낸 신호는 막지 않은 아무 스레드로 가므로, 그렇지 않으면 rclcpp가 건 SIGINT 처리기가 이 스레드에서 돌고 그 대기가 EINTR로 끝난다
 - 신호는 대기를 끝내지 않는다. `SA_RESTART` 없이 건 처리기는 `FUTEX_WAIT`, `futex_waitv`, `poll`을 EINTR로 끝내고, `SA_RESTART`도 timeout 있는 `FUTEX_WAIT`와 `poll`은 다시 시작하지 않는다. 그래서 futex 대기 둘과 fd 교환의 `poll`은 EINTR이면 남은 deadline으로 다시 부른다(`futex_waitv`는 deadline이 절대 시각이라 같은 값으로 다시 부른다). `fallocate`는 1 MiB 단위로 다시 부른다. 대기가 신호로 일찍 끝나지 않으므로 trace `WAKE_SIGNAL`은 더 이상 나오지 않는다(계약 번호는 그대로 둔다). 신호 처리기에서 spin을 멈추려면 `stop`·`cancel`을 부른다. futex wake만 하므로 처리기에서 불러도 된다. `close()`는 EINTR이어도 다시 부르지 않는다(Linux는 이미 fd를 풀었다). non-blocking `connect`·`recvmsg`와 helper 스레드(신호를 막았다)의 `poll`·`accept4`는 EINTR을 받지 않거나 루프가 이미 다시 부른다
   - 시험 `storm`은 처리기를 `SA_RESTART` 없이 건 SIGUSR1(대상 스레드에 200 us마다)과 `setitimer` SIGALRM 아래에서 생성, `Channel::wait`, `PublisherWatch::wait`, `wait_for_work`(merged와 parker 각각), 느린 발행자와의 fd 교환을 돈다. 타이머가 프로세스 전체에 걸리므로 시험 바이너리를 자식으로 다시 띄워 그 시험만 돌린다. 고치기 전에는 대기가 수십 us 만에 끝나고 fd 교환이 `NotReady`였다
-- 대가: source마다 스레드 하나(아직 붙지 않은 source도), wake마다 문맥 전환 한 번이 더 든다. 아래 표는 이 대가를 잰 것이다. fallback의 겨냥, 재겨냥, retired word, 두 틈은 `model_checking/wake`의 parked 설정이 다룬다.
+- 대가: source마다 스레드 하나(아직 붙지 않은 source도), wake마다 문맥 전환 한 번이 더 든다. 아래 표는 이 대가를 잰 것이다. fallback의 겨냥, 재겨냥, retired word, 두 틈은 flux_model_checking `wake`의 parked 설정이 다룬다.
 
 publish에서 콜백까지의 지연이다(Jetson AGX Orin, Linux 6.8 RT, SCHED_OTHER, 채널을 돌아가며 1 ms마다 한 프레임, 5000개). 두 번 잰 p99는 3 us 안에서 같았고, max는 두 경로 모두 실행마다 0.05~1.9 ms로 흔들려 싣지 않는다.
 
@@ -518,7 +518,7 @@ Miri 테스트(`scripts/miri.sh`):
 | `manifest::race::a_read_entry_is_never_torn` | roster seqlock |
 | `executor::race::a_retired_word_outlives_the_parkers_last_touch` | 겨냥 seqlock과 `taken`. 일찍 놓은 word는 use after free나 race다 |
 
-`model_checking/tools/mutate_orderings.py rust`로 `channel.rs`·`segment.rs`·`executor.rs`·`manifest.rs`·`discovery.rs`의 자리 83개를 하나씩 낮춰 이 테스트를 seed 64개로 돌렸다(2026-10-11). `SeqCst`는 acquire/release 형태로, 나머지는 `Relaxed`로 낮춘다.
+flux_model_checking의 `tools/mutate_orderings.py rust`로 `channel.rs`·`segment.rs`·`executor.rs`·`manifest.rs`·`discovery.rs`의 자리 83개를 하나씩 낮춰 이 테스트를 seed 64개로 돌렸다(2026-10-11). `SeqCst`는 acquire/release 형태로, 나머지는 `Relaxed`로 낮춘다.
 
 | 결과 | 자리 |
 | --- | --- |
@@ -545,13 +545,13 @@ Miri 테스트(`scripts/miri.sh`):
 
 리뷰는 해제 쪽 감소를 `Relaxed`로 낮춘 버그를 Miri가 놓친다고 했지만 잡는다. Miri는 LB 결과를 만들지 않지만, race 검출이 happens-before(vector clock)로 하기 때문이다. 감소와 덮어쓰기 사이에 happens-before가 없으면 재배치가 실제로 일어나지 않아도 payload 읽기와 쓰기를 race로 보고한다.
 
-GenMC litmus(`model_checking/litmus/`)는 GenMC가 없는 곳에서 썼고 아직 RC11에서 돌려 보지 않았다. 대신 `make native`로 C로서 유효한지만 본다.
+GenMC litmus(flux_model_checking의 `litmus/`)는 GenMC가 없는 곳에서 썼고 아직 RC11에서 돌려 보지 않았다. 대신 `make native`로 C로서 유효한지만 본다.
 
 ## 검증
 
 fuzz 대상은 `flux2_core/src/fuzz.rs`의 `frame`, `attach`, `roster` 셋이다. `attach`는 첫 바이트가 홀수면 파일을 헤더가 말하는 크기(16 MiB까지)로 맞춰, 헤더만 있는 입력도 attach 검사까지 간다. `cargo test`가 이 함수들을 고정 corpus로 돌리고, `fuzz/`(cargo-fuzz, 고정 nightly)가 같은 함수를 fuzzing한다.
 
-model checking 하니스는 `model_checking/`에 둔다. flux의 `flux_model_checking`과는 별개다. `wake`의 CRASH 설정은 어느 단계에서든 죽을 수 있는 대기자와 발행자의 sweep을 넣고, 두 store로 세는 옛 방식(`BUG_TWO_STORES`)을 누수로 잡는다. `readers`의 LOAN 설정은 loan abort를 넣는다. fork 가드와 1초 주기는 모델에 없다.
+model checking 하니스는 비공개 저장소 flux_model_checking에 둔다. 손으로 쓴 C 모델이라 이 저장소의 소스를 include하지 않는다. `wake`의 CRASH 설정은 어느 단계에서든 죽을 수 있는 대기자와 발행자의 sweep을 넣고, 두 store로 세는 옛 방식(`BUG_TWO_STORES`)을 누수로 잡는다. `readers`의 LOAN 설정은 loan abort를 넣는다. fork 가드와 1초 주기는 모델에 없다.
 
 실제 Rust 코드의 `Ordering`은 Miri로 검사한다. 대상은 `::race::` 테스트이고, 무엇을 보는지와 어느 자리를 잡는지는 아래 "메모리 순서" 절에 있다. 구독자는 프로세스처럼 각자 `ChannelShared`와 구독자 번호를 갖는다. Miri가 mmap·fcntl을 지원하지 않아 heap 경로만 돈다. claim이 0번 번호의 칸만 읽는 변형, 구독자가 borrow한 뒤 ticket을 다시 확인하지 않는 변형도 data race로 잡힌다. 툴체인은 fuzz crate가 고정한 nightly다.
 
@@ -559,9 +559,9 @@ model checking 하니스는 `model_checking/`에 둔다. flux의 `flux_model_che
 scripts/miri.sh    # MIRI_SEEDS 기본 0..64, 약 25초
 ```
 
-모델, litmus, Miri는 `colcon test`(패키지 `flux2_model_checking`)와, 덮는 파일이 바뀐 커밋의 pre-commit에서 돈다(`model_checking/README.md`).
+모델과 litmus는 `colcon test`(패키지 `flux_model_checking`)와, 덮는 파일이 바뀐 커밋의 pre-commit(flux_devel `.pre-commit-workspace.yaml`)에서 돈다. Miri는 Rust 소스와 함께 이 저장소에 두고 `colcon test`(패키지 `flux2_ffi`)와 pre-commit에서 돈다.
 
-전역 lock 없는 sweep은 `model_checking/sweep/`이 검사한다. 이름(signpost, 세그먼트 epoch), inode, 프로세스마다 open file description과 OFD lock을 모델로 두고, sweeper·발행자·구독자 중 누구든 아무 단계에서나 죽을 수 있다. 살아 있는 객체를 가리키는 이름을 지우지 않는지, 쓰고 있는 이름이 다른 객체로 바뀌지 않는지, 다 끝나면 남는 이름이 없는지를 본다(설정마다 수백만 상태). 이름 확인이나 lock을 빼거나 순서를 바꾼 변형은 모두 잡힌다. `flux2_core/tests/sweep_stress.rs`는 프로세스 12개를 계속 만들고 SIGKILL·SIGSTOP하며 같은 성질을 실제 /dev/shm에서 본다.
+전역 lock 없는 sweep은 flux_model_checking의 `sweep/`이 검사한다. 이름(signpost, 세그먼트 epoch), inode, 프로세스마다 open file description과 OFD lock을 모델로 두고, sweeper·발행자·구독자 중 누구든 아무 단계에서나 죽을 수 있다. 살아 있는 객체를 가리키는 이름을 지우지 않는지, 쓰고 있는 이름이 다른 객체로 바뀌지 않는지, 다 끝나면 남는 이름이 없는지를 본다(설정마다 수백만 상태). 이름 확인이나 lock을 빼거나 순서를 바꾼 변형은 모두 잡힌다. `flux2_core/tests/sweep_stress.rs`는 프로세스 12개를 계속 만들고 SIGKILL·SIGSTOP하며 같은 성질을 실제 /dev/shm에서 본다.
 
 loom은 쓰지 않는다. loom은 `SeqCst`를 AcqRel로 다뤄서, 올바른 `SeqCst` Dekker도 위반으로 보고한다.
 
