@@ -1,0 +1,4 @@
+# Loaded by find_package(flux_gen): exposes flux_generate_adapters() and the generator program.
+set(FLUX_GEN_EXECUTABLE "${flux_gen_DIR}/../../../lib/flux_gen/flux_gen")
+
+include("${flux_gen_DIR}/flux_generate_adapters.cmake")

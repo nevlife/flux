@@ -1,4 +1,4 @@
-# flux2 실노드 테스트 경우의 수
+# flux 실노드 테스트 경우의 수
 
 실제 rclcpp·rclpy 노드를 프로세스로 띄워 확인할 조합이다. 기준 메시지는 두 가지다.
 
@@ -7,7 +7,7 @@
 | IMU | `sensor_msgs/Imu` | 100 Hz | 약 300 B |
 | IMG | `sensor_msgs/Image` 1920x1080 rgb8 | 30 Hz | 약 6.2 MB |
 
-모든 경우에 공통으로 확인하는 것: 손상 프레임 0, 같은 발행자 안에서 seq 역행 0, 발행자가 마지막으로 보낸 프레임까지 받았는지, 빠진 프레임이 모두 flux2 `lost`에 잡혔는지, 빠진 프레임 수, 지연(p50·p99·max), 발행자 backpressure 수, 프로세스 종료 코드.
+모든 경우에 공통으로 확인하는 것: 손상 프레임 0, 같은 발행자 안에서 seq 역행 0, 발행자가 마지막으로 보낸 프레임까지 받았는지, 빠진 프레임이 모두 flux `lost`에 잡혔는지, 빠진 프레임 수, 지연(p50·p99·max), 발행자 backpressure 수, 프로세스 종료 코드.
 
 ## 1. 축
 
@@ -18,7 +18,7 @@
 | 프로세스 배치 | 발행·구독 다른 프로세스, 같은 프로세스, 같은 노드 |
 | 메시지 | IMU, IMG, `NO_SCHEMA` 바이트, 타입 있는 numpy 배열(dtype·shape) |
 | 받는 방식 | 콜백(executor), `take()`, `take_blocking()`, message_filters `Subscriber` |
-| executor | `flux2::Executor`, Python `flux2.Executor`, `PartitionedExecutor`(C++·Python) |
+| executor | `flux::Executor`, Python `flux.Executor`, `PartitionedExecutor`(C++·Python) |
 | rclpy 쪽 executor | `SingleThreadedExecutor`, `MultiThreadedExecutor`, `EventsExecutor` |
 | QoS depth | 1, 8, 슬롯 수와 같음 |
 | QoS replay | 0, 1, depth와 같음 |
@@ -26,7 +26,7 @@
 | 구독자 수 | 1, 2, 8, 상한, 상한+1 |
 | 배포판 | Humble(numpy 1.21, Qt5), Jazzy(numpy 1.26, Qt5), Lyrical(numpy 2.x, Qt6) |
 | 실행 환경 | 호스트, Docker 기본 seccomp(`/dev/shm` 64 MB) |
-| executor 대기 | merged(`futex_waitv`), parker 스레드 fallback(5.16 미만 커널, `FLUX2_DISABLE_FUTEX_WAITV=1`) |
+| executor 대기 | merged(`futex_waitv`), parker 스레드 fallback(5.16 미만 커널, `FLUX_DISABLE_FUTEX_WAITV=1`) |
 
 ## 2. 언어 조합
 
@@ -43,31 +43,31 @@
 
 | 경우 | 구성 |
 | --- | --- |
-| 같은 executor | 한 노드에 flux2 구독(IMG) + ROS 구독(IMU, DDS) + 타이머 |
-| 같은 콜백 그룹 | flux2 구독과 ROS 구독이 한 MutuallyExclusive 그룹 |
+| 같은 executor | 한 노드에 flux 구독(IMG) + ROS 구독(IMU, DDS) + 타이머 |
+| 같은 콜백 그룹 | flux 구독과 ROS 구독이 한 MutuallyExclusive 그룹 |
 | 다른 콜백 그룹 | 그룹을 나누고 `PartitionedExecutor`로 스레드 분리 |
-| 서비스·액션 | flux2 구독 중 서비스 호출, 액션 goal 처리 |
-| 느린 ROS 콜백 | ROS 콜백이 50 ms 막을 때 flux2 콜백 지연 |
-| 느린 flux2 콜백 | flux2 콜백이 50 ms 막을 때 ROS 콜백 지연 |
-| message_filters | flux2 IMG + ROS CameraInfo `TimeSynchronizer`, `ApproximateTime` |
-| message_filters 둘 다 flux2 | IMG 두 채널 동기화 |
-| 같은 이름 | 같은 토픽 이름으로 ROS 토픽과 flux2 채널이 동시에 존재 |
+| 서비스·액션 | flux 구독 중 서비스 호출, 액션 goal 처리 |
+| 느린 ROS 콜백 | ROS 콜백이 50 ms 막을 때 flux 콜백 지연 |
+| 느린 flux 콜백 | flux 콜백이 50 ms 막을 때 ROS 콜백 지연 |
+| message_filters | flux IMG + ROS CameraInfo `TimeSynchronizer`, `ApproximateTime` |
+| message_filters 둘 다 flux | IMG 두 채널 동기화 |
+| 같은 이름 | 같은 토픽 이름으로 ROS 토픽과 flux 채널이 동시에 존재 |
 | 노드 추가 시점 | spin 전에 추가, spin 중 노드·콜백 그룹·엔티티 생성 |
 
 ## 4. executor
 
 | executor | 경우 |
 | --- | --- |
-| `flux2::Executor` | flux2만, flux2+ROS, 노드 여러 개, `spin_until_future_complete` |
-| `flux2::Executor` | 다른 스레드에서 `cancel()`, spin 중 `rclcpp::shutdown()` |
-| `flux2::Executor` | 채널 127개(상한), 128개째 거절 |
-| `flux2::Executor` | `spin_once`·`spin_some`·`spin_all` 호출 시 예외 |
-| Python `flux2.Executor` | rclpy executor 세 종류 각각, `stop()`, 컨텍스트 shutdown |
+| `flux::Executor` | flux만, flux+ROS, 노드 여러 개, `spin_until_future_complete` |
+| `flux::Executor` | 다른 스레드에서 `cancel()`, spin 중 `rclcpp::shutdown()` |
+| `flux::Executor` | 채널 127개(상한), 128개째 거절 |
+| `flux::Executor` | `spin_once`·`spin_some`·`spin_all` 호출 시 예외 |
+| Python `flux.Executor` | rclpy executor 세 종류 각각, `stop()`, 컨텍스트 shutdown |
 | `PartitionedExecutor` | 그룹마다 스레드, 한 그룹 막힘이 다른 그룹에 영향 없음 |
 | `PartitionedExecutor` | `on_thread_start` hook, 한 스레드 예외가 전체 spin으로 전파 |
 | `PartitionedExecutor` | spin 중 새 그룹 생성, Reentrant 그룹 거절 |
-| `PartitionedExecutor` Python | flux2 전용 그룹에 ROS 엔티티가 들어오면 거절 |
-| 섞기 | 한 프로세스에 `flux2::Executor`와 `PartitionedExecutor` 동시 |
+| `PartitionedExecutor` Python | flux 전용 그룹에 ROS 엔티티가 들어오면 거절 |
+| 섞기 | 한 프로세스에 `flux::Executor`와 `PartitionedExecutor` 동시 |
 | 콜백 예외 | C++ throw, Python raise가 spin 호출자에게 도달 |
 
 ## 5. QoS
@@ -144,7 +144,7 @@
 
 | 경우 | 구성 |
 | --- | --- |
-| bridge | 구독 중 `ros2 topic echo_flux2`·`hz_flux2` |
-| bag | 구독 중 `record_flux2`, 재생한 채널을 실노드가 구독 |
-| rviz | flux2_tools display가 추가 구독자로 붙음 |
-| CLI | `flux2 topic` 목록에 발행자·구독자 노드 표시 |
+| bridge | 구독 중 `ros2 topic echo_flux`·`hz_flux` |
+| bag | 구독 중 `record_flux`, 재생한 채널을 실노드가 구독 |
+| rviz | flux_tools display가 추가 구독자로 붙음 |
+| CLI | `flux topic` 목록에 발행자·구독자 노드 표시 |

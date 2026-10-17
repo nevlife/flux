@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# flux2_core's in-process tests under a sanitizer: nightly -Zsanitizer with std rebuilt the same
+# flux_core's in-process tests under a sanitizer: nightly -Zsanitizer with std rebuilt the same
 # way. design.md, in its section on verification, says what each run covers and why each
 # suppression is there.
 #   scripts/sanitize.sh address|thread [extra cargo test arguments]
@@ -20,5 +20,5 @@ export TSAN_OPTIONS="allocator_may_return_null=1:halt_on_error=1:second_deadlock
 # Left out: the GPU tests (the driver is not instrumented and maps where ASan keeps its shadow) and
 # a test that times a cycle, which instrumentation slows past its bound.
 exec cargo "+$toolchain" test -Zbuild-std --target "$host" --target-dir "target/$kind" \
-  -p flux2_core --lib --test heap --test executor "$@" -- \
+  -p flux_core --lib --test heap --test executor "$@" -- \
   --skip gpu:: --skip publish_and_take_do_not_scan_every_slot

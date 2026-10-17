@@ -1,5 +1,5 @@
 [workspace]
-members = ["flux2_core", "flux2_ffi", "flux2_cli", "flux2_gen"]
+members = ["flux_core", "flux_ffi", "flux_cli", "flux_gen"]
 # Nightly only (cargo-fuzz); built from its own directory.
 exclude = ["fuzz"]
 resolver = "3"
@@ -12,8 +12,8 @@ rust-version = "1.88"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
-# Set only to measure what the trace calls cost (flux2_core/src/trace.rs).
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(flux2_trace_off)"] }
+# Set only to measure what the trace calls cost (flux_core/src/trace.rs).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(flux_trace_off)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

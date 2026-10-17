@@ -1,13 +1,13 @@
-# flux2 실노드 테스트 결과
+# flux 실노드 테스트 결과
 
-[test.md](test.md)의 경우의 수 가운데 `flux_ws/src/flux2_test_pkg`의 하네스가 만드는 것을 실제 rclcpp·rclpy 노드 프로세스로 돌린 결과다. 아래 수치는 모두 2026-10-06에 lyrical 호스트에서 다시 돌린 것이다. 그날 호스트에서는 다른 빌드가 같이 돌았다(load average 30~60, 12코어). 지연의 p99·max와 장시간의 빠짐에는 그 부하가 섞여 있다.
+[test.md](test.md)의 경우의 수 가운데 `flux_ws/src/flux_test_pkg`의 하네스가 만드는 것을 실제 rclcpp·rclpy 노드 프로세스로 돌린 결과다. 아래 수치는 모두 2026-10-06에 lyrical 호스트에서 다시 돌린 것이다. 그날 호스트에서는 다른 빌드가 같이 돌았다(load average 30~60, 12코어). 지연의 p99·max와 장시간의 빠짐에는 그 부하가 섞여 있다.
 
 - 노드: `cpp_pub`·`py_pub`(IMU 100 Hz, FHD rgb8 이미지 30 Hz, f32 배열), `cpp_sub`·`py_sub`(모든 프레임의 내용을 검사하고 발행자별 seq, 빠짐, `lost`, 지연을 기록)
 - 러너: `test/scenarios.py`(60개 케이스), `test/longrun.py`(장시간)
-- 실행: 각 실행에 자기 `/dev/shm`을 준다. `flux2` CLI 케이스는 cargo로 빌드한 `flux2`의 경로를 `FLUX2_CLI`로 받는다.
+- 실행: 각 실행에 자기 `/dev/shm`을 준다. `flux` CLI 케이스는 cargo로 빌드한 `flux`의 경로를 `FLUX_CLI`로 받는다.
 
 ```bash
-cd flux_ws/src/flux2_test_pkg/test
+cd flux_ws/src/flux_test_pkg/test
 bwrap --dev-bind / / --tmpfs /dev/shm -- python3 scenarios.py OUT_DIR [-k SUBSTRING ...]
 bwrap --dev-bind / / --size 67108864 --tmpfs /dev/shm -- python3 scenarios.py OUT_DIR -k "small /dev/shm"
 bwrap --dev-bind / / --tmpfs /dev/shm -- python3 longrun.py OUT_DIR MINUTES
@@ -67,28 +67,28 @@ INFO 5개는 판정선이 없는 측정이다. 호스트의 `/dev/shm`이 커서
 | --- | --- |
 | 1 축: Jazzy, Docker 기본 seccomp | 하네스 없음 |
 | 3 노드 추가 시점: spin 중 노드 생성 | 콜백 그룹과 구독 생성만 한다 |
-| 4 `flux2::Executor` 노드 여러 개 | 없음. 섞기 케이스는 노드 둘을 executor 둘에 나눠 넣는다 |
-| 5 거절: 슬롯 수를 넘는 borrow 합 | flux2가 거절하지 않는다. INFO로 측정만 한다 |
+| 4 `flux::Executor` 노드 여러 개 | 없음. 섞기 케이스는 노드 둘을 executor 둘에 나눠 넣는다 |
+| 5 거절: 슬롯 수를 넘는 borrow 합 | flux가 거절하지 않는다. INFO로 측정만 한다 |
 | 10 장시간 1시간 | `longrun.py OUT_DIR 60`으로 돌릴 수 있다. 이번에는 15분 |
-| 11 `echo_flux2`, rviz display | 없음. bridge는 `hz_flux2`만 돈다 |
+| 11 `echo_flux`, rviz display | 없음. bridge는 `hz_flux`만 돈다 |
 
-## 찾아서 고친 flux2 버그
+## 찾아서 고친 flux 버그
 
 이전 실행에서 찾은 것이다. 넷 다 수정을 되돌리면 실패하는 단위 테스트가 있다.
 
 | 버그 | 증상(실노드) | 원인 | 수정 |
 | --- | --- | --- | --- |
-| C++ `flux2::Executor`에서 ROS가 flux를 굶김 | ROS Imu 100 Hz에 50 ms 작업을 걸면 FHD가 157개 중 3개만 옴 | rclcpp 작업을 flux를 보지 않고 한 번에 64개까지 돌림 | flux에 일이 있으면 1 ms 뒤 넘김(`Executor::ready()`, `flux2_executor_ready`) |
+| C++ `flux::Executor`에서 ROS가 flux를 굶김 | ROS Imu 100 Hz에 50 ms 작업을 걸면 FHD가 157개 중 3개만 옴 | rclcpp 작업을 flux를 보지 않고 한 번에 64개까지 돌림 | flux에 일이 있으면 1 ms 뒤 넘김(`Executor::ready()`, `flux_executor_ready`) |
 | C++에서 flux가 ROS를 밀어냄(위 수정의 첫 시도에서 나옴) | FHD에 50 ms 작업이면 ROS p50 314 ms | executable 하나마다 넘기면 가벼운 ROS callback이 50 ms마다 하나씩만 돎 | 1 ms 동안은 ROS를 이어서 돎(`kTurnNs`) |
-| Python `flux2.Executor`에서 flux가 ROS를 굶김 | FHD에 50 ms 작업을 걸면 ROS Imu가 196개 중 3개만 옴 | rclpy는 준비된 task가 있으면 wait set을 보지 않음. dispatch task가 늘 준비돼 있었음 | dispatch가 1 ms 뒤 멈추고(`_TURN_NS`), 남은 프레임이 있으면 바로 다음 task |
+| Python `flux.Executor`에서 flux가 ROS를 굶김 | FHD에 50 ms 작업을 걸면 ROS Imu가 196개 중 3개만 옴 | rclpy는 준비된 task가 있으면 wait set을 보지 않음. dispatch task가 늘 준비돼 있었음 | dispatch가 1 ms 뒤 멈추고(`_TURN_NS`), 남은 프레임이 있으면 바로 다음 task |
 | view를 쥔 구독자가 재시작한 발행자를 따라가지 못함 | message_filters 입력이 늦은 CameraInfo를 기다리는 사이 발행자가 재시작하면 영원히 멈춤 | 남은 view가 하나라도 있으면 새 매핑으로 바꾸지 않았음. view는 `Arc`로 옛 매핑을 스스로 붙잡으므로 기다릴 이유가 없음 | 조건 삭제 |
 
-## flux2 밖의 한계
+## flux 밖의 한계
 
 | 항목 | 관찰(2026-10-06) | 근거 |
 | --- | --- | --- |
-| rclpy `MultiThreadedExecutor` | `flux2.Executor`에 넣으면 FHD 128개 중 101개만 받고(27개는 `lost`) p99 58 ms | flux2 없이 rclpy만으로 재현된다(`test/mte_plain.py`). Single·Events executor는 빠짐 0 |
-| DDS로 FHD 보내기(bridge) | relay는 30 Hz로 내보내는데 `hz_flux2`는 0.9 Hz | 기본 RMW로 6 MB 메시지를 보낼 때의 손실이다. IMU는 100 Hz 그대로 |
+| rclpy `MultiThreadedExecutor` | `flux.Executor`에 넣으면 FHD 128개 중 101개만 받고(27개는 `lost`) p99 58 ms | flux 없이 rclpy만으로 재현된다(`test/mte_plain.py`). Single·Events executor는 빠짐 0 |
+| DDS로 FHD 보내기(bridge) | relay는 30 Hz로 내보내는데 `hz_flux`는 0.9 Hz | 기본 RMW로 6 MB 메시지를 보낼 때의 손실이다. IMU는 100 Hz 그대로 |
 | `mlock` | `lock=True`인 FHD 발행자는 생성이 거절됨 | `RLIMIT_MEMLOCK`이 세그먼트를 덮지 못한다. 메시지가 그렇게 알려 준다 |
 
 Jazzy rclpy가 SIGINT 때 드물게 `RCLError: failed to initialize wait set`을 낸다는 이전 관찰은 이번에 다시 보지 않았다(Jazzy를 돌리지 않음). `py_sub`는 컨텍스트가 닫힌 뒤의 이 오류만 정상 종료로 본다.
@@ -106,7 +106,7 @@ Jazzy rclpy가 SIGINT 때 드물게 `RCLError: failed to initialize wait set`을
 | depth 1 느린 구독자(100 ms) | 받은 프레임 지연 p50 17 ms(C++), 21 ms(Python). 같은 조건의 depth 8은 255 ms |
 | 같은 노드에서 ROS 50 ms 작업, PartitionedExecutor | flux p99 4.9 ms(C++), 1.0 ms(Python), 빠짐 0 |
 | 같은 노드에서 flux 50 ms 작업, PartitionedExecutor | ROS p99 0.4 ms(C++), 4.2 ms(Python) |
-| 같은 노드에서 위 둘, `flux2::Executor` 한 스레드 | 서로 번갈아 돈다. ROS 50 ms 작업이면 flux p50 18 ms(54개 `lost`), flux 50 ms 작업이면 ROS p50 25 ms(C++) |
+| 같은 노드에서 위 둘, `flux::Executor` 한 스레드 | 서로 번갈아 돈다. ROS 50 ms 작업이면 flux p50 18 ms(54개 `lost`), flux 50 ms 작업이면 ROS p50 25 ms(C++) |
 | 서비스·액션 | Trigger p50 0.1~0.3 ms, 최대 15 ms, 이미지 빠짐 0 |
 | 발행자 SIGINT·SIGKILL 재시작 | 재접속 0.25~0.85 s, 두 run이 섞이지 않음, 각 run을 마지막 프레임까지 받음, 손상 0 |
 | 구독자가 먼저 뜸 | 발행자 시작 0.28 s 뒤 첫 프레임 |
@@ -145,7 +145,7 @@ lyrical 호스트, 15분씩 두 번. FHD 30 Hz를 구독자 8개(C++ 4, Python 4
 | fd, `/dev/shm` | 프로세스마다 45~47개, `/dev/shm` 5개로 변하지 않음 | 41~43개, 5개로 변하지 않음 |
 | RSS | 7분까지 C++ 구독자 129 MiB, Python 구독자 182 MiB. 8분부터 호스트 메모리 회수로 줄었다(101 MiB, 120 MiB) | 2분까지 129 MiB, 181 MiB. 3분에 회수로 줄고(106 MiB, 126 MiB) Python 구독자는 그 뒤 150 MiB까지 다시 늘었다 |
 
-빠짐은 모두 flux2가 `lost`로 센 것이다. 구독자가 depth 1을 제때 비우지 못한 것으로, 부하가 낮은 구간에서는 거의 늘지 않았다. 이전 문서의 "15분 빠짐 0"은 받은 개수를 보낸 개수와 비교하지 않은 판정이어서 근거가 되지 못한다. 부하가 없는 호스트에서 다시 돌린 위 결과는 빠짐이 0이었다.
+빠짐은 모두 flux가 `lost`로 센 것이다. 구독자가 depth 1을 제때 비우지 못한 것으로, 부하가 낮은 구간에서는 거의 늘지 않았다. 이전 문서의 "15분 빠짐 0"은 받은 개수를 보낸 개수와 비교하지 않은 판정이어서 근거가 되지 못한다. 부하가 없는 호스트에서 다시 돌린 위 결과는 빠짐이 0이었다.
 
 ## INFO 항목
 

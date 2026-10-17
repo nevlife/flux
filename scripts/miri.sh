@@ -11,4 +11,4 @@ if ! cargo "+$toolchain" miri --version >/dev/null 2>&1; then
   exit 1
 fi
 MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-many-seeds=${MIRI_SEEDS:-0..64}" \
-  exec cargo "+$toolchain" miri test -p flux2_core --lib ::race:: "$@"
+  exec cargo "+$toolchain" miri test -p flux_core --lib ::race:: "$@"

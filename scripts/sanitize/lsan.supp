@@ -1,3 +1,3 @@
-# Leaks LeakSanitizer reports that flux2 makes on purpose, as leak:<function>, each under its
+# Leaks LeakSanitizer reports that flux makes on purpose, as leak:<function>, each under its
 # reason. A failed fence keeps its channel for the process's life on purpose, but the GPU tests
 # that make one do not run under the sanitizers, so nothing is suppressed yet.

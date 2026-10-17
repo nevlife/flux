@@ -1,8 +1,8 @@
 # Defect classes only, style checks off. The Core Guidelines Bounds profile is off: a C ABI passes
 # arrays as a pointer and a length. Each disabled check below was run over the tree and every hit
 # was a false positive or intended.
-# Only flux2's own headers: the vendored nanobind under thirdparty/ is not ours to change.
-HeaderFilterRegex: '.*/flux2_[a-z]+/include/.*'
+# Only flux's own headers: the vendored nanobind under thirdparty/ is not ours to change.
+HeaderFilterRegex: '.*/flux_[a-z]+/include/.*'
 Checks: >
   -*,
   bugprone-*,

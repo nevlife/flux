@@ -1,0 +1,25 @@
+[package]
+name = "flux_core"
+description = "flux shared-memory engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+# Turns on the hidden `fuzz` module for the integration tests' oracles.
+flux_core = { path = ".", features = ["fuzz"] }
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "trace_cost"
+harness = false
+
+[features]
+# Exposes the fuzz targets to the cargo-fuzz crate in ../fuzz.
+fuzz = []

@@ -3,31 +3,31 @@
 version = 4
 
 [[package]]
-name = "flux2_cli"
+name = "flux_cli"
 version = "0.1.0"
 dependencies = [
- "flux2_core",
+ "flux_core",
  "libc",
 ]
 
 [[package]]
-name = "flux2_core"
+name = "flux_core"
 version = "0.1.0"
 dependencies = [
- "flux2_core",
+ "flux_core",
  "libc",
 ]
 
 [[package]]
-name = "flux2_ffi"
+name = "flux_ffi"
 version = "0.1.0"
 dependencies = [
- "flux2_core",
- "flux2_gen",
+ "flux_core",
+ "flux_gen",
 ]
 
 [[package]]
-name = "flux2_gen"
+name = "flux_gen"
 version = "0.1.0"
 
 [[package]]

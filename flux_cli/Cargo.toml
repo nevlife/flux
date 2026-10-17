@@ -1,0 +1,18 @@
+[package]
+name = "flux_cli"
+description = "flux: inspect flux channels on this host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "flux"
+path = "src/main.rs"
+
+[dependencies]
+flux_core = { path = "../flux_core" }
+libc = "0.2"
+
+[lints]
+workspace = true

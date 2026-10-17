@@ -1,5 +1,5 @@
 [package]
-name = "flux2_fuzz"
+name = "flux_fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-flux2_core = { path = "../flux2_core", features = ["fuzz"] }
+flux_core = { path = "../flux_core", features = ["fuzz"] }
 
 [[bin]]
 name = "frame"

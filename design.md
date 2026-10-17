@@ -1,30 +1,30 @@
-# flux Rust 이전 초기 설계
+# flux 설계
 
 ## 구조
 
 ```text
-flux2_core (Rust)    세그먼트, discovery, liveness, channel, executor, PartitionedExecutor
+flux_core (Rust)    세그먼트, discovery, liveness, channel, executor, PartitionedExecutor
    |
-flux2_ffi (C ABI)    cbindgen 헤더. 최소 표면
+flux_ffi (C ABI)    cbindgen 헤더. 최소 표면
    |            \
-flux2_cpp            flux2_py
+flux_cpp            flux_py
 C ABI 위 헤더 래퍼    nanobind로 C ABI 직결
 + rclcpp 통합         + rclpy 통합
 
-flux2_gen (Rust)     .msg -> C++/Python adapter 생성기, 설치된 .msg의 layout과 CDR 변환
-flux2_std_adapters   표준 메시지 adapter를 설치된 .msg에서 한 벌 생성
-flux2_bridge         flux2 채널 -> DDS 토픽 relay(C++ 노드), ros2 topic echo_flux2·hz_flux2
-flux2_bag            flux2 채널을 rosbag2에 녹화·재생·변환, ros2 bag record_flux2·play_flux2·convert_flux2
-flux2_msgs           bag이 프레임을 담는 FluxFrame
-flux2_tools          rviz2 Image·PointCloud2·DepthCloud display
-flux2_cli            `flux2` 명령(cargo가 빌드하고 colcon이 `bin`에 설치)
+flux_gen (Rust)     .msg -> C++/Python adapter 생성기, 설치된 .msg의 layout과 CDR 변환
+flux_std_adapters   표준 메시지 adapter를 설치된 .msg에서 한 벌 생성
+flux_bridge         flux 채널 -> DDS 토픽 relay(C++ 노드), ros2 topic echo_flux·hz_flux
+flux_bag            flux 채널을 rosbag2에 녹화·재생·변환, ros2 bag record_flux·play_flux·convert_flux
+flux_msgs           bag이 프레임을 담는 FluxFrame
+flux_tools          rviz2 Image·PointCloud2·DepthCloud display
+flux_cli            `flux` 명령(cargo가 빌드하고 colcon이 `bin`에 설치)
 ```
 
-ROS 2 도구와 맞물리는 앱인 flux2_bridge, flux2_bag, flux2_tools는 `ros2/` 아래에 두고, 나머지 패키지는 저장소 루트에 둔다.
+ROS 2 도구와 맞물리는 앱인 flux_bridge, flux_bag, flux_tools는 `ros2/` 아래에 두고, 나머지 패키지는 저장소 루트에 둔다.
 
 - loan·view 핸들은 호출자 메모리에 두는 storage 방식. loan 경로 힙 할당 없음
 - `panic = "abort"`(dev·release 모두)
-- wire 런타임은 `flux2/wire.hpp` 하나다. Python adapter는 이를 nanobind로 묶은 `flux2.wire`를 쓴다. Rust의 읽기 쪽 사본(`flux2_gen/src/wire.rs`)은 CDR 변환이 쓴다
+- wire 런타임은 `flux/wire.hpp` 하나다. Python adapter는 이를 nanobind로 묶은 `flux.wire`를 쓴다. Rust의 읽기 쪽 사본(`flux_gen/src/wire.rs`)은 CDR 변환이 쓴다
 - 언어: Rust로 쓴다. C++·Python은 rclcpp·rclpy·ros2cli·rviz가 요구하는 층(래퍼, 바인딩, ROS 노드, verb, display)에만 둔다. 빌드할 때만 도는 도구도 같다
 
 ## 가져갈 것
@@ -44,7 +44,7 @@ ROS 2 도구와 맞물리는 앱인 flux2_bridge, flux2_bag, flux2_tools는 `ros
 - QoS: `depth`, `durability`, `max_borrow`
 - 빈 view 사유 카운터(`Refused`), `lost`, `dropped`. `lost`는 구독의 수명 전체에 걸쳐 누적한다. 재attach나 발행자 종료로 0이 되지 않는다
 - `take_blocking`은 100 ms 조각으로 기다리며 조각마다 멈춤 조건을 본다. C++·Python 모두 노드의 context가 끝나면 빈 결과로 돌아오고(rclcpp `wait_for_message`처럼, 다만 100 ms 안에), `max_borrow`만큼 view를 쥐고 있으면 기다리지 않고 바로 빈 결과다. 조각 사이에도 한 스레드 규칙의 guard를 놓지 않는다
-- signpost + 유일 이름 세그먼트, epoch 회전, 재attach. epoch는 wrap할 때 0(발행자 없음)을 건너뛴다. `max_borrow`에 막힌 take도 epoch 회전을 확인하므로, view를 다 쥔 구독자도 재시작한 발행자에 다시 붙는다. 재attach하면 새 발행자의 첫 프레임부터 읽어, depth 안의 것은 받고 밀려난 것은 `lost`로 센다. 재attach가 `NOT_READY` 말고 다른 이유로 거절되면 core가 그 에러를 epoch가 바뀔 때까지 들고(`attach_error`, `flux2_channel_attach_status`), 래퍼는 이를 실패 격리 규칙으로 넘긴다. 옛 세그먼트의 view는 borrow를 옛 세그먼트에 돌려준다
+- signpost + 유일 이름 세그먼트, epoch 회전, 재attach. epoch는 wrap할 때 0(발행자 없음)을 건너뛴다. `max_borrow`에 막힌 take도 epoch 회전을 확인하므로, view를 다 쥔 구독자도 재시작한 발행자에 다시 붙는다. 재attach하면 새 발행자의 첫 프레임부터 읽어, depth 안의 것은 받고 밀려난 것은 `lost`로 센다. 재attach가 `NOT_READY` 말고 다른 이유로 거절되면 core가 그 에러를 epoch가 바뀔 때까지 들고(`attach_error`, `flux_channel_attach_status`), 래퍼는 이를 실패 격리 규칙으로 넘긴다. 옛 세그먼트의 view는 borrow를 옛 세그먼트에 돌려준다
 - 발행자 생존 확인(orphan probe, syscall 3개)은 빈 take `PROBE_EVERY`(8)번마다, 그리고 100 ms에 한 번까지만 한다. executor는 깰 때마다 조용한 구독도 take하므로, 횟수만으로 세면 빠른 토픽 하나에 조용한 토픽 15개인 executor에서 초당 2만 번이 된다. epoch 회전 확인은 load 하나라 빈 take마다 한다
 - 이름 규칙(layout version, topic, fingerprint). layout version은 지금 6이다(4: 대기 등록을 store 하나로, 5: `readers_high`, 6: `CudaIpc` storage와 장치 UUID). key는 `[A-Za-z0-9_/]`만 쓴다. 다른 문자는 평탄화하면 `.`가 되어 `cam.left`, `cam/left`, `cam-left`가 한 채널로 합쳐지므로 이름을 만들 때 `InvalidArgument`로 거절한다. ROS 이름은 해당하지 않는다
 - 이 버전의 signpost가 없는데 같은 key와 fingerprint의 다른 layout version signpost가 있으면 open이 두 버전을 적은 `Mismatch`를 낸다. /dev/shm 목록은 프로세스 안에서 100 ms에 한 번까지만 읽는다
@@ -52,7 +52,7 @@ ROS 2 도구와 맞물리는 앱인 flux2_bridge, flux2_bag, flux2_tools는 `ros
 - OFD 락 liveness(발행자: 세그먼트 바이트 0, 구독자 번호 `i`: 바이트 `1+i`). 락은 생존 확인에만 쓴다. 슬롯 접근은 atomic만으로 하고, 공유 헤더에 lock 워드는 없다
 - 구독자 payload 매핑 `PROT_READ`. 한 프로세스의 구독들은 세그먼트 매핑 하나를 같이 쓴다(프로세스 전역 표, `Weak` 참조). `outstanding`, `dropped` 같은 구독별 상태는 구독마다 따로 둔다. `MemoryPolicy`는 요청들의 합집합이고 한번 켠 것은 끄지 않는다
 - attach 시 `layout_config_ok`, `st_size` 대조, meta 경계 검사
-- fork 시 liveness fd 정리(D-102). fork한 자식이 물려받은 채널은 공유 카운트를 건드리지 않는다. view·loan 해제와 `waiters` 증감을 건너뛰고, 새 borrow와 발행은 거절한다(fork 세대 번호). 자식이 새로 연 채널은 자기 구독자 번호를 받는다. 물려받은 구독의 take는 C++·Python에서 `std::logic_error`(`RuntimeError`)로 거절하고, core `take_blocking`은 기다리지 않고 돌아온다. 자식에게는 borrow를 주지 않으므로 기다림이 끝나지 않기 때문이다. 물려받은 view·loan의 데이터 접근은 막지 않는다. iceoryx2와 zenoh는 fork를 다루지 않는다. agnocast는 heaphook의 `pthread_atfork`로 자식의 할당을 일반 힙으로 돌릴 뿐, 자식이 공유메모리를 쓰는 경우는 지원하지 않는다. 구독자 번호 lease 표와 매핑 표는 `fork()`가 기다리는 lock 아래에서만 고친다. 자식은 자기 첫 구독에서 다시 sweep한다
+- fork 시 liveness fd 정리. fork한 자식이 물려받은 채널은 공유 카운트를 건드리지 않는다. view·loan 해제와 `waiters` 증감을 건너뛰고, 새 borrow와 발행은 거절한다(fork 세대 번호). 자식이 새로 연 채널은 자기 구독자 번호를 받는다. 물려받은 구독의 take는 C++·Python에서 `std::logic_error`(`RuntimeError`)로 거절하고, core `take_blocking`은 기다리지 않고 돌아온다. 자식에게는 borrow를 주지 않으므로 기다림이 끝나지 않기 때문이다. 물려받은 view·loan의 데이터 접근은 막지 않는다. iceoryx2와 zenoh는 fork를 다루지 않는다. agnocast는 heaphook의 `pthread_atfork`로 자식의 할당을 일반 힙으로 돌릴 뿐, 자식이 공유메모리를 쓰는 경우는 지원하지 않는다. 구독자 번호 lease 표와 매핑 표는 `fork()`가 기다리는 lock 아래에서만 고친다. 자식은 자기 첫 구독에서 다시 sweep한다
 - `MemoryPolicy`(사전 커밋, mlock)
   - `MemoryPolicy`와 상관없이 세그먼트의 제어 영역(헤더, 대기 칸, ticket 색인, 슬롯 헤더와 구독자 칸, 곧 payload 앞까지)은 attach할 때 mlock한다. 기본 세그먼트에서 한 페이지다. `fallocate`는 공간만 잡을 뿐 상주를 보장하지 않는다. Jetson은 보통 zram swap이 켜져 있어 오래 쓰지 않은 페이지가 압축되고, 그 페이지가 제어 영역이면 take에서 major fault가 나고, wake word가 있는 페이지면 `futex_wake` 안에서도 난다(공유 futex key는 그 페이지를 찾는다)
   - 이 mlock은 실패해도 무시한다. `RLIMIT_MEMLOCK`에 들어가므로 한도가 작으면 잠기지 않을 뿐이다. 커널은 이미 잠긴 페이지를 다시 세지 않으므로 그 뒤 `MemoryPolicy::lock`이 세그먼트 전체를 잠글 때 이중으로 세지 않는다. 다만 다른 채널의 제어 영역도 같은 한도에 들므로, 한도가 세그먼트 크기와 거의 같으면 전체 mlock이 전보다 일찍 실패할 수 있다. 전체 mlock의 실패는 전처럼 오류다
@@ -64,7 +64,7 @@ ROS 2 도구와 맞물리는 앱인 flux2_bridge, flux2_bag, flux2_tools는 `ros
 - GPU 경로 셋(`ShmDirect`, `ShmRegistered`, `DeviceHandle`)과 두 seam 동기 fence. 아래 "GPU" 절
 - Python numpy view, bf16 `.bits`. GPU 채널은 `Frame`과 `Loan`이 `__cuda_array_interface__`, `__dlpack__`를 낸다
 - message_filters: 언어별 upstream policy + flux Subscriber 어댑터. 어댑터는 filter의 큐 크기를 받아 `max_borrow`를 큐 + 1 이상으로 올린다. filter는 새 프레임을 넣은 뒤 오래된 것을 지우므로, 그보다 작으면 새 프레임을 못 받아 입력이 멈춘다. 발행자의 슬롯이 큐 + 1보다 적으면 `INVALID_ARGUMENT`로 거절한다(executor 안에서 붙을 때면 아래 규칙대로 그 입력만 빠진다). 큐가 슬롯을 모두 쥐면 발행자가 다음 프레임을 쓰지 못하기 때문이다. 큐에 넣는 header는 stamp와 `frame_id`를 담는다(adapter의 `header__frame_id()`). 음수 stamp는 두 언어 모두 `unreadable`로 세고 넘기지 않는다. Python은 `std_msgs/Header`인 `header`가 없는 adapter를 생성 시점에 거절한다
-- `flux_model_checking` 하니스(알고리즘 모델), fuzz(wire, 손상 세그먼트). C++ 층은 `-DFLUX2_SANITIZER=thread`(또는 `address`)로 따로 빌드해 시험한다. 이 빌드는 Rust core를 계측하지 않으므로 core의 atomic이 순서를 정하는 경쟁은 잡지 않는다. 그쪽은 Miri와 `scripts/sanitize.sh`(아래 "검증")가 맡는다. Jazzy에서 TSan 보고는 모두 CycloneDDS(`libddsc`, 계측 안 됨) 안에서 나온다
+- `flux_model_checking` 하니스(알고리즘 모델), fuzz(wire, 손상 세그먼트). C++ 층은 `-DFLUX_SANITIZER=thread`(또는 `address`)로 따로 빌드해 시험한다. 이 빌드는 Rust core를 계측하지 않으므로 core의 atomic이 순서를 정하는 경쟁은 잡지 않는다. 그쪽은 Miri와 `scripts/sanitize.sh`(아래 "검증")가 맡는다. Jazzy에서 TSan 보고는 모두 CycloneDDS(`libddsc`, 계측 안 됨) 안에서 나온다
 - 기존 gtest 시나리오를 C++ 층 적합성 테스트로 이식
 - `flux` CLI(열거)
 - docker 지원(아직 없다. Docker 기본 seccomp와 `--ipc` private·host에서 도는 것은 확인했다)
@@ -74,7 +74,7 @@ ROS 2 도구와 맞물리는 앱인 flux2_bridge, flux2_bag, flux2_tools는 `ros
 
 대기는 `futex_waitv` 한 번이다. 붙어 있는 채널의 wake word(공유 futex)와 제어 word(프로세스 내부 futex)를 pass 시작 때 샘플한 값으로 넘긴다. 샘플 뒤 프레임이 오면 즉시 돌아온다. stop·interrupt·wake와 ROS hook은 제어 word를 올리고 깨운다.
 
-`futex_waitv`는 Linux 5.16부터 있다. 그 아래(`ENOSYS`: Ubuntu 22.04 GA 커널 5.15, Jetson JetPack 6의 L4T 36 커널 5.15)에서는 `Executor::new`가 parker 스레드 fallback을 고른다. flux의 io_uring fallback과 같은 구조다. seccomp가 막은 곳(`EPERM`)에서는 fallback으로 가지 않고 `Unsupported`(C ABI `FLUX2_UNSUPPORTED`)로 거절한다. fallback은 호출이 없는 커널을 위한 것이고, 막힌 호출은 profile에서 허용하는 것이 맞기 때문이다. 단위 테스트는 seccomp filter로 두 errno를 만들어 각 경로를 확인한다. 환경 변수 `FLUX2_DISABLE_FUTEX_WAITV`가 있으면 5.16 이상에서도 fallback을 고른다. 테스트는 이것으로 두 경로를 모두 돈다(Rust `tests/executor.rs`는 자기 자신을 한 번 더 실행하고, C ABI `executor.c`, C++ `test_executor`·`test_ros`·`test_partitioned`, Python `test_executor`·`test_partitioned`는 `_parked` 이름으로 한 번 더 돈다).
+`futex_waitv`는 Linux 5.16부터 있다. 그 아래(`ENOSYS`: Ubuntu 22.04 GA 커널 5.15, Jetson JetPack 6의 L4T 36 커널 5.15)에서는 `Executor::new`가 parker 스레드 fallback을 고른다. seccomp가 막은 곳(`EPERM`)에서는 fallback으로 가지 않고 `Unsupported`(C ABI `FLUX_UNSUPPORTED`)로 거절한다. fallback은 호출이 없는 커널을 위한 것이고, 막힌 호출은 profile에서 허용하는 것이 맞기 때문이다. 단위 테스트는 seccomp filter로 두 errno를 만들어 각 경로를 확인한다. 환경 변수 `FLUX_DISABLE_FUTEX_WAITV`가 있으면 5.16 이상에서도 fallback을 고른다. 테스트는 이것으로 두 경로를 모두 돈다(Rust `tests/executor.rs`는 자기 자신을 한 번 더 실행하고, C ABI `executor.c`, C++ `test_executor`·`test_ros`·`test_partitioned`, Python `test_executor`·`test_partitioned`는 `_parked` 이름으로 한 번 더 돈다).
 
 ```text
 merged:   executor ── futex_waitv([제어 word, wake word...,  watch word...])
@@ -86,9 +86,9 @@ fallback: parker(word) ── FUTEX_WAIT(word, seen) ── 값이 바뀜 ──
 - word가 바뀌면(attach, epoch 변경, 발행자 재시작) `wait_for_work`는 스레드를 띄우거나 멈추지 않는다. 그 parker의 겨냥(word, 시작 값)만 바꾸고, parker가 기다리던 word를 futex wake한다. executor 스레드는 cyra가 SCHED_FIFO로 올리는 RT 스레드이고, 스레드를 만들면 스택을 mmap하고(mmap_lock 쓰기, 할당) 끝내면 munmap하기 때문이다. 스레드 생성과 join은 `add`와 executor drop에만 있다. 예외는 fork한 자식이다. 부모의 parker 스레드는 자식에 없으므로 자식의 첫 대기가 새로 띄우고, 자식의 drop은 그 스레드를 join하지 않는다.
 - 겨냥은 executor 하나가 쓰는 seqlock이다. 바뀐 word의 mapping은 parker가 그 뒤의 겨냥을 읽었다고 표시할 때까지 executor가 쥔다. 그 전에는 parker가 옛 word를 아직 만질 수 있기 때문이다.
 - parker는 겨냥이 바뀔 때마다 merged wait가 넘겼을 값(pass가 샘플한 seq, watch의 armed epoch)에서 시작한다. 그래서 샘플 뒤에 온 프레임은 곧바로 제어 word를 울린다. executor는 제어 word를 마지막으로 들은 값으로 기다리므로, 그 뒤에 울린 것은 대기를 바로 끝낸다. 잃는 wake가 없다.
-- waiter gate, priority, pass 예산, stop·interrupt·tick, source 127개 상한, trace 이벤트(`flux2_trace_wake`의 위치와 값)는 두 경로가 같다. C ABI 위의 층은 어느 경로인지 모른다.
+- waiter gate, priority, pass 예산, stop·interrupt·tick, source 127개 상한, trace 이벤트(`flux_trace_wake`의 위치와 값)는 두 경로가 같다. C ABI 위의 층은 어느 경로인지 모른다.
 - parker를 멈추거나 겨냥을 바꿀 때는 표시를 한 뒤 그 word를 futex wake한다. 같은 word를 기다리는 다른 대기는 이를 stray wake로 보고 다시 확인한다. 표시와 parker의 대기 사이에 끼면 parker의 대기 상한(50 ms) 안에 본다. 겨냥을 바꿀 때 이 틈에 끼면 새 word의 프레임은 잃지 않지만 최대 50 ms 늦는다. 옛 word의 futex 대기는 겨냥 word를 함께 비교할 수 없어서 이 틈을 닫지 못한다. 겨냥 word에서 자는 parker에는 겨냥의 틈이 없다. stop의 틈은 어느 word에서든 있다. stop 표시는 futex가 비교하는 word가 아니기 때문이다. 그래서 executor drop은 최대 50 ms 늦는다. 두 틈 모두 의도한 예외이고, flux_model_checking `wake`의 parked 설정은 이 틈에서만 timeout을 허용한다.
-- parker, GPU accept, `flux2-reaper`(아래 "정리 순서") 스레드는 모든 신호를 막은 채 시작한다. 프로세스로 보낸 신호는 막지 않은 아무 스레드로 가므로, 그렇지 않으면 rclcpp가 건 SIGINT 처리기가 이 스레드에서 돌고 그 대기가 EINTR로 끝난다
+- parker, GPU accept, `flux-reaper`(아래 "정리 순서") 스레드는 모든 신호를 막은 채 시작한다. 프로세스로 보낸 신호는 막지 않은 아무 스레드로 가므로, 그렇지 않으면 rclcpp가 건 SIGINT 처리기가 이 스레드에서 돌고 그 대기가 EINTR로 끝난다
 - 신호는 대기를 끝내지 않는다. `SA_RESTART` 없이 건 처리기는 `FUTEX_WAIT`, `futex_waitv`, `poll`을 EINTR로 끝내고, `SA_RESTART`도 timeout 있는 `FUTEX_WAIT`와 `poll`은 다시 시작하지 않는다. 그래서 futex 대기 둘과 fd 교환의 `poll`은 EINTR이면 남은 deadline으로 다시 부른다(`futex_waitv`는 deadline이 절대 시각이라 같은 값으로 다시 부른다). `fallocate`는 1 MiB 단위로 다시 부른다. 대기가 신호로 일찍 끝나지 않으므로 trace `WAKE_SIGNAL`은 더 이상 나오지 않는다(계약 번호는 그대로 둔다). 신호 처리기에서 spin을 멈추려면 `stop`·`cancel`을 부른다. futex wake만 하므로 처리기에서 불러도 된다. `close()`는 EINTR이어도 다시 부르지 않는다(Linux는 이미 fd를 풀었다). non-blocking `connect`·`recvmsg`와 helper 스레드(신호를 막았다)의 `poll`·`accept4`는 EINTR을 받지 않거나 루프가 이미 다시 부른다
   - 시험 `storm`은 처리기를 `SA_RESTART` 없이 건 SIGUSR1(대상 스레드에 200 us마다)과 `setitimer` SIGALRM 아래에서 생성, `Channel::wait`, `PublisherWatch::wait`, `wait_for_work`(merged와 parker 각각), 느린 발행자와의 fd 교환을 돈다. 타이머가 프로세스 전체에 걸리므로 시험 바이너리를 자식으로 다시 띄워 그 시험만 돌린다. 고치기 전에는 대기가 수십 us 만에 끝나고 fd 교환이 `NotReady`였다
 - 대가: source마다 스레드 하나(아직 붙지 않은 source도), wake마다 문맥 전환 한 번이 더 든다. 아래 표는 이 대가를 잰 것이다. fallback의 겨냥, 재겨냥, retired word, 두 틈은 flux_model_checking `wake`의 parked 설정이 다룬다.
@@ -104,7 +104,7 @@ publish에서 콜백까지의 지연이다(Jetson AGX Orin, Linux 6.8 RT, SCHED_
 
 채널이 적을 때 fallback은 문맥 전환 한 번만큼(p50 4~8 us, p99 8~12 us) 느리다. 127개에서는 merged wait가 호출마다 word 128개를 등록하는 비용이 커서 둘이 비슷하다.
 
-flux는 io_uring(`FUTEX_WAIT` + eventfd `POLL_ADD`)을 썼다. ROS 알림과 제어 신호를 eventfd로 받아서 futex와 fd를 함께 기다려야 했기 때문이다. 둘 다 같은 프로세스 안의 일이라 futex로 받을 수 있고, 그러면 기다릴 것이 모두 futex라 `futex_waitv`로 충분하다. ROS hook이 futex를 깨우는 것은 Jazzy·lyrical, Fast DDS·CycloneDDS·Zenoh, 같은 프로세스·다른 프로세스 publisher에서 확인했다. 비교는 다음과 같다(Ryzen 5 9600X, Linux 7.0, 대기 계층만 측정).
+io_uring(`FUTEX_WAIT` + eventfd `POLL_ADD`)으로 기다리는 방법도 있다. ROS 알림과 제어 신호를 eventfd로 받으면 futex와 fd를 함께 기다려야 하기 때문이다. 둘 다 같은 프로세스 안의 일이라 futex로 받을 수 있고, 그러면 기다릴 것이 모두 futex라 `futex_waitv`로 충분하다. ROS hook이 futex를 깨우는 것은 Jazzy·lyrical, Fast DDS·CycloneDDS·Zenoh, 같은 프로세스·다른 프로세스 publisher에서 확인했다. 비교는 다음과 같다(Ryzen 5 9600X, Linux 7.0, 대기 계층만 측정).
 
 | 채널 | io_uring 지연 중앙값 | `futex_waitv` 지연 중앙값 | io_uring CPU/wake | `futex_waitv` CPU/wake |
 | --- | --- | --- | --- | --- |
@@ -132,12 +132,10 @@ flux는 io_uring(`FUTEX_WAIT` + eventfd `POLL_ADD`)을 썼다. ROS 알림과 제
 | --- | --- |
 | core | `Executor`(대기, priority, 같은 priority 교대, pass 예산), `PartitionedExecutor`(스레드, `on_thread_start`, stop·interrupt 전파, 오류 전파), `Source` trait |
 | C ABI | 핸들 생성·해제, 함수 포인터 + ctx로 받는 `Source`·hook, 반환 코드로 전달하는 callback 실패 |
-| C++ | ROS 전용. 공개는 `Publisher`, `Subscription`, `Executor`, `FrameView`, `WriteSlot`, `QoS`이고, C ABI RAII 래퍼는 `flux2::detail`에 둔다. `PartitionedExecutor`는 callback group마다 스레드 하나와 `flux2::Executor` 하나를 둔다. flux 구독이 있든 ROS만 있든 같은 경로라 stop이 tick을 기다리지 않는다. message_filters 입력은 `flux2::message_filters::Subscriber<Adapter>`이고, `add_sync_group`은 한 synchronizer의 입력이 다른 group에 흩어지면 spin을 거절한다. `add()`나 `on_thread_start()`에 넘긴 group은 SharedPtr로 붙잡고, 그 밖의 group은 사라지면 그 스레드를 끝낸다. `cancel()`은 lock을 잡지 않고 futex wake만 하므로 신호 처리기에서 불러도 된다 |
-| Python | ROS 전용. nanobind 모듈이 flux2_cpp의 `flux2::detail` 층(C ABI RAII 래퍼, `Subscriber`)을 그대로 쓴다. 공개는 `Publisher`, `Subscription`, `Executor`, `Loan`, `QoS`이고 프레임은 읽기 전용 numpy view다. bf16은 `uint16` 비트로 읽는다. 거절은 C++과 같은 값으로 돌려준다. 실패한 commit은 loan을 끝내고 `TOO_LARGE`를 돌려주며(iceoryx2, zenoh, agnocast도 실패한 송신이 loan을 소모한다), 8차원을 넘는 publish도 `TOO_LARGE`, 지원하지 않는 dtype은 `TypeError`다. 생성된 Builder의 setter가 예외를 내면 writer가 잠겨 commit이 거절된다. 정수 필드는 범위를 넘으면 numpy 버전과 상관없이 `OverflowError`, 문자열 필드는 rclpy처럼 `str`만 받는다. 콜백은 GIL을 잡고 돈다. flux 구독만 도는 루프(ROS 노드 없는 `Executor`, `PartitionedExecutor`의 flux 스레드)는 core의 `spin`을 GIL 없이 돌리고 콜백과 tick마다 GIL을 잡는다(`PyEval_SaveThread`·`RestoreThread`). tick에서 Ctrl-C와 구독 노드의 context 종료를 본다. rclpy의 SIGTERM 처리는 Python `on_shutdown`을 부르지 않아서, 알림을 기다리지 않고 tick마다 확인한다. SIGTERM이나 `rclpy.shutdown()`으로 context가 끝나면 spin은 정상 반환한다. rclpy가 이때 wait set을 만들다 내는 `RCLError`는 종료로 본다. 종료 때는 `atexit`에서 아직 도는 spin을 멈추고 1초까지 기다린 뒤, GIL을 다시 잡으러 가는 중인 스레드를 모두 지나가게 하고 그 뒤에 오는 스레드는 세워 둔다. Python 3.14 미만은 finalization 중에 GIL을 다시 잡는 스레드를 `pthread_exit`로 끝내는데, 이것이 `noexcept` 프레임을 지나며 abort하기 때문이다(Jazzy, Python 3.12). numpy 배열과 scalar는 numpy C API로 만든다. `nb::ndarray`는 C++에서 `numpy.array()`를 불러 넘겨서 배열 하나에 약 500 ns가 들고, C API로는 약 50 ns다. 그래서 빌드에 numpy 헤더가 필요하고 numpy 1.x(Jazzy)와 2.x(lyrical)를 각 환경에서 빌드해 시험한다. rclpy executor는 group 단위로 엔티티를 받지 못하므로 `PartitionedExecutor`는 flux 구독이 있는 group마다 flux 전용 스레드, 노드마다 rclpy 스레드를 둔다. 그래서 flux group에 ROS 엔티티가 있으면 spin을 거절하고, 한 synchronizer에 flux와 ROS 입력이 섞이면 `Executor`를 쓰게 한다. 노드 스레드는 `spin_once`마다, flux 스레드가 GIL을 기다리는 동안 GIL을 내준다(`_step_aside`). CPython은 5 ms 동안 전환이 없어야 GIL을 넘기게 하는데, 바쁜 rclpy 스레드는 그보다 자주 GIL을 놓았다 다시 잡아 flux 스레드가 굶었다(300개 중 8개) |
+| C++ | ROS 전용. 공개는 `Publisher`, `Subscription`, `Executor`, `FrameView`, `WriteSlot`, `QoS`이고, C ABI RAII 래퍼는 `flux::detail`에 둔다. `PartitionedExecutor`는 callback group마다 스레드 하나와 `flux::Executor` 하나를 둔다. flux 구독이 있든 ROS만 있든 같은 경로라 stop이 tick을 기다리지 않는다. message_filters 입력은 `flux::message_filters::Subscriber<Adapter>`이고, `add_sync_group`은 한 synchronizer의 입력이 다른 group에 흩어지면 spin을 거절한다. `add()`나 `on_thread_start()`에 넘긴 group은 SharedPtr로 붙잡고, 그 밖의 group은 사라지면 그 스레드를 끝낸다. `cancel()`은 lock을 잡지 않고 futex wake만 하므로 신호 처리기에서 불러도 된다 |
+| Python | ROS 전용. nanobind 모듈이 flux_cpp의 `flux::detail` 층(C ABI RAII 래퍼, `Subscriber`)을 그대로 쓴다. 공개는 `Publisher`, `Subscription`, `Executor`, `Loan`, `QoS`이고 프레임은 읽기 전용 numpy view다. bf16은 `uint16` 비트로 읽는다. 거절은 C++과 같은 값으로 돌려준다. 실패한 commit은 loan을 끝내고 `TOO_LARGE`를 돌려주며(iceoryx2, zenoh, agnocast도 실패한 송신이 loan을 소모한다), 8차원을 넘는 publish도 `TOO_LARGE`, 지원하지 않는 dtype은 `TypeError`다. 생성된 Builder의 setter가 예외를 내면 writer가 잠겨 commit이 거절된다. 정수 필드는 범위를 넘으면 numpy 버전과 상관없이 `OverflowError`, 문자열 필드는 rclpy처럼 `str`만 받는다. 콜백은 GIL을 잡고 돈다. flux 구독만 도는 루프(ROS 노드 없는 `Executor`, `PartitionedExecutor`의 flux 스레드)는 core의 `spin`을 GIL 없이 돌리고 콜백과 tick마다 GIL을 잡는다(`PyEval_SaveThread`·`RestoreThread`). tick에서 Ctrl-C와 구독 노드의 context 종료를 본다. rclpy의 SIGTERM 처리는 Python `on_shutdown`을 부르지 않아서, 알림을 기다리지 않고 tick마다 확인한다. SIGTERM이나 `rclpy.shutdown()`으로 context가 끝나면 spin은 정상 반환한다. rclpy가 이때 wait set을 만들다 내는 `RCLError`는 종료로 본다. 종료 때는 `atexit`에서 아직 도는 spin을 멈추고 1초까지 기다린 뒤, GIL을 다시 잡으러 가는 중인 스레드를 모두 지나가게 하고 그 뒤에 오는 스레드는 세워 둔다. Python 3.14 미만은 finalization 중에 GIL을 다시 잡는 스레드를 `pthread_exit`로 끝내는데, 이것이 `noexcept` 프레임을 지나며 abort하기 때문이다(Jazzy, Python 3.12). numpy 배열과 scalar는 numpy C API로 만든다. `nb::ndarray`는 C++에서 `numpy.array()`를 불러 넘겨서 배열 하나에 약 500 ns가 들고, C API로는 약 50 ns다. 그래서 빌드에 numpy 헤더가 필요하고 numpy 1.x(Jazzy)와 2.x(lyrical)를 각 환경에서 빌드해 시험한다. rclpy executor는 group 단위로 엔티티를 받지 못하므로 `PartitionedExecutor`는 flux 구독이 있는 group마다 flux 전용 스레드, 노드마다 rclpy 스레드를 둔다. 그래서 flux group에 ROS 엔티티가 있으면 spin을 거절하고, 한 synchronizer에 flux와 ROS 입력이 섞이면 `Executor`를 쓰게 한다. 노드 스레드는 `spin_once`마다, flux 스레드가 GIL을 기다리는 동안 GIL을 내준다(`_step_aside`). CPython은 5 ms 동안 전환이 없어야 GIL을 넘기게 하는데, 바쁜 rclpy 스레드는 그보다 자주 GIL을 놓았다 다시 잡아 flux 스레드가 굶었다(300개 중 8개) |
 
-ROS 2 executor 통합은 C++ flux와 같다.
-
-- C++: `flux2::Executor`가 `rclcpp::Executor`를 상속해 대체한다. 한 pass는 `wait_for_work` → `dispatch` → rclcpp 작업 순서이고, ROS 엔티티의 준비 hook이 `wake`를 부른다. ROS timer는 hook이 없으므로 가장 가까운 deadline으로 대기를 줄인다. ROS time이 켜진 timer는 `rcl_wait`처럼 그 deadline에서 빼고, clock jump callback이 due가 되거나 시간원이 바뀔 때 executor를 깨운다.
+- C++: `flux::Executor`가 `rclcpp::Executor`를 상속해 대체한다. 한 pass는 `wait_for_work` → `dispatch` → rclcpp 작업 순서이고, ROS 엔티티의 준비 hook이 `wake`를 부른다. ROS timer는 hook이 없으므로 가장 가까운 deadline으로 대기를 줄인다. ROS time이 켜진 timer는 `rcl_wait`처럼 그 deadline에서 빼고, clock jump callback이 due가 되거나 시간원이 바뀔 때 executor를 깨운다.
 - hook을 걸 엔티티는 tick마다 rclcpp의 callback group 목록(`get_all_callback_groups`)을 다시 읽어 정한다. `add_node` 같은 등록 함수는 override하지 않는다. 그 시그니처가 rclcpp 버전마다 달라서다(Jazzy는 값, 이후는 const 참조).
 - `spin()`과 `spin_until_future_complete()`가 같은 루프를 돈다. 후자는 `spin_until_future_complete_impl`을 직접 구현한 것이라 `spin_once_impl`을 거치지 않는다. timeout은 pass를 한 번 돈 뒤에 본다. rclcpp처럼 timeout 0도 준비된 일을 처리한다. `spin_once`·`spin_some`·`spin_all`은 예외를 던진다. `spin_some`·`spin_all`은 rclcpp wait set 기준 예산이라 flux를 건너뛰고, `spin_once`는 쓰지 않기로 했다.
 - Python: rclpy executor를 그대로 쓴다. 노드가 있거나 rclpy executor를 넘기면 이 방식이다. 스레드는 셋이다.
@@ -149,7 +147,7 @@ ROS 2 executor 통합은 C++ flux와 같다.
 - 한쪽이 밀려도 다른 쪽이 굶지 않는다. 실노드 시험에서 둘 다 굶었다(아래 표).
   - C++: flux `dispatch`는 ROS 작업이 준비되면 다음 callback 전에 멈추는데, rclcpp 작업은 flux를 보지 않고 한 pass에 64개까지 돌았다. 이제 executable 하나를 돌릴 때마다 `ready()`(syscall 없이 wake word와 샘플을 비교)를 보고, flux에 일이 있고 1 ms(`kTurnNs`)가 지났으면 넘긴다. 1 ms를 두는 이유는 반대쪽이다. executable 하나마다 넘기면 50 ms짜리 flux callback 사이에 가벼운 ROS callback이 하나씩만 돌아 100 Hz Imu가 밀렸다(p50 314 ms).
   - Python: rclpy는 준비된 task가 있으면 wait set을 보지 않고 task부터 돈다. 프레임이 계속 오면 `dispatch` task가 매번 준비돼 있어 ROS callback이 돌지 못했다. 이제 `dispatch`는 1 ms(`_TURN_NS`)가 지나면 다음 callback 전에 멈추고, bridge는 `has_more`면 기다리지 않고 바로 다음 task를 낸다. 기다리면 끊긴 pass에 남은 구독이 다음 프레임까지 밀려 그 프레임에 덮였다. guard condition으로 wait set에 넣는 방법도 시험했지만 EventsExecutor가 guard condition을 받지 않고, 시간 예산만으로 세 rclpy executor 모두 굶지 않았다.
-  - rclpy `MultiThreadedExecutor`는 바쁜 구독 옆에서 다른 스레드가 낸 task를 늦게(최대 수백 ms) 돌리거나 놓친다. flux2 없이 rclpy만으로도 재현된다(`flux2_test_pkg/test/mte_plain.py`). `flux2.Executor`와는 Single 또는 Events executor를 쓰거나 `PartitionedExecutor`를 쓴다.
+  - rclpy `MultiThreadedExecutor`는 바쁜 구독 옆에서 다른 스레드가 낸 task를 늦게(최대 수백 ms) 돌리거나 놓친다. flux 없이 rclpy만으로도 재현된다(`flux_test_pkg/test/mte_plain.py`). `flux.Executor`와는 Single 또는 Events executor를 쓰거나 `PartitionedExecutor`를 쓴다.
 
 | 과부하 | 고치기 전 | 고친 뒤 |
 | --- | --- | --- |
@@ -165,45 +163,45 @@ ROS 2 executor 통합은 C++ flux와 같다.
 
 ## GPU
 
-정본은 flux의 `flux_docs/design/gpu_platform.md`와 `gpu_copy.md`(D-040~D-052)다. 여기에는 flux2에서 달라진 것과 구현 위치만 적는다.
+GPU 경로의 결정과 구현 위치를 적는다.
 
 | 층 | 맡는 일 |
 | --- | --- |
 | core `gpu` | `libcuda.so.1`을 실행 시점에 연다(링크하지 않는다). 경로 판정 `probe`, `Stream`, 호스트 등록, VMM 할당·export·import, fd를 넘기는 소켓, 두 seam의 fence와 통계 |
-| C ABI | `flux2_stream`(NULL은 호스트 채널), `flux2_gpu_probe`, `*_device_ptr`, `*_stream`, `flux2_channel_fence_failed`·`fence_wait`, `FLUX2_PUBLISHED_WRONG_DEVICE`·`FENCE_FAILED`. ABI 버전 2에서 들어왔다. `flux2_channel_set_fence_timeout`, `flux2_channel_set_release_mode`, `flux2_view_after`, `flux2_gpu_wedged`는 뒤에 더한 함수이고, `FLUX2_PUBLISHED_GPU_WEDGED`는 뒤에 더한 값이다. 구조체 배치가 그대로라 ABI 버전은 올리지 않았고, 이 함수들을 쓰는 바이너리는 옛 라이브러리에서 symbol을 못 찾아 로드 때 실패한다 |
+| C ABI | `flux_stream`(NULL은 호스트 채널), `flux_gpu_probe`, `*_device_ptr`, `*_stream`, `flux_channel_fence_failed`·`fence_wait`, `FLUX_PUBLISHED_WRONG_DEVICE`·`FENCE_FAILED`. ABI 버전 2에서 들어왔다. `flux_channel_set_fence_timeout`, `flux_channel_set_release_mode`, `flux_view_after`, `flux_gpu_wedged`는 뒤에 더한 함수이고, `FLUX_PUBLISHED_GPU_WEDGED`는 뒤에 더한 값이다. 구조체 배치가 그대로라 ABI 버전은 올리지 않았고, 이 함수들을 쓰는 바이너리는 옛 라이브러리에서 symbol을 못 찾아 로드 때 실패한다 |
 | C++ | `Device`, `gpu::Stream`, Publisher·Subscription의 `Device`·`gpu::Stream` 생성자, `FrameView`·`WriteSlot`의 `device_ptr()`·`stream()` |
 | Python | `device="cuda"`, `Frame`(`with` 스코프나 callback 안에서만 메모리를 낸다), `Loan`·`Frame`의 `__cuda_array_interface__`·`__dlpack__`, `probe()` |
 
 - 경로는 장치마다 위에서부터 처음 맞는 줄이다. `integrated && host_register`이면 `ShmRegistered`(매핑을 `cuMemHostRegister`), `integrated && pageable`이면 `ShmDirect`(매핑 포인터 그대로), `vmm && posix_fd`이면 `DeviceHandle`(payload 전체를 VMM 할당 하나로), 그 밖은 이유를 붙인 `None`이다. stream을 선언한 채널은 `None`에서 생성이 거절된다
-- flux와 순서가 다르다. flux는 `ShmDirect`를 먼저 고른다. Thor(`pageable = 1`)에서 등록하지 않은 슬롯은 CUDA runtime이 pageable host 메모리로 보아, 슬롯으로 가는 `cudaMemcpyAsync`가 동기 pageable 경로를 탄다. 30 Hz 9.2 MB 복사에서 p50은 약 240 μs로 같지만 20%가 500 μs를 넘고 p99가 5 ms였다. 등록하면 같은 복사의 p99가 255 μs다(2026-10-14)
+- `ShmDirect`보다 `ShmRegistered`를 먼저 고른다. Thor(`pageable = 1`)에서 등록하지 않은 슬롯은 CUDA runtime이 pageable host 메모리로 보아, 슬롯으로 가는 `cudaMemcpyAsync`가 동기 pageable 경로를 탄다. 30 Hz 9.2 MB 복사에서 p50은 약 240 μs로 같지만 20%가 500 μs를 넘고 p99가 5 ms였다. 등록하면 같은 복사의 p99가 255 μs다(2026-10-14)
 - 구독자의 `PROT_READ` 매핑은 장치가 `READ_ONLY_HOST_REGISTER_SUPPORTED`일 때만 `READ_ONLY`로 등록한다. Orin은 이 플래그 없이는 거절하고, Thor는 이 플래그를 지원하지 않아 플래그 없이 등록한다
 - 등록과 import는 세그먼트 매핑마다 한 번이다. 한 프로세스의 구독들이 매핑을 같이 쓰고, 드라이버는 같은 메모리의 두 번째 등록을 거절하기 때문이다
 - 두 seam은 동기로 닫는다. commit은 stream을 기다린 뒤 발행하고, view 해제는 기다린 뒤 borrow를 돌려준다. 기다림은 blocking-sync event다(`cuEventRecord` + `cuEventSynchronize`). `cuStreamSynchronize`는 context 설정에 따라 기다리는 동안 코어를 돌린다
 - fence가 실패하면 그 슬롯을 놓지 않는다. commit 쪽은 claim을 쥔 채 `FenceFailed`이고, 해제 쪽은 borrow를 쥔 채 남는다. 샌 borrow가 `max_borrow`를 채우면 그 뒤 take는 `refused.fence`로 센다(trace 사유 `REFUSED_FENCE`)
 - 연산 하나의 오류와 sticky 오류를 나눈다. cuda.h가 "프로세스를 다시 띄워야만 풀린다"고 적은 오류(226, 700, 702, 710, 714~719, 721, 810, 911)를 어느 드라이버 호출에서든 처음 받으면, 프로세스의 GPU 상태를 그 오류로 한 번 wedged로 표시한다. 드라이버는 그 뒤 모든 호출에 같은 오류를 돌려준다
   - 그 뒤 모든 GPU 채널은 드라이버를 부르기 전에 같은 사유로 바로 거절한다. take는 `refused.fence`(trace 사유 `REFUSED_GPU_WEDGED`), loan은 빈 결과(`CLAIM_GPU_WEDGED`), commit과 publish는 `GpuWedged`(`LOAN_GPU_WEDGED`, `CLAIM_GPU_WEDGED`), `take_blocking`은 기다리지 않고 빈 결과다. 새 stream과 GPU 채널은 오류 번호를 밝힌 `Unsupported`다. 전에는 해제마다 borrow가 새어 `max_borrow`를 채운 뒤에야 거절이 드러났고, loan은 commit마다 슬롯을 하나씩 잃었다
-  - 오류 번호는 core `gpu::wedged()`, C ABI `flux2_gpu_wedged()`, C++ `gpu::wedged()`, Python `flux2.gpu_wedged()`로 읽고, 표시하는 순간 trace `gpu_wedged` 이벤트가 한 번 나간다. supervisor는 이것을 보고 프로세스를 다시 띄운다. 호스트 채널은 영향을 받지 않는다
+  - 오류 번호는 core `gpu::wedged()`, C ABI `flux_gpu_wedged()`, C++ `gpu::wedged()`, Python `flux.gpu_wedged()`로 읽고, 표시하는 순간 trace `gpu_wedged` 이벤트가 한 번 나간다. supervisor는 이것을 보고 프로세스를 다시 띄운다. 호스트 채널은 영향을 받지 않는다
   - 검사는 GPU 채널에서만 하는 atomic load 하나이고, 오류 분류는 실패한 호출에서만 돈다
 - 실패한 fence는 채널도 프로세스가 끝날 때까지 쥔다. 채널이 사라지면 매핑이 풀리고 구독자 번호가 풀려, 다음 구독자가 그 번호의 칸을 0으로 지우기 때문이다. 프로세스가 죽으면 그 kernel도 같이 끝나므로 그때 회수된다
-- fence 대기에는 채널마다 상한을 둘 수 있다. core `Channel::set_fence_timeout`, C ABI `flux2_channel_set_fence_timeout`, C++ `set_fence_timeout`, Python `fence_timeout`(초)이고, 기본은 상한 없음이다. GPU가 멈추면 상한 없는 대기는 executor 스레드도 멈추게 하기 때문이다
+- fence 대기에는 채널마다 상한을 둘 수 있다. core `Channel::set_fence_timeout`, C ABI `flux_channel_set_fence_timeout`, C++ `set_fence_timeout`, Python `fence_timeout`(초)이고, 기본은 상한 없음이다. GPU가 멈추면 상한 없는 대기는 executor 스레드도 멈추게 하기 때문이다
   - `cuEventSynchronize`에는 상한을 줄 수 없다. 그래서 상한이 있으면 그 작업만 표시하는 event를 기록해 stream의 대기 스레드(아래)에 넘기고, 호출한 스레드는 그 event의 상태 word를 상한을 두고 futex로 기다린다. 대기 스레드가 device의 신호로 깨어 word를 올리므로 끝난 뒤 곧 돌아온다. 처음에는 `cuEventQuery`를 늘어나는 간격(최대 1 ms)으로 물었는데, 끝난 뒤에도 다음 질문까지 늦게 알았다. 상한이 없으면 지금처럼 blocking-sync event로 기다린다
   - 상한을 넘긴 대기는 fence 실패와 같다. `fence_failed`로 세고, commit은 `FenceFailed`이고, 슬롯은 쥔 채 둔다. 그 작업만 표시하는 event를 따로 기록해 두고, 그 채널의 다음 take나 claim이 끝났는지 다시 묻는다. 끝났으면 해제 쪽은 borrow를 돌려주고, commit 쪽은 발행하지 않은 claim을 놓는다. 커널도 멈춘 job이 쓰던 메모리는 리셋 전까지 풀지 않는다
   - 재attach하거나 채널이 사라질 때 남은 늦은 작업은 아래의 orphan 규칙을 따른다
   - Python이 consumer stream(`__dlpack__(stream=)`)을 기다리는 대기에는 상한이 없다
-- 구독은 해제 방식을 고른다. core `Channel::set_release_mode(ReleaseMode::Deferred)`, C ABI `flux2_channel_set_release_mode(FLUX2_RELEASE_DEFERRED)`, C++ `set_release_mode(gpu::ReleaseMode::Deferred)`, Python `release="deferred"`이고, 기본은 `Wait`(위의 동기 해제)다. C++·Python 구독은 재attach한 채널에도 다시 건다
+- 구독은 해제 방식을 고른다. core `Channel::set_release_mode(ReleaseMode::Deferred)`, C ABI `flux_channel_set_release_mode(FLUX_RELEASE_DEFERRED)`, C++ `set_release_mode(gpu::ReleaseMode::Deferred)`, Python `release="deferred"`이고, 기본은 `Wait`(위의 동기 해제)다. C++·Python 구독은 재attach한 채널에도 다시 건다
   - `Wait`는 해제가 stream을 기다린 뒤 borrow를 돌려준다. callback이 결과를 꺼내며(`.cpu()` 등) 이미 GPU를 기다렸다면 이 대기는 거의 없다
   - `Deferred`는 해제가 그 순간까지의 작업을 표시하는 event를 기록하고 곧바로 돌아간다. callback이 GPU 작업을 걸어 둔 채 끝나는 노드(consumer 버퍼로 비동기 복사, 파이프라인)에서 executor 스레드가 그 GPU 시간 동안 막히지 않는다
-  - borrow는 device가 그 슬롯을 다 쓴 뒤에만 돌아간다. 돌려주는 자리는 채널 자기 스레드의 다음 take, `can_borrow`, executor pass다. 공유메모리를 만지는 스레드를 늘리지 않기 위해서다(D-044)
+  - borrow는 device가 그 슬롯을 다 쓴 뒤에만 돌아간다. 돌려주는 자리는 채널 자기 스레드의 다음 take, `can_borrow`, executor pass다. 공유메모리를 만지는 스레드를 늘리지 않기 위해서다
   - 그때까지 borrow는 `max_borrow`에 든다. 그 작업이 실패하면 실패한 fence처럼 borrow를 쥔 채 `fence_failed`로 센다. 해제가 기다리지 않으므로 `fence_wait`의 release 값은 늘지 않는다. trace `release` 이벤트는 해제 시점에 `held` 0으로 남는다
   - 표시 event를 기록하지 못하면(forked child 등) 그 해제는 `Wait`로 한다. commit은 두 방식 모두 기다린다
-  - 늦은 작업은 채널을 쥔다. 채널이 사라지거나 재attach로 바뀌면, 이미 끝난 것은 그 자리에서 돌려주고 남은 것은 그 작업의 waiter 스레드에 넘긴다(orphan). waiter는 작업이 끝나면 그 항목을 놓기만 하고(마지막 unmap은 `flux2-reaper`), 실패하면 실패한 fence처럼 계속 쥔다. waiter는 공유메모리 카운터를 만지지 않는다(D-044). 그래서 그 borrow는 프로세스의 구독자 번호가 풀린 뒤 다음에 그 번호를 받는 쪽이 지울 때까지 남는다. 죽은 구독자와 같다. 채널이 사라진 뒤 view가 늦게 해제해도 같은 길로 간다. 처음에는 이 경우 채널과 import가 프로세스가 끝날 때까지 남았다(compute-sanitizer가 C++ `test_gpu`에서 2 MiB로 보고). 시험은 `a_deferred_release_outliving_its_subscription_lets_the_mapping_go_once_done`이다
-  - Python `Frame`은 `__dlpack__(stream=s)`로 받은 consumer stream을 기다리지 않고, 채널 stream이 device에서 s 뒤에 오게 한다(`cuStreamWaitEvent`, C ABI `flux2_view_after`). 그 뒤의 표시 event가 s의 작업까지 덮는다
-- 대기 스레드 `flux2-gpu-wait`는 상한이나 `Deferred`를 쓰는 stream마다 하나다. 그 설정을 하는 호출이 만들므로 executor 스레드에서 생기지 않는다
+  - 늦은 작업은 채널을 쥔다. 채널이 사라지거나 재attach로 바뀌면, 이미 끝난 것은 그 자리에서 돌려주고 남은 것은 그 작업의 waiter 스레드에 넘긴다(orphan). waiter는 작업이 끝나면 그 항목을 놓기만 하고(마지막 unmap은 `flux-reaper`), 실패하면 실패한 fence처럼 계속 쥔다. waiter는 공유메모리 카운터를 만지지 않는다. 그래서 그 borrow는 프로세스의 구독자 번호가 풀린 뒤 다음에 그 번호를 받는 쪽이 지울 때까지 남는다. 죽은 구독자와 같다. 채널이 사라진 뒤 view가 늦게 해제해도 같은 길로 간다. 처음에는 이 경우 채널과 import가 프로세스가 끝날 때까지 남았다(compute-sanitizer가 C++ `test_gpu`에서 2 MiB로 보고). 시험은 `a_deferred_release_outliving_its_subscription_lets_the_mapping_go_once_done`이다
+  - Python `Frame`은 `__dlpack__(stream=s)`로 받은 consumer stream을 기다리지 않고, 채널 stream이 device에서 s 뒤에 오게 한다(`cuStreamWaitEvent`, C ABI `flux_view_after`). 그 뒤의 표시 event가 s의 작업까지 덮는다
+- 대기 스레드 `flux-gpu-wait`는 상한이나 `Deferred`를 쓰는 stream마다 하나다. 그 설정을 하는 호출이 만들므로 executor 스레드에서 생기지 않는다
   - 표시 event를 들어온 순서대로 `cuEventSynchronize`(blocking-sync)로 기다린다. 한 stream의 event는 순서대로 끝나므로, stream마다 두면 다른 채널의 긴 kernel 뒤에서 기다리지 않는다. 프로세스에 하나만 두면 그 kernel이 다른 채널의 상한까지 넘기게 한다
   - 끝나면 event의 상태 word를 올려 futex로 깨우고, 그 채널을 맡은 executor의 제어 word를 울린다. executor는 원래 제어 word를 함께 기다리므로(merged wait와 parker 경로 둘 다) 새 프레임이 없어도 깨어 borrow를 돌려준다. 채널은 executor pass마다 자기 executor를 등록한다
   - 이 스레드는 공유메모리를 만지지 않는다. 채널이 사라져도 남은 event를 다 기다린 뒤 끝나고, join하지 않는다. 멈춘 kernel이 join을 영영 막기 때문이다
   - 깨움 경로 위의 스레드다. RT 체인에서는 cyra로 이 이름을 선언한다. 모든 신호를 막은 채 시작한다
-- blocking-sync event에서 자는 스레드(`Wait` 해제·commit의 호출 스레드, `flux2-gpu-wait`)를 깨우는 것은 GPU 드라이버의 IRQ 처리다. 그래서 fence의 깨움 경로에는 flux2 밖의 스레드가 하나 더 있다
+- blocking-sync event에서 자는 스레드(`Wait` 해제·commit의 호출 스레드, `flux-gpu-wait`)를 깨우는 것은 GPU 드라이버의 IRQ 처리다. 그래서 fence의 깨움 경로에는 flux 밖의 스레드가 하나 더 있다
   - PREEMPT_RT에서는 IRQ 처리가 스레드(`irq/<n>-nvidia`, Orin은 GPU 드라이버 이름)로 돌고 기본 우선순위가 `SCHED_FIFO` 50이다. 같은 CPU에서 그보다 높은 stage가 돌면 GPU가 끝났어도 깨움이 그 stage 뒤로 밀린다
   - cyra 체인에서는 이 IRQ 스레드를 `match: {irq: nvidia}`(Orin은 GPU 드라이버의 handler 이름) stage로 선언하고, fence를 기다리는 stage보다 낮지 않게 둔다. cyra 데몬 `cyrad`가 그 스레드를 찾아 건다
   - fence 대기가 길게 재지면 GPU 시간과 함께 이 IRQ 스레드가 언제 깨어 돌았는지를 본다
@@ -211,10 +209,10 @@ ROS 2 executor 통합은 C++ flux와 같다.
 - legacy default stream(NULL)은 `Stream::from_native`가 거절한다. 스레드마다 다른 stream을 가리키기 때문이다
 - `DeviceHandle` 세그먼트는 control plane만 shm에 두고(`StorageKind::CudaIpc`), 헤더에 할당한 장치의 UUID를 적는다. 구독자는 ordinal이 아니라 UUID로 자기 장치를 찾는다. `CUDA_VISIBLE_DEVICES`가 다르면 ordinal이 달라지기 때문이다. 구독자 stream의 장치가 그 장치와 다르면 attach에서 `Mismatch`다. import는 할당한 장치에만 READ 권한을 주므로 다른 GPU의 kernel이 읽으면 illegal address로 context가 망가진다
 - VMM 할당과 import, 호스트 등록은 그 장치의 primary context에서 만들고 해제한다. primary context는 retain한 채 놓지 않는다. 호출자가 current로 둔 자기 context를 먼저 파괴해도 해제가 그 context를 쓰지 않게 하기 위해서다. 호스트 등록은 그 context와 함께 사라지기도 해서 `PORTABLE`로 등록한다. 그래야 그 장치의 다른 context에 있는 stream도 등록한 메모리를 pinned로 본다
-- fd는 채널마다 accept 스레드 하나가 소켓 파일 `/dev/shm/flux2.gpu.<dev>.<ino>`(0600)로 `SCM_RIGHTS`에 실어 넘긴다. 데이터와 같은 `/dev/shm`에 두므로 세그먼트가 보이는 곳에서는 endpoint도 보인다. 처음에 쓴 abstract 이름은 network namespace를 따라서, `--ipc=host`이면서 network가 다른 컨테이너에서는 연결되지 않았고 `--net=host` 컨테이너에는 그대로 노출됐다
+- fd는 채널마다 accept 스레드 하나가 소켓 파일 `/dev/shm/flux.gpu.<dev>.<ino>`(0600)로 `SCM_RIGHTS`에 실어 넘긴다. 데이터와 같은 `/dev/shm`에 두므로 세그먼트가 보이는 곳에서는 endpoint도 보인다. 처음에 쓴 abstract 이름은 network namespace를 따라서, `--ipc=host`이면서 network가 다른 컨테이너에서는 연결되지 않았고 `--net=host` 컨테이너에는 그대로 노출됐다
   - 발행자는 자기 pid를 붙인 이름에 bind하고 listen한 뒤 rename으로 제자리에 옮긴다. 그래서 그 이름은 듣고 있는 소켓만 가리키고, 같은 inode를 다시 받은 세그먼트는 죽은 발행자가 남긴 파일을 덮어쓴다
   - 발행자는 끝날 때 파일이 아직 자기 것(inode)이면 지운다. sweep은 듣는 쪽이 없는 endpoint와 10초 넘게 남은 bind 중간 이름을 지운다. 중간 이름의 pid로 판정하지 않는 것은 다른 pid namespace의 것일 수 있기 때문이다
-  - 양쪽 모두 `SO_PEERCRED`로 상대가 이 euid인지도 확인한다. flux에는 이 확인이 없었다. 받는 쪽이 open file 한도에 닿아 커널이 fd를 버리면(`MSG_CTRUNC`) 그 사유로 `NotReady`다
+  - 양쪽 모두 `SO_PEERCRED`로 상대가 이 euid인지도 확인한다. 받는 쪽이 open file 한도에 닿아 커널이 fd를 버리면(`MSG_CTRUNC`) 그 사유로 `NotReady`다
 - 구독자의 import 매핑은 읽기 전용(`cuMemSetAccess` READ)이다. export한 fd에는 `FD_CLOEXEC`를 붙인다. 드라이버가 지금 붙여 주지만 문서로 보장하지 않고, exec한 자식이 이 fd를 물려받으면 할당을 쓰기 가능한 채로 살려 두기 때문이다
 - 받는 쪽은 non-blocking으로 connect하고 fd를 최대 1초 기다린다. 응답이 없으면 `NotReady`다. 멈춘 발행자(SIGSTOP, debugger)의 backlog가 차면 blocking connect는 돌아오지 않기 때문이다. backlog가 찬 뒤에는 기다리지 않고 바로 `NotReady`다
 - `DeviceHandle` 채널은 GPU 전용이다. CPU 구독은 attach에서 `Mismatch`, `publish()`는 `WrongDevice`, loan의 host 포인터는 NULL이다. 호스트 경로를 가진 장치는 `CudaIpc` 세그먼트를 import하지 않는다
@@ -253,7 +251,7 @@ x86 RTX 4070 SUPER(driver 580, CUDA 13)에서의 검증:
 | Python 수명과 stream | `with` 밖으로 나간 tensor의 값, torch 자기 stream의 읽기·쓰기가 해제·commit 전에 끝나는지 확인한다 |
 | sticky 오류 | PTX로 만든 kernel이 구독자의 READ import에 쓰게 해서 실제 illegal address(700)를 낸다. 커널 로그에 Xid 31(`FAULT_RO_VIOLATION`)이 남는다. 그 뒤 take, loan, stream 생성이 바로 거절되는지 본다. 일부러 GPU fault를 내므로 `#[ignore]`이고 `--include-ignored`로 따로 돌린다 |
 
-GPU가 없어도 도는 시험은 대역 드라이버(`flux2_core/src/gpu/fake.rs`, `cfg(test)`)로 돈다. 시험 바이너리가 `FLUX2_FAKE_CUDA`를 걸고 자기 자신을 그 시험 하나만 도는 자식 프로세스로 띄우면, `Driver`가 `libcuda.so.1` 대신 이 대역을 쓴다. 통합 GPU 하나(`integrated`·`pageable`·`host_register`가 모두 1이라 판정은 `ShmRegistered`)를 흉내 내고 VMM은 없다. stream의 작업은 시험이 넣고(`submit`), 끝내고(`finish`), 실패시키고(`fail`), 끝내지 않는다. sticky 오류는 `wedge`로 내며, 그 뒤 드라이버 호출은 이미 기다리는 것까지 그 오류를 돌려준다. 사용자 context를 만들고 파괴할 수 있고, 파괴한 context를 쓰거나 객체를 두 번 해제하면 crash 대신 기록한다. 시험은 `gpu::tests::stand_in`에 있다
+GPU가 없어도 도는 시험은 대역 드라이버(`flux_core/src/gpu/fake.rs`, `cfg(test)`)로 돈다. 시험 바이너리가 `FLUX_FAKE_CUDA`를 걸고 자기 자신을 그 시험 하나만 도는 자식 프로세스로 띄우면, `Driver`가 `libcuda.so.1` 대신 이 대역을 쓴다. 통합 GPU 하나(`integrated`·`pageable`·`host_register`가 모두 1이라 판정은 `ShmRegistered`)를 흉내 내고 VMM은 없다. stream의 작업은 시험이 넣고(`submit`), 끝내고(`finish`), 실패시키고(`fail`), 끝내지 않는다. sticky 오류는 `wedge`로 내며, 그 뒤 드라이버 호출은 이미 기다리는 것까지 그 오류를 돌려준다. 사용자 context를 만들고 파괴할 수 있고, 파괴한 context를 쓰거나 객체를 두 번 해제하면 crash 대신 기록한다. 시험은 `gpu::tests::stand_in`에 있다
 
 | 규칙 | 시험 |
 | --- | --- |
@@ -267,7 +265,7 @@ GPU가 없어도 도는 시험은 대역 드라이버(`flux2_core/src/gpu/fake.r
 | fork한 자식은 드라이버를 부르지 않는다 | 자식에서 view·채널·stream을 버려도 드라이버 호출 수가 그대로이고, stream 생성은 fork를 밝힌 오류다 |
 | 호스트 등록은 사용자 context를 파괴해도 남고, 그 context를 쓰지 않고 해제된다 | |
 
-debug 빌드(`debug_assertions`)에서는 GPU 경로가 쥔 것을 장부(`flux2_core/src/gpu/ledger.rs`)에 적는다. 커널의 `DMA_API_DEBUG`에 해당한다. release 빌드에서는 장부 함수가 비어 있어 hot path 비용이 없다.
+debug 빌드(`debug_assertions`)에서는 GPU 경로가 쥔 것을 장부(`flux_core/src/gpu/ledger.rs`)에 적는다. 커널의 `DMA_API_DEBUG`에 해당한다. release 빌드에서는 장부 함수가 비어 있어 hot path 비용이 없다.
 
 | 적는 것 | 바로 실패(panic)로 보는 것 | 누수로 보고하는 때 |
 | --- | --- | --- |
@@ -281,11 +279,11 @@ debug 빌드(`debug_assertions`)에서는 GPU 경로가 쥔 것을 장부(`flux2
 compute-sanitizer로도 돌린다. 자식 프로세스로 도는 시험의 보고는 부모가 받아 두므로, 오류가 있으면 자식이 99로 끝나 부모의 시험이 실패한다.
 
 ```bash
-cargo test -p flux2_core --no-run   # 시험 바이너리 경로를 찍는다
+cargo test -p flux_core --no-run   # 시험 바이너리 경로를 찍는다
 compute-sanitizer --tool memcheck --leak-check full --target-processes all --error-exitcode 99 \
-  target/debug/deps/flux2_core-<hash> gpu:: --test-threads=1
+  target/debug/deps/flux_core-<hash> gpu:: --test-threads=1
 compute-sanitizer --tool memcheck --leak-check full --target-processes all --error-exitcode 99 \
-  build/flux2_cpp/test_gpu
+  build/flux_cpp/test_gpu
 ```
 
 이 RTX 4070 SUPER에서 core는 37개 통과(1개 ignored), 오류 0, 누수 0이다. C++ `test_gpu`는 위의 늦은 해제 때문에 import 하나(2 MiB)를 누수로 보고한다.
@@ -296,33 +294,33 @@ GPU 시험은 커널 로그로도 판정한다. 등록 해제 뒤 접근이나 R
 | --- | --- |
 | C++ `test_gpu` | gtest 전역 environment가 시작과 끝에 표시하고 비교한다 |
 | Python `test_gpu.py` | module fixture가 같은 일을 한다 |
-| core `cargo test` | `scripts/kernel_log.sh run cargo test -p flux2_core gpu::`로 감싸 돈다 |
+| core `cargo test` | `scripts/kernel_log.sh run cargo test -p flux_core gpu::`로 감싸 돈다 |
 
 - root 없이 로그를 읽을 수 없으면(journal은 `adm`·`systemd-journal` 그룹, dmesg는 `kernel.dmesg_restrict=0`) 판정하지 않는다고 알리고 시험만 돈다
 - 로그는 호스트 전체의 것이라 같은 시각 다른 프로세스의 fault도 실패로 잡는다. 일부러 Xid를 내는 `#[ignore]` sticky 시험은 이 판정 밖에서 따로 돌린다
 
 ## tensor 메시지
 
-DLPack `DLTensor`의 필드만 가진 메시지는 flux2_gen이 필드 이름과 타입으로 알아본다. `tensor_msgs/ExperimentalTensor`(Lyrical)가 그 모양이다: `uint8 dtype_code`, `uint8 dtype_bits`, `uint16 dtype_lanes`, `int64[] shape`, `int64[] strides`, `uint64 byte_offset`, `uint8[] data`. 패키지 이름은 보지 않으므로 사용자가 복사한 메시지도 같다. 필드 하나가 이름, 타입, 중첩에서 다르거나 필드가 더 있으면 보통 메시지다. 판정은 `Layout::tensor_at`이고, 그 밖의 메시지는 생성물이 한 글자도 바뀌지 않는다(설치된 .msg와 시험 .msg 262개 메시지의 생성물을 바이트 단위로 대조했다).
+DLPack `DLTensor`의 필드만 가진 메시지는 flux_gen이 필드 이름과 타입으로 알아본다. `tensor_msgs/ExperimentalTensor`(Lyrical)가 그 모양이다: `uint8 dtype_code`, `uint8 dtype_bits`, `uint16 dtype_lanes`, `int64[] shape`, `int64[] strides`, `uint64 byte_offset`, `uint8[] data`. 패키지 이름은 보지 않으므로 사용자가 복사한 메시지도 같다. 필드 하나가 이름, 타입, 중첩에서 다르거나 필드가 더 있으면 보통 메시지다. 판정은 `Layout::tensor_at`이고, 그 밖의 메시지는 생성물이 한 글자도 바뀌지 않는다(설치된 .msg와 시험 .msg 262개 메시지의 생성물을 바이트 단위로 대조했다).
 
 생성 adapter는 dtype, shape, strides, byte_offset을 해석해 슬롯 위의 view를 낸다. 복사는 없다.
 
 | 언어 | View | Builder |
 | --- | --- | --- |
-| Python | `as_tensor__()`는 numpy view. numpy에 이름이 없는 dtype(bf16, fp8)은 `flux2.wire.Tensor`(`.bits`, `__dlpack__`, `.array`는 `TypeError`). View 자체도 `__dlpack__`, `__dlpack_device__`를 낸다 | `alloc_tensor__(dtype, shape)`. dtype은 numpy dtype이나 DLPack 이름(`"bfloat16"`, `"float8_e4m3fn"` 등). 쓰기 가능한 view를 같은 규칙으로 돌려준다 |
-| C++ | `as_tensor__()`는 `flux2::wire::Tensor`(첫 원소 포인터, `DlType`, shape, strides). `as<T>()`는 dtype이 `T`일 때만 포인터 | `alloc_tensor__(DlType, shape)`는 `void *`, `alloc_tensor__<T>(shape)`는 `Span<T>` |
+| Python | `as_tensor__()`는 numpy view. numpy에 이름이 없는 dtype(bf16, fp8)은 `flux.wire.Tensor`(`.bits`, `__dlpack__`, `.array`는 `TypeError`). View 자체도 `__dlpack__`, `__dlpack_device__`를 낸다 | `alloc_tensor__(dtype, shape)`. dtype은 numpy dtype이나 DLPack 이름(`"bfloat16"`, `"float8_e4m3fn"` 등). 쓰기 가능한 view를 같은 규칙으로 돌려준다 |
+| C++ | `as_tensor__()`는 `flux::wire::Tensor`(첫 원소 포인터, `DlType`, shape, strides). `as<T>()`는 dtype이 `T`일 때만 포인터 | `alloc_tensor__(DlType, shape)`는 `void *`, `alloc_tensor__<T>(shape)`는 `Span<T>` |
 
 - 프레임은 다른 프로세스가 쓴 것이라 필드를 믿지 않는다. `byte_offset`과 shape, strides, 원소 크기가 닿는 모든 원소가 `data` 안이어야 하고 첫 원소는 원소 크기 경계에 있어야 한다. 어기면 Python은 `WireError`, C++은 빈 결과와 `!ok__()`다. 복사로 대신하지 않는다
-- 검사는 `flux2::wire::tensor_fault` 하나를 두 언어가 쓴다. Python은 shape와 strides를 슬롯에서 복사한 뒤 그 복사본을 검사하고 view도 복사본으로 만든다. 검사한 뒤 발행자가 슬롯을 고쳐도 검사하지 않은 값으로 view를 만들지 않기 위해서다. C++ `Tensor`의 shape, strides는 슬롯을 가리키는 span이다
+- 검사는 `flux::wire::tensor_fault` 하나를 두 언어가 쓴다. Python은 shape와 strides를 슬롯에서 복사한 뒤 그 복사본을 검사하고 view도 복사본으로 만든다. 검사한 뒤 발행자가 슬롯을 고쳐도 검사하지 않은 값으로 view를 만들지 않기 위해서다. C++ `Tensor`의 shape, strides는 슬롯을 가리키는 span이다
 - strides는 원소 단위이고 비어 있으면 C-contiguous다. 음수 stride도 범위 안이면 받는다(numpy는 읽고 torch는 거절한다). 크기가 0이나 1인 축의 stride는 밟지 않으므로 범위를 묻지 않는다
 - 받는 dtype: Int·UInt 8~64비트, Float 16·32·64, Complex 64·128, Bool 8, BFloat 16, Float8 계열(코드 7~14). lanes가 1이 아니거나 opaque handle, sub-byte float(코드 15~17), DLPack에 없는 코드는 거절한다
-- bf16과 fp8은 D-048대로 `.bits`(같은 폭 unsigned)와 `__dlpack__`로만 낸다. 다른 float로 위장하지 않는다
+- bf16과 fp8은 `.bits`(같은 폭 unsigned)와 `__dlpack__`로만 낸다. 다른 float로 위장하지 않는다
 - 구독자 쪽 view는 읽기 전용이고 Builder 쪽은 쓰기 가능하다. CPU DLPack capsule도 GPU `Frame`처럼 read-only flag 없이 낸다. 구독자 매핑이 `PROT_READ`이므로 그 torch tensor에 쓰면 SIGSEGV다
-- Builder는 `data`를 64바이트 경계에 잡는다(`flux2::wire::kTensorAlign`). 이를 위해 `Writer::alloc<T>(off, n, align)`을 더했다. 슬롯 시작이 page 경계라서 frame offset의 정렬이 주소의 정렬이다
+- Builder는 `data`를 64바이트 경계에 잡는다(`flux::wire::kTensorAlign`). 이를 위해 `Writer::alloc<T>(off, n, align)`을 더했다. 슬롯 시작이 page 경계라서 frame offset의 정렬이 주소의 정렬이다
 - GPU: `device="cuda"` 구독의 `Frame`을 View에 넘기면 필드는 호스트 매핑(`Frame._host()`)으로 읽고, `__dlpack__`은 장치 tensor를 낸다. 주소는 등록한 장치 주소에 호스트에서 잰 `data` offset을 더한 것이다(`Frame._tensor_dlpack`). core와 C ABI는 바뀌지 않았다. 호스트 매핑이 없는 `DeviceHandle`은 이유를 붙여 거절한다
   - 해제는 `Frame` 규칙을 따른다. View는 `with`나 callback 안에서만 만든다. View의 호스트 view와 장치 tensor는 DLPack tensor처럼 frame을 쥔다. consumer stream(`__dlpack__(stream=)`)은 `Frame.__dlpack__`과 같이 해제 전에 기다리거나 `Deferred`에서는 순서만 건다
   - CPU 발행자와 `device="cuda"` 구독자의 조합은 이 Orin(`ShmRegistered`)에서 같은 프로세스와 다른 프로세스 모두 돈다
-- 시험: `flux2_py/test/test_tensor.py`(실제 채널로 C++과 Python 양방향, strides·byte_offset, bf16·fp8, 범위·정렬 위반, 슬롯 안의 주소인지), `test_gpu.py`의 tensor 메시지 셋(장치 주소, 슬롯 유지, strided bf16, 위반), `flux2_gen/tests/emit.rs`의 판정, 시험 메시지 `flux2_gen/test/msg/DlTensor.msg`
+- 시험: `flux_py/test/test_tensor.py`(실제 채널로 C++과 Python 양방향, strides·byte_offset, bf16·fp8, 범위·정렬 위반, 슬롯 안의 주소인지), `test_gpu.py`의 tensor 메시지 셋(장치 주소, 슬롯 유지, strided bf16, 위반), `flux_gen/tests/emit.rs`의 판정, 시험 메시지 `flux_gen/test/msg/DlTensor.msg`
 
 ## 구독자 crash
 
@@ -341,24 +339,24 @@ DLPack `DLTensor`의 필드만 가진 메시지는 flux2_gen이 필드 이름과
 
 ## C ABI
 
-`flux2_ffi`가 core 위에 C 함수를 내보낸다. 헤더 `flux2_ffi/include/flux2.h`는 cbindgen이 Rust 소스에서 생성하고, 생성본을 커밋한다. 빌드는 cbindgen에 의존하지 않는다. pre-commit(`scripts/gen_c_header.sh --check`)이 다시 생성해 보고, 차이가 있으면 실패한다.
+`flux_ffi`가 core 위에 C 함수를 내보낸다. 헤더 `flux_ffi/include/flux.h`는 cbindgen이 Rust 소스에서 생성하고, 생성본을 커밋한다. 빌드는 cbindgen에 의존하지 않는다. pre-commit(`scripts/gen_c_header.sh --check`)이 다시 생성해 보고, 차이가 있으면 실패한다.
 
 | 항목 | 방식 |
 | --- | --- |
 | 핸들 | 불투명 포인터. `_free`는 NULL 허용 |
-| view·loan | 호출자 메모리의 고정 크기 저장소(`flux2_view` 128바이트, `flux2_loan` 128바이트). 0으로 초기화하면 빈 상태. 첫 바이트가 태그다. 값으로 복사하지 않는다. 옮기는 것은 바이트를 복사한 뒤 원본을 0으로 만드는 것뿐이다(iceoryx2, zenoh-c도 복사를 감지하지 않는다) |
-| 오류 | `flux2_status` 반환과 스레드별 `flux2_last_error()` |
-| 버전 | soname `libflux2_ffi.so.<FLUX2_ABI_VERSION>`, `flux2_abi_version()`. 지금 3이다(trace 계약 2의 `stamp_offset` 인자와 `flux2_source.endpoint`). C++ 래퍼는 처음 쓸 때 헤더의 값과 비교해 다르면 `Mismatch`를 던진다. 옛 헤더로 빌드한 바이너리가 view·loan 저장소 밖을 덮어쓰는 것을 막는다 |
-| callback | 함수 포인터 + ctx. `attach`·`deliver_one`은 음수, hook은 0이 아닌 값이 실패다. 실패하면 spin이 `FLUX2_CALLBACK`으로 끝난다 |
+| view·loan | 호출자 메모리의 고정 크기 저장소(`flux_view` 128바이트, `flux_loan` 128바이트). 0으로 초기화하면 빈 상태. 첫 바이트가 태그다. 값으로 복사하지 않는다. 옮기는 것은 바이트를 복사한 뒤 원본을 0으로 만드는 것뿐이다(iceoryx2, zenoh-c도 복사를 감지하지 않는다) |
+| 오류 | `flux_status` 반환과 스레드별 `flux_last_error()` |
+| 버전 | soname `libflux_ffi.so.<FLUX_ABI_VERSION>`, `flux_abi_version()`. 지금 3이다(trace 계약 2의 `stamp_offset` 인자와 `flux_source.endpoint`). C++ 래퍼는 처음 쓸 때 헤더의 값과 비교해 다르면 `Mismatch`를 던진다. 옛 헤더로 빌드한 바이너리가 view·loan 저장소 밖을 덮어쓰는 것을 막는다 |
+| callback | 함수 포인터 + ctx. `attach`·`deliver_one`은 음수, hook은 0이 아닌 값이 실패다. 실패하면 spin이 `FLUX_CALLBACK`으로 끝난다 |
 | 상수 | 리터럴로 적고 core 값과 같은지 컴파일 시점에 assert |
 
-예외는 경계를 넘지 않는다. C++ 래퍼는 callback 안에서 잡은 예외를 ctx에 보관했다가, 그 callback을 부른 C 호출이 끝나면 반환 코드와 상관없이 다시 던진다. `flux2_executor_add`는 실패해도 source를 소비한다(`drop`이 한 번 돈다).
+예외는 경계를 넘지 않는다. C++ 래퍼는 callback 안에서 잡은 예외를 ctx에 보관했다가, 그 callback을 부른 C 호출이 끝나면 반환 코드와 상관없이 다시 던진다. `flux_executor_add`는 실패해도 source를 소비한다(`drop`이 한 번 돈다).
 
-ABI 테스트는 C 프로그램(`flux2_ffi/tests/c/`)이다. `cargo test`가 커밋된 헤더와 staticlib으로 이들을 빌드해 돌리고, 헤더를 C++로도 컴파일해 본다. 라이브러리가 내보낸 `flux2_*` 심볼이 모두 헤더에 있는지도 확인한다. cbindgen은 매크로가 만든 함수를 보지 못하기 때문이다.
+ABI 테스트는 C 프로그램(`flux_ffi/tests/c/`)이다. `cargo test`가 커밋된 헤더와 staticlib으로 이들을 빌드해 돌리고, 헤더를 C++로도 컴파일해 본다. 라이브러리가 내보낸 `flux_*` 심볼이 모두 헤더에 있는지도 확인한다. cbindgen은 매크로가 만든 함수를 보지 못하기 때문이다.
 
 ## trace
 
-trace 이벤트는 core의 `flux2_trace_*` 함수다(`flux2_core/src/trace.rs`). 함수 자체는 아무것도 하지 않고, 수집기(armo의 uprobe, LD_PRELOAD, LTTng)가 이름으로 붙는 지점이다. 이 함수들은 `libflux2_ffi.so`가 내보내므로, C++·Python이 공유 라이브러리로 링크하면 armo가 프로세스의 maps에서 찾는다. 이벤트 이름, 인자, 상수는 계약이고 `flux2_trace_contract_2`가 그 버전이다. 이름이나 인자를 바꾸면 번호를 올리고 옛 심볼은 지운다. 이벤트나 상수를 더하기만 하면 번호를 그대로 둔다(`gpu_wedged`, `*_GPU_WEDGED`). 정본은 `flux_docs/armo/design.md` 11절이고, C 선언과 상수는 설치 헤더 `flux2/trace.h`다.
+trace 이벤트는 core의 `flux_trace_*` 함수다(`flux_core/src/trace.rs`). 함수 자체는 아무것도 하지 않고, 수집기(armo의 uprobe, LD_PRELOAD, LTTng)가 이름으로 붙는 지점이다. 이 함수들은 `libflux_ffi.so`가 내보내므로, C++·Python이 공유 라이브러리로 링크하면 armo가 프로세스의 maps에서 찾는다. 이벤트 이름, 인자, 상수는 계약이고 `flux_trace_contract_2`가 그 버전이다. 이름이나 인자를 바꾸면 번호를 올리고 옛 심볼은 지운다. 이벤트나 상수를 더하기만 하면 번호를 그대로 둔다(`gpu_wedged`, `*_GPU_WEDGED`). 정본은 `flux_docs/armo/design.md` 11절이고, C 선언과 상수는 설치 헤더 `flux/trace.h`다.
 
 | 이벤트 | 인자 | 부르는 곳 |
 | --- | --- | --- |
@@ -372,20 +370,20 @@ trace 이벤트는 core의 `flux2_trace_*` 함수다(`flux2_core/src/trace.rs`).
 | `gpu_wedged` | result(`CUresult`) | sticky CUDA 오류로 프로세스의 GPU를 wedged로 표시할 때, 프로세스에 한 번 |
 | `wait`, `wake` | executor, sources, timeout_ns / executor, result(`WAKE_*`), entry | `wait_for_work`, 두 대기 경로 같음 |
 | `callback_start`, `callback_end` | executor, entry, endpoint / executor, entry, delivered, channel, segment | dispatch |
-| `endpoint_init` | endpoint, node, key, signpost, fingerprint, role, lang | flux2_cpp·flux2_py의 Publisher·Subscription 생성자 |
-| `py_gil`, `py_ready` | phase / channel, ticket | flux2_py의 GIL 재획득, 콜백 직전 |
-| `record_drop` | channel, ticket, count, reason(`RECORD_*`) | flux2_bag 녹화기가 bag에 쓰지 못한 프레임 |
+| `endpoint_init` | endpoint, node, key, signpost, fingerprint, role, lang | flux_cpp·flux_py의 Publisher·Subscription 생성자 |
+| `py_gil`, `py_ready` | phase / channel, ticket | flux_py의 GIL 재획득, 콜백 직전 |
+| `record_drop` | channel, ticket, count, reason(`RECORD_*`) | flux_bag 녹화기가 bag에 쓰지 못한 프레임 |
 
-- channel 식별자: `ChannelShared`의 주소. 재attach 전까지 고정이다. 바인딩은 `flux2_view_trace_channel`로 얻는다
+- channel 식별자: `ChannelShared`의 주소. 재attach 전까지 고정이다. 바인딩은 `flux_view_trace_channel`로 얻는다
 - executor 식별자: 제어 블록의 주소. executor를 옮겨도 고정이다
-- endpoint 식별자: 바인딩의 Publisher·Subscription 객체 주소. executor source는 `flux2_source.endpoint`(core `Source::endpoint`)로 같은 주소를 넘긴다
+- endpoint 식별자: 바인딩의 Publisher·Subscription 객체 주소. executor source는 `flux_source.endpoint`(core `Source::endpoint`)로 같은 주소를 넘긴다
 - `callback_end`의 segment: owner 파일이 없으므로, 늦게 붙은 도구도 이 인자로 callback의 채널을 안다
 - roster label은 노드의 fully qualified name이다. armo는 `/`로 시작하는 label을 노드로 읽는다
-- stamp: 최상위 `std_msgs/Header`의 stamp 8 B를 little-endian u64로 읽은 값(sec 아래, nanosec 위)이다. 위치(`stamp_offset`)는 flux2_gen이 정하고, 생성 코드가 실릴 때 fingerprint별로 `libflux2_ffi`에 등록하며(`flux2_stamp_offset_register`), flux2_cpp가 채널을 만들 때 찾아 C ABI 인자로 넘긴다. Header가 없는 타입, raw API, device payload는 0이다
+- stamp: 최상위 `std_msgs/Header`의 stamp 8 B를 little-endian u64로 읽은 값(sec 아래, nanosec 위)이다. 위치(`stamp_offset`)는 flux_gen이 정하고, 생성 코드가 실릴 때 fingerprint별로 `libflux_ffi`에 등록하며(`flux_stamp_offset_register`), flux_cpp가 채널을 만들 때 찾아 C ABI 인자로 넘긴다. Header가 없는 타입, raw API, device payload는 0이다
 
-함수마다 asm 문자열이 다르다. 같으면 LLVM이 같은 시그니처의 빈 함수를 한 주소로 합쳐서, 한 이벤트의 uprobe가 다른 이벤트에도 걸린다. 모든 인자는 asm 입력 operand로 읽는다. 읽지 않으면 `codegen-units=1`이나 fat LTO 빌드에서 호출 지점이 인자 레지스터를 채우지 않아 수집기가 쓰레기 값을 받는다. `flux2_ffi/tests/trace_args.rs`가 그 빌드의 cdylib와 staticlib에서 C 프로그램의 이벤트 값을 기록기로 확인한다. `flux2_ffi`의 ABI 테스트는 18개 함수가 서로 다른 주소로 export되고 `flux2/trace.h`에 선언돼 있으며 상수가 core와 같은지 본다. LTTng·LD_PRELOAD 같은 수집 방식은 armo가 맡는다.
+함수마다 asm 문자열이 다르다. 같으면 LLVM이 같은 시그니처의 빈 함수를 한 주소로 합쳐서, 한 이벤트의 uprobe가 다른 이벤트에도 걸린다. 모든 인자는 asm 입력 operand로 읽는다. 읽지 않으면 `codegen-units=1`이나 fat LTO 빌드에서 호출 지점이 인자 레지스터를 채우지 않아 수집기가 쓰레기 값을 받는다. `flux_ffi/tests/trace_args.rs`가 그 빌드의 cdylib와 staticlib에서 C 프로그램의 이벤트 값을 기록기로 확인한다. `flux_ffi`의 ABI 테스트는 18개 함수가 서로 다른 주소로 export되고 `flux/trace.h`에 선언돼 있으며 상수가 core와 같은지 본다. LTTng·LD_PRELOAD 같은 수집 방식은 armo가 맡는다.
 
-끈 상태(아무것도 붙지 않음) 비용은 이벤트당 0.7~2.6 ns다(Orin, CPU 고정, 9회 중앙값, `flux2_core/benches/trace_cost.rs`). 호출 지점은 `trace::event!` 매크로이고, `RUSTFLAGS="--cfg flux2_trace_off"` 빌드가 호출 지점을 인자 계산과 함께 지워 비교 기준이 된다. 이 cfg는 측정용이고 기능이 아니다.
+끈 상태(아무것도 붙지 않음) 비용은 이벤트당 0.7~2.6 ns다(Orin, CPU 고정, 9회 중앙값, `flux_core/benches/trace_cost.rs`). 호출 지점은 `trace::event!` 매크로이고, `RUSTFLAGS="--cfg flux_trace_off"` 빌드가 호출 지점을 인자 계산과 함께 지워 비교 기준이 된다. 이 cfg는 측정용이고 기능이 아니다.
 
 | 루프 | 반복당 이벤트 | 켬 | 끔 | 이벤트당 |
 | --- | --- | --- | --- | --- |
@@ -395,18 +393,18 @@ trace 이벤트는 core의 `flux2_trace_*` 함수다(`flux2_core/src/trace.rs`).
 
 ## 열거
 
-열거용 manifest는 signpost 안의 roster에 둔다. flux2에는 owner 파일이 없어서, 같은 OFD lock 방식을 signpost에 한 번 더 쓴다. 칸 `j`의 주인은 signpost 바이트 `2+j`에 write lock을 쥔 프로세스다. 프로세스가 죽으면 커널이 lock을 풀고, 열거는 lock이 걸린 칸만 읽는다(`F_OFD_GETLK`). 열거는 아무것도 바꾸지 않는다.
+열거용 manifest는 signpost 안의 roster에 둔다. flux에는 owner 파일이 없어서, 같은 OFD lock 방식을 signpost에 한 번 더 쓴다. 칸 `j`의 주인은 signpost 바이트 `2+j`에 write lock을 쥔 프로세스다. 프로세스가 죽으면 커널이 lock을 풀고, 열거는 lock이 걸린 칸만 읽는다(`F_OFD_GETLK`). 열거는 아무것도 바꾸지 않는다.
 
 - signpost 크기: 16 KiB
 - endpoint 칸: 62개
 - 칸 내용: pid, 발행자 여부, label. 주인이 seqlock으로 쓴다.
   - 쓰는 쪽: `seq`를 홀수로 store한 뒤 Release fence, 필드들(모두 atomic, Relaxed), 짝수 `seq` Release store다. 홀수 store만 Release로 하면 뒤의 쓰기가 그 앞으로 넘어올 수 있다(ARM에서만 드러난다)
   - 쓰다 죽은 주인은 `seq`를 홀수로 남긴다. 새 주인은 그 값에서 시작한다(`seq | 1`). lock이 풀린 칸은 열거가 읽지 않으므로 남은 홀수는 새 주인이 쓰기 전까지만 보인다
-  - 읽는 쪽: 짝수 `seq`(Acquire), 필드, label 전체(240 B)를 고정 버퍼로 복사, Acquire fence, `seq` 재확인이다. 64번 안에 맞지 않으면 그 칸은 "busy"다. `Topic::busy`로 세고 `flux2 topic info`가 표시한다. C ABI의 열거 구조체는 배치를 바꾸지 않으려고 이 값을 싣지 않는다
+  - 읽는 쪽: 짝수 `seq`(Acquire), 필드, label 전체(240 B)를 고정 버퍼로 복사, Acquire fence, `seq` 재확인이다. 64번 안에 맞지 않으면 그 칸은 "busy"다. `Topic::busy`로 세고 `flux topic info`가 표시한다. C ABI의 열거 구조체는 배치를 바꾸지 않으려고 이 값을 싣지 않는다
   - label 길이는 재확인을 통과한 뒤에야 쓴다. 버퍼보다 길면 쓰는 쪽이 만들 수 없는 값이므로 그 칸을 목록에서 뺀다
   - 비용 모델: 읽기 재시도는 쓰기 빈도 × 읽기 시간에 비례한다. 칸은 announce와 종료 때만 쓰므로 재시도는 드물다
 - 정확한 key: 처음 announce한 쪽이 한 번만 쓴다. 열거는 key를 평탄화한 값이 signpost 이름의 key 부분과 같을 때만 정확한 key로 낸다. 다르면 이름에서 되살린 key를 `key_exact = false`로 낸다
-- 62칸이 차면 그 뒤의 announce는 roster에 오르지 않는다. 프레임 수신과는 상관없고 목록에만 빠진다. `max_subscribers`를 따라 늘리지 않는다. signpost는 발행자보다 먼저 생길 수 있고 재시작에도 남아서, 만들 때 그 값을 모르기 때문이다. `flux2 topic info`는 목록이 찼으면 그렇다고 표시한다
+- 62칸이 차면 그 뒤의 announce는 roster에 오르지 않는다. 프레임 수신과는 상관없고 목록에만 빠진다. `max_subscribers`를 따라 늘리지 않는다. signpost는 발행자보다 먼저 생길 수 있고 재시작에도 남아서, 만들 때 그 값을 모르기 때문이다. `flux topic info`는 목록이 찼으면 그렇다고 표시한다
 
 roster가 signpost에 있으므로 발행자가 없어도 announce한 구독자가 보이고, 발행자가 재시작해도 등록이 유지된다. API는 C++ flux와 같다(`ManifestEntry`, `Announcement`, `Topic`, `Endpoint`, `enumerate_topics`, `ChannelStats`, `read_channel_stats`). 다만 `Endpoint`는 `(pid, starttime)` 대신 pid만 갖는다.
 
@@ -437,20 +435,20 @@ signpost를 연 프로세스(발행자, 구독자, announce한 쪽)는 signpost 
 
 - 비동기 실행원 중 GPU 대기 스레드는 공유메모리를 만지지 않고 join하지 않는다. 늦춘 해제와 시간을 넘긴 fence는 `ChannelShared`를 쥐므로 그 일이 끝나기 전에는 이 순서가 시작되지 않는다
 - 전에는 `map` 필드가 `device` 필드보다 먼저 drop되어 호스트 등록 해제가 munmap 뒤에 돌았다. 시험 `a_registration_is_undone_before_its_mapping_goes`가 해제 시점에 그 범위가 아직 매핑돼 있는지 `mincore`로 본다
-- 발행자가 사라진 세그먼트의 마지막 매핑을 놓는 스레드가 그 tmpfs 페이지를 모두 해제한다(마지막 파일 참조가 그 munmap이나 구독자 번호 fd다). 128 MiB에서 7.3 ms, 16 MiB에서 0.8 ms다(Ryzen 5 9600X). 재attach는 executor 스레드의 take 안에서 일어나므로, 옛 `ChannelShared`를 놓는 세 곳(채널의 재attach, executor의 대기 핸들 교체, parker가 다 쓴 겨냥)은 직접 drop하지 않고 `flux2-reaper` 스레드에 넘긴다. 128 MiB 세그먼트의 재attach take가 5.1 ms에서 0.04 ms가 됐다
+- 발행자가 사라진 세그먼트의 마지막 매핑을 놓는 스레드가 그 tmpfs 페이지를 모두 해제한다(마지막 파일 참조가 그 munmap이나 구독자 번호 fd다). 128 MiB에서 7.3 ms, 16 MiB에서 0.8 ms다(Ryzen 5 9600X). 재attach는 executor 스레드의 take 안에서 일어나므로, 옛 `ChannelShared`를 놓는 세 곳(채널의 재attach, executor의 대기 핸들 교체, parker가 다 쓴 겨냥)은 직접 drop하지 않고 `flux-reaper` 스레드에 넘긴다. 128 MiB 세그먼트의 재attach take가 5.1 ms에서 0.04 ms가 됐다
   - reaper는 프로세스에 하나이고 첫 구독을 여는 호출(사용자 스레드)이 만든다. 모든 신호를 막은 채 시작하고, 시작하자마자 SCHED_OTHER, nice 0으로 내려간다. 아무도 기다리지 않는 정리 스레드라서 일부러 보통 우선순위로 돈다. 만든 스레드의 RT 정책을 물려받으면 페이지 해제가 정작 비켜 주려던 RT 스레드를 밀어내기 때문이다. 양수 nice를 0으로 낮추려면 권한(`RLIMIT_NICE`)이 있어야 하므로, 양수 nice 스레드에서 만들면 그 값으로 남는다. CPU affinity는 건드리지 않는다(cyra가 정할 수 있다). 시험은 SCHED_FIFO가 허용되면 FIFO 스레드에서, 아니면 SCHED_BATCH 스레드에서 만들어 reaper가 SCHED_OTHER인지 본다
   - fork한 자식에는 reaper가 없으므로 그 자리에서 drop한다
   - 옛 세그먼트의 view를 콜백 밖까지 쥐다 놓는 경우는 그 view를 놓는 스레드가 값을 치른다
 
 ## CLI
 
-`flux2_cli`가 바이너리 `flux2`를 만든다. colcon이 `bin`에 설치하므로 워크스페이스를 source하면 PATH에 있다. core 바로 위에 있어서 Python이나 ROS 없이 돈다. /dev/shm을 읽기만 하고 lock이나 borrow를 잡지 않으므로, 대상 프로세스는 이를 알아채지 못한다. 명령과 출력 형식은 C++ flux CLI를 따른다.
+`flux_cli`가 바이너리 `flux`를 만든다. colcon이 `bin`에 설치하므로 워크스페이스를 source하면 PATH에 있다. core 바로 위에 있어서 Python이나 ROS 없이 돈다. /dev/shm을 읽기만 하고 lock이나 borrow를 잡지 않으므로, 대상 프로세스는 이를 알아채지 못한다. 명령과 출력 형식은 C++ flux CLI를 따른다.
 
 | 명령 | 하는 일 |
 | --- | --- |
-| `flux2 topic list` | 채널, 세그먼트 up/down, endpoint 요약 |
-| `flux2 topic info <channel>` | fingerprint, signpost, epoch, 슬롯, storage, 발행 프레임 수, wake gate 대기자, endpoint |
-| `flux2 topic hz <channel> [--window SEC]` | 발행 속도 |
+| `flux topic list` | 채널, 세그먼트 up/down, endpoint 요약 |
+| `flux topic info <channel>` | fingerprint, signpost, epoch, 슬롯, storage, 발행 프레임 수, wake gate 대기자, endpoint |
+| `flux topic hz <channel> [--window SEC]` | 발행 속도 |
 
 - 호스트의 채널 중 이 사용자가 열 수 있는 것을 다룬다. 열 수 없는 signpost는 열거에서 빠진다
 - `--window`는 1 ms 이상이다. key, label, signpost의 제어 문자는 escape해서 찍는다. 크기는 단위로 나눠 떨어지지 않으면 소수 한 자리로 찍는다
@@ -549,7 +547,7 @@ GenMC litmus(flux_model_checking의 `litmus/`)는 GenMC가 없는 곳에서 썼�
 
 ## 검증
 
-fuzz 대상은 `flux2_core/src/fuzz.rs`의 `frame`, `attach`, `roster` 셋이다. `attach`는 첫 바이트가 홀수면 파일을 헤더가 말하는 크기(16 MiB까지)로 맞춰, 헤더만 있는 입력도 attach 검사까지 간다. `cargo test`가 이 함수들을 고정 corpus로 돌리고, `fuzz/`(cargo-fuzz, 고정 nightly)가 같은 함수를 fuzzing한다.
+fuzz 대상은 `flux_core/src/fuzz.rs`의 `frame`, `attach`, `roster` 셋이다. `attach`는 첫 바이트가 홀수면 파일을 헤더가 말하는 크기(16 MiB까지)로 맞춰, 헤더만 있는 입력도 attach 검사까지 간다. `cargo test`가 이 함수들을 고정 corpus로 돌리고, `fuzz/`(cargo-fuzz, 고정 nightly)가 같은 함수를 fuzzing한다.
 
 model checking 하니스는 비공개 저장소 flux_model_checking에 둔다. 손으로 쓴 C 모델이라 이 저장소의 소스를 include하지 않는다. `wake`의 CRASH 설정은 어느 단계에서든 죽을 수 있는 대기자와 발행자의 sweep을 넣고, 두 store로 세는 옛 방식(`BUG_TWO_STORES`)을 누수로 잡는다. `readers`의 LOAN 설정은 loan abort를 넣는다. fork 가드와 1초 주기는 모델에 없다.
 
@@ -559,21 +557,21 @@ model checking 하니스는 비공개 저장소 flux_model_checking에 둔다. �
 scripts/miri.sh    # MIRI_SEEDS 기본 0..64, 약 25초
 ```
 
-모델과 litmus는 `colcon test`(패키지 `flux_model_checking`)와, 덮는 파일이 바뀐 커밋의 pre-commit(flux_devel `.pre-commit-workspace.yaml`)에서 돈다. Miri는 Rust 소스와 함께 이 저장소에 두고 `colcon test`(패키지 `flux2_ffi`)와 pre-commit에서 돈다.
+모델과 litmus는 `colcon test`(패키지 `flux_model_checking`)와, 덮는 파일이 바뀐 커밋의 pre-commit(flux_devel `.pre-commit-workspace.yaml`)에서 돈다. Miri는 Rust 소스와 함께 이 저장소에 두고 `colcon test`(패키지 `flux_ffi`)와 pre-commit에서 돈다.
 
-전역 lock 없는 sweep은 flux_model_checking의 `sweep/`이 검사한다. 이름(signpost, 세그먼트 epoch), inode, 프로세스마다 open file description과 OFD lock을 모델로 두고, sweeper·발행자·구독자 중 누구든 아무 단계에서나 죽을 수 있다. 살아 있는 객체를 가리키는 이름을 지우지 않는지, 쓰고 있는 이름이 다른 객체로 바뀌지 않는지, 다 끝나면 남는 이름이 없는지를 본다(설정마다 수백만 상태). 이름 확인이나 lock을 빼거나 순서를 바꾼 변형은 모두 잡힌다. `flux2_core/tests/sweep_stress.rs`는 프로세스 12개를 계속 만들고 SIGKILL·SIGSTOP하며 같은 성질을 실제 /dev/shm에서 본다.
+전역 lock 없는 sweep은 flux_model_checking의 `sweep/`이 검사한다. 이름(signpost, 세그먼트 epoch), inode, 프로세스마다 open file description과 OFD lock을 모델로 두고, sweeper·발행자·구독자 중 누구든 아무 단계에서나 죽을 수 있다. 살아 있는 객체를 가리키는 이름을 지우지 않는지, 쓰고 있는 이름이 다른 객체로 바뀌지 않는지, 다 끝나면 남는 이름이 없는지를 본다(설정마다 수백만 상태). 이름 확인이나 lock을 빼거나 순서를 바꾼 변형은 모두 잡힌다. `flux_core/tests/sweep_stress.rs`는 프로세스 12개를 계속 만들고 SIGKILL·SIGSTOP하며 같은 성질을 실제 /dev/shm에서 본다.
 
 loom은 쓰지 않는다. loom은 `SeqCst`를 AcqRel로 다뤄서, 올바른 `SeqCst` Dekker도 위반으로 보고한다.
 
 ### 다중 프로세스 시험
 
-`flux2_core/tests/`의 셋이다. 시험 바이너리 자신을 역할마다 다시 실행해 워커 프로세스로 쓴다(`tests/common`). 프레임은 머리에 자기 ticket, 발행자 nonce, 길이, dtype, shape, 해시를 담는다. 구독자는 take할 때와 해제 직전에 이를 확인하므로, 찢어진 프레임, 쥔 동안 다시 쓰인 슬롯, 이전 프레임의 길이나 shape를 물려받은 재사용 슬롯이 그 자리에서 드러난다. 기본 길이는 `cargo test`에서 2초이고 환경 변수로 늘린다. 공유메모리를 직접 읽는 oracle(`fuzz::borrows`, `fuzz::lag`)은 `fuzz` feature 뒤에 있고, flux2_core가 자기 자신을 그 feature와 함께 dev-dependency로 받아 시험에서만 켠다.
+`flux_core/tests/`의 셋이다. 시험 바이너리 자신을 역할마다 다시 실행해 워커 프로세스로 쓴다(`tests/common`). 프레임은 머리에 자기 ticket, 발행자 nonce, 길이, dtype, shape, 해시를 담는다. 구독자는 take할 때와 해제 직전에 이를 확인하므로, 찢어진 프레임, 쥔 동안 다시 쓰인 슬롯, 이전 프레임의 길이나 shape를 물려받은 재사용 슬롯이 그 자리에서 드러난다. 기본 길이는 `cargo test`에서 2초이고 환경 변수로 늘린다. 공유메모리를 직접 읽는 oracle(`fuzz::borrows`, `fuzz::lag`)은 `fuzz` feature 뒤에 있고, flux_core가 자기 자신을 그 feature와 함께 dev-dependency로 받아 시험에서만 켠다.
 
 | 시험 | 하는 일 | 길이 |
 | --- | --- | --- |
-| `op_fuzz` | 발행자 하나와 구독자 둘이 coordinator가 하나씩 보내는 연산 열을 돈다. 연산은 publish, loan, commit, 잘못된 commit, abort, 발행자 재시작, take, release, SIGKILL, SIGSTOP, SIGCONT다. 한 번에 하나라서 순차 모델이 모든 응답을 정확히 예측한다. publish의 ticket이나 backpressure, take의 ticket·`lost`·`refused.max_borrow`, 연산마다 공유메모리의 구독자 번호별 borrow 합을 모델과 대조한다. 죽인 구독자는 다음 연산 때 다시 띄워, 그 사이 claim이 주인 없는 번호의 borrow를 회수하게 한다. 실패한 열은 줄여서 `tests/op_fuzz/`에 저장하고, `fixed_sequences_match_the_model`이 그 파일을 모두 다시 돈다 | `FLUX2_OPFUZZ_SECS`, 첫 seed `FLUX2_OPFUZZ_SEED`(16진) |
-| `torture` | 같은 세 역할이 쉬지 않고 돈다. coordinator는 무작위로 죽이고 다시 띄우고, 하나를 1~20 ms 멈추고, 주기마다 모두를 10 ms 멈추고(stutter), CPU affinity를 무작위 부분집합으로 바꾼다(shuffle). 해제 때 (그 세그먼트의 `latest` - view의 ticket)을 히스토그램으로 남긴다. 슬롯 수 이상이면 borrow가 없었을 때 다시 쓰였을 슬롯이고, 그 해제의 해시 확인이 덮어쓰기 판정이다. 죽이지 않는 keeper 구독자는 끝에 fd 수와 매핑한 flux2 객체가 open 전과 같은지 보고, 도는 동안 매핑한 객체가 현재 세그먼트, signpost, view가 쥔 옛 세그먼트를 넘지 않는지 본다. 마지막 sweep 뒤 /dev/shm에 채널 이름이 남으면 실패다 | `FLUX2_TORTURE_SECS`, `FLUX2_TORTURE_STUTTER_MS`(500), `FLUX2_TORTURE_SHUFFLE_MS`(1000) |
-| `gpu_soak` | GPU 채널의 kill soak이다. 발행자는 loan을 `cuMemsetD8Async`로 ticket이 정하는 바이트와 길이로 채우고, 구독자는 `cuMemcpyDtoH`로 읽어 확인한다. keeper는 자기 프로세스의 device 메모리(nvidia-smi)가 open 전으로 돌아오는지 본다. 발행자가 연 device endpoint는 마지막 sweep 뒤 모두 없어야 한다. 길이를 지정한 실행은 살아 있는 어느 프로세스에도 잡히지 않는 device 메모리가 처음과 32 MiB 안인지도 본다. 다른 GPU 사용자가 이 값을 흔들어서 기본 실행에서는 출력만 한다. CUDA 장치가 없으면 바로 돌아온다 | `FLUX2_GPU_SOAK_SECS` |
+| `op_fuzz` | 발행자 하나와 구독자 둘이 coordinator가 하나씩 보내는 연산 열을 돈다. 연산은 publish, loan, commit, 잘못된 commit, abort, 발행자 재시작, take, release, SIGKILL, SIGSTOP, SIGCONT다. 한 번에 하나라서 순차 모델이 모든 응답을 정확히 예측한다. publish의 ticket이나 backpressure, take의 ticket·`lost`·`refused.max_borrow`, 연산마다 공유메모리의 구독자 번호별 borrow 합을 모델과 대조한다. 죽인 구독자는 다음 연산 때 다시 띄워, 그 사이 claim이 주인 없는 번호의 borrow를 회수하게 한다. 실패한 열은 줄여서 `tests/op_fuzz/`에 저장하고, `fixed_sequences_match_the_model`이 그 파일을 모두 다시 돈다 | `FLUX_OPFUZZ_SECS`, 첫 seed `FLUX_OPFUZZ_SEED`(16진) |
+| `torture` | 같은 세 역할이 쉬지 않고 돈다. coordinator는 무작위로 죽이고 다시 띄우고, 하나를 1~20 ms 멈추고, 주기마다 모두를 10 ms 멈추고(stutter), CPU affinity를 무작위 부분집합으로 바꾼다(shuffle). 해제 때 (그 세그먼트의 `latest` - view의 ticket)을 히스토그램으로 남긴다. 슬롯 수 이상이면 borrow가 없었을 때 다시 쓰였을 슬롯이고, 그 해제의 해시 확인이 덮어쓰기 판정이다. 죽이지 않는 keeper 구독자는 끝에 fd 수와 매핑한 flux 객체가 open 전과 같은지 보고, 도는 동안 매핑한 객체가 현재 세그먼트, signpost, view가 쥔 옛 세그먼트를 넘지 않는지 본다. 마지막 sweep 뒤 /dev/shm에 채널 이름이 남으면 실패다 | `FLUX_TORTURE_SECS`, `FLUX_TORTURE_STUTTER_MS`(500), `FLUX_TORTURE_SHUFFLE_MS`(1000) |
+| `gpu_soak` | GPU 채널의 kill soak이다. 발행자는 loan을 `cuMemsetD8Async`로 ticket이 정하는 바이트와 길이로 채우고, 구독자는 `cuMemcpyDtoH`로 읽어 확인한다. keeper는 자기 프로세스의 device 메모리(nvidia-smi)가 open 전으로 돌아오는지 본다. 발행자가 연 device endpoint는 마지막 sweep 뒤 모두 없어야 한다. 길이를 지정한 실행은 살아 있는 어느 프로세스에도 잡히지 않는 device 메모리가 처음과 32 MiB 안인지도 본다. 다른 GPU 사용자가 이 값을 흔들어서 기본 실행에서는 출력만 한다. CUDA 장치가 없으면 바로 돌아온다 | `FLUX_GPU_SOAK_SECS` |
 
 oracle은 일부러 넣은 버그로 확인했다. `op_fuzz`는 넷을 모두 잡아 3~8 연산으로 줄였고, 그 열이 `tests/op_fuzz/`의 고정 시험이다.
 
@@ -613,7 +611,7 @@ oracle은 일부러 넣은 버그로 확인했다. `op_fuzz`는 넷을 모두 �
 
 ### sanitizer
 
-`scripts/sanitize.sh address` 또는 `thread`가 flux2_core의 프로세스 안 시험(lib, `heap`, `executor`)을 nightly(`nightly-2026-10-05`)의 `-Zsanitizer`로 돈다. std도 같은 방식으로 다시 빌드하고(`-Zbuild-std`), 빌드는 `target/<kind>`에 따로 둔다. ASan(LeakSanitizer 포함)과 TSan은 커널의 KASAN·KCSAN처럼 따로 돈다.
+`scripts/sanitize.sh address` 또는 `thread`가 flux_core의 프로세스 안 시험(lib, `heap`, `executor`)을 nightly(`nightly-2026-10-05`)의 `-Zsanitizer`로 돈다. std도 같은 방식으로 다시 빌드하고(`-Zbuild-std`), 빌드는 `target/<kind>`에 따로 둔다. ASan(LeakSanitizer 포함)과 TSan은 커널의 KASAN·KCSAN처럼 따로 돈다.
 
 - 빼는 것: GPU 시험(드라이버가 계측되지 않고 ASan의 shadow 자리에 매핑한다), 한 주기의 시간을 재는 `publish_and_take_do_not_scan_every_slot`(계측이 상한을 넘긴다)
 - `allocator_may_return_null=1`: 할당할 수 없을 만큼 큰 heap 채널을 일부러 요청하는 시험이 있다
@@ -627,7 +625,7 @@ oracle은 일부러 넣은 버그로 확인했다. `op_fuzz`는 넷을 모두 �
 `cargo llvm-cov`로 퍼저가 실제로 도는 분기를 본다. root 없이 설치된다(`rustup component add llvm-tools-preview`, `cargo install cargo-llvm-cov`). 워커는 같은 시험 바이너리라 정상 종료한 워커의 profile도 합쳐진다. SIGKILL로 죽은 워커의 것은 빠진다.
 
 ```bash
-FLUX2_OPFUZZ_SECS=60 FLUX2_TORTURE_SECS=60 cargo llvm-cov --no-report -p flux2_core --test op_fuzz --test torture
+FLUX_OPFUZZ_SECS=60 FLUX_TORTURE_SECS=60 cargo llvm-cov --no-report -p flux_core --test op_fuzz --test torture
 cargo llvm-cov report --text --output-path cov.txt
 ```
 
@@ -648,7 +646,7 @@ cargo llvm-cov report --text --output-path cov.txt
 
 - 기본 `coredump_filter`(0x33)는 공유 파일 매핑(bit 3)을 빼서, core에 세그먼트 헤더와 슬롯 상태가 없다. debug 빌드(`debug_assertions`)는 첫 세그먼트를 매핑할 때 프로세스의 `coredump_filter`에 bit 3을 켠다. release 빌드는 바꾸지 않는다. 운영에서 같은 증거가 필요하면 프로세스를 띄우기 전에 `echo 0x3b > /proc/<pid>/coredump_filter`나 부모 셸에서 같은 값을 둔다(자식이 물려받는다). 커널은 이 값을 base 0으로 읽으므로 hex에는 `0x`가 필요하다
 - payload는 어느 빌드에서든 `MADV_DONTDUMP`로 core에서 뺀다. 덤프 크기의 대부분이고 원인을 보여 주는 일은 드물다. 그 대신 bit 3을 켜도 core는 제어 영역만큼만 커진다
-- 빌드마다 build-id와 debuginfo를 보관한다. Ubuntu의 링커는 기본으로 `.note.gnu.build-id`를 넣는다(`readelf -n libflux2_ffi.so`). debuginfod나 빌드 산출물 보관으로 core의 build-id에서 심볼을 찾는다
+- 빌드마다 build-id와 debuginfo를 보관한다. Ubuntu의 링커는 기본으로 `.note.gnu.build-id`를 넣는다(`readelf -n libflux_ffi.so`). debuginfod나 빌드 산출물 보관으로 core의 build-id에서 심볼을 찾는다
 - core를 받는 곳은 `/proc/sys/kernel/core_pattern`(Ubuntu는 apport, systemd 배포는 systemd-coredump)과 `ulimit -c`가 정한다. RT 배포는 systemd-coredump `ProcessSizeMax`로 크기를 제한한다. 덤프가 끝날 때까지 OFD lock이 풀리지 않으므로 발행자 생존 판정이 그만큼 늦는다(CUDA 프로세스는 수 초)
 
 ## 발행자
@@ -659,7 +657,7 @@ cargo llvm-cov report --text --output-path cov.txt
 ## 스레드
 
 - Publisher나 Subscription 하나를 두 스레드가 동시에 쓰면 거절한다
-  - C ABI 핸들: publish·loan·take·set_qos가 겹치면 `FLUX2_PUBLISHED_IN_USE`, `FLUX2_IN_USE`, 빈 결과를 돌려준다
+  - C ABI 핸들: publish·loan·take·set_qos가 겹치면 `FLUX_PUBLISHED_IN_USE`, `FLUX_IN_USE`, 빈 결과를 돌려준다
   - C++·Python 구독: `std::logic_error`(Python은 `RuntimeError`)를 던진다. 재attach가 다른 스레드가 쓰는 매핑을 해제하기 때문이다
 - 차례로 쓰는 것은 허용한다. rclcpp와 rclpy의 MultiThreadedExecutor는 콜백을 매번 다른 스레드에서 돌린다
 - executor가 serve하는 구독은 사용자가 take할 수 없다. 둘이 프레임을 나눠 갖기 때문이다
@@ -681,8 +679,8 @@ cargo llvm-cov report --text --output-path cov.txt
 | `ChannelShared::reclaiming` | PI futex | 죽은 번호 회수 | 발행자(commit이 1초에 한 번, claim이 굶을 때) | 번호마다 OFD lock 시도 |
 | `ChannelShared::late` | PI futex | 늦춘 해제와 시간을 넘긴 fence | 해제하는 아무 스레드(push), 채널 스레드(꺼내고 되돌림) | `Vec` 조작만. 끝났는지 묻는 `cuEventQuery`는 lock을 놓고 한다 |
 | `ChannelShared::release_waker`, `gpu_waker` | PI futex | 깨울 executor의 `Weak` | 해제하는 스레드, executor | `Weak` 복사 |
-| GPU 대기 스레드 큐(`Waiter::queue`) | `std::sync::Mutex` + `Condvar` | 표시 event 큐 | 표시하는 스레드, `flux2-gpu-wait` | push·pop. `cuEventSynchronize`는 lock 밖이다 |
-| stamp offset 표(`flux2_ffi`) | `std::sync::Mutex` | fingerprint별 offset | 생성 코드 적재, 채널 생성 | 표 조회 |
+| GPU 대기 스레드 큐(`Waiter::queue`) | `std::sync::Mutex` + `Condvar` | 표시 event 큐 | 표시하는 스레드, `flux-gpu-wait` | push·pop. `cuEventSynchronize`는 lock 밖이다 |
+| stamp offset 표(`flux_ffi`) | `std::sync::Mutex` | fingerprint별 offset | 생성 코드 적재, 채널 생성 | 표 조회 |
 | `PartitionedExecutor` 실패(core), C++ `PartitionedExecutor::m_` | `std::sync::Mutex`, `std::mutex` | 첫 오류, 등록 상태 | 파티션 스레드, 호출 스레드 | 값 기록 |
 | Python `Executor::m_`(claim), `Turnstile::m_` | `std::mutex` + `condition_variable` | 어느 스레드가 pass를 도는지, GIL 넘겨주기 | bridge·post·spin 스레드, `serve()` 스레드 | 깃발 조작. 기다리는 동안은 `condition_variable`이 놓는다. GIL은 이 mutex를 놓은 뒤에 다시 잡는다 |
 | GIL | CPython | 인터프리터 | Python 층 | 콜백. 대기(`take_blocking`, `spin`, stream·fence)는 GIL을 놓고 한다 |
@@ -705,7 +703,7 @@ cargo llvm-cov report --text --output-path cov.txt
 - signpost와 세그먼트는 이 euid가 소유한 것만 연다(mmap 전에 `fstat`의 `st_uid`). 열거와 통계는 다른 사용자의 것을 건너뛴다. 연 뒤에 소유자가 파일을 줄여 생기는 SIGBUS는 막지 않는다. `sweep_dead`는 이 uid의 객체만 지운다(iceoryx2, zenoh도 자기 uid만). 세그먼트 이름이 이미 있으면 다음 epoch를 무작위로 뽑아 선점을 피한다. signpost 이름은 그대로 예측할 수 있다
 - 다만 버그 있는 피어나 손상된 프레임 때문에 받는 쪽이 죽거나 프레임 밖을 읽지 않게 한다
   - `take`는 슬롯 헤더를 복사해 검사한다. dtype이 알려진 값인지, `itemsize`가 dtype 크기인지, shape 곱이 `nbytes`인지, `nbytes`가 슬롯 안인지 본다. 어긋나면 `refused.bad_frame`으로 세고 그 프레임을 건너뛴다. 커서는 넘어가므로 같은 프레임을 다시 세지 않는다
-  - `FrameView`는 검사한 복사본을 들고 다닌다. `flux2_view_meta`는 view 저장소 안을 가리키므로 view를 옮기면 함께 옮겨진다
+  - `FrameView`는 검사한 복사본을 들고 다닌다. `flux_view_meta`는 view 저장소 안을 가리키므로 view를 옮기면 함께 옮겨진다
   - descriptor로 읽은 바이트의 합이 프레임 크기를 넘으면 거절한다. writer는 같은 바이트를 두 번 가리키지 않으므로 디코딩 크기가 프레임 크기에 묶인다. CDR 변환(bridge), 생성된 C++·Python `frame_to_msg`(프레임 하나에 예산 하나), Python `Reader.strings`, rviz PointCloud2의 필드 이름이 이렇게 한다. 원소를 만드는 복사는 원소 안 고정 배열(`string[N]`, `T[N]`)이 요구하는 바이트까지 먼저 확인한다. 그 배열은 프레임에서 descriptor 하나지만 만들 때는 N개가 생겨서, stride만 세면 짧은 프레임이 프레임보다 훨씬 큰 메시지를 만들게 한다
   - rviz PointCloud2는 width × height × point_step을 곱하지 않고 나눗셈으로 비교해 wrap을 막는다
   - bool 바이트는 0이 아니면 true다(C++, Python, bridge 모두)
@@ -717,11 +715,11 @@ cargo llvm-cov report --text --output-path cov.txt
   - 공유메모리를 읽는 모듈(`channel`, `segment`, `discovery`, `manifest`, `reader`, `layout`)은 clippy `unwrap_used`, `expect_used`, `panic`, `indexing_slicing`을 deny로 둔다(시험 코드는 제외). 구독자 번호와 슬롯 번호로 칸을 찾는 것은 slice 색인 대신 `Segment::reader`·`waiter`가 한다. 두 값은 이 프로세스가 정한 것이고 debug assert로 확인한다
   - 헤더를 아직 `&ControlHeader`로 본다. 일반 필드는 위 복사본으로만 읽고 참조로 읽지 않는다
   - bridge와 bag 녹화는 ROS 토픽 이름이 아닌 key를 경고 한 번과 함께 건너뛴다. 로그에는 검사를 통과한 key만 찍는다
-- view 해제가 프로토콜이 만들 수 없는 감소이면 거절한다. C 호출자가 `flux2_view` 저장소를 복사해 두 번 해제하는 경우다. 커널 kref처럼 use-after-free 대신 누수를 고른다
+- view 해제가 프로토콜이 만들 수 없는 감소이면 거절한다. C 호출자가 `flux_view` 저장소를 복사해 두 번 해제하는 경우다. 커널 kref처럼 use-after-free 대신 누수를 고른다
   - 감소 전에 슬롯의 ticket을 view의 ticket과 비교한다(Relaxed load 하나). borrow가 서 있는 동안 claim은 성공하지 못하므로 다른 ticket이면 그 borrow는 이미 돌아간 것이다. 같은 구독자가 슬롯을 다시 borrow한 뒤 옛 view를 해제하면 0 검사로는 못 잡고 새 borrow가 일찍 풀리는데, 이것을 잡는다. claim이 실패하기 직전의 `TICKET_CLAIMED`는 정상으로 본다. epoch는 따로 담지 않는다. view가 자기 세그먼트를 `Arc`로 쥐고 그 세그먼트에 해제하기 때문이다
   - 감소가 돌려준 이전 값에 비교 하나를 더한다. 0이었거나 2^31 이상이면 감소를 되돌린다. 0이었으면 1로 남겨 그 슬롯을 세그먼트가 사라질 때까지(발행자 재시작이나 이 프로세스의 종료와 회수) 쥔다. 2^31 이상은 이미 claim되지 않는다
   - 상한을 `max_borrow`로 두지 않는다. 한 프로세스의 구독들이 번호 하나를 같이 쓰므로 칸 값은 그 구독들의 `max_borrow` 합까지 정상이다
-  - 거절한 해제는 `outstanding`도 바꾸지 않는다. `Channel::misreleased()`(C ABI `flux2_channel_misreleased`, 구조체 배치가 그대로라 ABI 버전은 그대로다)로 세고, 프로세스에서 처음 한 번만 stderr에 슬롯·ticket·이유를 남긴다
+  - 거절한 해제는 `outstanding`도 바꾸지 않는다. `Channel::misreleased()`(C ABI `flux_channel_misreleased`, 구조체 배치가 그대로라 ABI 버전은 그대로다)로 세고, 프로세스에서 처음 한 번만 stderr에 슬롯·ticket·이유를 남긴다
   - 비용: heap 채널 publish+take+release 66.2 → 66.8 ns(Ryzen 5 9600X, CPU 고정, 9회 중앙값을 세 번), 잡음 안이다
   - 바이트 복사한 view 둘이 같은 `ChannelShared`의 `Arc`를 두 번 놓는 것은 막지 못한다. 칸 검사는 그 `Arc`가 아직 살아 있을 때만 돈다
 - 남은 것: C++ `bool[N]` View 접근자(원시 바이트를 `bool`로 본다)
@@ -748,47 +746,34 @@ cargo llvm-cov report --text --output-path cov.txt
 
 ## Humble
 
-Humble(Ubuntu 22.04, rclcpp 16, rosbag2 0.15, rviz_common 11, Python 3.10, numpy 1.21)에서 빌드하고 시험한다. 차이는 배포판 이름이 아니라 버전으로 고른다(`RCLCPP_VERSION_MAJOR`, rosbag2_transport의 minor 버전인 `FLUX2_ROSBAG2_MINOR`, `rviz_common_VERSION`, 헤더 유무). Jazzy·Lyrical의 동작은 그대로다.
+Humble(Ubuntu 22.04, rclcpp 16, rosbag2 0.15, rviz_common 11, Python 3.10, numpy 1.21)에서 빌드하고 시험한다. 차이는 배포판 이름이 아니라 버전으로 고른다(`RCLCPP_VERSION_MAJOR`, rosbag2_transport의 minor 버전인 `FLUX_ROSBAG2_MINOR`, `rviz_common_VERSION`, 헤더 유무). Jazzy·Lyrical의 동작은 그대로다.
 
-| Humble의 차이 | flux2가 하는 것 |
+| Humble의 차이 | flux가 하는 것 |
 | --- | --- |
-| `rclcpp::Executor::cancel()`이 virtual이 아니고 `spin_until_future_complete_impl`이 없다(rclcpp 28 미만) | `flux2::Executor`가 `cancel()`과 `spin_until_future_complete()`를 자기 타입에 둔다. `rclcpp::Executor &`로 부르면 rclcpp의 것이 돈다. 그때 `spin_until_future_complete()`는 `spin_once` 미지원 예외를 던진다. context shutdown은 hook으로 어느 쪽이든 멈춘다 |
+| `rclcpp::Executor::cancel()`이 virtual이 아니고 `spin_until_future_complete_impl`이 없다(rclcpp 28 미만) | `flux::Executor`가 `cancel()`과 `spin_until_future_complete()`를 자기 타입에 둔다. `rclcpp::Executor &`로 부르면 rclcpp의 것이 돈다. 그때 `spin_until_future_complete()`는 `spin_once` 미지원 예외를 던진다. context shutdown은 hook으로 어느 쪽이든 멈춘다 |
 | `TimerBase::get_clock()`이 없다 | protected `clock_`을 멤버 포인터로 읽는다 |
 | bag 메시지의 시각이 `time_stamp` 하나다 | 녹화는 recv 시각(take 시각)만 bag에 쓴다. commit 시각은 FluxFrame header stamp에 그대로 있다. 재생·변환은 그 하나를 쓴다 |
 | `TopicFilter`를 설치하지 않는다 | 녹화가 0.15의 선택 규칙(토픽 목록, `-e`, `-x`, 숨은 토픽)을 그대로 따른다. `--exclude-topics`는 0.26부터라 거절한다 |
 | 녹화기에 서비스가 없다 | `~/pause`·`~/resume`으로는 멈출 수 없다. 녹화기가 멈춘 동안(`is_paused()`)의 프레임을 쓰지 않는 규칙은 같다 |
 | `Player::play()`가 bag 끝까지 막고, 재생 hook, `stop()`, `exclude_topics_to_filter`가 없다 | `play()`를 자기 스레드에서 돌리고 시작은 protected 준비 상태로 기다린다. ROS 토픽은 포함 목록으로 고르고, ROS 토픽이 없으면 어느 토픽과도 맞지 않는 이름 하나를 넘긴다. 재생 루프가 `rclcpp::ok()`만 보므로 멈출 때 context를 shutdown한다 |
-| 재생한 메시지를 알려 주지 않는다 | `play_next`·`burst`가 ROS 토픽을 옮겨도 flux2 시계는 따라가지 않는다. ROS 메시지가 다 떨어진 뒤에 flux2 프레임을 하나씩 옮긴다. pause·resume·rate는 Jazzy와 같다 |
+| 재생한 메시지를 알려 주지 않는다 | `play_next`·`burst`가 ROS 토픽을 옮겨도 flux 시계는 따라가지 않는다. ROS 메시지가 다 떨어진 뒤에 flux 프레임을 하나씩 옮긴다. pause·resume·rate는 Jazzy와 같다 |
 | rclcpp·rclpy `EventsExecutor`, gtest `GTEST_FLAG_SET`이 없다 | 그 executor를 쓰는 시험 조합만 빠진다 |
-
-## 뺄 것
-
-- 다중 발행자
-  - writer 신원 각인(`writer_pid`, `writer_starttime`, `writer_stamp`)
-  - 죽은 writer claim 회수(`recover_stuck_writes`)
-  - `latest` CAS-max -> store
-  - signpost write 락 bootstrap 경쟁, join 경로, `try_join`
-  - `multiwriter` 하니스
-- 예약 필드: `epoch`(ControlHeader), `kInitCleaning`, `StorageKind::DmaBuf`, `flags`
-- `peek`(필요해지면 추가)
-- owner 파일, `(pid, starttime)` 신원, holder 테이블, 공용 `refcount`
 
 ## 결정
 
 | 항목 | 결정 |
 | --- | --- |
-| 연구 범위 | flux와 같다 |
 | 커널 | 5.16 이상은 merged wait(`futex_waitv`), 그 아래는 parker 스레드 fallback이다. 그래서 Humble의 Ubuntu 22.04는 GA 커널(5.15)과 HWE 커널(6.8) 모두에서 돌고, Jetson JetPack 6(L4T 36, 5.15)도 fallback으로 돈다. 처음에는 io_uring `FUTEX_WAIT`(6.7)였다 |
-| ROS 배포판 | Humble, Jazzy, Lyrical. Kilted는 지원하지 않는다(rviz_common 15.0의 `Display::update`가 Lyrical과 달라 flux2_tools가 빌드되지 않는다). Humble 차이는 아래 "Humble" 절 |
-| `flux_bag`, `flux_bridge`, `flux_tools`, `flux_std_adapters` | flux2용으로 다시 만들었다(`flux2_bag`, `flux2_bridge`, `flux2_tools`, `flux2_std_adapters`). 채널 열거는 C++·Python 모두 `enumerate_topics`·`read_channel_stats`로 한다 |
-| tracing(LTTng) | armo가 맡는다. flux2는 trace 함수만 노출한다 |
-| C++ | `flux2::` 네임스페이스, C++17(Jazzy 기준). flux(`flux::`)와 한 프로세스에 같이 링크할 수 있다 |
+| ROS 배포판 | Humble, Jazzy, Lyrical. Kilted는 지원하지 않는다(rviz_common 15.0의 `Display::update`가 Lyrical과 달라 flux_tools가 빌드되지 않는다). Humble 차이는 아래 "Humble" 절 |
+| 채널 열거 | C++·Python 모두 `enumerate_topics`·`read_channel_stats`로 한다 |
+| tracing(LTTng) | armo가 맡는다. flux는 trace 함수만 노출한다 |
+| C++ | `flux::` 네임스페이스, C++17(Jazzy 기준) |
 | 콜백 예외 | C++ 콜백의 예외는 C ABI를 넘지 않는다. 래퍼가 잡아 두고 그 콜백을 부른 호출(`dispatch`, `spin`)에서 다시 던진다 |
-| flux2_gen | flux_gen을 옮겼고 Rust로 다시 썼다. cargo가 빌드하고 `lib/flux2_gen/flux2_gen`에 설치한다. fingerprint와 layout(scalar 크기, offset, stride, align)은 Python 판과 같음을 설치된 .msg 214종과 시험 .msg로 대조했다. 생성 코드의 글자는 이후 고친 것들로 달라졌다. 생성물은 `<pkg>/flux2/<msg>.hpp`(`<pkg>::flux2_msg`)와 `<pkg>_flux2` 모듈이라 flux 어댑터와 한 워크스페이스에 공존한다. Python 모듈은 `flux2.wire`(flux2_py)를 import한다. flux2_gen은 의존이 없으므로 flux2_cpp·flux2_py의 테스트 의존이 순환하지 않는다. 생성된 코드의 시험(`test_emit`)은 런타임이 있는 flux2_py에 둔다. 해석 규칙은 rosidl을 따른다. 파싱되지 않는 .msg는 그것을 읽는 메시지만 실패시키고, 상수는 rosidl의 literal·범위·따옴표 규칙을 따르고, `@optional`과 `T[N>65536]`은 그 메시지만 거절한다. 줄은 Python `splitlines()`처럼 나눈다. rosidl처럼 탭은 공백으로 바꾸고, 줄은 첫 `#`에서 끊는다. 따옴표 안의 `#`도 마찬가지라 상수 값이 거기서 끝난다. 이름만 쓴 `Header`·`Time`은 builtin 타입으로 풀릴 때만 frame stamp다. 문자열은 첫 NUL에서 끊는다(rclpy와 같다). C++ 이름은 끝에 `_`를 붙여 피하고 Python은 Python 키워드만 피한다. 키워드 이름의 메시지 모듈은 `<snake>_.py`다. 메시지 이름 `View`, `Builder`, 원소 클래스 이름은 거절한다. `flux2_generate_adapters()`는 `<pkg>_flux2_adapters` INTERFACE 라이브러리를 만들고, 같은 패키지의 target은 이를 링크해 자기 adapter를 include한다. ROS bridge 쌍은 그보다 먼저 `rosidl_generate_interfaces()`에 넘긴 메시지에만 만든다. 두 메시지가 같은 파일을 쓰면 configure 에러다 |
-| flux2_bridge | flux_bridge를 옮겼다. relay는 C++ 노드다. adapter를 찾지 않는다. 채널의 fingerprint로 설치된 .msg에서 타입과 layout을 찾고(`flux2_schemas_*`), 프레임을 그 메시지의 CDR로 바로 써서 `GenericPublisher`로 낸다. 그래서 adapter를 설치하지 않은 타입도 relay되고, 메시지 객체를 거치지 않는다. CDR은 rmw가 같은 메시지에서 쓰는 바이트와 같음을 표준 9종으로 시험한다(padding은 0으로 쓴다). domain이 없으니 key가 정확하고 발행자가 살아 있는 채널만 relay한다. 한 이름에 설치된 타입의 채널이 둘이면 signpost 순서로 첫 것을 고른다(`echo_flux2`도 같다). 같은 이름이 다른 fingerprint로 돌아오면 relay를 다시 만든다. 프레임은 복사한 뒤 view를 놓고 CDR 크기 계산과 쓰기를 복사본으로 한다. `--poll`은 유한한 양수다(`--poll=SEC`, `-h` 지원). verb는 flux와 겹치지 않게 `echo_flux2`·`hz_flux2`다 |
-| flux2_bag | flux_bag을 옮겼다. 프레임은 `<channel>/flux2` 토픽에 `flux2_msgs/msg/FluxFrame`으로 담는다. 필드와 CDR 인코딩은 flux의 `FluxFrame`과 같고 타입 이름만 다르다. 메시지를 flux2_bag 안에서 생성하지 않고 flux2_msgs로 나눈 것은 rosidl이 만드는 Python 패키지 `flux2_bag`이 verb 패키지와 이름이 겹치기 때문이다. 녹화는 signpost마다 하고 생존은 세그먼트로 본다. 10초 넘게 내려간 채널은 놓는다. 채널 목록은 `/dev/shm`에서 flux2 이름이 생기거나 크기가 바뀌거나 지워지면 inotify로 곧바로 다시 읽고, 발행자는 마지막 사건 뒤에 epoch와 key를 쓰므로 그 뒤 500 ms 동안은 10 ms마다 다시 읽는다. `--poll`은 그 밖의 주기이고, 10초는 채널이 내려간 것을 처음 본 목록부터 잰다. `~/pause` 동안의 프레임은 rosbag2처럼 take하되 bag에 쓰지 않는다. 채널 스레드는 프레임을 자기 버퍼로 복사해 슬롯을 곧바로 돌려주고 쓰기 큐에 넣는다. bag은 스레드 하나가 쓴다. 디스크가 느린 동안 프레임은 큐에서 기다리고, 큐는 `--max-cache-size`(기본 1 GiB)를 넘지 않는다. 넘는 프레임은 버리고 `record_drop`의 `RECORD_CACHE_FULL`로 남긴다. 받기 전에 채널이 덮어쓴 프레임은 `RECORD_OVERRUN`이고, 쓰기에 실패한 프레임은 `RECORD_WRITE_FAILED`다. 다 쓴 버퍼는 다음 프레임에 다시 쓴다. 프레임 크기의 새 버퍼는 페이지마다 page fault가 나서 프레임이 오는 속도보다 느리기 때문이다. 측정(Orin, NVMe 약 0.7 GB/s, full HD 6.2 MB 프레임 100개를 5 ms 간격, 슬롯 8개): 큐 전 8~21% 손실, 큐 뒤 0. 같은 프레임을 메모리 복사 속도(0.5 ms 간격)로 연달아 내면 받는 쪽도 프레임마다 복사를 하므로 큐로도 다 받지 못한다. 슬롯 크기와 수는 attach 세대마다 다시 읽는다. send 시각과 header stamp는 commit 시각, recv 시각은 take 시각이다. 재생은 시작 전에 발행자를 만들고 2 tick(200 ms) 기다린다. 재생할 FluxFrame은 별도 스레드가 최대 256 MiB 미리 읽고, ROS 토픽과 flux2 채널은 함께 시작하는 두 시계를 따르며 플레이어의 pause·resume·set_rate·play_next·burst(서비스와 키보드)가 두 시계를 같이 움직인다. Jazzy의 seek는 virtual이 아니라서 ROS 토픽만 옮긴다. 프레임의 geometry가 바뀌면 발행자를 다시 만들고, dtype × shape가 데이터 크기와 다른 프레임은 건너뛴다. `-r`은 유한한 양수다. 채널이 구독이나 발행자를 거절하면 그 채널만 빠진다. writer 같은 나머지 예외는 bag을 닫은 뒤 exit 1로 끝낸다. 변환(`convert_flux2 BAG -o OUT`)은 오프라인으로 bag을 새 bag에 옮긴다. FluxFrame은 fingerprint가 가리키는 설치된 타입이 있으면 bridge와 같은 스키마 CDR 변환으로 그 ROS 메시지가 되어 채널 자체 토픽에 녹화 시각 그대로 들어가고, 없거나 같은 이름의 ROS 토픽이 다른 타입이면 FluxFrame으로 남는다. 나머지 토픽은 그대로 복사한다. 저장 형식은 rosbag2 기본(Jazzy는 mcap, CDR)이다. 변환, inotify 감지, 재생 미리 읽기, 키보드 조작은 사용자가 유지하기로 확인했다(2026-10-09) |
-| flux2_tools | flux_tools를 옮겼다. adapter는 직접 생성하지 않고 flux2_std_adapters 헤더를 쓴다. rviz_common 15(Lyrical)는 Qt6이고 `Display::update`가 `std::chrono::nanoseconds`를 받는다. 14(Jazzy)와 11(Humble)은 Qt5이고 float 초를 받는다. CMake가 찾은 버전으로 둘을 고른다. Qt는 직접 찾지 않고 rviz_common이 빌드된 Qt를 쓴다. display 셋은 `ChannelDisplay`를 공유하고, attach 실패는 Topic 상태에 띄운다 |
-| 노드 단위 적용 | 나중에 한다. 지금은 기존 rclcpp/rclpy 노드에서 토픽 단위로 opt-in한다. DDS participant 비용까지 없애는 flux2 전용 노드(agnocast의 `agnocast::Node`에 해당)는 그때 설계한다 |
-| domain id | 없다. 이름에 넣지 않고 `FLUX_DOMAIN`·`ROS_DOMAIN_ID`도 읽지 않는다. 한 호스트의 같은 key·fingerprint는 모두 한 채널이다 |
+| flux_gen | Rust로 썼다. cargo가 빌드하고 `lib/flux_gen/flux_gen`에 설치한다. 생성물은 `<pkg>/flux/<msg>.hpp`(`<pkg>::flux_msg`)와 `<pkg>_flux` 모듈이다. Python 모듈은 `flux.wire`(flux_py)를 import한다. flux_gen은 의존이 없으므로 flux_cpp·flux_py의 테스트 의존이 순환하지 않는다. 생성된 코드의 시험(`test_emit`)은 런타임이 있는 flux_py에 둔다. 해석 규칙은 rosidl을 따른다. 파싱되지 않는 .msg는 그것을 읽는 메시지만 실패시키고, 상수는 rosidl의 literal·범위·따옴표 규칙을 따르고, `@optional`과 `T[N>65536]`은 그 메시지만 거절한다. 줄은 Python `splitlines()`처럼 나눈다. rosidl처럼 탭은 공백으로 바꾸고, 줄은 첫 `#`에서 끊는다. 따옴표 안의 `#`도 마찬가지라 상수 값이 거기서 끝난다. 이름만 쓴 `Header`·`Time`은 builtin 타입으로 풀릴 때만 frame stamp다. 문자열은 첫 NUL에서 끊는다(rclpy와 같다). C++ 이름은 끝에 `_`를 붙여 피하고 Python은 Python 키워드만 피한다. 키워드 이름의 메시지 모듈은 `<snake>_.py`다. 메시지 이름 `View`, `Builder`, 원소 클래스 이름은 거절한다. `flux_generate_adapters()`는 `<pkg>_flux_adapters` INTERFACE 라이브러리를 만들고, 같은 패키지의 target은 이를 링크해 자기 adapter를 include한다. ROS bridge 쌍은 그보다 먼저 `rosidl_generate_interfaces()`에 넘긴 메시지에만 만든다. 두 메시지가 같은 파일을 쓰면 configure 에러다 |
+| flux_bridge | relay는 C++ 노드다. adapter를 찾지 않는다. 채널의 fingerprint로 설치된 .msg에서 타입과 layout을 찾고(`flux_schemas_*`), 프레임을 그 메시지의 CDR로 바로 써서 `GenericPublisher`로 낸다. 그래서 adapter를 설치하지 않은 타입도 relay되고, 메시지 객체를 거치지 않는다. CDR은 rmw가 같은 메시지에서 쓰는 바이트와 같음을 표준 9종으로 시험한다(padding은 0으로 쓴다). domain이 없으니 key가 정확하고 발행자가 살아 있는 채널만 relay한다. 한 이름에 설치된 타입의 채널이 둘이면 signpost 순서로 첫 것을 고른다(`echo_flux`도 같다). 같은 이름이 다른 fingerprint로 돌아오면 relay를 다시 만든다. 프레임은 복사한 뒤 view를 놓고 CDR 크기 계산과 쓰기를 복사본으로 한다. `--poll`은 유한한 양수다(`--poll=SEC`, `-h` 지원). verb는 `echo_flux`·`hz_flux`다 |
+| flux_bag | 프레임은 `<channel>/flux` 토픽에 `flux_msgs/msg/FluxFrame`으로 담는다. 메시지를 flux_bag 안에서 생성하지 않고 flux_msgs로 나눈 것은 rosidl이 만드는 Python 패키지 `flux_bag`이 verb 패키지와 이름이 겹치기 때문이다. 녹화는 signpost마다 하고 생존은 세그먼트로 본다. 10초 넘게 내려간 채널은 놓는다. 채널 목록은 `/dev/shm`에서 flux 이름이 생기거나 크기가 바뀌거나 지워지면 inotify로 곧바로 다시 읽고, 발행자는 마지막 사건 뒤에 epoch와 key를 쓰므로 그 뒤 500 ms 동안은 10 ms마다 다시 읽는다. `--poll`은 그 밖의 주기이고, 10초는 채널이 내려간 것을 처음 본 목록부터 잰다. `~/pause` 동안의 프레임은 rosbag2처럼 take하되 bag에 쓰지 않는다. 채널 스레드는 프레임을 자기 버퍼로 복사해 슬롯을 곧바로 돌려주고 쓰기 큐에 넣는다. bag은 스레드 하나가 쓴다. 디스크가 느린 동안 프레임은 큐에서 기다리고, 큐는 `--max-cache-size`(기본 1 GiB)를 넘지 않는다. 넘는 프레임은 버리고 `record_drop`의 `RECORD_CACHE_FULL`로 남긴다. 받기 전에 채널이 덮어쓴 프레임은 `RECORD_OVERRUN`이고, 쓰기에 실패한 프레임은 `RECORD_WRITE_FAILED`다. 다 쓴 버퍼는 다음 프레임에 다시 쓴다. 프레임 크기의 새 버퍼는 페이지마다 page fault가 나서 프레임이 오는 속도보다 느리기 때문이다. 측정(Orin, NVMe 약 0.7 GB/s, full HD 6.2 MB 프레임 100개를 5 ms 간격, 슬롯 8개): 큐 전 8~21% 손실, 큐 뒤 0. 같은 프레임을 메모리 복사 속도(0.5 ms 간격)로 연달아 내면 받는 쪽도 프레임마다 복사를 하므로 큐로도 다 받지 못한다. 슬롯 크기와 수는 attach 세대마다 다시 읽는다. send 시각과 header stamp는 commit 시각, recv 시각은 take 시각이다. 재생은 시작 전에 발행자를 만들고 2 tick(200 ms) 기다린다. 재생할 FluxFrame은 별도 스레드가 최대 256 MiB 미리 읽고, ROS 토픽과 flux 채널은 함께 시작하는 두 시계를 따르며 플레이어의 pause·resume·set_rate·play_next·burst(서비스와 키보드)가 두 시계를 같이 움직인다. Jazzy의 seek는 virtual이 아니라서 ROS 토픽만 옮긴다. 프레임의 geometry가 바뀌면 발행자를 다시 만들고, dtype × shape가 데이터 크기와 다른 프레임은 건너뛴다. `-r`은 유한한 양수다. 채널이 구독이나 발행자를 거절하면 그 채널만 빠진다. writer 같은 나머지 예외는 bag을 닫은 뒤 exit 1로 끝낸다. 변환(`convert_flux BAG -o OUT`)은 오프라인으로 bag을 새 bag에 옮긴다. FluxFrame은 fingerprint가 가리키는 설치된 타입이 있으면 bridge와 같은 스키마 CDR 변환으로 그 ROS 메시지가 되어 채널 자체 토픽에 녹화 시각 그대로 들어가고, 없거나 같은 이름의 ROS 토픽이 다른 타입이면 FluxFrame으로 남는다. 나머지 토픽은 그대로 복사한다. 저장 형식은 rosbag2 기본(Jazzy는 mcap, CDR)이다. 변환, inotify 감지, 재생 미리 읽기, 키보드 조작은 사용자가 유지하기로 확인했다(2026-10-09) |
+| flux_tools | adapter는 직접 생성하지 않고 flux_std_adapters 헤더를 쓴다. rviz_common 15(Lyrical)는 Qt6이고 `Display::update`가 `std::chrono::nanoseconds`를 받는다. 14(Jazzy)와 11(Humble)은 Qt5이고 float 초를 받는다. CMake가 찾은 버전으로 둘을 고른다. Qt는 직접 찾지 않고 rviz_common이 빌드된 Qt를 쓴다. display 셋은 `ChannelDisplay`를 공유하고, attach 실패는 Topic 상태에 띄운다 |
+| 노드 단위 적용 | 나중에 한다. 지금은 기존 rclcpp/rclpy 노드에서 토픽 단위로 opt-in한다. DDS participant 비용까지 없애는 flux 전용 노드(agnocast의 `agnocast::Node`에 해당)는 그때 설계한다 |
+| domain id | 없다. 이름에 넣지 않고 `ROS_DOMAIN_ID`도 읽지 않는다. 한 호스트의 같은 key·fingerprint는 모두 한 채널이다 |
 | shm 크기 | 세그먼트와 signpost는 `fallocate`로 만든다. `/dev/shm`이 모자라면 생성이 ENOSPC로 실패하고, 쓰다가 SIGBUS로 죽지 않는다. 대신 publisher가 슬롯 전체 메모리를 생성 시점에 차지한다. C++ 기본 슬롯은 8 MiB × 16 |
 | 외부 이벤트 루프용 fd | 노출하지 않는다. rclpy wait set이 임의 fd를 받지 않아 fd가 있어도 bridge 스레드가 필요하다. asyncio 같은 사용처가 생기면 추가한다 |
