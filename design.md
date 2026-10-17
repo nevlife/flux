@@ -20,6 +20,8 @@ flux2_tools          rviz2 Image·PointCloud2·DepthCloud display
 flux2_cli            `flux2` 명령(cargo가 빌드하고 colcon이 `bin`에 설치)
 ```
 
+ROS 2 도구와 맞물리는 앱인 flux2_bridge, flux2_bag, flux2_tools는 `ros2/` 아래에 두고, 나머지 패키지는 저장소 루트에 둔다.
+
 - loan·view 핸들은 호출자 메모리에 두는 storage 방식. loan 경로 힙 할당 없음
 - `panic = "abort"`(dev·release 모두)
 - wire 런타임은 `flux2/wire.hpp` 하나다. Python adapter는 이를 nanobind로 묶은 `flux2.wire`를 쓴다. Rust의 읽기 쪽 사본(`flux2_gen/src/wire.rs`)은 CDR 변환이 쓴다
