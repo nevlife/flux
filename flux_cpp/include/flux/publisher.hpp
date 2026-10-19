@@ -3,17 +3,13 @@
 
 #include "flux/channel.hpp"
 #include "flux/detail/manifest.hpp"
+#include "flux/node_ref.hpp"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <string>
-
-namespace rclcpp
-{
-class Node;
-}
 
 namespace flux
 {
@@ -31,18 +27,18 @@ public:
   // `max_subscribers` counts subscribing processes (up to FLUX_MAX_SUBSCRIBERS), not
   // subscriptions. Each one adds a counter that every publish reads.
   Publisher(
-    rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
+    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
     std::uint32_t slot_size = kDefaultSlotSize, std::uint32_t slot_count = kDefaultSlotCount,
     MemoryPolicy mem = {}, std::uint32_t max_subscribers = kDefaultMaxSubscribers);
   // Frames produced on the GPU. Device::Cuda declares a stream flux creates; Error where the
   // host has no GPU route.
   Publisher(
-    rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint,
+    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
     std::uint32_t slot_size, std::uint32_t slot_count, Device device, MemoryPolicy mem = {},
     std::uint32_t max_subscribers = kDefaultMaxSubscribers);
   // The caller's stream; the commit waits for everything queued on it.
   Publisher(
-    rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint,
+    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
     std::uint32_t slot_size, std::uint32_t slot_count, const gpu::Stream & stream,
     MemoryPolicy mem = {}, std::uint32_t max_subscribers = kDefaultMaxSubscribers);
 

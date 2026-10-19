@@ -50,7 +50,8 @@ void PartitionedExecutor::add(
   kept_.emplace(group.get(), group);
 }
 
-void PartitionedExecutor::add_node(const rclcpp::Node::SharedPtr & node)
+void PartitionedExecutor::add_node(
+  const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node)
 {
   const std::lock_guard<std::mutex> lk(m_);
   if (spinning_) throw std::logic_error("flux: add_node() while spinning");
@@ -196,12 +197,11 @@ void PartitionedExecutor::spawn_new_groups()
     it = it->second.expired() ? claimed_.erase(it) : std::next(it);
   }
   for (auto it = nodes_.begin(); it != nodes_.end();) {
-    const auto node = it->lock();
-    if (!node) {
+    const auto base = it->lock();
+    if (!base) {
       it = nodes_.erase(it);
       continue;
     }
-    const auto base = node->get_node_base_interface();
     base->for_each_callback_group([&](const rclcpp::CallbackGroup::SharedPtr & group) {
       if (claimed_.count(group.get()) != 0) return;
       const bool assigned = assigned_.count(group.get()) != 0;

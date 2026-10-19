@@ -3,7 +3,7 @@
 #include "ros_boundary.hpp"
 
 #include <rclcpp/logging.hpp>
-#include <rclcpp/node.hpp>
+#include <rclcpp/node_interfaces/node_logging_interface.hpp>
 
 #include <utility>
 
@@ -11,25 +11,25 @@ namespace flux
 {
 
 Subscription::Subscription(
-  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
+  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
   Callback cb, MemoryPolicy mem)
 : Subscription(node, topic, fingerprint, qos, std::move(cb), gpu::Stream{}, mem)
 {
 }
 
 Subscription::Subscription(
-  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
+  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
   Callback cb, Device device, MemoryPolicy mem)
 : Subscription(node, topic, fingerprint, qos, std::move(cb), gpu::stream_for(device), mem)
 {
 }
 
 Subscription::Subscription(
-  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
+  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
   Callback cb, const gpu::Stream & stream, MemoryPolicy mem)
 : topic_(detail::resolve(node, topic)),
-  logger_(node.get_logger().get_name()),
-  context_(node.get_node_base_interface()->get_context()),
+  logger_(node.logging()->get_logger_name()),
+  context_(node.base()->get_context()),
   sub_(detail::signpost_name(topic_, fingerprint), fingerprint, qos, mem, stream),
   cb_(std::move(cb)),
   announced_(detail::announce(node, sub_.signpost_name(), topic_, false))

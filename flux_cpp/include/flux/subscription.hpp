@@ -5,6 +5,7 @@
 #include "flux/detail/executor.hpp"
 #include "flux/detail/manifest.hpp"
 #include "flux/detail/subscriber.hpp"
+#include "flux/node_ref.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -15,7 +16,6 @@
 namespace rclcpp
 {
 class Context;
-class Node;
 }  // namespace rclcpp
 
 namespace flux
@@ -38,14 +38,14 @@ public:
 
   // Throws on a QoS the channel would refuse, before anything is announced.
   Subscription(
-    rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
+    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
     const QoS & qos = QoS{}, Callback cb = {}, MemoryPolicy mem = {});
   // Frames consumed on the GPU; a device payload takes no other kind of subscription.
   Subscription(
-    rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
+    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
     Callback cb, Device device, MemoryPolicy mem = {});
   Subscription(
-    rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
+    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
     Callback cb, const gpu::Stream & stream, MemoryPolicy mem = {});
 
   FrameView take() { return sub_.take(); }

@@ -2,6 +2,7 @@
 #include "flux/publisher.hpp"
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 
 #include <std_msgs/msg/string.hpp>
 
@@ -162,6 +163,23 @@ TEST_F(Partitioned, AGroupRunsItsFluxAndRosCallbacksOnItsOwnThread)
   }));
   EXPECT_EQ(flux_thread.load(), ros_thread.load());
   EXPECT_NE(flux_thread.load(), default_thread.load());
+  EXPECT_EQ(spin.stop(), "");
+}
+
+TEST_F(Partitioned, ALifecycleNodeCarriesFrames)
+{
+  auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("flux_part_lifecycle");
+  auto group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  flux::Publisher p(*node, topic("lifecycle"), flux::kNoSchema, kSlot, kSlots);
+  std::atomic<int> got{0};
+  flux::Subscription s(
+    *node, topic("lifecycle"), flux::kNoSchema, 4, [&](const flux::FrameView &) { ++got; });
+  flux::PartitionedExecutor ex;
+  ex.add(s, group);
+  ex.add_node(node);
+  Spinning spin(ex);
+  ASSERT_EQ(p.publish("x", 1), flux::Published::Ok);
+  EXPECT_TRUE(eventually([&] { return got == 1; }));
   EXPECT_EQ(spin.stop(), "");
 }
 

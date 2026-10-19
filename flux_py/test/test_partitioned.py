@@ -9,6 +9,7 @@ import rclpy
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
+from rclpy.lifecycle import LifecycleNode
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -86,6 +87,23 @@ def test_a_blocked_group_does_not_stall_another(node):
     assert eventually(lambda: b_got)
     release.set()
     assert s.stop() is None
+
+
+def test_a_lifecycle_node_carries_frames():
+    node = LifecycleNode("flux_part_lifecycle")
+    pub = flux.Publisher(node, topic("lifecycle"), **SMALL)
+    got = []
+    ex = flux.PartitionedExecutor()
+    ex.add(
+        flux.Subscription(node, pub.topic_name, callback=lambda v: got.append(1)),
+        MutuallyExclusiveCallbackGroup(),
+    )
+    ex.add_node(node)
+    s = Spinning(ex)
+    pub.publish(b"x")
+    assert eventually(lambda: got)
+    assert s.stop() is None
+    node.destroy_node()
 
 
 def test_groups_and_nodes_get_threads_of_their_own(node):

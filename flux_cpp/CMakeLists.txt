@@ -53,11 +53,13 @@ ament_export_dependencies(flux_ffi rclcpp message_filters std_msgs)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(sensor_msgs REQUIRED)
+  find_package(rclcpp_lifecycle REQUIRED)
   foreach(t test_channel test_executor test_ros test_partitioned test_message_filters test_gpu)
     ament_add_gtest(${t} test/${t}.cpp TIMEOUT 120)
     target_link_libraries(${t} flux_cpp ${std_msgs_TARGETS} ${sensor_msgs_TARGETS})
     target_compile_options(${t} PRIVATE -Wall -Wextra -Werror)
   endforeach()
+  target_link_libraries(test_partitioned ${rclcpp_lifecycle_TARGETS})
   target_compile_definitions(test_gpu PRIVATE
     FLUX_KERNEL_LOG="${CMAKE_CURRENT_SOURCE_DIR}/../scripts/kernel_log.sh")
   # Again on the parker threads a kernel below 5.16 waits with. ament_add_gtest_test takes no

@@ -6,7 +6,7 @@
 
 #include <rclcpp/callback_group.hpp>
 #include <rclcpp/context.hpp>
-#include <rclcpp/node.hpp>
+#include <rclcpp/node_interfaces/node_base_interface.hpp>
 
 #include <atomic>
 #include <cstdint>
@@ -47,7 +47,13 @@ public:
   void add(
     detail::Source & src, const rclcpp::CallbackGroup::SharedPtr & group,
     std::int32_t priority = 0);
-  void add_node(const rclcpp::Node::SharedPtr & node);
+  void add_node(const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node);
+  // rclcpp::Node, rclcpp_lifecycle::LifecycleNode, or any node with get_node_base_interface().
+  template <class NodeT>
+  void add_node(const std::shared_ptr<NodeT> & node)
+  {
+    add_node(node->get_node_base_interface());
+  }
   // The inputs of one message_filters synchronizer: flux or rclcpp message_filters
   // subscribers. spin() refuses them in different groups, since the synchronizer would then call
   // back on whichever thread delivered last.
@@ -114,7 +120,7 @@ private:
   rclcpp::Context::SharedPtr context_;
   rclcpp::OnShutdownCallbackHandle on_shutdown_;
 
-  std::vector<rclcpp::Node::WeakPtr> nodes_;
+  std::vector<rclcpp::node_interfaces::NodeBaseInterface::WeakPtr> nodes_;
   std::vector<std::vector<SyncInput>> sync_groups_;
   std::map<const rclcpp::CallbackGroup *, std::vector<Assigned>> assigned_;
   std::map<const rclcpp::CallbackGroup *, std::function<void()>> init_;

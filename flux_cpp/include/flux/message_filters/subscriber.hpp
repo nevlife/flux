@@ -14,11 +14,6 @@
 #include <string>
 #include <utility>
 
-namespace rclcpp
-{
-class Node;
-}
-
 namespace flux::message_filters
 {
 
@@ -47,7 +42,7 @@ public:
   using Message = StampedFrame<Adapter>;
 
   Subscriber(
-    rclcpp::Node & node, const std::string & topic, std::uint32_t queue, const QoS & qos = QoS{})
+    const NodeRef & node, const std::string & topic, std::uint32_t queue, const QoS & qos = QoS{})
   : sub_(node, topic, Adapter::kFingerprint, covering(qos, queue))
   {
     sub_.sub_.require_slots(queue + 1);

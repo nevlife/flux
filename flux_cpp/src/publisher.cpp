@@ -6,7 +6,7 @@ namespace flux
 {
 
 Publisher::Publisher(
-  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint,
+  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
   std::uint32_t slot_size, std::uint32_t slot_count, MemoryPolicy mem,
   std::uint32_t max_subscribers)
 : Publisher(node, topic, fingerprint, slot_size, slot_count, gpu::Stream{}, mem, max_subscribers)
@@ -14,7 +14,7 @@ Publisher::Publisher(
 }
 
 Publisher::Publisher(
-  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint,
+  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
   std::uint32_t slot_size, std::uint32_t slot_count, Device device, MemoryPolicy mem,
   std::uint32_t max_subscribers)
 : Publisher(
@@ -23,7 +23,7 @@ Publisher::Publisher(
 }
 
 Publisher::Publisher(
-  rclcpp::Node & node, const std::string & topic, std::uint64_t fingerprint,
+  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
   std::uint32_t slot_size, std::uint32_t slot_count, const gpu::Stream & stream, MemoryPolicy mem,
   std::uint32_t max_subscribers)
 : topic_(detail::resolve(node, topic)),
