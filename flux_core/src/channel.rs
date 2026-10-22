@@ -22,6 +22,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
+use crate::arena::{self, TRAILER_BYTES};
 use crate::discovery::{
     SignpostMap, open_publisher_segment, segment_publisher_dead, sweep_dead_once,
 };
@@ -158,7 +159,20 @@ pub struct ChannelShared {
     /// The executor serving this channel, poked by the waiter when such work is done.
     gpu_waker: PiMutex<Weak<Control>>,
     gpu_waker_of: AtomicUsize,
+    /// Publisher only, per slot: the arena memory its frame points into, freed when the slot is
+    /// claimed again.
+    owned: PiMutex<Vec<Vec<Owned>>>,
 }
+
+/// Arena memory a frame owns.
+pub enum Owned {
+    Block(u64),
+    /// Memory a binding allocated in the arena and keeps alive until `release(ctx)`.
+    Adopted(unsafe extern "C" fn(*mut c_void), *mut c_void),
+}
+
+// SAFETY: the adopter promises its release may run on whichever thread claims the slot.
+unsafe impl Send for Owned {}
 
 /// A slot whose work nobody waited for yet, kept until it is done. It keeps the channel too, as a
 /// failed fence does, so the mapping and the reader number stay while the device may use them.
@@ -204,6 +218,44 @@ impl ChannelShared {
             orphaned_late: AtomicBool::new(false),
             gpu_waker: PiMutex::new(Weak::new()),
             gpu_waker_of: AtomicUsize::new(0),
+            owned: PiMutex::new(Vec::new()),
+        }
+    }
+
+    fn own(&self, slot: u32, o: Owned) {
+        let mut owned = self.owned.lock();
+        if owned.is_empty() {
+            owned.resize_with(self.seg.layout().slot_count as usize, Vec::new);
+        }
+        if let Some(v) = owned.get_mut(slot as usize) {
+            v.push(o);
+        }
+    }
+
+    fn owns_any(&self, slot: u32) -> bool {
+        self.owned
+            .lock()
+            .get(slot as usize)
+            .is_some_and(|v| !v.is_empty())
+    }
+
+    /// Outside the lock: a release may run a binding's code, which may publish.
+    fn free_owned(&self, slot: u32) {
+        let list = match self.owned.lock().get_mut(slot as usize) {
+            Some(v) if !v.is_empty() => std::mem::take(v),
+            _ => return,
+        };
+        let a = arena::arena();
+        for o in list {
+            match o {
+                Owned::Block(off) => {
+                    if let Some(a) = a {
+                        a.free(off);
+                    }
+                }
+                // SAFETY: the adopter's contract.
+                Owned::Adopted(release, ctx) => unsafe { release(ctx) },
+            }
         }
     }
 
@@ -661,6 +713,8 @@ impl Drop for ChannelShared {
         if self.gpu.is_some() {
             ledger::channel_gone(self.trace_handle());
         }
+        // Arena memory is not freed here: a frame left in a slot can still be taken after the
+        // publisher is gone, so it stays until this process ends.
     }
 }
 
@@ -678,6 +732,11 @@ pub struct FrameView {
 }
 
 impl FrameView {
+    /// The arena the frame's trailer names, read-only. None for a frame without one.
+    pub fn heap(&self) -> Option<&'static [u8]> {
+        arena::resolve(self.data())
+    }
+
     /// Empty when the payload is device memory; read it through `device_ptr`.
     pub fn data(&self) -> &[u8] {
         if !self.sh.seg.host_payload() {
@@ -785,6 +844,65 @@ pub struct WriteSlot {
     done: bool,
 }
 
+/// A loan's handle on the process arena: plain data, so a binding copies it with its writer.
+/// Arena memory it hands out belongs to the loan's frame and is freed when its slot is claimed
+/// again. Use it only while the loan lives.
+#[derive(Clone, Copy)]
+pub struct Heap {
+    sh: *const ChannelShared,
+    slot: u32,
+    pub base: *mut u8,
+    pub size: usize,
+}
+
+impl Heap {
+    /// What a binding keeps: the channel and the slot.
+    pub fn raw(&self) -> (*const c_void, u32) {
+        (self.sh.cast(), self.slot)
+    }
+
+    /// The handle `raw` and the arena fields describe.
+    pub fn from_raw(channel: *const c_void, slot: u32, base: *mut u8, size: usize) -> Heap {
+        Heap {
+            sh: channel.cast(),
+            slot,
+            base,
+            size,
+        }
+    }
+
+    /// `bytes` of arena memory and their arena offset.
+    ///
+    /// # Safety
+    /// The loan this came from is live.
+    pub unsafe fn alloc(&self, bytes: usize, align: usize) -> Option<(*mut u8, u64)> {
+        let a = arena::arena()?;
+        let off = a.alloc(bytes, align)?;
+        // SAFETY: the live loan holds the channel.
+        unsafe { &*self.sh }.own(self.slot, Owned::Block(off));
+        Some((a.ptr(off), off))
+    }
+
+    /// Hands the frame `bytes` at `p`, arena memory allocated elsewhere (under the malloc hook),
+    /// with what frees them. None, and `release` not kept, unless they are all in the arena.
+    ///
+    /// # Safety
+    /// The loan this came from is live. `release(ctx)` must be callable once, on any thread, and
+    /// nothing else may free `p` first.
+    pub unsafe fn adopt(
+        &self,
+        p: *const u8,
+        bytes: usize,
+        release: unsafe extern "C" fn(*mut c_void),
+        ctx: *mut c_void,
+    ) -> Option<u64> {
+        let off = arena::arena()?.offset_of(p, bytes)?;
+        // SAFETY: the live loan holds the channel.
+        unsafe { &*self.sh }.own(self.slot, Owned::Adopted(release, ctx));
+        Some(off)
+    }
+}
+
 impl WriteSlot {
     /// Empty when the payload is device memory; write it through `device_ptr`.
     pub fn data_mut(&mut self) -> &mut [u8] {
@@ -816,6 +934,17 @@ impl WriteSlot {
 
     pub fn host_addressable(&self) -> bool {
         self.sh.seg.host_payload()
+    }
+
+    /// The loan's way into the arena; None with no arena or on a device payload.
+    pub fn heap(&self) -> Option<Heap> {
+        let a = arena::arena().filter(|_| self.sh.seg.host_payload())?;
+        Some(Heap {
+            sh: Arc::as_ptr(&self.sh),
+            slot: self.slot,
+            base: a.base(),
+            size: a.size(),
+        })
     }
 
     pub fn commit(mut self) -> Published {
@@ -861,6 +990,24 @@ impl WriteSlot {
 
     /// Shrinks a one-dimensional loan to `nbytes`. Any other rank would need the shape restated.
     pub fn commit_len(mut self, nbytes: usize) -> Published {
+        let mut nbytes = nbytes;
+        // Claiming the slot freed what its last frame owned, so anything owned now is this one's.
+        if self.sh.owns_any(self.slot)
+            && let Some(a) = arena::arena()
+        {
+            let at = nbytes.next_multiple_of(8);
+            if at + TRAILER_BYTES > self.capacity() {
+                self.sh.abort(self.slot);
+                self.end(trace::LOAN_TOO_LARGE);
+                return Published::TooLarge;
+            }
+            let t = a.trailer();
+            // SAFETY: at + 64 <= capacity, inside the slot.
+            let dst = unsafe { self.sh.seg.payload(self.slot).add(at) };
+            // SAFETY: the claim makes this the only access to the slot.
+            unsafe { std::ptr::copy_nonoverlapping(t.as_ptr(), dst, TRAILER_BYTES) };
+            nbytes = at + TRAILER_BYTES;
+        }
         let m = &mut self.meta;
         let n = nbytes as u64;
         if m.ndim != 1
@@ -1296,6 +1443,7 @@ impl Channel {
         for result in [trace::CLAIM_OK, trace::CLAIM_RECLAIMED] {
             let found = self.order.queue.iter().position(|&s| self.sh.try_claim(s));
             if let Some(slot) = found.and_then(|i| self.order.queue.remove(i)) {
+                self.sh.free_owned(slot);
                 event!(flux_trace_claim(self.trace_handle(), slot, result, loan));
                 return Some(slot);
             }

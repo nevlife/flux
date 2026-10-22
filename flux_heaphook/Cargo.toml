@@ -1,0 +1,16 @@
+[package]
+name = "flux_heaphook"
+description = "Experimental LD_PRELOAD malloc hook that routes a scope's allocations to the flux arena"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

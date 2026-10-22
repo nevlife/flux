@@ -6,6 +6,7 @@
 #include <cstring>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 // Runtime for flux_gen adapters: read and write the flat frame layout flux_gen computes
 // (flux_gen/src/layout.rs). Header-only and ROS-free, so a generated header pulls in nothing
@@ -41,6 +42,12 @@ static_assert(sizeof(Desc) == 8);
 
 constexpr std::size_t kMaxFrameBytes = 0xFFFFFFFFu;  // descriptors are uint32
 
+// Experimental: a descriptor offset at or past this is kHeapBase + an offset into the publisher's
+// arena, a shm file the frame's trailer names (FLUX_HEAP_BASE). Frames stay pointer-free.
+constexpr std::size_t kHeapBase = std::size_t{1} << 31;
+// Room the commit needs at the frame's end to name the arena: 64 bytes on an 8-byte boundary.
+constexpr std::size_t kHeapTrailer = 64 + 7;
+
 template <class T>
 class Span
 {
@@ -58,6 +65,24 @@ public:
 private:
   T * p_ = nullptr;
   std::size_t n_ = 0;
+};
+
+// Experimental: where a Writer puts what does not fit its slot. A loan's handle on the arena
+// (flux::WriteSlot::heap()), valid while the loan lives; empty for none.
+struct Heap
+{
+  std::byte * base = nullptr;
+  std::size_t size = 0;
+  const void * channel = nullptr;
+  std::uint32_t slot = 0;
+  // Arena memory the frame owns until its slot is claimed again; *off gets its arena offset.
+  void * (*alloc)(const Heap &, std::size_t bytes, std::size_t align, std::uint64_t * off) =
+    nullptr;
+  // Hands the frame arena memory the malloc hook placed; release(owner) frees it later. False,
+  // and release not kept, when it is not all in the arena.
+  bool (*adopt)(
+    const Heap &, const void * p, std::size_t bytes, void (*release)(void *), void * owner,
+    std::uint64_t * off) = nullptr;
 };
 
 namespace detail
@@ -238,14 +263,21 @@ class Reader
 {
 public:
   Reader() = default;
-  Reader(const void * base, std::size_t size) noexcept
-  : base_(static_cast<const std::byte *>(base)), size_(size), bad_(base == nullptr)
+  // `heap` is the arena the frame's trailer names, if any (flux::FrameView::heap()).
+  Reader(const void * base, std::size_t size, Span<const std::byte> heap = {}) noexcept
+  : base_(static_cast<const std::byte *>(base)),
+    size_(size),
+    heap_(heap.data()),
+    heap_size_(heap.size()),
+    bad_(base == nullptr)
   {
   }
 
   bool bad() const noexcept { return bad_; }
   explicit operator bool() const noexcept { return !bad_; }
   std::size_t size() const noexcept { return size_; }
+  // The bytes descriptors can name: the frame's and its arena's.
+  std::size_t budget() const noexcept { return size_ + heap_size_; }
   const std::byte * base() const noexcept { return base_; }
 
   template <class T>
@@ -253,14 +285,14 @@ public:
   {
     static_assert(std::is_trivially_copyable_v<T>);
     T v{};
-    if (bad_ || !detail::fits(off, sizeof(T), size_)) {
-      bad_ = true;
+    const std::byte * p = region(off, 1, sizeof(T), 1);
+    if (p == nullptr) {
       return v;
     }
     if constexpr (std::is_same_v<T, bool>) {
-      return std::to_integer<unsigned char>(base_[off]) != 0;  // as as_bool()
+      return std::to_integer<unsigned char>(*p) != 0;  // as as_bool()
     }
-    std::memcpy(&v, base_ + off, sizeof(T));  // offsets are aligned by construction; be exact
+    std::memcpy(&v, p, sizeof(T));  // offsets are aligned by construction; be exact
     return v;
   }
 
@@ -268,10 +300,8 @@ public:
   template <class T>
   Span<const T> block(std::size_t off, std::size_t n) const noexcept
   {
-    if (!region(off, n, sizeof(T), alignof(T))) {
-      return {};
-    }
-    return Span<const T>(reinterpret_cast<const T *>(base_ + off), n);
+    const std::byte * p = region(off, n, sizeof(T), alignof(T));
+    return p != nullptr ? Span<const T>(reinterpret_cast<const T *>(p), n) : Span<const T>();
   }
 
   Desc desc(std::size_t off) const noexcept { return get<Desc>(off); }
@@ -280,7 +310,7 @@ public:
   std::size_t len(std::size_t off, std::size_t esize, std::size_t align) const noexcept
   {
     const Desc d = desc(off);
-    return region(d.off, d.len, esize, align) ? d.len : 0;
+    return region(d.off, d.len, esize, align) != nullptr ? d.len : 0;
   }
 
   // Elements of a variable array, aliasing the frame. Empty (and bad()) if the descriptor does
@@ -289,27 +319,23 @@ public:
   Span<const T> span(std::size_t off) const noexcept
   {
     const Desc d = desc(off);
-    if (!region(d.off, d.len, sizeof(T), alignof(T))) {
-      return {};
-    }
-    return Span<const T>(reinterpret_cast<const T *>(base_ + d.off), d.len);
+    const std::byte * p = region(d.off, d.len, sizeof(T), alignof(T));
+    return p != nullptr ? Span<const T>(reinterpret_cast<const T *>(p), d.len) : Span<const T>();
   }
 
   std::string_view str(std::size_t off) const noexcept
   {
     const Desc d = desc(off);
-    if (bad_ || !detail::fits(d.off, d.len, size_)) {
-      bad_ = true;
-      return {};
-    }
-    return std::string_view(reinterpret_cast<const char *>(base_ + d.off), d.len);
+    const std::byte * p = region(d.off, d.len, 1, 1);
+    return p != nullptr ? std::string_view(reinterpret_cast<const char *>(p), d.len)
+                        : std::string_view();
   }
 
   // Entry `i` of a string array whose descriptor is at `off`.
   std::string_view str_at(std::size_t off, std::size_t i) const noexcept
   {
     const Desc d = desc(off);
-    if (!region(d.off, d.len, sizeof(Desc), alignof(Desc)) || i >= d.len) {
+    if (region(d.off, d.len, sizeof(Desc), alignof(Desc)) == nullptr || i >= d.len) {
       bad_ = true;
       return {};
     }
@@ -321,7 +347,7 @@ public:
     std::size_t off, std::size_t i, std::size_t stride, std::size_t align) const noexcept
   {
     const Desc d = desc(off);
-    if (!region(d.off, d.len, stride, align) || i >= d.len) {
+    if (region(d.off, d.len, stride, align) == nullptr || i >= d.len) {
       bad_ = true;
       return 0;
     }
@@ -353,17 +379,29 @@ public:
   }
 
 private:
-  bool region(std::size_t off, std::size_t n, std::size_t esize, std::size_t align) const noexcept
+  // n elements of esize at `off`, in the frame or (past kHeapBase) the arena; null, and bad(),
+  // unless all of them are inside and the first is on `align`.
+  const std::byte * region(
+    std::size_t off, std::size_t n, std::size_t esize, std::size_t align) const noexcept
   {
-    if (bad_ || off % align != 0 || off > size_ || n > (size_ - off) / esize) {
-      bad_ = true;
-      return false;
+    const std::byte * base = base_;
+    std::size_t size = size_;
+    if (off >= kHeapBase) {
+      base = heap_;
+      size = heap_size_;
+      off -= kHeapBase;
     }
-    return true;
+    if (bad_ || base == nullptr || off % align != 0 || off > size || n > (size - off) / esize) {
+      bad_ = true;
+      return nullptr;
+    }
+    return base + off;
   }
 
   const std::byte * base_ = nullptr;
   std::size_t size_ = 0;
+  const std::byte * heap_ = nullptr;
+  std::size_t heap_size_ = 0;
   mutable bool bad_ = false;
 };
 
@@ -374,10 +412,13 @@ class Writer
 {
 public:
   Writer() = default;
-  Writer(void * base, std::size_t capacity, std::size_t scalar_bytes) noexcept
+  // With a `heap`, what does not fit the slot goes to the arena instead of failing.
+  Writer(
+    void * base, std::size_t capacity, std::size_t scalar_bytes, const Heap & heap = {}) noexcept
   : base_(static_cast<std::byte *>(base)),
     cap_(capacity),
     used_(scalar_bytes),
+    heap_(heap),
     bad_(base == nullptr || scalar_bytes > capacity)
   {
     if (!bad_) {
@@ -396,24 +437,18 @@ public:
   void put(std::size_t off, const T & v) noexcept
   {
     static_assert(std::is_trivially_copyable_v<T>);
-    if (bad_ || !detail::fits(off, sizeof(T), cap_)) {
-      bad_ = true;
-      return;
+    std::byte * p = at(off, 1, sizeof(T));
+    if (p != nullptr) {
+      std::memcpy(p, &v, sizeof(T));
     }
-    std::memcpy(base_ + off, &v, sizeof(T));
   }
 
   // A fixed T[N] block, writable in place.
   template <class T>
   Span<T> block(std::size_t off, std::size_t n) noexcept
   {
-    // Divide rather than multiply, as region() and reserve() do: `n * sizeof(T)` wraps for a
-    // large n and the wrapped product then passes the bound it was meant to fail.
-    if (bad_ || off > cap_ || n > (cap_ - off) / sizeof(T)) {
-      bad_ = true;
-      return {};
-    }
-    return Span<T>(reinterpret_cast<T *>(base_ + off), n);
+    std::byte * p = at(off, n, sizeof(T));
+    return p != nullptr ? Span<T>(reinterpret_cast<T *>(p), n) : Span<T>();
   }
 
   // Reserve n elements and record the descriptor at `off`. The returned span aliases the slot:
@@ -490,12 +525,12 @@ public:
 
   bool put_str_at(std::size_t off, std::size_t i, std::string_view s) noexcept
   {
-    if (bad_ || !detail::fits(off, sizeof(Desc), cap_)) {
-      bad_ = true;
+    const std::byte * p = at(off, 1, sizeof(Desc));
+    if (p == nullptr) {
       return false;
     }
     Desc d{};
-    std::memcpy(&d, base_ + off, sizeof(d));
+    std::memcpy(&d, p, sizeof(d));
     if (i >= d.len) {
       bad_ = true;
       return false;
@@ -509,35 +544,116 @@ public:
   std::size_t alloc_elems(
     std::size_t off, std::size_t n, std::size_t stride, std::size_t align) noexcept
   {
-    void * p = reserve(off, n, stride, align, true);
-    return p ? static_cast<std::size_t>(static_cast<std::byte *>(p) - base_) : 0;
+    std::size_t at_off = 0;
+    return reserve(off, n, stride, align, true, &at_off) != nullptr ? at_off : 0;
+  }
+
+  // Experimental: n elements at p, arena memory the malloc hook placed, become the array at `off`
+  // without a copy; release(owner) runs when the slot is claimed again. False, with nothing
+  // recorded, when they are not all in the arena.
+  bool adopt(
+    std::size_t off, const void * p, std::size_t n, std::size_t esize, void (*release)(void *),
+    void * owner) noexcept
+  {
+    std::byte * dp = at(off, 1, sizeof(Desc));
+    std::uint64_t aoff = 0;
+    if (
+      dp == nullptr || heap_.adopt == nullptr || p == nullptr || n > 0xFFFFFFFFu ||
+      n > heap_.size / esize || !heap_.adopt(heap_, p, n * esize, release, owner, &aoff)) {
+      return false;
+    }
+    const Desc d{static_cast<std::uint32_t>(kHeapBase + aoff), static_cast<std::uint32_t>(n)};
+    std::memcpy(dp, &d, sizeof(d));
+    return true;
+  }
+
+  // A container whose buffer was allocated under the malloc hook (flux::ArenaScope) becomes the
+  // array at `off` without a copy; any other is copied. True when it was not copied.
+  template <class C>
+  bool adopt(std::size_t off, C && c)
+  {
+    using V = std::remove_cv_t<std::remove_reference_t<C>>;
+    using T = typename V::value_type;
+    static_assert(std::is_trivially_copyable_v<T>);
+    auto * keep = new V(std::forward<C>(c));  // NOLINT(cppcoreguidelines-owning-memory)
+    const auto release = [](void * k) {
+      delete static_cast<V *>(k);  // NOLINT(cppcoreguidelines-owning-memory)
+    };
+    if (adopt(off, keep->data(), keep->size(), sizeof(T), release, keep)) {
+      return true;
+    }
+    const Span<T> s = alloc<T>(off, keep->size());
+    if (!keep->empty() && s.size() == keep->size()) {
+      std::memcpy(s.data(), keep->data(), keep->size() * sizeof(T));
+    }
+    release(keep);
+    return false;
   }
 
 private:
-  void * reserve(
-    std::size_t off, std::size_t n, std::size_t esize, std::size_t align, bool zero) noexcept
+  // n elements of esize at `off`, in the slot or (past kHeapBase) the arena; null, and bad(),
+  // unless all of them are inside.
+  std::byte * at(std::size_t off, std::size_t n, std::size_t esize) noexcept
   {
-    if (bad_ || !detail::fits(off, sizeof(Desc), cap_)) {
+    std::byte * base = base_;
+    std::size_t size = cap_;
+    if (off >= kHeapBase) {
+      base = heap_.base;
+      size = heap_.size;
+      off -= kHeapBase;
+    }
+    // Divide rather than multiply: `n * esize` wraps for a large n and the wrapped product then
+    // passes the bound it was meant to fail.
+    if (bad_ || base == nullptr || off > size || n > (size - off) / esize) {
       bad_ = true;
       return nullptr;
     }
+    return base + off;
+  }
+
+  // In the slot while it fits, else in the arena.
+  void * reserve(
+    std::size_t off, std::size_t n, std::size_t esize, std::size_t align, bool zero,
+    std::size_t * at_off = nullptr) noexcept
+  {
+    std::byte * dp = at(off, 1, sizeof(Desc));
+    if (dp == nullptr) {
+      return nullptr;
+    }
+    const bool heap = heap_.alloc != nullptr;
+    const std::size_t cap = heap && cap_ >= kHeapTrailer ? cap_ - kHeapTrailer : cap_;
+    const std::size_t limit = heap ? kHeapBase : kMaxFrameBytes;
     const std::size_t start = detail::align_up(used_, align);
-    if (start > cap_ || n > (cap_ - start) / esize || start + n * esize > kMaxFrameBytes) {
+    std::byte * p = nullptr;
+    std::size_t where = 0;
+    if (start <= cap && n <= (cap - start) / esize && start + n * esize <= limit) {
+      p = base_ + start;
+      where = start;
+      used_ = start + n * esize;
+    } else if (heap_.alloc != nullptr && n <= 0xFFFFFFFFu && n <= heap_.size / esize) {
+      std::uint64_t aoff = 0;
+      p = static_cast<std::byte *>(heap_.alloc(heap_, n * esize, align, &aoff));
+      where = kHeapBase + static_cast<std::size_t>(aoff);
+    }
+    if (p == nullptr) {
       bad_ = true;
       return nullptr;
     }
-    const Desc d{static_cast<std::uint32_t>(start), static_cast<std::uint32_t>(n)};
-    std::memcpy(base_ + off, &d, sizeof(d));
-    used_ = start + n * esize;
+    const Desc d{static_cast<std::uint32_t>(where), static_cast<std::uint32_t>(n)};
+    std::memcpy(dp, &d, sizeof(d));
     if (zero) {
-      std::memset(base_ + start, 0, n * esize);
+      std::memset(p, 0, n * esize);
     }
-    return base_ + start;
+    if (at_off != nullptr) {
+      *at_off = where;
+    }
+    return p;
   }
 
   std::byte * base_ = nullptr;
   std::size_t cap_ = 0;
   std::size_t used_ = 0;
+  Heap heap_;
   bool bad_ = false;
 };
 

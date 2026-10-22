@@ -216,6 +216,13 @@ fn builder_accessors(block: &Block, w: &Through, out: &mut Vec<String>, prefix: 
                      {{ return {recv}alloc<{t}>({}, n); }}",
                     at(base, o)
                 ));
+                // Experimental: a container filled under flux::ArenaScope, without a copy.
+                out.push(format!(
+                    "{IND}template <class C> bool adopt__{n}(C && c) \
+                     {{ static_assert(std::is_same_v<typename std::decay_t<C>::value_type, {t}>); \
+                     return {recv}adopt({}, std::forward<C>(c)); }}",
+                    at(base, o)
+                ));
             }
             LeafKind::String => out.push(format!(
                 "{IND}void set__{n}(std::string_view s) noexcept {{ {recv}put_str({}, s); }}",
@@ -416,6 +423,7 @@ fn tensor(layout: &Layout, view: &mut Vec<String>, builder: &mut Vec<String>) ->
 }
 
 /// The C++ header text for a layout. `source` is the .msg path, for the banner.
+#[allow(clippy::too_many_lines)]
 pub fn emit(layout: &Layout, source: &str) -> String {
     let (ns, guard) = (namespace(layout), guard(layout, ""));
     let mut elems = String::new();
@@ -473,12 +481,13 @@ struct {name}
 public:
     View() = default;
     View(const void * data, std::size_t size) noexcept : r_(data, size) {{}}
-    explicit View(const flux::FrameView & f) noexcept : r_(f.data(), f.size()) {{}}
+    explicit View(const flux::FrameView & f) noexcept : r_(f.data(), f.size(), f.heap()) {{}}
 
     // False once any accessor has been asked for something the frame does not contain.
     bool ok__() const noexcept {{ return !r_.bad(); }}
     explicit operator bool() const noexcept {{ return ok__(); }}
     std::size_t size__() const noexcept {{ return r_.size(); }}
+    std::size_t budget__() const noexcept {{ return r_.budget(); }}
 
 {view}
 
@@ -492,11 +501,11 @@ private:
 public:
     Builder(void * data, std::size_t capacity) noexcept : w_(data, capacity, kScalarBytes) {{}}
     explicit Builder(flux::WriteSlot & slot) noexcept
-    : ext_(&slot), w_(slot.data(), slot.capacity(), kScalarBytes) {{}}
+    : ext_(&slot), w_(slot.data(), slot.capacity(), kScalarBytes, slot.heap()) {{}}
     // Owning form, for build__(). The slot travels with the Builder, so the caller has one object
     // to keep alive instead of two.
     explicit Builder(flux::WriteSlot && slot) noexcept
-    : owned_(std::move(slot)), w_(owned_->data(), owned_->capacity(), kScalarBytes) {{}}
+    : owned_(std::move(slot)), w_(owned_->data(), owned_->capacity(), kScalarBytes, owned_->heap()) {{}}
 
     // False once a field did not fit; commit__() then refuses rather than publishing a torn frame.
     bool ok__() const noexcept {{ return !w_.bad(); }}

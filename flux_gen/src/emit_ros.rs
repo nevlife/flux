@@ -297,7 +297,7 @@ pub fn emit_cpp(layout: &Layout, source: &str) -> String {
         format!(
             r#"  // A writer never points two descriptors at the same bytes, so a frame whose copy
   // would read more than it holds is built to multiply the copy: refuse it first.
-  std::size_t unread = v.size__();
+  std::size_t unread = v.budget__();
   const auto spend = [&unread](std::size_t n) {{
     if (n > unread) {{
       throw std::runtime_error("flux: {type_name}: the frame reads the same bytes twice");
@@ -621,7 +621,7 @@ pub fn emit_py(layout: &Layout, source: &str) -> String {
             format!(
                 r#"    # A writer never points two descriptors at the same bytes, so a frame whose copy
     # would read more than it holds is built to multiply the copy: refuse it first.
-    r, unread = v._r, len(v._r)
+    r, unread = v._r, v._r.budget()
 
     def spend(n):
         nonlocal unread

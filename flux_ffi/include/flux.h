@@ -13,7 +13,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define FLUX_ABI_VERSION 3
+#define FLUX_ABI_VERSION 4
 
 #define FLUX_MAX_DIMS 8
 
@@ -30,6 +30,8 @@
 #define FLUX_MAX_SUBSCRIBERS 4096
 
 #define FLUX_NO_STAMP -1
+
+#define FLUX_HEAP_BASE 2147483648
 
 #define FLUX_DTYPE_U8 0
 
@@ -169,6 +171,14 @@ typedef struct flux_qos {
 typedef struct flux_loan {
   uint64_t opaque[16];
 } flux_loan;
+
+// Experimental arena handle of a live loan; `base` is null without one (`FLUX_ARENA_BYTES`).
+typedef struct flux_heap {
+  uint8_t *base;
+  size_t size;
+  const void *channel;
+  uint32_t slot;
+} flux_heap;
 
 // A borrowed frame in caller memory, never copied. A move copies the bytes and zeroes the source.
 typedef struct flux_view {
@@ -343,6 +353,26 @@ void *flux_loan_stream(const struct flux_loan *l);
 uint64_t flux_loan_device_ptr(const struct flux_loan *l);
 
 flux_published flux_loan_commit(struct flux_loan *l);
+
+struct flux_heap flux_loan_heap(const struct flux_loan *l);
+
+// Arena memory the frame owns until its slot is claimed again; `off` gets its arena offset.
+uint8_t *flux_heap_alloc(const struct flux_heap *h, size_t bytes, size_t align, uint64_t *off);
+
+// Gives the frame arena memory the hook placed; `release(ctx)` runs when the slot is reclaimed.
+bool flux_heap_adopt(const struct flux_heap *h,
+                     const uint8_t *p,
+                     size_t bytes,
+                     void (*release)(void*),
+                     void *ctx,
+                     uint64_t *off);
+
+const uint8_t *flux_arena_resolve(const uint8_t *frame, size_t len, size_t *size);
+
+// Routes this thread's allocations to the arena under `libflux_heaphook.so`; false without it.
+bool flux_arena_scope_enter(void);
+
+void flux_arena_scope_leave(void);
 
 // Shrinks a one-dimensional loan to `nbytes`.
 flux_published flux_loan_commit_len(struct flux_loan *l, size_t nbytes);

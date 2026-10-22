@@ -52,7 +52,8 @@ if(BUILD_TESTING)
   add_library(flux_trace_log MODULE test/trace_log.cpp)
   ament_add_pytest_test(test_trace test/test_trace.py TIMEOUT 120
     ENV FLUX_TRACE_LOG_LIB=$<TARGET_FILE:flux_trace_log>)
-  foreach(t test_channel test_executor test_partitioned test_message_filters test_wire test_emit test_tensor test_gpu)
+  foreach(t test_channel test_executor test_partitioned test_message_filters test_wire test_emit test_tensor test_gpu
+      test_arena)
     ament_add_pytest_test(${t} test/${t}.py TIMEOUT 120
       ENV FLUX_EXIT_DELAY=$<TARGET_FILE:flux_exit_delay>)
   endforeach()

@@ -570,6 +570,16 @@ public:
   bool valid() const noexcept { return w_.valid(); }
   std::size_t capacity() noexcept { return w_.capacity(); }
 
+  // Experimental: the loan's arena handle for a wire Writer, None without an arena.
+  nb::object heap() const
+  {
+    const flux::wire::Heap h = w_.heap();
+    if (h.base == nullptr) return nb::none();
+    return nb::make_tuple(
+      reinterpret_cast<std::uintptr_t>(h.base), h.size,      // NOLINT(*-reinterpret-cast)
+      reinterpret_cast<std::uintptr_t>(h.channel), h.slot);  // NOLINT(*-reinterpret-cast)
+  }
+
   nb::dict cai() { return cuda_array_interface(device_array()); }
   nb::object dlpack(nb::handle self, const nb::kwargs & kw)
   {
@@ -1277,6 +1287,7 @@ NB_MODULE(_flux, m)
     .def_prop_ro("valid", &Loan::valid)
     .def("__bool__", &Loan::valid)
     .def_prop_ro("capacity", &Loan::capacity)
+    .def_prop_ro("_heap", &Loan::heap)
     .def_prop_ro("__cuda_array_interface__", &Loan::cai)
     .def(
       "__dlpack__",
@@ -1387,4 +1398,6 @@ NB_MODULE(_flux, m)
     "fingerprint"_a);
 
   bind_wire(m);
+  m.def("_arena_scope_enter", &flux_arena_scope_enter);
+  m.def("_arena_scope_leave", &flux_arena_scope_leave);
 }

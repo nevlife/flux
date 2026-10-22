@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use flux_core::{
-    Channel, DType, Error, FrameMeta, FrameView, Mapped, MemoryPolicy, Published, PublisherWatch,
-    QoS, ReleaseMode, WriteSlot, signpost_name,
+    Channel, DType, Error, FrameMeta, FrameView, Heap, Mapped, MemoryPolicy, Published,
+    PublisherWatch, QoS, ReleaseMode, WriteSlot, signpost_name,
 };
 
 use crate::gpu::{flux_stream, stream_of};
@@ -564,6 +564,118 @@ pub unsafe extern "C" fn flux_loan_device_ptr(l: *const flux_loan) -> u64 {
 pub unsafe extern "C" fn flux_loan_commit(l: *mut flux_loan) -> flux_published {
     // SAFETY: valid loan storage.
     unsafe { loan(l) }.commit(WriteSlot::commit)
+}
+
+/// Experimental arena handle of a live loan; `base` is null without one (`FLUX_ARENA_BYTES`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct flux_heap {
+    pub base: *mut u8,
+    pub size: usize,
+    pub channel: *const c_void,
+    pub slot: u32,
+}
+
+impl flux_heap {
+    fn core(&self) -> Option<Heap> {
+        (!self.base.is_null())
+            .then(|| Heap::from_raw(self.channel, self.slot, self.base, self.size))
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_loan_heap(l: *const flux_loan) -> flux_heap {
+    // SAFETY: flux_loan is sized and aligned for LoanCell (asserted above).
+    let h = unsafe { &*l.cast::<LoanCell>() }
+        .slot
+        .get()
+        .and_then(WriteSlot::heap);
+    h.map_or(
+        flux_heap {
+            base: std::ptr::null_mut(),
+            size: 0,
+            channel: std::ptr::null(),
+            slot: 0,
+        },
+        |h| {
+            let (channel, slot) = h.raw();
+            flux_heap {
+                base: h.base,
+                size: h.size,
+                channel,
+                slot,
+            }
+        },
+    )
+}
+
+/// Arena memory the frame owns until its slot is claimed again; `off` gets its arena offset.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_heap_alloc(
+    h: *const flux_heap,
+    bytes: usize,
+    align: usize,
+    off: *mut u64,
+) -> *mut u8 {
+    // SAFETY: h is valid; its loan is live (the caller's contract).
+    let Some((p, o)) = unsafe { &*h }
+        .core()
+        .and_then(|h| unsafe { h.alloc(bytes, align) })
+    else {
+        return std::ptr::null_mut();
+    };
+    // SAFETY: off is valid for a write.
+    unsafe { off.write(o) };
+    p
+}
+
+/// Gives the frame arena memory the hook placed; `release(ctx)` runs when the slot is reclaimed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_heap_adopt(
+    h: *const flux_heap,
+    p: *const u8,
+    bytes: usize,
+    release: unsafe extern "C" fn(*mut c_void),
+    ctx: *mut c_void,
+    off: *mut u64,
+) -> bool {
+    // SAFETY: h is valid; its loan is live and release is as heap_adopt asks (the caller's
+    // contract).
+    let Some(o) = unsafe { &*h }
+        .core()
+        .and_then(|h| unsafe { h.adopt(p, bytes, release, ctx) })
+    else {
+        return false;
+    };
+    // SAFETY: off is valid for a write.
+    unsafe { off.write(o) };
+    true
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_arena_resolve(
+    frame: *const u8,
+    len: usize,
+    size: *mut usize,
+) -> *const u8 {
+    // SAFETY: the caller passes len readable bytes.
+    let Some(h) = flux_core::arena::resolve(unsafe { bytes(frame, len) }) else {
+        return std::ptr::null();
+    };
+    // SAFETY: size is valid for a write.
+    unsafe { size.write(h.len()) };
+    h.as_ptr()
+}
+
+/// Routes this thread's allocations to the arena under `libflux_heaphook.so`; false without it.
+#[unsafe(no_mangle)]
+pub extern "C" fn flux_arena_scope_enter() -> bool {
+    flux_core::arena::scope_enter()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flux_arena_scope_leave() {
+    flux_core::arena::scope_leave();
 }
 
 /// Shrinks a one-dimensional loan to `nbytes`.
