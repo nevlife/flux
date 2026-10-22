@@ -220,7 +220,7 @@ const TRACE_EVENTS: [&str; 18] = [
     "contract_2",
 ];
 
-/// armo attaches uprobes to these by name. Two events at one address would make a probe on one
+/// orma attaches uprobes to these by name. Two events at one address would make a probe on one
 /// fire for both.
 #[test]
 fn trace_events_are_exported_at_distinct_addresses() {

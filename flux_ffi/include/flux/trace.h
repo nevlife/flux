@@ -1,4 +1,4 @@
-/* flux trace contract 2: the events libflux_ffi exports for collectors (armo) to attach to by
+/* flux trace contract 2: the events libflux_ffi exports for collectors (orma) to attach to by
  * name. Each function does nothing. flux_core/src/trace.rs defines them; the bindings call the
  * ones about endpoints, the GIL and recording. Strings are NUL-terminated and live until the call
  * returns; pointers other than strings are identities, never read. */

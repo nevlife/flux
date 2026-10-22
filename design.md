@@ -356,7 +356,7 @@ ABI 테스트는 C 프로그램(`flux_ffi/tests/c/`)이다. `cargo test`가 커�
 
 ## trace
 
-trace 이벤트는 core의 `flux_trace_*` 함수다(`flux_core/src/trace.rs`). 함수 자체는 아무것도 하지 않고, 수집기(armo의 uprobe, LD_PRELOAD, LTTng)가 이름으로 붙는 지점이다. 이 함수들은 `libflux_ffi.so`가 내보내므로, C++·Python이 공유 라이브러리로 링크하면 armo가 프로세스의 maps에서 찾는다. 이벤트 이름, 인자, 상수는 계약이고 `flux_trace_contract_2`가 그 버전이다. 이름이나 인자를 바꾸면 번호를 올리고 옛 심볼은 지운다. 이벤트나 상수를 더하기만 하면 번호를 그대로 둔다(`gpu_wedged`, `*_GPU_WEDGED`). 정본은 `flux_docs/armo/design.md` 11절이고, C 선언과 상수는 설치 헤더 `flux/trace.h`다.
+trace 이벤트는 core의 `flux_trace_*` 함수다(`flux_core/src/trace.rs`). 함수 자체는 아무것도 하지 않고, 수집기(orma의 uprobe, LD_PRELOAD, LTTng)가 이름으로 붙는 지점이다. 이 함수들은 `libflux_ffi.so`가 내보내므로, C++·Python이 공유 라이브러리로 링크하면 orma가 프로세스의 maps에서 찾는다. 이벤트 이름, 인자, 상수는 계약이고 `flux_trace_contract_2`가 그 버전이다. 이름이나 인자를 바꾸면 번호를 올리고 옛 심볼은 지운다. 이벤트나 상수를 더하기만 하면 번호를 그대로 둔다(`gpu_wedged`, `*_GPU_WEDGED`). 정본은 `flux_docs/orma/design.md` 11절이고, C 선언과 상수는 설치 헤더 `flux/trace.h`다.
 
 | 이벤트 | 인자 | 부르는 곳 |
 | --- | --- | --- |
@@ -378,10 +378,10 @@ trace 이벤트는 core의 `flux_trace_*` 함수다(`flux_core/src/trace.rs`). �
 - executor 식별자: 제어 블록의 주소. executor를 옮겨도 고정이다
 - endpoint 식별자: 바인딩의 Publisher·Subscription 객체 주소. executor source는 `flux_source.endpoint`(core `Source::endpoint`)로 같은 주소를 넘긴다
 - `callback_end`의 segment: owner 파일이 없으므로, 늦게 붙은 도구도 이 인자로 callback의 채널을 안다
-- roster label은 노드의 fully qualified name이다. armo는 `/`로 시작하는 label을 노드로 읽는다
+- roster label은 노드의 fully qualified name이다. orma는 `/`로 시작하는 label을 노드로 읽는다
 - stamp: 최상위 `std_msgs/Header`의 stamp 8 B를 little-endian u64로 읽은 값(sec 아래, nanosec 위)이다. 위치(`stamp_offset`)는 flux_gen이 정하고, 생성 코드가 실릴 때 fingerprint별로 `libflux_ffi`에 등록하며(`flux_stamp_offset_register`), flux_cpp가 채널을 만들 때 찾아 C ABI 인자로 넘긴다. Header가 없는 타입, raw API, device payload는 0이다
 
-함수마다 asm 문자열이 다르다. 같으면 LLVM이 같은 시그니처의 빈 함수를 한 주소로 합쳐서, 한 이벤트의 uprobe가 다른 이벤트에도 걸린다. 모든 인자는 asm 입력 operand로 읽는다. 읽지 않으면 `codegen-units=1`이나 fat LTO 빌드에서 호출 지점이 인자 레지스터를 채우지 않아 수집기가 쓰레기 값을 받는다. `flux_ffi/tests/trace_args.rs`가 그 빌드의 cdylib와 staticlib에서 C 프로그램의 이벤트 값을 기록기로 확인한다. `flux_ffi`의 ABI 테스트는 18개 함수가 서로 다른 주소로 export되고 `flux/trace.h`에 선언돼 있으며 상수가 core와 같은지 본다. LTTng·LD_PRELOAD 같은 수집 방식은 armo가 맡는다.
+함수마다 asm 문자열이 다르다. 같으면 LLVM이 같은 시그니처의 빈 함수를 한 주소로 합쳐서, 한 이벤트의 uprobe가 다른 이벤트에도 걸린다. 모든 인자는 asm 입력 operand로 읽는다. 읽지 않으면 `codegen-units=1`이나 fat LTO 빌드에서 호출 지점이 인자 레지스터를 채우지 않아 수집기가 쓰레기 값을 받는다. `flux_ffi/tests/trace_args.rs`가 그 빌드의 cdylib와 staticlib에서 C 프로그램의 이벤트 값을 기록기로 확인한다. `flux_ffi`의 ABI 테스트는 18개 함수가 서로 다른 주소로 export되고 `flux/trace.h`에 선언돼 있으며 상수가 core와 같은지 본다. LTTng·LD_PRELOAD 같은 수집 방식은 orma가 맡는다.
 
 끈 상태(아무것도 붙지 않음) 비용은 이벤트당 0.7~2.6 ns다(Orin, CPU 고정, 9회 중앙값, `flux_core/benches/trace_cost.rs`). 호출 지점은 `trace::event!` 매크로이고, `RUSTFLAGS="--cfg flux_trace_off"` 빌드가 호출 지점을 인자 계산과 함께 지워 비교 기준이 된다. 이 cfg는 측정용이고 기능이 아니다.
 
@@ -766,7 +766,7 @@ Humble(Ubuntu 22.04, rclcpp 16, rosbag2 0.15, rviz_common 11, Python 3.10, numpy
 | 커널 | 5.16 이상은 merged wait(`futex_waitv`), 그 아래는 parker 스레드 fallback이다. 그래서 Humble의 Ubuntu 22.04는 GA 커널(5.15)과 HWE 커널(6.8) 모두에서 돌고, Jetson JetPack 6(L4T 36, 5.15)도 fallback으로 돈다. 처음에는 io_uring `FUTEX_WAIT`(6.7)였다 |
 | ROS 배포판 | Humble, Jazzy, Lyrical. Kilted는 지원하지 않는다(rviz_common 15.0의 `Display::update`가 Lyrical과 달라 flux_tools가 빌드되지 않는다). Humble 차이는 아래 "Humble" 절 |
 | 채널 열거 | C++·Python 모두 `enumerate_topics`·`read_channel_stats`로 한다 |
-| tracing(LTTng) | armo가 맡는다. flux는 trace 함수만 노출한다 |
+| tracing(LTTng) | orma가 맡는다. flux는 trace 함수만 노출한다 |
 | C++ | `flux::` 네임스페이스, C++17(Jazzy 기준) |
 | 콜백 예외 | C++ 콜백의 예외는 C ABI를 넘지 않는다. 래퍼가 잡아 두고 그 콜백을 부른 호출(`dispatch`, `spin`)에서 다시 던진다 |
 | flux_gen | Rust로 썼다. cargo가 빌드하고 `lib/flux_gen/flux_gen`에 설치한다. 생성물은 `<pkg>/flux/<msg>.hpp`(`<pkg>::flux_msg`)와 `<pkg>_flux` 모듈이다. Python 모듈은 `flux.wire`(flux_py)를 import한다. flux_gen은 의존이 없으므로 flux_cpp·flux_py의 테스트 의존이 순환하지 않는다. 생성된 코드의 시험(`test_emit`)은 런타임이 있는 flux_py에 둔다. 해석 규칙은 rosidl을 따른다. 파싱되지 않는 .msg는 그것을 읽는 메시지만 실패시키고, 상수는 rosidl의 literal·범위·따옴표 규칙을 따르고, `@optional`과 `T[N>65536]`은 그 메시지만 거절한다. 줄은 Python `splitlines()`처럼 나눈다. rosidl처럼 탭은 공백으로 바꾸고, 줄은 첫 `#`에서 끊는다. 따옴표 안의 `#`도 마찬가지라 상수 값이 거기서 끝난다. 이름만 쓴 `Header`·`Time`은 builtin 타입으로 풀릴 때만 frame stamp다. 문자열은 첫 NUL에서 끊는다(rclpy와 같다). C++ 이름은 끝에 `_`를 붙여 피하고 Python은 Python 키워드만 피한다. 키워드 이름의 메시지 모듈은 `<snake>_.py`다. 메시지 이름 `View`, `Builder`, 원소 클래스 이름은 거절한다. `flux_generate_adapters()`는 `<pkg>_flux_adapters` INTERFACE 라이브러리를 만들고, 같은 패키지의 target은 이를 링크해 자기 adapter를 include한다. ROS bridge 쌍은 그보다 먼저 `rosidl_generate_interfaces()`에 넘긴 메시지에만 만든다. 두 메시지가 같은 파일을 쓰면 configure 에러다 |

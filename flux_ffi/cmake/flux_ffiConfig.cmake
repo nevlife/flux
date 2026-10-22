@@ -1,4 +1,4 @@
-# flux::ffi links the shared library, so armo and other uprobe tools find libflux_ffi.so in the
+# flux::ffi links the shared library, so orma and other uprobe tools find libflux_ffi.so in the
 # process's maps. flux::ffi_static is the static archive.
 get_filename_component(_flux_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
 

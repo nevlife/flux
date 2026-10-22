@@ -20,7 +20,7 @@ inline std::string resolve(const NodeRef & node, const std::string & topic)
   return node.topics()->resolve_topic_name(topic);
 }
 
-// The roster label is the node's fully qualified name: armo reads a label starting with '/' as
+// The roster label is the node's fully qualified name: orma reads a label starting with '/' as
 // the node (trace contract 2).
 inline Announcement announce(
   const NodeRef & node, const std::string & signpost, const std::string & topic, bool publisher)
