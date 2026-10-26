@@ -1,0 +1,5 @@
+# Found with a release that left slot 0's counter up.
+slots=2 s0=2,2,1 s1=1,1,1
+p publish 758
+s0 take
+s0 release 2

@@ -1,0 +1,8 @@
+# Found with a reclaim that unlocked a dead number without clearing its counts.
+slots=2 s0=2,2,2 s1=3,3,3
+p publish 79
+p publish 217
+s0 take
+s0 take
+s0 kill
+p publish 402

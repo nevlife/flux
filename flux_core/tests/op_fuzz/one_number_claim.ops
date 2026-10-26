@@ -1,0 +1,10 @@
+# Found with a claim that read only number 0's counters: it took the slot number 1 held.
+slots=2 s0=2,2,1 s1=1,1,1
+s1 take
+p publish 420
+s1 take
+p publish 802
+s0 take
+s0 take
+s0 release 2
+p publish 772

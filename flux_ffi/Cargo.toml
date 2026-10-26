@@ -1,0 +1,17 @@
+[package]
+name = "flux_ffi"
+description = "C ABI over flux_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+flux_core = { path = "../flux_core" }
+flux_gen = { path = "../flux_gen" }
+
+[lints]
+workspace = true

@@ -1,0 +1,62 @@
+# flux v?.?.?
+
+릴리스 노트 양식이다. 릴리스할 때 `unreleased.md`를 `v<버전>.md`로 옮기고, 이 양식을 복사해 새 `unreleased.md`를 만든다.
+
+## [v?.?.?](https://github.com/nevlife/flux/tree/v?.?.?)
+
+[전체 변경](https://github.com/nevlife/flux/compare/v?.?.?...v?.?.?)
+
+### 기능
+
+<!--
+    새 항목은 issue 번호 순으로 넣는다. 병합 충돌을 줄이기 위해서다.
+    issue가 없는 항목은 번호 없이 맨 뒤에 둔다.
+-->
+
+* [#N](https://github.com/nevlife/flux/issues/N) 한 줄 설명
+
+### 버그 수정
+
+<!--
+    새 항목은 issue 번호 순으로 넣는다.
+-->
+
+* [#N](https://github.com/nevlife/flux/issues/N) 한 줄 설명
+
+### 리팩터링
+
+<!--
+    새 항목은 issue 번호 순으로 넣는다.
+-->
+
+* [#N](https://github.com/nevlife/flux/issues/N) 한 줄 설명
+
+### 작업 흐름
+
+<!--
+    빌드, 시험, 검사, 문서 생성의 변경. 새 항목은 issue 번호 순으로 넣는다.
+-->
+
+* [#N](https://github.com/nevlife/flux/issues/N) 한 줄 설명
+
+### 새 API
+
+<!--
+    새 항목은 issue 번호 순으로 넣는다.
+-->
+
+* [#N](https://github.com/nevlife/flux/issues/N) 한 줄 설명
+
+### 호환이 깨지는 변경
+
+<!--
+    사용자가 고쳐야 하는 것마다 번호를 붙이고, 고치기 전과 후를 코드로 보인다.
+    C ABI 버전(FLUX_ABI_VERSION)이나 공유메모리 배치 버전이 바뀌면 여기에 적는다.
+-->
+
+1. 무엇이 바뀌었고 왜 바뀌었는가.
+
+   ```cpp
+   // 전
+   // 후
+   ```

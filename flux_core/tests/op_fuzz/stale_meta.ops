@@ -1,0 +1,7 @@
+# Found with a commit that rewrote the meta only on a slot's first use: the reused slot kept
+# the last frame's length and shape.
+slots=2 s0=2,2,1 s1=1,1,1
+p publish 758
+p publish 572
+p publish 772
+s1 take

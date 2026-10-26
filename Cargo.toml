@@ -1,0 +1,30 @@
+[workspace]
+members = ["flux_core", "flux_ffi", "flux_cli", "flux_gen"]
+# Nightly only (cargo-fuzz); built from its own directory.
+exclude = ["fuzz"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.88"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+# Set only to measure what the trace calls cost (flux_core/src/trace.rs).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(flux_trace_off)"] }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+must_use_candidate = "allow"
+similar_names = "allow"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

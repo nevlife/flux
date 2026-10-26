@@ -1,0 +1,15 @@
+[package]
+name = "flux_gen"
+description = "flux adapter generator: .msg schemas to flat-wire layouts, fingerprints and adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "flux_gen"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+

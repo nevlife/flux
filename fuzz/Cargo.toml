@@ -1,0 +1,33 @@
+[package]
+name = "flux_fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+flux_core = { path = "../flux_core", features = ["fuzz"] }
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "attach"
+path = "fuzz_targets/attach.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roster"
+path = "fuzz_targets/roster.rs"
+test = false
+doc = false
+bench = false
