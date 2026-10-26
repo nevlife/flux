@@ -1,4 +1,4 @@
-//! Trace events: exported, never-inlined functions a collector (orma by uprobe, preload or
+//! Trace events: exported, never-inlined functions a collector (by uprobe, preload or
 //! `LTTng`) attaches to by name. They do nothing themselves. The names, arguments and constants are a
 //! contract, versioned by `flux_trace_contract_*` and declared for C in `flux/trace.h`. A channel
 //! is named by its `ChannelShared` (stable until a re-attach), an executor by its control block.
