@@ -67,7 +67,3 @@ PYTHON=~/venvs/flux-docs/bin/python src/flux/scripts/build_docs.sh
 | `py_gil`, `py_ready` | Python 바인딩의 GIL 재획득과 콜백 직전 |
 | `record_drop` | `flux_bag` 녹화기가 bag에 쓰지 못한 프레임 |
 | `gpu_wedged` | 복구할 수 없는 CUDA 오류로 프로세스의 GPU를 멈춤 상태로 표시할 때 |
-
-## 문서 예제
-
-이 문서들의 코드 블록 중에는 언어 표시 뒤에 `doc:<id>`가 붙은 것이 있다. 이런 블록은 시험 코드와 같다. C++ 예제는 `flux_cpp/test/test_doc_examples.cpp`에서, Python 예제는 `flux_py/test/test_doc_examples.py`에서 실제로 돈다. pre-commit의 `scripts/check_doc_examples.py`는 문서의 코드 블록이 시험의 `[doc:<id>]` 구간과 같은지 확인한다.
