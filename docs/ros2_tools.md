@@ -1,6 +1,6 @@
 # ROS 2 도구
 
-flux 채널은 DDS graph에 없으므로 기본 ROS 2 도구(`ros2 topic`, `rqt`, `ros2 bag`, rviz2)는 그대로는 보지 못한다. `ros2/` 아래 세 패키지가 이를 잇는다.
+flux 채널은 DDS graph에 없으므로 기본 ROS 2 도구(`ros2 topic`, `rqt`, `ros2 bag`, rviz2)로는 그대로 볼 수 없다. `ros2/` 아래의 세 패키지가 flux 채널을 이 도구들과 연결한다.
 
 | 패키지 | 하는 일 | 복사 |
 | --- | --- | --- |
@@ -14,7 +14,7 @@ flux 채널은 DDS graph에 없으므로 기본 ROS 2 도구(`ros2 topic`, `rqt`
 ros2 run flux_bridge bridge [--poll SEC]
 ```
 
-노드 하나(`flux_bridge_<pid>`)를 띄운다. `--poll`초(기본 1)마다 채널 목록을 읽고, 채널마다 아래 조건이 모두 맞는 동안에만 relay를 돌린다. 아무도 보지 않는 채널에는 비용이 없다.
+bridge는 노드 하나(`flux_bridge_<pid>`)를 띄우고, `--poll`초(기본 1)마다 채널 목록을 읽는다. 그리고 채널마다 아래 조건이 모두 맞는 동안에만 relay를 돌린다. 그래서 아무도 구독하지 않는 채널에는 비용이 들지 않는다.
 
 - 발행자가 살아 있고 이름이 정확히 알려진 채널이다.
 - 채널의 fingerprint가 설치된 `.msg` 타입(`AMENT_PREFIX_PATH`)과 맞는다. adapter를 설치하지 않은 타입도 된다.
@@ -35,7 +35,7 @@ ros2 topic echo_flux /camera/image --no-arr
 ros2 topic hz_flux /camera/image
 ```
 
-기본 `echo`·`hz`를 바로 띄우면 bridge의 다음 poll까지 토픽이 없다. 두 verb는 아무 일도 하지 않는 구독을 먼저 만들고, bridge의 발행자가 graph에 오를 때까지 기다린 뒤 기본 verb를 그대로 돌린다. 인자는 기본 verb의 것에 `--bridge-timeout SEC`(기본 10)가 더해진다. 타입은 채널의 fingerprint로 flux가 찾으므로 DDS 발견을 기다리지 않는다. bridge가 떠 있어야 한다.
+기본 `echo`·`hz`를 바로 띄우면, bridge가 다음에 poll할 때까지 토픽이 없다. 그래서 두 verb는 먼저 아무 일도 하지 않는 구독을 만든다. 그리고 bridge의 발행자가 graph에 나타날 때까지 기다린 뒤 기본 verb를 그대로 돌린다. 인자는 기본 verb의 인자에 `--bridge-timeout SEC`(기본 10)가 더해진 것이다. 메시지 타입은 flux가 채널의 fingerprint로 찾으므로 DDS 발견을 기다리지 않는다. 두 verb를 쓰려면 bridge가 떠 있어야 한다.
 
 ## flux_bag
 
@@ -81,9 +81,9 @@ uint8[] data             # 슬롯에 있던 프레임 바이트 그대로
 ros2 bag play_flux BAG [-r RATE]
 ```
 
-`FluxFrame` 토픽은 파일에서 바로 원래 채널에 기록된 fingerprint, `slot_size`, `slot_count`로 발행한다. 나머지 토픽은 rosbag2 player가 재생한다. flux 채널은 자기 시계를 따르고, player의 pause, resume, rate(서비스와 키보드)가 그 시계도 움직인다. play_next와 burst는 ROS 토픽을 옮기고 flux 채널이 따라가며, ROS 메시지가 다 떨어지면 flux 프레임을 옮긴다. Humble(rosbag2 0.15)에서는 ROS 토픽만 옮기고 flux 채널은 그대로다.
+`FluxFrame` 토픽은 파일에서 읽어 바로 원래 채널에 발행한다. 이때 bag에 기록된 fingerprint, `slot_size`, `slot_count`를 쓴다. 나머지 토픽은 rosbag2 player가 재생한다. flux 채널은 자기 시계를 따른다. player의 pause, resume, rate(서비스와 키보드)는 이 시계도 함께 움직인다. play_next와 burst는 ROS 토픽을 옮기고, flux 채널은 그 뒤를 따라간다. ROS 메시지가 다 떨어지면 play_next와 burst는 flux 프레임을 옮긴다. Humble(rosbag2 0.15)에서는 ROS 토픽만 옮기고 flux 채널은 그대로다.
 
-- 재생은 발행자를 만든 뒤 200 ms 기다리고 시작한다. 먼저 떠 있던 구독자가 붙을 시간이다.
+- 재생은 발행자를 만든 뒤 200 ms 기다리고 시작한다. 먼저 떠 있던 구독자가 붙을 시간을 주기 위해서다.
 - 프레임의 `slot_size`나 `slot_count`가 바뀌면 발행자를 다시 만든다. dtype x shape가 데이터 크기와 다른 프레임은 건너뛴다.
 - seek는 ROS 토픽만 옮긴다.
 
@@ -93,11 +93,11 @@ ros2 bag play_flux BAG [-r RATE]
 ros2 bag convert_flux BAG -o OUT
 ```
 
-bag을 새 bag으로 옮기며, `FluxFrame`의 fingerprint가 설치된 타입을 가리키면 그 ROS 메시지로 바꿔 채널 이름의 토픽에 녹화 시각 그대로 넣는다. 타입을 못 찾거나 같은 이름의 ROS 토픽이 다른 타입이면 `FluxFrame`으로 남긴다. 나머지 토픽은 그대로 복사한다. 변환한 토픽은 flux 없이 읽고, 남은 `FluxFrame`은 `flux_msgs`가 있어야 읽는다. 스키마와 맞지 않는 프레임이 있으면 변환이 exit code 1로 멈춘다.
+bag을 새 bag으로 옮긴다. `FluxFrame`의 fingerprint가 설치된 타입을 가리키면, 그 프레임을 ROS 메시지로 바꿔 채널 이름의 토픽에 넣는다. 녹화 시각은 그대로 둔다. 타입을 못 찾거나 같은 이름의 ROS 토픽이 다른 타입이면 `FluxFrame`으로 남긴다. 나머지 토픽은 그대로 복사한다. 변환한 토픽은 flux 없이 읽을 수 있다. 남은 `FluxFrame`을 읽으려면 `flux_msgs`가 있어야 한다. 스키마와 맞지 않는 프레임이 있으면 변환이 exit code 1로 멈춘다.
 
 ## flux_tools(rviz2)
 
-rviz2에서 `Add` -> `flux_tools`를 고른다. 세 display 모두 rviz2 프로세스 안에서 flux 구독을 열고 render tick마다 최신 프레임 하나를 읽는다(depth 1, `max_borrow` 1). `Topic`에는 같은 타입의 살아 있는 채널이 나오고, 직접 적어도 된다. 붙지 못하면 이유를 Topic 상태에 보인다.
+rviz2에서 `Add` -> `flux_tools`를 고른다. 세 display 모두 rviz2 프로세스 안에서 flux 구독을 열고 render tick마다 최신 프레임 하나를 읽는다(depth 1, `max_borrow` 1). `Topic`에는 같은 타입의 살아 있는 채널이 나오고, 이름을 직접 적어도 된다. 붙지 못하면 Topic 상태에 이유를 보인다.
 
 | display | 타입 | 하는 일 |
 | --- | --- | --- |
@@ -105,7 +105,7 @@ rviz2에서 `Add` -> `flux_tools`를 고른다. 세 display 모두 rviz2 프로�
 | `flux_tools/PointCloud2` | `sensor_msgs/PointCloud2` | 점을 메시지로 한 번 복사해 rviz2 기본 point cloud renderer에 넘긴다. `x`, `y`, `z`가 `FLOAT32`여야 한다 |
 | `flux_tools/DepthCloud` | depth `sensor_msgs/Image` | depth 이미지(`16UC1`·`mono16` mm, `32FC1` m)를 GPU에서 3D 점으로 펴서 그린다. 같은 카메라의 `CameraInfo`는 DDS에서 받는다 |
 
-- Image: 16비트와 `32FC1`은 `Normalize Range`(기본 켬)가 프레임마다 최솟값과 최댓값을 흑백에 맞춘다. 끄면 `Min Value`, `Max Value`를 쓴다. 픽셀 변환은 shader가 하고 CPU에서 픽셀을 바꾸지 않는다.
-- DepthCloud: `Camera Info Topic`은 채널 이름에서 image_transport 규칙으로 정한다(`/cam/depth/image_raw` -> `/cam/depth/camera_info`). 직접 고치면 그 값을 쓴다. `Min Range`, `Max Range`(0은 상한 없음), `Point Size (Pixels)`, `Alpha`를 정한다.
+- Image: 16비트와 `32FC1` 프레임에서는 `Normalize Range`(기본 켬)가 프레임마다 최솟값과 최댓값을 검정과 흰색에 맞춘다. 끄면 `Min Value`, `Max Value`를 쓴다. 픽셀 변환은 shader가 하고 CPU에서 픽셀을 바꾸지 않는다.
+- DepthCloud: `Camera Info Topic`은 채널 이름에서 image_transport 규칙으로 정한다(`/cam/depth/image_raw` -> `/cam/depth/camera_info`). 직접 고치면 그 값을 쓴다. `Min Range`, `Max Range`(0은 상한 없음), `Point Size (Pixels)`, `Alpha`도 정할 수 있다.
 - PointCloud2와 DepthCloud는 `header.frame_id`를 TF로 fixed frame에 맞춘다.
-- rviz2가 슬롯을 쥐는 시간은 업로드나 복사 한 번이다. 그리기가 느리면 그만큼 발행자의 `Backpressure`가 늘 수 있다.
+- rviz2는 업로드나 복사를 한 번 하는 동안 슬롯을 쥔다. 그리기가 느리면 그만큼 발행자의 `Backpressure`가 늘 수 있다.

@@ -1,6 +1,6 @@
 # 메시지 타입과 adapter
 
-타입 없이도 배열(dtype, shape, 바이트)을 보낼 수 있다. ROS 메시지 구조를 그대로 쓰려면 `.msg`에서 adapter를 생성한다. adapter는 메시지를 슬롯 안의 평평한 바이트 배치로 읽고 쓴다. 직렬화가 없고, 배열 필드는 슬롯을 그대로 가리킨다.
+타입 없이도 배열(dtype, shape, 바이트)을 보낼 수 있다. ROS 메시지 구조를 그대로 쓰려면 `.msg`에서 adapter를 생성한다. adapter는 메시지를 슬롯 안에 평평한 바이트 배치로 쓰고, 그 배치에서 읽는다. 직렬화가 없고, 배열 필드는 슬롯을 그대로 가리킨다.
 
 ## adapter 만들기
 
@@ -29,13 +29,13 @@ flux_generate_adapters(msg/Cloud.msg)
 | `<pkg>_flux/<snake>_ros.py` | 같은 함수의 Python 판 |
 
 - ROS 쪽 두 파일은 같은 패키지가 그 메시지를 `rosidl_generate_interfaces()`에 먼저 넘겼을 때만 생긴다. 이 두 파일만 rosidl 메시지 타입을 include·import한다.
-- 생성된 C++ 헤더는 `flux/channel.hpp`를 include한다. 쓰는 쪽이 `flux_cpp`를 링크한다. 메시지 패키지 자신은 `flux_cpp`에 빌드 의존이 없다.
-- 같은 패키지의 target이 adapter를 include하려면 `${PROJECT_NAME}_flux_adapters`를 링크한다. 다른 패키지에서는 메시지 패키지의 `${<pkg>_TARGETS}`를 링크하면 된다. adapter 헤더가 rosidl 헤더와 같은 include 경로에 설치된다.
-- fingerprint는 중첩된 타입이 펴진 모양까지 반영한다. 중첩된 `.msg`를 고치면 그것을 쓰는 adapter가 다시 생성된다. 양쪽 adapter가 다른 `.msg`에서 생성되면 fingerprint가 달라 서로 다른 채널이 된다. 오류는 나지 않는다.
+- 생성된 C++ 헤더는 `flux/channel.hpp`를 include한다. 그러므로 adapter를 쓰는 쪽이 `flux_cpp`를 링크한다. 메시지 패키지 자신은 `flux_cpp`에 빌드 의존하지 않는다.
+- 같은 패키지의 target이 adapter를 include하려면 `${PROJECT_NAME}_flux_adapters`를 링크한다. 다른 패키지에서는 메시지 패키지의 `${<pkg>_TARGETS}`를 링크하면 된다. adapter 헤더가 rosidl 헤더와 같은 include 경로에 설치되기 때문이다.
+- fingerprint에는 중첩된 타입을 펼친 모양까지 반영된다. 중첩된 `.msg`를 고치면 그것을 쓰는 adapter가 다시 생성된다. 발행 쪽과 구독 쪽 adapter가 서로 다른 `.msg`에서 생성되면 fingerprint가 달라 서로 다른 채널이 된다. 이때 오류는 나지 않는다.
 
 ## 표준 메시지
 
-`flux_std_adapters`가 아래 타입의 adapter를 설치된 `.msg`에서 한 벌 만든다. 이 타입들은 각자 생성하지 않는다. 같은 타입을 여러 패키지가 생성하면 C++ 정의가 둘이 되고 Python 모듈은 경로에서 앞선 하나만 보인다.
+`flux_std_adapters`는 설치된 `.msg`에서 아래 타입의 adapter를 한 벌 만든다. 이 타입들의 adapter는 각 패키지에서 따로 생성하지 않는다. 같은 타입을 여러 패키지가 생성하면 C++ 정의가 둘이 되고, Python 모듈은 경로에서 앞선 하나만 보인다.
 
 | 패키지 | 타입 |
 | --- | --- |
@@ -68,7 +68,7 @@ from sensor_msgs_flux.image_ros import frame_to_msg, msg_to_frame
 
 ## 접근자 규칙
 
-`.msg`가 다음과 같을 때다.
+아래 표는 `.msg`가 다음과 같을 때의 접근자다.
 
 ```text
 std_msgs/Header header
@@ -92,15 +92,15 @@ geometry_msgs/Pose pose
 | `Pose pose` | `v.pose_position_x()` | `v.pose_position_x` | `b.set__pose_position_x(v)` | `b.pose_position_x = v` |
 | `Header header` | `v.header__sec()`, `v.header__nanosec()`, `v.header__frame_id()` | `v.header__stamp`(튜플), `v.header__frame_id` | `b.set__header__stamp(s, ns)`, `b.set__header__frame_id(f)` | `b.set__header__stamp(s, ns)`, `b.header__frame_id = f` |
 
-- 중첩된 메시지는 이름을 `_`로 이어 편다. `pose.position.x`는 `pose_position_x`다. 최상위의 `std_msgs/Header`와 `builtin_interfaces/Time` 필드는 `__`로 잇는다(`header__sec`, `stamp__sec`, Python `stamp__stamp`). 더 깊은 곳에서는 다른 메시지처럼 편다.
-- 가변 배열은 `alloc__<name>(n)`이 슬롯 안에 자리를 잡고 그 자리를 돌려준다. 거기에 쓰는 것이 복사 없는 경로다. 호출 순서는 자유다. 고정 길이 배열은 자리가 정해져 있어 `alloc__` 없이 바로 쓴다.
-- 자리가 모자라면 C++ `alloc__`은 빈 `Span`을 준다. `Builder`는 그때부터 `false`이고 `commit__()`은 `TooLarge`를 돌려주며 발행하지 않는다.
-- Python 접근자와 `frame_to_msg()`는 문자열을 첫 NUL에서 끊는다. rclpy와 같다. C++ `View` 접근자는 쓰인 바이트를 그대로 준다.
+- 중첩된 메시지는 이름을 `_`로 이어 펼친다. `pose.position.x`는 `pose_position_x`다. 최상위의 `std_msgs/Header`와 `builtin_interfaces/Time` 필드는 `__`로 잇는다(`header__sec`, `stamp__sec`, Python `stamp__stamp`). 더 깊은 곳에서는 다른 메시지처럼 펼친다.
+- 가변 배열은 `alloc__<name>(n)`으로 슬롯 안에 자리를 잡는다. 이 함수는 잡은 자리를 돌려주고, 거기에 바로 쓰면 복사가 없다. 호출 순서는 상관없다. 고정 길이 배열은 자리가 이미 정해져 있으므로 `alloc__` 없이 바로 쓴다.
+- 자리가 모자라면 C++ `alloc__`은 빈 `Span`을 준다. 그때부터 `Builder`는 `false`이고, `commit__()`은 발행하지 않고 `TooLarge`를 돌려준다.
+- Python 접근자와 `frame_to_msg()`는 문자열을 첫 NUL에서 끊는다. rclpy도 같다. C++ `View` 접근자는 쓰인 바이트를 그대로 준다.
 - C++ 이름이 C++ 키워드와 겹치면 끝에 `_`를 붙인다. Python은 Python 키워드만 피한다. 메시지 이름 `View`, `Builder`는 쓸 수 없다.
 
 ## 받는 쪽의 검사
 
-프레임은 다른 프로세스가 쓴 것이라 받는 쪽이 검사한다. 길이와 위치를 담은 칸이 프레임 밖을 가리키면 읽지 않는다.
+프레임은 다른 프로세스가 쓴 것이므로 받는 쪽에서 검사한다. 길이나 위치를 담은 칸이 프레임 밖을 가리키면 읽지 않는다.
 
 - C++ `View`는 잘못된 접근을 만나면 `ok__()`를 `false`로 고정하고, 그 뒤 접근자는 빈 값을 준다. 읽은 다음에 `ok__()`를 확인한다.
 - Python `View`는 `flux.wire.WireError`를 던진다.
@@ -108,7 +108,7 @@ geometry_msgs/Pose pose
 
 ## 생성하지 못하는 메시지
 
-아래 모양이 있는 메시지는 생성이 실패하고 빌드가 멈춘다. 그 메시지는 일반 ROS 토픽으로 보낸다.
+아래 모양의 필드가 있는 메시지는 adapter 생성이 실패하고 빌드가 멈춘다. 이런 메시지는 일반 ROS 토픽으로 보낸다.
 
 | 모양 | 이유 |
 | --- | --- |
@@ -117,13 +117,13 @@ geometry_msgs/Pose pose
 | `wstring` | 지원하지 않는다 |
 | `@optional` 필드 | 지원하지 않는다 |
 | `T[N]`에서 N > 65536 | `T[]`를 쓴다 |
-| 자기 자신을 포함하는 타입, 필드가 없는 중첩 타입 | 펼 수 없다 |
+| 자기 자신을 포함하는 타입, 필드가 없는 중첩 타입 | 펼칠 수 없다 |
 
 프레임 하나는 4 GiB를 넘지 못한다. 길이와 위치를 32비트로 적기 때문이다. 실제 상한은 발행자의 `slot_size`다.
 
 ## tensor 메시지
 
-DLPack `DLTensor`의 필드만 가진 메시지는 tensor 메시지로 알아본다. `tensor_msgs/ExperimentalTensor`(Lyrical)가 그 모양이다. 패키지 이름은 보지 않으므로 같은 필드를 복사한 메시지도 같다.
+DLPack `DLTensor`의 필드만 가진 메시지는 tensor 메시지로 다룬다. `tensor_msgs/ExperimentalTensor`(Lyrical)가 그 모양이다. 패키지 이름은 보지 않으므로 같은 필드를 복사한 메시지도 tensor 메시지가 된다.
 
 ```text
 uint8 dtype_code
