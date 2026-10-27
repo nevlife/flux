@@ -289,6 +289,40 @@ TEST_F(Doc, Partitioned)
   EXPECT_NE(testing::internal::GetCapturedStdout().find("camera: 64 bytes"), std::string::npos);
 }
 
+// [doc:cpp_component]
+class Camera : public rclcpp::Node
+{
+public:
+  explicit Camera(const rclcpp::NodeOptions & options)
+  : Node("camera", options),
+    group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
+    sub_(*this, "image", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & frame) {
+      std::cout << "camera: " << frame.size() << " bytes\n";
+    })
+  {
+    sub_.add_to_callback_group(*this, group_);
+  }
+
+private:
+  rclcpp::CallbackGroup::SharedPtr group_;
+  flux::Subscription sub_;
+};
+// [doc:/cpp_component]
+
+// A container serves it the same way; this one never names the subscription.
+TEST_F(Doc, AComponentsSubscriptionIsServedThroughItsGroup)
+{
+  std::thread publisher = feed("image");
+  testing::internal::CaptureStdout();
+  const auto camera = std::make_shared<Camera>(
+    rclcpp::NodeOptions().arguments({"--ros-args", "-r", "__ns:=/doc" + std::to_string(getpid())}));
+  flux::PartitionedExecutor ex;
+  ex.add_node(camera);
+  ex.spin();
+  publisher.join();
+  EXPECT_NE(testing::internal::GetCapturedStdout().find("camera: 64 bytes"), std::string::npos);
+}
+
 TEST_F(Doc, MessageFilters)
 {
   std::thread left_pub = feed("left/image", Image::kFingerprint);

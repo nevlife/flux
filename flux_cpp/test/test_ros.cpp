@@ -22,6 +22,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <future>
@@ -134,6 +135,64 @@ TEST_F(Ros, AFrameReachesTheCallback)
   const Spinning spin{*ex_};
   ASSERT_EQ(pub.publish("frame", 5), flux::Published::Ok);
   EXPECT_TRUE(eventually([&] { return got == 1; }));
+}
+
+TEST_F(Ros, ASubscriptionInAGroupIsServedWithItsNode)
+{
+  flux::Publisher pub(*node_, topic("member"), flux::kNoSchema, kSlot, kSlots);
+  std::atomic<int> got{0};
+  flux::Subscription sub(
+    *node_, topic("member"), flux::kNoSchema, 4, [&](const flux::FrameView &) { ++got; });
+  sub.add_to_callback_group(*node_);
+  // Made after the spin starts, but it outlives the executor serving it, as `sub` does.
+  std::atomic<int> late{0};
+  std::optional<flux::Subscription> later;
+  ex_->add_node(node_);
+  const Spinning spin{*ex_};
+  ASSERT_EQ(pub.publish("x", 1), flux::Published::Ok);
+  EXPECT_TRUE(eventually([&] { return got == 1; }));
+
+  // Found by the next rescan.
+  later.emplace(
+    *node_, topic("member"), flux::kNoSchema, 4, [&](const flux::FrameView &) { ++late; });
+  later->add_to_callback_group(*node_);
+  EXPECT_TRUE(eventually([&] {
+    (void)pub.publish("x", 1);
+    return late > 0;
+  }));
+}
+
+std::vector<std::string> & logged()
+{
+  static std::vector<std::string> lines;
+  return lines;
+}
+
+TEST_F(Ros, AnRclcppExecutorServingAFluxSubscriptionSaysSoOnce)
+{
+  flux::Subscription sub(
+    *node_, topic("stock"), flux::kNoSchema, 4, [](const flux::FrameView &) {});
+  sub.add_to_callback_group(*node_);
+  logged().clear();
+  const auto previous = rcutils_logging_get_output_handler();
+  rcutils_logging_set_output_handler([](
+                                       const rcutils_log_location_t *, int, const char *,
+                                       rcutils_time_point_value_t, const char * format,
+                                       va_list * args) {
+    std::array<char, 512> line{};
+    std::vsnprintf(line.data(), line.size(), format, *args);
+    logged().emplace_back(line.data());
+  });
+  rclcpp::executors::SingleThreadedExecutor stock;
+  stock.add_node(node_);
+  stock.spin_some(10ms);
+  stock.spin_some(10ms);
+  rcutils_logging_set_output_handler(previous);
+  const auto said = std::count_if(logged().begin(), logged().end(), [](const std::string & l) {
+    return l.find(topic("stock")) != std::string::npos &&
+           l.find("no frame of it is delivered") != std::string::npos;
+  });
+  EXPECT_EQ(said, 1);
 }
 
 TEST_F(Ros, TopicsAreResolvedAgainstTheNode)

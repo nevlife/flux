@@ -27,9 +27,14 @@
 
 namespace flux
 {
+namespace detail
+{
+class GroupMember;
+}
 
 // One wait for flux subscriptions and the ROS entities of the nodes and groups added the rclcpp
-// way. Ready ROS entities run on rclcpp's own path. spin() and spin_until_future_complete() run
+// way, including the flux subscriptions put in those groups (add_to_callback_group). Ready ROS
+// entities run on rclcpp's own path. spin() and spin_until_future_complete() run
 // it; spin_once(), spin_some() and spin_all() throw.
 class Executor : public rclcpp::Executor
 {
@@ -116,6 +121,8 @@ private:
     rclcpp::TimerBase::SharedPtr lock() const { return timer.lock(); }
   };
   std::unordered_map<const void *, Timer> timers_;
+  // Never taken out again, as core_ has no remove: such a source outlives this executor.
+  std::unordered_map<const void *, std::weak_ptr<detail::GroupMember>> members_;
   std::unordered_set<const void *> seen_;
   // What the last rescan bridged.
   std::vector<rclcpp::CallbackGroup::WeakPtr> groups_;

@@ -22,15 +22,17 @@
 namespace flux
 {
 
-// One thread per callback group: a group's flux subscriptions and its ROS entities run on that
-// group's own flux::Executor, so a slow callback stalls only its group. Every group of an added
-// node gets a thread, groups created while spinning included; a group that is not added to
-// executors automatically gets one only if a subscription is assigned to it. A group named in
-// add() or on_thread_start() is kept alive by this executor; the thread of any other group holds
-// it until this executor is its last owner (Humble's rclcpp waits on a raw pointer into it).
+// One thread and flux::Executor per callback group of the added nodes, groups created while
+// spinning included, but not one left out of automatic adding unless a subscription is assigned to
+// it, nor one another executor serves. A group named in add() or on_thread_start() is kept alive;
+// any other is held by its thread until this is its last owner (Humble's rclcpp waits on it).
 class PartitionedExecutor
 {
 public:
+  using NodeBase = rclcpp::node_interfaces::NodeBaseInterface;
+  using ThreadStart =
+    std::function<void(const NodeBase::SharedPtr &, const rclcpp::CallbackGroup::SharedPtr &)>;
+
   // Throws Error with FLUX_UNSUPPORTED where flux::Executor would.
   PartitionedExecutor();
   ~PartitionedExecutor();
@@ -47,12 +49,20 @@ public:
   void add(
     detail::Source & src, const rclcpp::CallbackGroup::SharedPtr & group,
     std::int32_t priority = 0);
-  void add_node(const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node);
+  // While spinning too: returns with the node's threads started, or throws with none started.
+  void add_node(const NodeBase::SharedPtr & node);
   // rclcpp::Node, rclcpp_lifecycle::LifecycleNode, or any node with get_node_base_interface().
   template <class NodeT>
   void add_node(const std::shared_ptr<NodeT> & node)
   {
     add_node(node->get_node_base_interface());
+  }
+  // Returns once the node's group threads have ended. Not from one of them.
+  void remove_node(const NodeBase::SharedPtr & node);
+  template <class NodeT>
+  void remove_node(const std::shared_ptr<NodeT> & node)
+  {
+    remove_node(node->get_node_base_interface());
   }
   // The inputs of one message_filters synchronizer: flux or rclcpp message_filters
   // subscribers. spin() refuses them in different groups, since the synchronizer would then call
@@ -67,6 +77,8 @@ public:
   }
   // Runs on the group's thread before it spins.
   void on_thread_start(const rclcpp::CallbackGroup::SharedPtr & group, std::function<void()> init);
+  // On every group's thread, ahead of that group's hook. A hook's exception stops spin().
+  void on_thread_start(ThreadStart init);
 
   // The first error on any thread stops every thread and is rethrown here. A Reentrant group is
   // refused: one thread cannot run its callbacks in parallel.
@@ -99,16 +111,26 @@ private:
     std::unique_ptr<Executor> ex;
     std::thread thread;
     rclcpp::CallbackGroup::SharedPtr group;
+    NodeBase::WeakPtr node;
   };
 
-  void spawn_new_groups();
+  void rescan();
+  // Under groups_m_.
+  std::vector<rclcpp::CallbackGroup::SharedPtr> unserved_groups(const NodeBase::SharedPtr & node);
+  void spawn(const rclcpp::CallbackGroup::SharedPtr & group, const NodeBase::SharedPtr & node);
   void check_sync_groups();
-  void spawn(
-    const rclcpp::CallbackGroup::SharedPtr & group,
-    const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node);
   void fail(std::exception_ptr e);
   void stop_children();
-  void join_gone_groups();
+  static void join(std::vector<Child> & children);
+
+  // Before m_ when both are held. Never held while joining: the joined may wait for it.
+  std::mutex groups_m_;
+  bool serving_ = false;
+  std::vector<NodeBase::WeakPtr> nodes_;
+  std::vector<Child> children_;
+  std::size_t spawned_ = 0;
+  // Weak, so a recycled address is not taken for a group already served.
+  std::map<const rclcpp::CallbackGroup *, rclcpp::CallbackGroup::WeakPtr> claimed_;
 
   std::mutex m_;
   // Not under m_: cancel() may run in a signal handler that interrupted a holder of m_.
@@ -120,14 +142,11 @@ private:
   rclcpp::Context::SharedPtr context_;
   rclcpp::OnShutdownCallbackHandle on_shutdown_;
 
-  std::vector<rclcpp::node_interfaces::NodeBaseInterface::WeakPtr> nodes_;
   std::vector<std::vector<SyncInput>> sync_groups_;
   std::map<const rclcpp::CallbackGroup *, std::vector<Assigned>> assigned_;
   std::map<const rclcpp::CallbackGroup *, std::function<void()>> init_;
+  ThreadStart any_init_;
   std::map<const rclcpp::CallbackGroup *, rclcpp::CallbackGroup::SharedPtr> kept_;
-  // Weak, so a recycled address is not taken for a group already served.
-  std::map<const rclcpp::CallbackGroup *, rclcpp::CallbackGroup::WeakPtr> claimed_;
-  std::vector<Child> children_;
 };
 
 }  // namespace flux

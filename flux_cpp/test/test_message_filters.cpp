@@ -305,4 +305,32 @@ TEST_F(Filters, APartitionedSynchronizerKeepsItsInputsInOneGroup)
   }));
 }
 
+// As in a component, whose node never sees the executor serving it.
+TEST_F(Filters, InputsPutInAGroupAreServedByItsExecutor)
+{
+  auto pa = pub("ga");
+  auto pb = pub("gb");
+  auto g = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  In a(*node_, topic("ga"), 4, qos());
+  In b(*node_, topic("gb"), 4, qos());
+  a.add_to_callback_group(*node_, g);
+  b.add_to_callback_group(*node_, g);
+  EXPECT_THROW(b.add_to_callback_group(*node_, g), std::logic_error);
+  ::message_filters::TimeSynchronizer<Msg, Msg> sync(4);
+  sync.connectInput(a, b);
+  std::atomic<int> paired{0};
+  const std::function<void(const MsgPtr &, const MsgPtr &)> on_pair =
+    [&](const auto &, const auto &) { ++paired; };
+  sync.registerCallback(std::bind(on_pair, _1, _2));
+  flux::PartitionedExecutor ex;
+  ex.add_node(node_);
+  const Spinner s([&] { ex.spin(); }, [&] { ex.cancel(); });
+  EXPECT_TRUE(eventually([&] {
+    (void)send(pa, 7, 1);
+    (void)send(pb, 7, 2);
+    std::this_thread::sleep_for(10ms);
+    return paired > 0;
+  }));
+}
+
 }  // namespace

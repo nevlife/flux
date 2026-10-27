@@ -1,31 +1,31 @@
 # flux
 
-flux는 같은 호스트의 ROS 2 노드끼리 큰 데이터(이미지, 포인트 클라우드, 텐서)를 복사 없이 주고받게 하는 C++·Python 라이브러리다. 새 미들웨어가 아니다. rmw를 바꾸지 않고 데몬도 없다. 기존 `rclcpp`·`rclpy` 노드 안에서 토픽 단위로 골라 쓰고, 나머지 토픽은 지금처럼 DDS로 흐른다.
+flux는 같은 호스트의 ROS 2 노드끼리 큰 데이터(이미지, 포인트 클라우드, 텐서)를 복사 없이 주고받게 하는 C++·Python 라이브러리다. 새 미들웨어가 아니다. rmw를 바꾸지 않고 데몬도 없다. 기존 `rclcpp`·`rclpy` 노드 안에서 flux로 보낼 토픽만 고른다. 나머지 토픽은 지금처럼 DDS로 오간다.
 
 ```text
 발행자 노드 (C++ 또는 Python)                구독자 노드 (C++ 또는 Python)
   loan()으로 받은 슬롯에 직접 쓴다  ->  /dev/shm 링  ->  콜백이 같은 슬롯을 읽기 전용 view로 받는다
 ```
 
-구독자는 직렬화도 복사도 없이 발행자가 쓴 슬롯을 그대로 읽는다. C++에서는 `FrameView`, Python에서는 읽기 전용 numpy 배열이다. CUDA GPU에서 만든 프레임도 같은 API로 보낸다([GPU](docs/gpu.md)).
+구독자는 직렬화도 복사도 없이 발행자가 쓴 슬롯을 그대로 읽는다. 구독자가 받는 것은 C++에서는 `FrameView`, Python에서는 읽기 전용 numpy 배열이다. CUDA GPU에서 만든 프레임도 같은 API로 보낸다([GPU](docs/gpu.md)).
 
 ## 지원 환경
 
 | 항목 | 지원 |
 | --- | --- |
-| OS | Linux. 커널 5.15(Ubuntu 22.04, JetPack 6)부터 7.0까지 시험했다. 5.16 이상은 `futex_waitv` 하나로 기다리고, 그 아래는 구독마다 대기 스레드를 둔다 |
+| OS | Linux. 커널 5.15(Ubuntu 22.04, JetPack 6)부터 7.0까지 시험했다. 5.16 이상에서는 `futex_waitv` 호출 하나로 기다리고, 그보다 낮으면 구독마다 대기 스레드를 둔다 |
 | ROS 2 | Humble, Jazzy, Lyrical. Kilted는 지원하지 않는다 |
 | 언어 | C++17, Python 3(numpy 1.x·2.x) |
 | 빌드 도구 | colcon, CMake 3.16 이상, rustup(Rust 버전은 `rust-toolchain.toml`이 고정한다) |
-| GPU(선택) | CUDA 드라이버. 통합 GPU(Jetson Orin, Thor)와 VMM·POSIX fd를 지원하는 외장 GPU. `libcuda.so.1`은 실행 시점에 열므로 GPU 없는 호스트에도 같은 바이너리가 돈다 |
+| GPU(선택) | CUDA 드라이버. 통합 GPU(Jetson Orin, Thor)와 VMM·POSIX fd를 지원하는 외장 GPU. flux는 `libcuda.so.1`을 실행 시점에 연다. 그래서 GPU가 없는 호스트에서도 같은 바이너리가 돈다 |
 
 ## 빌드
 
-colcon 워크스페이스의 `src/` 아래에 두고 빌드한다. nanobind가 submodule이므로 submodule도 받는다.
+colcon 워크스페이스의 `src/` 아래에 두고 빌드한다. nanobind가 submodule로 들어 있으므로 submodule도 함께 받는다.
 
 ```bash
 cd ~/ros2_ws/src
-git clone --recurse-submodules https://github.com/nevlife/flux
+git clone --recurse-submodules <flux 저장소 주소> flux
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
@@ -62,7 +62,7 @@ ex.add_node(node)
 ex.spin()
 ```
 
-`frame`은 공유메모리 슬롯을 가리키는 읽기 전용 배열이다. 배열이 살아 있는 동안 발행자는 그 슬롯을 다시 쓰지 못한다. 오래 둘 값은 복사해 둔다. 자세한 사용법은 [C++](docs/cpp.md)과 [Python](docs/python.md) 문서에 있다.
+`frame`은 공유메모리 슬롯을 가리키는 읽기 전용 배열이다. 배열이 살아 있는 동안 발행자는 그 슬롯을 다시 쓰지 못한다. 오래 둘 값은 복사한다. 자세한 사용법은 [C++](docs/cpp.md)과 [Python](docs/python.md) 문서에 있다.
 
 ## 패키지
 
@@ -76,6 +76,7 @@ ex.spin()
 | `flux_std_adapters` | `sensor_msgs/Image` 같은 표준 메시지의 adapter |
 | `flux_msgs` | bag에 프레임을 담는 `FluxFrame` 메시지 |
 | `flux_cli` | `flux` 명령 |
+| `flux_components` | 컴포넌트 컨테이너. 로드한 노드의 콜백 그룹마다 스레드 하나를 두고, 컴포넌트의 flux 구독도 돌린다 |
 | `ros2/flux_bridge` | flux 채널을 DDS 토픽으로 다시 발행한다. `ros2 topic echo_flux`, `hz_flux` |
 | `ros2/flux_bag` | rosbag2 녹화·재생. `ros2 bag record_flux`, `play_flux`, `convert_flux` |
 | `ros2/flux_tools` | rviz2 display(Image, PointCloud2, DepthCloud) |

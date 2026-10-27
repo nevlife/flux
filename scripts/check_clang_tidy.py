@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PACKAGES = ("flux_cpp", "flux_py", "flux_bag", "flux_tools")
+PACKAGES = ("flux_cpp", "flux_components", "flux_py", "flux_bag", "flux_tools")
 # Half the cores at nice 10: a commit should not take the machine away from running nodes.
 JOBS = max(1, (os.cpu_count() or 2) // 2)
 

@@ -15,6 +15,7 @@
 
 namespace rclcpp
 {
+class CallbackGroup;
 class Context;
 }  // namespace rclcpp
 
@@ -24,6 +25,10 @@ namespace message_filters
 {
 template <class Adapter>
 class Subscriber;
+}
+namespace detail
+{
+class GroupMember;
 }
 
 // A view passed to the callback holds its slot only for that call: copy out what is kept longer.
@@ -53,6 +58,11 @@ public:
   // node's context is shut down, as rclcpp::wait_for_message, and at once while max_borrow views
   // are held.
   FrameView take_blocking(std::int64_t timeout_ns = -1);
+
+  // Served by the executor serving `group` (null: default group), which it outlives. Not add()ed.
+  void add_to_callback_group(
+    const NodeRef & node, const std::shared_ptr<rclcpp::CallbackGroup> & group = nullptr,
+    std::int32_t priority = 0);
 
   bool has_callback() const noexcept { return static_cast<bool>(cb_); }
   bool attached() const noexcept { return sub_.attached(); }
@@ -88,6 +98,8 @@ private:
   detail::Subscriber sub_;
   Callback cb_;
   detail::Announcement announced_;
+  // Last, so it leaves the group first.
+  std::shared_ptr<detail::GroupMember> member_;
 };
 
 }  // namespace flux

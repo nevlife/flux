@@ -13,6 +13,7 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -281,6 +282,121 @@ TEST_F(Partitioned, AnErrorOnOneThreadStopsAllAndReachesSpin)
   EXPECT_THROW(ex.spin(), std::logic_error);
   ex.cancel();
   ex.spin();
+}
+
+TEST_F(Partitioned, ASubscriptionInAGroupIsServedOnThatGroupsThread)
+{
+  auto pa = pub("member");
+  auto group = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  std::atomic<std::thread::id> hook_thread{};
+  std::atomic<std::thread::id> cb_thread{};
+  flux::Subscription sa(*node_, topic("member"), flux::kNoSchema, 4, [&](const flux::FrameView &) {
+    cb_thread = std::this_thread::get_id();
+  });
+  sa.add_to_callback_group(*node_, group);
+  EXPECT_THROW(sa.add_to_callback_group(*node_, group), std::logic_error);
+  flux::PartitionedExecutor ex;
+  ex.add_node(node_);
+  ex.on_thread_start(group, [&] { hook_thread = std::this_thread::get_id(); });
+  Spinning spin(ex);
+  ASSERT_TRUE(eventually([&] {
+    (void)pa.publish("x", 1);
+    return cb_thread.load() != std::thread::id{};
+  }));
+  EXPECT_EQ(hook_thread.load(), cb_thread.load());
+  EXPECT_EQ(spin.stop(), "");
+}
+
+TEST_F(Partitioned, AHookForEveryThreadGetsItsNodeAndGroup)
+{
+  auto group = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  std::atomic<int> ticks{0};
+  auto timer = node_->create_wall_timer(5ms, [&] { ++ticks; }, group);
+  std::mutex m;
+  std::set<const rclcpp::CallbackGroup *> hooked;
+  std::thread::id group_thread{};
+  std::thread::id specific_after{};
+  flux::PartitionedExecutor ex;
+  ex.add_node(node_);
+  ex.on_thread_start([&](const auto & node, const auto & g) {
+    // Walking the node's groups here must not deadlock against the walk that spawned this thread.
+    node->for_each_callback_group([](const auto &) {});
+    const std::lock_guard<std::mutex> lk(m);
+    EXPECT_EQ(node, node_->get_node_base_interface());
+    hooked.insert(g.get());
+    if (g == group) group_thread = std::this_thread::get_id();
+  });
+  ex.on_thread_start(group, [&] {
+    const std::lock_guard<std::mutex> lk(m);
+    if (hooked.count(group.get()) != 0) specific_after = std::this_thread::get_id();
+  });
+  EXPECT_THROW(ex.on_thread_start([](const auto &, const auto &) {}), std::invalid_argument);
+  Spinning spin(ex);
+  ASSERT_TRUE(eventually([&] { return ticks > 0; }));
+  const std::lock_guard<std::mutex> lk(m);
+  EXPECT_EQ(hooked.count(group.get()), 1u);
+  EXPECT_EQ(hooked.count(node_->get_node_base_interface()->get_default_callback_group().get()), 1u);
+  EXPECT_EQ(specific_after, group_thread);
+}
+
+TEST_F(Partitioned, ANodeAddedWhileSpinningHasItsThreadsOnReturn)
+{
+  flux::PartitionedExecutor ex;
+  Spinning spin(ex);
+  auto other = std::make_shared<rclcpp::Node>("flux_part_added");
+  auto g = other->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  std::this_thread::sleep_for(50ms);
+  const std::size_t before = threads();
+  ex.add_node(other);
+  EXPECT_EQ(threads(), before + 2);
+
+  auto refused = std::make_shared<rclcpp::Node>("flux_part_refused");
+  auto r = refused->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+  EXPECT_THROW(ex.add_node(refused), std::invalid_argument);
+  EXPECT_EQ(threads(), before + 2);
+  EXPECT_EQ(spin.stop(), "");
+}
+
+TEST_F(Partitioned, RemoveNodeEndsItsThreadsBeforeItReturns)
+{
+  auto other = std::make_shared<rclcpp::Node>("flux_part_removed");
+  auto g = other->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  std::atomic<int> ticks{0};
+  auto timer = other->create_wall_timer(1ms, [&] { ++ticks; }, g);
+  flux::PartitionedExecutor ex;
+  ex.add_node(node_);
+  ex.add_node(other);
+  Spinning spin(ex);
+  ASSERT_TRUE(eventually([&] { return ticks > 0; }));
+  const std::size_t before = threads();
+  ex.remove_node(other);
+  EXPECT_EQ(threads(), before - 2);
+  const int after = ticks;
+  std::this_thread::sleep_for(150ms);
+  EXPECT_EQ(ticks, after);
+  ex.add_node(other);
+  EXPECT_TRUE(eventually([&] { return ticks > after; }));
+  EXPECT_EQ(spin.stop(), "");
+}
+
+TEST_F(Partitioned, AGroupAnotherExecutorServesIsLeftToIt)
+{
+  auto group = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  std::atomic<std::thread::id> tick_thread{};
+  auto timer =
+    node_->create_wall_timer(5ms, [&] { tick_thread = std::this_thread::get_id(); }, group);
+  rclcpp::executors::SingleThreadedExecutor own;
+  own.add_callback_group(group, node_->get_node_base_interface());
+  std::thread own_thread([&] { own.spin(); });
+  flux::PartitionedExecutor ex;
+  ex.add_node(node_);
+  Spinning spin(ex);
+  ASSERT_TRUE(eventually([&] { return tick_thread.load() != std::thread::id{}; }));
+  std::this_thread::sleep_for(150ms);
+  EXPECT_EQ(spin.stop(), "");
+  EXPECT_EQ(tick_thread.load(), own_thread.get_id());
+  own.cancel();
+  own_thread.join();
 }
 
 TEST_F(Partitioned, MisuseIsRefused)

@@ -1,5 +1,6 @@
 #include "flux/executor.hpp"
 
+#include "flux/detail/group_member.hpp"
 #include "on_exit.hpp"
 
 #include <rclcpp/any_executable.hpp>
@@ -148,7 +149,9 @@ rclcpp::FutureReturnCode Executor::run(
   if (spinning.exchange(true)) {
     throw std::runtime_error("flux: spin() while already spinning or in add()");
   }
+  detail::GroupMember::in_flux_executor() = true;
   const detail::OnExit reset([this] {
+    detail::GroupMember::in_flux_executor() = false;
     stop_ = false;
     core_.clear_interrupt();
     spinning.store(false);
@@ -309,8 +312,15 @@ void Executor::bridge_group(const rclcpp::CallbackGroup::SharedPtr & group)
       if (hooked(timers_, timer)) return;
       timers_[timer.get()] = {timer, on_ros_time(timer, poke)};
     },
-    // Action servers and clients are waitables.
+    // Action servers and clients are waitables, and so are flux sources put in the group.
     [&](const rclcpp::Waitable::SharedPtr & wt) {
+      if (const auto member = std::dynamic_pointer_cast<detail::GroupMember>(wt)) {
+        if (hooked(members_, member)) return;
+        core_.add(member->source(), member->priority());
+        member->served();
+        members_[member.get()] = member;
+        return;
+      }
       seen_.insert(wt.get());
       if (hooked(waitables_, wt)) return;
       wt->set_on_ready_callback([poke](std::size_t n, int) { poke(n); });

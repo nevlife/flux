@@ -1,10 +1,12 @@
 #include "flux/subscription.hpp"
 
+#include "flux/detail/group_member.hpp"
 #include "ros_boundary.hpp"
 
 #include <rclcpp/logging.hpp>
 #include <rclcpp/node_interfaces/node_logging_interface.hpp>
 
+#include <stdexcept>
 #include <utility>
 
 namespace flux
@@ -37,6 +39,15 @@ Subscription::Subscription(
   detail::trace_endpoint(this, node, topic_, sub_.signpost_name(), fingerprint, false);
   // A volatile subscription counts from here, not from the first wake.
   sub_.attach();
+}
+
+void Subscription::add_to_callback_group(
+  const NodeRef & node, const std::shared_ptr<rclcpp::CallbackGroup> & group, std::int32_t priority)
+{
+  if (!cb_)
+    throw std::invalid_argument("flux: a Subscription without a callback has nothing to run");
+  if (member_) throw std::logic_error("flux: the subscription is already in a callback group");
+  member_ = detail::join_group(node, *this, topic_, group, priority);
 }
 
 FrameView Subscription::take_blocking(std::int64_t timeout_ns)

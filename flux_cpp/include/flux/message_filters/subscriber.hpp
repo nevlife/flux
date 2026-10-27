@@ -3,6 +3,7 @@
 
 #include "flux/channel.hpp"
 #include "flux/detail/executor.hpp"
+#include "flux/detail/group_member.hpp"
 #include "flux/subscription.hpp"
 
 #include <message_filters/simple_filter.hpp>
@@ -11,6 +12,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -46,6 +48,15 @@ public:
   : sub_(node, topic, Adapter::kFingerprint, covering(qos, queue))
   {
     sub_.sub_.require_slots(queue + 1);
+  }
+
+  // As Subscription::add_to_callback_group. The inputs of one synchronizer go in one group.
+  void add_to_callback_group(
+    const NodeRef & node, const rclcpp::CallbackGroup::SharedPtr & group = nullptr,
+    std::int32_t priority = 0)
+  {
+    if (member_) throw std::logic_error("flux: the subscriber is already in a callback group");
+    member_ = detail::join_group(node, *this, sub_.topic_name(), group, priority);
   }
 
   const Subscription & subscription() const noexcept { return sub_; }
@@ -97,6 +108,7 @@ private:
   Subscription sub_;
   std::uint64_t forwarded_ = 0;
   std::uint64_t unreadable_ = 0;
+  std::shared_ptr<detail::GroupMember> member_;
 };
 
 }  // namespace flux::message_filters

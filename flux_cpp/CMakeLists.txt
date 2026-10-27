@@ -33,7 +33,8 @@ add_library(flux_cpp
   src/publisher.cpp
   src/subscription.cpp
   src/executor.cpp
-  src/partitioned_executor.cpp)
+  src/partitioned_executor.cpp
+  src/group_member.cpp)
 add_library(flux::cpp ALIAS flux_cpp)
 set_target_properties(flux_cpp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_features(flux_cpp PUBLIC cxx_std_17)

@@ -9,6 +9,7 @@ namespace rclcpp::node_interfaces
 class NodeBaseInterface;
 class NodeTopicsInterface;
 class NodeLoggingInterface;
+class NodeWaitablesInterface;
 }  // namespace rclcpp::node_interfaces
 
 namespace flux
@@ -22,7 +23,8 @@ public:
   NodeRef(NodeT & node)  // NOLINT(runtime/explicit): Publisher(*this, ...) keeps compiling
   : base_(node.get_node_base_interface()),
     topics_(node.get_node_topics_interface()),
-    logging_(node.get_node_logging_interface())
+    logging_(node.get_node_logging_interface()),
+    waitables_(node.get_node_waitables_interface())
   {
   }
 
@@ -38,11 +40,17 @@ public:
   {
     return logging_;
   }
+  const std::shared_ptr<rclcpp::node_interfaces::NodeWaitablesInterface> & waitables()
+    const noexcept
+  {
+    return waitables_;
+  }
 
 private:
   std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface> base_;
   std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface> topics_;
   std::shared_ptr<rclcpp::node_interfaces::NodeLoggingInterface> logging_;
+  std::shared_ptr<rclcpp::node_interfaces::NodeWaitablesInterface> waitables_;
 };
 
 }  // namespace flux
