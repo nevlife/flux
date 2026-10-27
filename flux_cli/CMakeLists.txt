@@ -26,3 +26,4 @@ add_custom_target(flux_cli_cargo ALL
   COMMENT "cargo build flux_cli")
 
 install(PROGRAMS ${CARGO_DIR}/release/flux DESTINATION bin)
+install(FILES environment/flux-complete.bash DESTINATION share/${PROJECT_NAME}/environment)

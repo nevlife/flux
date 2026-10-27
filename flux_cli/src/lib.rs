@@ -66,6 +66,41 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
     })
 }
 
+/// Shell completion candidates for `words`, the arguments after `flux` up to and including the
+/// one being typed. Channel keys come from `topics`; `find` accepts each of them back.
+pub fn complete(words: &[String], topics: &[Topic]) -> Vec<String> {
+    let Some((typed, before)) = words.split_last() else {
+        return Vec::new();
+    };
+    let before: Vec<&str> = before.iter().map(String::as_str).collect();
+    let mut out: Vec<String> = match before.as_slice() {
+        [] => vec!["topic".into()],
+        ["topic"] => vec!["list".into(), "info".into(), "hz".into()],
+        [.., "--window"] => Vec::new(),
+        ["topic", verb @ ("info" | "hz"), rest @ ..] => {
+            if typed.starts_with('-') {
+                if *verb == "hz" && !rest.contains(&"--window") {
+                    vec!["--window".into()]
+                } else {
+                    Vec::new()
+                }
+            } else if !rest
+                .iter()
+                .enumerate()
+                .any(|(i, a)| !a.starts_with('-') && (i == 0 || rest[i - 1] != "--window"))
+            {
+                topics.iter().map(|t| t.key.clone()).collect()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => Vec::new(),
+    };
+    out.retain(|c| c.starts_with(typed.as_str()));
+    out.dedup();
+    out
+}
+
 /// Sorted by key, then signpost, so output is stable.
 pub fn sorted(mut topics: Vec<Topic>) -> Vec<Topic> {
     topics.sort_by(|a, b| (&a.key, &a.signpost).cmp(&(&b.key, &b.signpost)));
@@ -177,6 +212,40 @@ mod tests {
         ] {
             assert!(parse(&argv(bad)).is_err(), "accepted: {bad}");
         }
+    }
+
+    fn completions(line: &str, topics: &[Topic]) -> Vec<String> {
+        let mut words = argv(line);
+        if line.is_empty() || line.ends_with(' ') {
+            words.push(String::new());
+        }
+        complete(&words, topics)
+    }
+
+    #[test]
+    fn completion_offers_verbs_then_channels() {
+        let t = sorted(vec![
+            topic("/cam/left", true, 1),
+            topic("/cam/left", true, 2),
+            topic("/imu", false, 1),
+        ]);
+        assert_eq!(completions("", &t), ["topic"]);
+        assert_eq!(completions("topic ", &t), ["list", "info", "hz"]);
+        assert_eq!(completions("topic h", &t), ["hz"]);
+        assert_eq!(completions("topic info ", &t), [".imu", "/cam/left"]);
+        assert_eq!(completions("topic hz /c", &t), ["/cam/left"]);
+        assert!(completions("topic list ", &t).is_empty());
+        assert!(completions("topic info /imu ", &t).is_empty());
+    }
+
+    #[test]
+    fn completion_offers_window_to_hz_once() {
+        let t = [topic("/cam", true, 1)];
+        assert_eq!(completions("topic hz /cam --", &t), ["--window"]);
+        assert!(completions("topic hz /cam --window ", &t).is_empty());
+        assert!(completions("topic hz --window 2 --", &t).is_empty());
+        assert_eq!(completions("topic hz --window 2 ", &t), ["/cam"]);
+        assert!(completions("topic info --", &t).is_empty());
     }
 
     #[test]

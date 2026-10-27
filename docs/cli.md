@@ -10,6 +10,8 @@ flux topic hz <channel> [--window SEC]
 
 명령을 실행한 사용자가 열 수 있는 채널만 다룬다. 다른 사용자의 채널은 보이지 않는다.
 
+bash에서는 워크스페이스를 source하면 Tab 자동완성이 켜진다. 하위 명령, `--window`, 지금 이 호스트에 보이는 채널 이름을 채운다.
+
 ## topic list
 
 채널마다 한 줄이다.

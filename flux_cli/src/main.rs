@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use flux_cli::format::{
     display_name, endpoint_summary, human_bytes, printable, storage_name, table,
 };
-use flux_cli::{Command, USAGE, find, parse, sorted};
+use flux_cli::{Command, USAGE, complete, find, parse, sorted};
 use flux_core::{ROSTER_ENTRIES, Topic, enumerate_topics, read_channel_stats};
 
 fn list(topics: &[Topic]) -> u8 {
@@ -137,6 +137,13 @@ fn main() -> ExitCode {
     // SAFETY: restoring a signal's default disposition.
     unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Called by the bash completion hook; the words may contain -h, so this comes first.
+    if argv.first().is_some_and(|a| a == "__complete") {
+        for c in complete(&argv[1..], &sorted(enumerate_topics())) {
+            println!("{c}");
+        }
+        return ExitCode::SUCCESS;
+    }
     if argv.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;

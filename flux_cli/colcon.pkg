@@ -1,0 +1,5 @@
+{
+  "hooks": [
+    "share/flux_cli/environment/flux-complete.bash"
+  ]
+}
