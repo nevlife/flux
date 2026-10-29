@@ -13,11 +13,11 @@ flux는 같은 호스트의 ROS 2 노드끼리 큰 데이터(이미지, 포인�
 
 | 항목 | 지원 |
 | --- | --- |
-| OS | Linux. 커널 5.15(Ubuntu 22.04, JetPack 6)부터 7.0까지 시험했다. 5.16 이상에서는 `futex_waitv` 호출 하나로 기다리고, 그보다 낮으면 구독마다 대기 스레드를 둔다 |
-| ROS 2 | Humble, Jazzy, Lyrical. Kilted는 지원하지 않는다 |
+| OS | Linux. 커널 5.16 이상에서는 `futex_waitv` 호출 하나로 기다리고, 그보다 낮으면 구독마다 대기 스레드를 둔다 |
+| ROS 2 | Humble, Jazzy |
 | 언어 | C++17, Python 3(numpy 1.x·2.x) |
 | 빌드 도구 | colcon, CMake 3.16 이상, rustup(Rust 버전은 `rust-toolchain.toml`이 고정한다) |
-| GPU(선택) | CUDA 드라이버. 통합 GPU(Jetson Orin, Thor)와 VMM·POSIX fd를 지원하는 외장 GPU. flux는 `libcuda.so.1`을 실행 시점에 연다. 그래서 GPU가 없는 호스트에서도 같은 바이너리가 돈다 |
+| GPU(선택) | CUDA 드라이버. 통합 GPU(Jetson Orin, Thor. JetPack 7.2)와 VMM·POSIX fd를 지원하는 외장 GPU. flux는 `libcuda.so.1`을 실행 시점에 연다. 그래서 GPU가 없는 호스트에서도 같은 바이너리가 돈다 |
 
 ## 빌드
 
