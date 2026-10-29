@@ -95,20 +95,28 @@ if frame is not None:
 
 ## 장치 메모리 채널(`DeviceHandle`)
 
-외장 GPU의 채널은 데이터가 장치 메모리에만 있다.
+외장 GPU에서 GPU 발행자의 채널은 데이터가 장치 메모리에만 있다. CPU 메모리와 장치 메모리가 떨어져 있으므로, 메모리의 반대편에 있는 쪽은 프레임마다 한 번 복사한다.
 
-| 하지 못하는 것 | 대신 |
+| 발행 → 구독 | 통합 GPU | 외장 GPU |
+| --- | --- | --- |
+| CPU → CPU | 복사 없음 | 복사 없음 |
+| GPU → GPU | 복사 없음 | 복사 없음 |
+| CPU → GPU | 복사 없음 | 구독자가 take마다 자기 장치 버퍼로 복사한다. 복사는 구독 stream에 걸린다 |
+| GPU → CPU | 복사 없음 | 구독자가 take마다 자기 호스트 버퍼로 복사하고, take 안에서 끝을 기다린다 |
+| `publish(호스트 배열)` → 장치 메모리 채널 | 해당 없음 | 발행자가 슬롯으로 복사한 뒤 commit한다 |
+
+| 장치 메모리 채널에서 하지 못하는 것 | 대신 |
 | --- | --- |
-| `publish(호스트 배열)` | `WrongDevice`. loan하고 장치에서 쓴다 |
-| CPU 구독(`Device::Cpu`) | 붙을 때 `MISMATCH`로 거절한다. GPU 구독만 붙는다 |
-| `data()`, Python `loan.array` | `nullptr`, 예외. `device_ptr()`이나 `__dlpack__`을 쓴다 |
-| adapter의 `View`·`Builder` | 프레임 배치가 호스트 메모리를 전제하므로 쓰지 못한다 |
+| loan의 `data()`, Python `loan.array` | `nullptr`, 예외. `device_ptr()`이나 `__dlpack__`을 쓴다 |
+| adapter의 `Builder`, GPU 구독자의 `View` | 프레임 배치가 호스트 메모리를 전제하므로 쓰지 못한다. CPU 구독자의 `View`는 자기 복사본을 읽는다 |
+
+- 장치 메모리 채널의 CPU 구독자가 받는 view는 `data()`가 자기 복사본이고, `device_ptr()`은 0이다.
+- 복사가 실패한 take는 빈 결과이고 `refused.fence`로 센다. 그 슬롯은 돌려주지 않는다.
 
 - 구독자는 메모리를 할당한 장치를 번호가 아니라 UUID로 찾는다. 그래서 `CUDA_VISIBLE_DEVICES`가 달라도 같은 장치를 찾는다. 구독 stream의 장치가 그 장치와 다르면 `MISMATCH`다.
-- 경로가 `DeviceHandle`인 호스트에서는 호스트 메모리 채널의 GPU 구독을 `INVALID_ARGUMENT`로 거절한다.
 - 장치 메모리 fd는 `/dev/shm/flux.gpu.<dev>.<ino>` 소켓으로 넘긴다. 세그먼트가 보이는 곳에서는 이 소켓도 보인다.
 
-통합 GPU(`ShmRegistered`, `ShmDirect`)에서는 슬롯이 호스트 메모리이기도 하므로 위 제한이 없다. 한 채널에서 CPU 구독과 GPU 구독이 같이 돈다.
+통합 GPU(`ShmRegistered`, `ShmDirect`)에서는 슬롯이 호스트 메모리이기도 하므로 복사가 없다. 한 채널에서 CPU 구독과 GPU 구독이 같이 돈다.
 
 ## 기다림의 상한과 해제 방식
 

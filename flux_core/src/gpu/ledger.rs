@@ -1,5 +1,6 @@
 //! A debug build's ledger of what the GPU path holds, after the kernel's `DMA_API_DEBUG`: host
-//! registrations, exports, imports and the exported descriptor with their sizes, and each GPU
+//! registrations, exports, imports, a subscriber's copies and the exported descriptor with their
+//! sizes, and each GPU
 //! channel's borrows with the fences that let them go. Misuse panics where it happens: a release
 //! of what is not held, a size that differs from the one made, a borrow returned without a fence
 //! that finished. What a channel still holds when it goes, or the process at exit, is reported as
@@ -18,6 +19,7 @@ pub(crate) enum Held {
     Registration(usize),
     Export(u64),
     Import(u64),
+    Copy(u64),
     Fd(i32),
 }
 

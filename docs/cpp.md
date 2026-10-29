@@ -67,7 +67,7 @@ flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
 | `NotPublisher` | 발행할 수 없는 채널이다 |
 | `InvalidArgument` | 알 수 없는 dtype이거나 이미 끝난 loan의 commit이다 |
 | `InUse` | 다른 스레드가 같은 발행자를 쓰는 중이다 |
-| `WrongDevice` | 장치 메모리 채널에 호스트 배열을 발행했다([gpu.md](gpu.md)) |
+| `WrongDevice` | 지금은 돌려주지 않는다. 장치 메모리 채널의 `publish()`는 호스트 배열을 복사해 발행한다([gpu.md](gpu.md)) |
 | `FenceFailed` | CUDA stream을 기다리지 못했다. fence 상한이 없으면 그 슬롯은 다시 쓰이지 않고, 있으면 작업이 끝난 뒤 돌아온다 |
 | `GpuWedged` | 프로세스의 GPU가 복구할 수 없는 CUDA 오류로 멈췄다. 프로세스를 다시 띄운다 |
 

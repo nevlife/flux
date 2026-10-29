@@ -73,8 +73,8 @@ pub enum Published {
     TooLarge,
     /// This channel was opened as a subscriber, or before a `fork()` this process came out of.
     NotPublisher,
-    /// The payload is device memory, which a host copy cannot reach: loan and write through
-    /// `device_ptr`.
+    /// No longer returned: `publish` copies host bytes into a device payload. Kept so the C ABI's
+    /// values do not move.
     WrongDevice,
     /// The declared stream could not be waited for. The slot stays claimed and is never reused.
     FenceFailed,
@@ -111,12 +111,27 @@ pub struct Refused {
     pub fence: u64,
 }
 
-/// A channel that declared a stream: the device address of slot 0's payload and the stream both
-/// seams wait for.
+/// A channel that declared a stream, or a host subscriber of a device payload: the device address
+/// of slot 0's payload and the stream both seams wait for.
 struct GpuState {
     stream: Stream,
     base: u64,
     stats: Arc<FenceStats>,
+    staged: Staged,
+}
+
+/// A subscriber on a discrete GPU whose payload sits across `PCIe` reads its own copy, which each
+/// take makes.
+enum Staged {
+    InPlace,
+    /// A host payload copied to the device. `GpuState::base` is this buffer's.
+    Device(gpu::DeviceBuffer),
+    /// A device payload, imported at `from`, copied to the host on a stream of flux's own. Such a
+    /// subscriber declared no stream, so its views show neither a device address nor a stream.
+    Host {
+        buf: gpu::HostBuffer,
+        from: u64,
+    },
 }
 
 /// What views and loans keep alive past their Channel: the mapping and this consumer's number.
@@ -210,18 +225,15 @@ impl ChannelShared {
     /// Judges the stream against the payload and makes it device-addressable. Every refusal is
     /// permanent: retrying never turns a host payload into a device one.
     fn attach_device(&mut self, stream: &Stream, stats: &Arc<FenceStats>) -> Result<()> {
-        let seg = &self.seg;
         if !stream.declared() {
-            if seg.host_payload() {
+            if self.seg.host_payload() {
                 return Ok(());
             }
-            return Err(Error::Mismatch(format!(
-                "the payload of '{}' lives in GPU memory and cannot be read from the host; declare \
-                 a stream",
-                seg.name()
-            )));
+            return self.attach_host_copy(stats);
         }
+        let seg = &self.seg;
         let route = gpu::require_route(stream.device())?.route;
+        let mut staged = Staged::InPlace;
         let base = if seg.host_payload() {
             let payload = seg.payload(0);
             match route {
@@ -238,12 +250,25 @@ impl ChannelShared {
                         .map(DevicePayload::Registered)
                     })?
                     .base(),
+                // A discrete GPU reads host memory across `PCIe` at every access, so the frame is
+                // copied once. Registering the mapping keeps that copy off the calling thread.
                 Route::DeviceHandle | Route::None => {
-                    return Err(Error::InvalidArgument(
-                        "this host reaches the GPU through the device handle path, so a channel \
-                         that declares a stream needs a device payload; this one's is host memory"
-                            .into(),
-                    ));
+                    if !seg.payload_readonly() || gpu::registers_read_only(stream.device()) {
+                        seg.device_payload(|| {
+                            HostRegistration::new(
+                                payload,
+                                seg.layout().payload_bytes(),
+                                seg.payload_readonly(),
+                                stream.device(),
+                            )
+                            .map(DevicePayload::Registered)
+                        })?;
+                    }
+                    let buf =
+                        gpu::DeviceBuffer::new(seg.layout().payload_bytes(), stream.device())?;
+                    let base = buf.base();
+                    staged = Staged::Device(buf);
+                    base
                 }
             }
         } else {
@@ -254,12 +279,7 @@ impl ChannelShared {
                     seg.name()
                 )));
             }
-            let ordinal = gpu::device_for_uuid(&seg.header().device_uuid).ok_or_else(|| {
-                Error::Mismatch(format!(
-                    "no device in this process has the UUID '{}' was allocated on",
-                    seg.name()
-                ))
-            })?;
+            let ordinal = self.payload_device()?;
             if ordinal != stream.device() {
                 return Err(Error::Mismatch(format!(
                     "the payload of '{}' is on device {ordinal} and the stream on device {}, \
@@ -268,7 +288,55 @@ impl ChannelShared {
                     stream.device()
                 )));
             }
-            seg.device_payload(|| {
+            self.import(ordinal)?
+        };
+        self.gpu = Some(GpuState {
+            stream: stream.clone(),
+            base,
+            stats: Arc::clone(stats),
+            staged,
+        });
+        Ok(())
+    }
+
+    /// A host subscriber of a device payload: the payload is imported and each take copies the
+    /// frame to pinned host memory of this subscriber's.
+    fn attach_host_copy(&mut self, stats: &Arc<FenceStats>) -> Result<()> {
+        let ordinal = self.payload_device()?;
+        let route = gpu::require_route(ordinal)?.route;
+        if route != Route::DeviceHandle {
+            return Err(Error::Mismatch(format!(
+                "the payload of '{}' is a device allocation, which this host's {route} route does \
+                 not import",
+                self.seg.name()
+            )));
+        }
+        let from = self.import(ordinal)?;
+        let buf = gpu::HostBuffer::new(self.seg.layout().payload_bytes(), ordinal)?;
+        self.gpu = Some(GpuState {
+            stream: Stream::on_device(ordinal)?,
+            base: 0,
+            stats: Arc::clone(stats),
+            staged: Staged::Host { buf, from },
+        });
+        Ok(())
+    }
+
+    /// This process's ordinal of the device the payload was allocated on.
+    fn payload_device(&self) -> Result<i32> {
+        gpu::device_for_uuid(&self.seg.header().device_uuid).ok_or_else(|| {
+            Error::Mismatch(format!(
+                "the payload of '{}' is in GPU memory, and no device in this process has the UUID \
+                 it was allocated on",
+                self.seg.name()
+            ))
+        })
+    }
+
+    fn import(&self, ordinal: i32) -> Result<u64> {
+        let seg = &self.seg;
+        Ok(seg
+            .device_payload(|| {
                 gpu::DeviceImport::open(
                     &gpu::endpoint(seg.id()),
                     seg.layout().payload_bytes(),
@@ -276,27 +344,68 @@ impl ChannelShared {
                 )
                 .map(DevicePayload::Imported)
             })?
-            .base()
-        };
-        self.gpu = Some(GpuState {
-            stream: stream.clone(),
-            base,
-            stats: Arc::clone(stats),
-        });
-        Ok(())
+            .base())
+    }
+
+    fn slot_offset(&self, slot: u32) -> usize {
+        slot as usize * self.seg.layout().payload_stride()
     }
 
     fn device_ptr(&self, slot: u32) -> u64 {
-        self.gpu.as_ref().map_or(0, |g| {
-            g.base + u64::from(slot) * self.seg.layout().payload_stride() as u64
-        })
+        match &self.gpu {
+            Some(g) if !matches!(g.staged, Staged::Host { .. }) => {
+                g.base + self.slot_offset(slot) as u64
+            }
+            _ => 0,
+        }
     }
 
     fn stream(&self) -> Stream {
-        self.gpu
-            .as_ref()
-            .map(|g| g.stream.clone())
-            .unwrap_or_default()
+        match &self.gpu {
+            Some(g) if !matches!(g.staged, Staged::Host { .. }) => g.stream.clone(),
+            _ => Stream::default(),
+        }
+    }
+
+    /// The bytes of `slot` the host reads: the mapping, or this subscriber's copy of a device
+    /// payload.
+    fn host_slot(&self, slot: u32) -> Option<*mut u8> {
+        if self.seg.host_payload() {
+            return Some(self.seg.payload(slot));
+        }
+        match &self.gpu {
+            Some(GpuState {
+                staged: Staged::Host { buf, .. },
+                ..
+            }) => {
+                // SAFETY: the copy is payload_bytes long, as the payload.
+                Some(unsafe { buf.base().add(self.slot_offset(slot)) })
+            }
+            _ => None,
+        }
+    }
+
+    /// Copies the borrowed `slot` to where this subscriber reads it. A host copy is waited for
+    /// here, since the caller reads it once the take returns; a device copy is queued on the
+    /// channel's stream, which the caller's work follows. False once the driver refused, when the
+    /// copy may have run in part.
+    fn stage(&self, slot: u32, nbytes: usize) -> bool {
+        let Some(g) = &self.gpu else {
+            return true;
+        };
+        let at = self.slot_offset(slot);
+        match &g.staged {
+            Staged::InPlace => true,
+            Staged::Device(buf) => {
+                g.stream
+                    .copy_to_device(buf.base() + at as u64, self.seg.payload(slot), nbytes)
+            }
+            Staged::Host { buf, from } => {
+                // SAFETY: at + nbytes is inside the copy, as inside the payload.
+                let to = unsafe { buf.base().add(at) };
+                g.stream.copy_to_host(to, from + at as u64, nbytes) && g.stream.wait()
+            }
+        }
     }
 
     /// Before a commit or a release declares done what the stream may still be doing. A forked
@@ -428,11 +537,14 @@ impl ChannelShared {
         let Ok(at) = usize::try_from(self.stamp_offset) else {
             return 0;
         };
-        if !self.seg.host_payload() || at as u64 + 8 > nbytes {
+        let Some(base) = self.host_slot(slot) else {
+            return 0;
+        };
+        if at as u64 + 8 > nbytes {
             return 0;
         }
         // SAFETY: at + 8 <= nbytes <= slot_size: inside the slot.
-        let p = unsafe { self.seg.payload(slot).add(at) };
+        let p = unsafe { base.add(at) };
         // SAFETY: the caller owns the slot, so nobody writes it meanwhile.
         u64::from_le_bytes(unsafe { std::ptr::read_unaligned(p.cast::<[u8; 8]>()) })
     }
@@ -678,16 +790,17 @@ pub struct FrameView {
 }
 
 impl FrameView {
-    /// Empty when the payload is device memory; read it through `device_ptr`.
+    /// Empty when the payload is device memory and this subscriber declared a stream; read it
+    /// through `device_ptr`.
     pub fn data(&self) -> &[u8] {
-        if !self.sh.seg.host_payload() {
+        let Some(p) = self.sh.host_slot(self.slot) else {
             return &[];
-        }
+        };
         #[allow(clippy::cast_possible_truncation)]
         let len = self.meta.nbytes as usize;
-        // SAFETY: the borrow keeps the publisher off this slot, and take checked nbytes against
-        // slot_size.
-        unsafe { std::slice::from_raw_parts(self.sh.seg.payload(self.slot), len) }
+        // SAFETY: the borrow keeps the publisher off this slot, and this channel's next copy into
+        // it off its copy; take checked nbytes against slot_size.
+        unsafe { std::slice::from_raw_parts(p, len) }
     }
 
     /// The frame's device address, 0 when the channel declared no stream. Read-only on a
@@ -702,7 +815,7 @@ impl FrameView {
     }
 
     pub fn host_addressable(&self) -> bool {
-        self.sh.seg.host_payload()
+        self.sh.host_slot(self.slot).is_some()
     }
 
     pub fn meta(&self) -> &FrameMeta {
@@ -1225,8 +1338,6 @@ impl Channel {
     fn publish_meta(&mut self, data: &[u8], meta: FrameMeta) -> Published {
         let refused = if !self.can_publish() {
             Some((Published::NotPublisher, trace::CLAIM_NOT_PUBLISHER))
-        } else if !self.sh.seg.host_payload() {
-            Some((Published::WrongDevice, trace::CLAIM_WRONG_DEVICE))
         } else if !fits(&meta, self.slot_size()) || data.len() as u64 != meta.nbytes {
             Some((Published::TooLarge, trace::CLAIM_TOO_LARGE))
         } else if !matches!(self.sh.fence(Seam::Commit), Fenced::Done) {
@@ -1246,11 +1357,41 @@ impl Channel {
         let Some(s) = self.claim(0) else {
             return Published::Backpressure;
         };
+        if !self.sh.seg.host_payload() {
+            return self.publish_to_device(s, data, &meta);
+        }
         // SAFETY: the claim makes this the only access to the slot, and nbytes <= slot_size.
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), self.sh.seg.payload(s), data.len()) };
         self.sh.finish_commit(s, &meta);
         self.order.queue.push_back(s);
         Published::Ok
+    }
+
+    /// Copies host `data` into the claimed device slot `s` on the channel's stream, which the
+    /// commit then waits for. A failed copy or fence keeps the claim, as a loan's commit does.
+    fn publish_to_device(&mut self, s: u32, data: &[u8], meta: &FrameMeta) -> Published {
+        let dst = self.sh.device_ptr(s);
+        let copied = self
+            .sh
+            .gpu
+            .as_ref()
+            .is_some_and(|g| g.stream.copy_to_device(dst, data.as_ptr(), data.len()));
+        let fenced = if copied {
+            self.sh.fence(Seam::Commit)
+        } else {
+            Fenced::Failed
+        };
+        match fenced {
+            Fenced::Done => {
+                self.sh.finish_commit(s, meta);
+                self.order.queue.push_back(s);
+                return Published::Ok;
+            }
+            Fenced::Failed => std::mem::forget(Arc::clone(&self.sh)),
+            Fenced::Late(late) => self.sh.defer(late, s, 0, Seam::Commit, false),
+        }
+        self.order.loaned.push(s);
+        fence_failed(trace::CLAIM_FENCE_FAILED, trace::CLAIM_GPU_WEDGED).0
     }
 
     /// The whole slot as one u8 run; commit the prefix written with `commit_len`.
@@ -1363,12 +1504,25 @@ impl Channel {
                 ));
                 continue;
             }
-            self.stalled_polls = 0;
-            self.last_seen_ticket = t;
-            self.taken = true;
             if self.sh.gpu.is_some() {
                 ledger::borrowed(self.sh.trace_handle(), s);
             }
+            #[allow(clippy::cast_possible_truncation)]
+            if !self.sh.stage(s, meta.nbytes as usize) {
+                // The copy may still read the slot: the borrow stays, as a failed fence's does.
+                ledger::kept(self.sh.trace_handle(), s);
+                self.sh.leases_leaked.fetch_add(1, Ordering::Release);
+                std::mem::forget(Arc::clone(&self.sh));
+                self.refused.fence += 1;
+                event!(flux_trace_refused(
+                    self.sh.trace_handle(),
+                    trace::REFUSED_FENCE
+                ));
+                return None;
+            }
+            self.stalled_polls = 0;
+            self.last_seen_ticket = t;
+            self.taken = true;
             event!(flux_trace_take(
                 self.sh.trace_handle(),
                 t,

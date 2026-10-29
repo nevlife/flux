@@ -131,7 +131,6 @@ TEST_F(Gpu, TheLegacyDefaultStreamIsRefused)
 // What a kernel writes into a loan, after the commit's fence, both kinds of subscriber read.
 TEST_F(Gpu, AFrameWrittenOnTheDeviceReachesHostAndDeviceSubscribers)
 {
-  if (platform_.route == flux::gpu::Route::DeviceHandle) GTEST_SKIP() << "host reads need shm";
   const std::string name = unique_name("loan");
   auto pub = flux::detail::Channel::create(
     name, 1 << 16, 4, flux::kNoSchema, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
@@ -166,7 +165,6 @@ TEST_F(Gpu, AFrameWrittenOnTheDeviceReachesHostAndDeviceSubscribers)
 
 TEST_F(Gpu, PublisherAndSubscriptionTakeADevice)
 {
-  if (platform_.route == flux::gpu::Route::DeviceHandle) GTEST_SKIP() << "host reads need shm";
   if (!rclcpp::ok()) rclcpp::init(0, nullptr);
   auto node = std::make_shared<rclcpp::Node>("flux_gpu_test");
   const std::string topic = "/gpu" + std::to_string(getpid()) + "_node";

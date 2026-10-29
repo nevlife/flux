@@ -522,28 +522,30 @@ mod channel {
         assert_eq!(super::UNMAPPED_UNREGISTERS.get(), 0);
     }
 
-    #[test]
-    fn a_device_payload_reaches_only_a_device_subscriber() {
-        let Some((memset, copy)) = gpu() else { return };
+    fn discrete() -> Option<Forced> {
         let p = probe(0);
-        if !(p.vmm && p.posix_fd_handle) {
-            return;
-        }
-        let _route = Forced::route(super::Route::DeviceHandle);
+        (p.vmm && p.posix_fd_handle).then(|| Forced::route(super::Route::DeviceHandle))
+    }
+
+    fn pattern() -> Vec<u8> {
+        #[allow(clippy::cast_possible_truncation)]
+        (0..4096u32).map(|i| (i * 7) as u8).collect()
+    }
+
+    #[test]
+    fn a_device_payload_reaches_both_kinds_of_subscriber() {
+        let Some((memset, copy)) = gpu() else { return };
+        let Some(_route) = discrete() else { return };
         let name = topic("dev");
         let mut p = publisher(&name, Stream::create().unwrap());
         assert!(p.device_backed());
-        assert_eq!(p.publish(b"host bytes"), Published::WrongDevice);
+        let mut cpu = subscriber(&name, Stream::default()).unwrap();
+        let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
         let mut w = p.loan().unwrap();
         assert!(w.data_mut().is_empty());
         fill(memset, w.device_ptr(), 0x21, 4096, &w.stream());
         assert_eq!(w.commit_len(4096), Published::Ok);
 
-        let cpu = subscriber(&name, Stream::default());
-        assert!(matches!(cpu, Err(Error::Mismatch(_))), "{:?}", cpu.err());
-
-        let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
-        assert!(dev.device_backed());
         let v = dev.take().unwrap();
         assert!(v.data().is_empty() && !v.host_addressable());
         assert_eq!(v.meta().nbytes, 4096);
@@ -552,6 +554,54 @@ mod channel {
                 .iter()
                 .all(|&b| b == 0x21)
         );
+        drop(v);
+
+        let v = cpu.take().unwrap();
+        assert!(v.host_addressable());
+        assert_eq!((v.device_ptr(), v.stream().declared()), (0, false));
+        assert_eq!(v.data().len(), 4096);
+        assert!(v.data().iter().all(|&b| b == 0x21));
+    }
+
+    #[test]
+    fn host_bytes_published_into_a_device_payload_reach_both_kinds_of_subscriber() {
+        let Some((_, copy)) = gpu() else { return };
+        let Some(_route) = discrete() else { return };
+        let name = topic("dev_publish");
+        let mut p = publisher(&name, Stream::create().unwrap());
+        let mut cpu = subscriber(&name, Stream::default()).unwrap();
+        let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
+        let bytes = pattern();
+        assert_eq!(p.publish(&bytes), Published::Ok);
+
+        let v = dev.take().unwrap();
+        assert_eq!(read_back(copy, v.device_ptr(), bytes.len()), bytes);
+        drop(v);
+        assert_eq!(cpu.take().unwrap().data(), &bytes[..]);
+    }
+
+    #[test]
+    fn a_host_payload_is_copied_for_a_device_subscriber_on_a_discrete_gpu() {
+        let Some((_, copy)) = gpu() else { return };
+        let Some(_route) = discrete() else { return };
+        let name = topic("h2d");
+        let mut p = publisher(&name, Stream::default());
+        assert!(!p.device_backed());
+        let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
+        let bytes = pattern();
+        let other: Vec<u8> = bytes.iter().map(|b| !b).collect();
+        assert_eq!(p.publish(&bytes), Published::Ok);
+        assert_eq!(p.publish(&other), Published::Ok);
+
+        let qos = QoS::new(4).unwrap().transient_local(4).max_borrow(2);
+        dev.set_qos(qos.unwrap()).unwrap();
+        let first = dev.take().unwrap();
+        let second = dev.take().unwrap();
+        assert!(first.host_addressable() && first.data() == &bytes[..]);
+        assert_ne!(first.device_ptr(), second.device_ptr());
+        assert!(first.stream().wait());
+        assert_eq!(read_back(copy, first.device_ptr(), bytes.len()), bytes);
+        assert_eq!(read_back(copy, second.device_ptr(), other.len()), other);
     }
 
     /// The endpoint of the publisher's segment, found by the segment file's inode.

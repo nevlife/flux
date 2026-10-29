@@ -125,6 +125,12 @@ pub(crate) struct Vmm {
     pub release: unsafe extern "C" fn(AllocHandle) -> CuResult,
 }
 
+/// Copies between host and device memory, queued on a stream.
+pub(crate) struct Copies {
+    pub htod: unsafe extern "C" fn(DevicePtr, *const c_void, usize, Handle) -> CuResult,
+    pub dtoh: unsafe extern "C" fn(*mut c_void, DevicePtr, usize, Handle) -> CuResult,
+}
+
 /// Groups load apart: a driver without host registration or VMM still serves the other routes.
 pub(crate) struct Driver {
     #[cfg_attr(not(test), allow(dead_code))]
@@ -132,6 +138,7 @@ pub(crate) struct Driver {
     pub core: Result<Core, &'static str>,
     pub host_reg: Result<HostReg, &'static str>,
     pub vmm: Result<Vmm, &'static str>,
+    pub copies: Result<Copies, &'static str>,
     born: u32,
 }
 
@@ -181,6 +188,7 @@ impl Driver {
             core: Err(why),
             host_reg: Err(why),
             vmm: Err(why),
+            copies: Err(why),
             born: sys::fork_gen(),
         };
         // SAFETY: a constant NUL-terminated name.
@@ -208,6 +216,7 @@ impl Driver {
             core: Ok(core),
             host_reg: Driver::host_reg(lib).ok_or("libcuda.so.1 has no host registration"),
             vmm: Driver::vmm(lib).ok_or("libcuda.so.1 has no virtual memory management"),
+            copies: Driver::copies(lib).ok_or("libcuda.so.1 has no asynchronous copies"),
             born: sys::fork_gen(),
         }
     }
@@ -271,6 +280,13 @@ impl Driver {
         })
     }
 
+    fn copies(lib: usize) -> Option<Copies> {
+        load!(lib, Copies {
+            htod = c"cuMemcpyHtoDAsync_v2",
+            dtoh = c"cuMemcpyDtoHAsync_v2",
+        })
+    }
+
     /// The test stand-in's driver, which has no VMM.
     #[cfg(test)]
     pub(crate) fn stand_in(core: Core, host_reg: HostReg) -> Driver {
@@ -279,6 +295,7 @@ impl Driver {
             core: Ok(core),
             host_reg: Ok(host_reg),
             vmm: Err("the stand-in driver has no virtual memory management"),
+            copies: Err("the stand-in driver has no copies"),
             born: sys::fork_gen(),
         }
     }

@@ -246,6 +246,45 @@ impl Drop for DeviceAlloc {
     }
 }
 
+/// A subscriber's own device copy of a host payload, never exported.
+pub(crate) struct DeviceBuffer {
+    region: Region,
+}
+
+impl DeviceBuffer {
+    pub(crate) fn new(bytes: usize, ordinal: i32) -> Result<DeviceBuffer> {
+        let (core, vmm) = vmm()?;
+        let ctx = core
+            .primary_context(ordinal)
+            .ok_or_else(|| Error::Unsupported("the primary context was refused".into()))?;
+        let device = device_handle(core, ordinal)
+            .ok_or_else(|| Error::Unsupported("cuDeviceGet failed".into()))?;
+        sys::watch_fork();
+        let mut region = Region::new(ctx, rounded(vmm, device, bytes)?);
+        let prop = pinned_on(device);
+        // SAFETY: valid pointers; size is a multiple of the granularity.
+        if unsafe { (vmm.create)(&raw mut region.alloc, region.size, &raw const prop, 0) }
+            != SUCCESS
+        {
+            region.alloc = 0;
+            return Err(Error::Unsupported("cuMemCreate failed".into()));
+        }
+        region.map(vmm, device, MEM_ACCESS_READ_WRITE)?;
+        ledger::made(Held::Copy(region.addr), region.size);
+        Ok(DeviceBuffer { region })
+    }
+
+    pub(crate) fn base(&self) -> DevicePtr {
+        self.region.addr
+    }
+}
+
+impl Drop for DeviceBuffer {
+    fn drop(&mut self) {
+        ledger::undone(Held::Copy(self.region.addr), self.region.size);
+    }
+}
+
 /// A subscriber's mapping of the publisher's allocation, readable only: a consuming kernel cannot
 /// write the slot.
 pub(crate) struct DeviceImport {

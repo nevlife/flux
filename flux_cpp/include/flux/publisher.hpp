@@ -74,7 +74,7 @@ public:
   gpu::FenceWait fence_wait() const noexcept { return ch_.fence_wait(); }
   // Zero, the default, is no bound. A commit that runs out is FenceFailed until its work is done.
   void set_fence_timeout(std::chrono::nanoseconds t) const noexcept { ch_.set_fence_timeout(t); }
-  // The payload is device memory: publish() is WrongDevice and a loan's data() is null.
+  // The payload is device memory: publish() copies host bytes to it and a loan's data() is null.
   bool device_backed() const noexcept { return ch_.device_backed(); }
   std::uint32_t slot_size() const noexcept { return ch_.slot_size(); }
   const std::string & topic_name() const noexcept { return topic_; }

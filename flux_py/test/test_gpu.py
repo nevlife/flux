@@ -78,8 +78,6 @@ def test_the_probe_names_the_route_and_its_attributes():
 
 
 def test_a_frame_written_on_the_device_reaches_host_and_device_subscribers(node):
-    if flux.probe().route == flux.Route.DEVICE_HANDLE:
-        pytest.skip("host subscribers need a host payload")
     pub = flux.Publisher(node, topic("rt"), device="cuda", **SMALL)
     cpu = flux.Subscription(node, topic("rt"), qos=flux.QoS(depth=4))
     dev = flux.Subscription(node, topic("rt"), qos=flux.QoS(depth=4), device="cuda")
@@ -317,8 +315,6 @@ def tensor_msg(tmp_path_factory):
 
 def tensor_channel(node, m, name):
     """A host publisher and a CUDA subscription of a tensor message."""
-    if flux.probe().route == flux.Route.DEVICE_HANDLE:
-        pytest.skip("the fields are read through a host mapping")
     pub = flux.Publisher(node, topic(name), fingerprint=m.FINGERPRINT__, **SMALL)
     qos = flux.QoS(depth=4, max_borrow=1)
     sub = flux.Subscription(node, topic(name), fingerprint=m.FINGERPRINT__, qos=qos, device="cuda")
@@ -386,8 +382,7 @@ def test_a_device_array_is_refused_by_publish(node):
     pub = flux.Publisher(node, topic("refuse"), device="cuda", **SMALL)
     with pytest.raises(TypeError, match="loan"):
         pub.publish(torch.zeros(4, device="cuda"))
-    host = flux.Published.WRONG_DEVICE if pub.device_backed else flux.Published.OK
-    assert pub.publish(np.zeros(4, np.float32)) == host
+    assert pub.publish(np.zeros(4, np.float32)) == flux.Published.OK
 
 
 def test_a_device_name_other_than_cpu_or_cuda_is_refused(node):
@@ -451,11 +446,7 @@ CHILD = textwrap.dedent(
     t = f"/d{os.getpid()}"
     pub = flux.Publisher(node, t, slot_size=1 << 16, slot_count=4, device="cuda")
     assert pub.device_backed
-    try:
-        flux.Subscription(node, t)
-        raise SystemExit("a host subscription attached to a device payload")
-    except flux.Error as e:
-        assert e.status == flux.Status.MISMATCH, e
+    cpu = flux.Subscription(node, t, qos=flux.QoS(depth=4))
     sub = flux.Subscription(node, t, qos=flux.QoS(depth=4), device="cuda")
     loan = pub.loan((128,), "float32")
     try:
@@ -463,13 +454,18 @@ CHILD = textwrap.dedent(
         raise SystemExit("a device loan handed out a host array")
     except RuntimeError:
         pass
-    assert pub.publish(np.zeros(4, np.float32)) == flux.Published.WRONG_DEVICE
     with torch.cuda.stream(torch.cuda.ExternalStream(loan.stream)):
         torch.as_tensor(loan, device="cuda").fill_(1.25)
     assert loan.commit() == flux.Published.OK
+    assert pub.publish(np.full(4, 2.0, np.float32)) == flux.Published.OK
     with sub.take() as f:
         with torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
             assert float(torch.from_dlpack(f).sum()) == 1.25 * 128
+    with sub.take() as f:
+        with torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
+            assert float(torch.from_dlpack(f).sum()) == 8.0
+    assert float(cpu.take().sum()) == 1.25 * 128
+    assert cpu.take().tolist() == [2.0] * 4
     print("ok")
     """
 )

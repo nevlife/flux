@@ -25,7 +25,8 @@ use driver::{
     NOT_READY, SUCCESS,
 };
 pub(crate) use vmm::{
-    DeviceAlloc, DeviceImport, device_for_uuid, device_uuid, endpoint, remove_dead_endpoint,
+    DeviceAlloc, DeviceBuffer, DeviceImport, device_for_uuid, device_uuid, endpoint,
+    remove_dead_endpoint,
 };
 
 use crate::error::{Error, Result};
@@ -276,6 +277,22 @@ impl Stream {
             return Err(Error::Unsupported("cuStreamCreate failed".into()));
         }
         Stream::with_event(core, native, ctx, device, true)
+    }
+
+    /// A stream flux owns on `ordinal`'s primary context, for copies the caller did not ask a
+    /// stream for: a host subscriber reading a device payload.
+    pub(crate) fn on_device(ordinal: i32) -> Result<Stream> {
+        let core = core()?;
+        let ctx = core
+            .primary_context(ordinal)
+            .ok_or_else(|| Error::Unsupported("the primary context was refused".into()))?;
+        let mut native = std::ptr::null_mut();
+        // SAFETY: native is a valid out-pointer; flags 0 is CU_STREAM_DEFAULT.
+        let rc = core.with_context(ctx, || unsafe { (core.stream_create)(&raw mut native, 0) });
+        if !ok(rc) {
+            return Err(Error::Unsupported("cuStreamCreate failed".into()));
+        }
+        Stream::with_event(core, native, ctx, ordinal, true)
     }
 
     /// The caller's stream. Null is CUDA's legacy default stream, which names a different stream
@@ -635,6 +652,37 @@ impl Stream {
         }
     }
 
+    /// Queues `n` bytes from host `src` to device `dst`. A registered `src` keeps the copy off
+    /// the calling thread; a pageable one is staged before this returns.
+    pub(crate) fn copy_to_device(&self, dst: DevicePtr, src: *const u8, n: usize) -> bool {
+        self.copy(|c, stream| {
+            // SAFETY: the caller holds src..src+n and dst..dst+n until the stream is waited for.
+            unsafe { (c.htod)(dst, src.cast(), n, stream) }
+        })
+    }
+
+    /// Queues `n` bytes from device `src` to host `dst`.
+    pub(crate) fn copy_to_host(&self, dst: *mut u8, src: DevicePtr, n: usize) -> bool {
+        self.copy(|c, stream| {
+            // SAFETY: as copy_to_device.
+            unsafe { (c.dtoh)(dst.cast(), src, n, stream) }
+        })
+    }
+
+    fn copy(&self, f: impl FnOnce(&driver::Copies, *mut c_void) -> CuResult) -> bool {
+        let Some(s) = &self.0 else {
+            return false;
+        };
+        if sys::fork_gen() != s.born {
+            return false;
+        }
+        let drv = Driver::get();
+        let (Ok(core), Ok(copies)) = (&drv.core, &drv.copies) else {
+            return false;
+        };
+        ok(core.with_context(s.ctx as *mut c_void, || f(copies, s.native as *mut c_void)))
+    }
+
     /// Orders the next work queued on this stream after everything queued on `other` so far, on
     /// the device: no thread waits.
     pub fn after(&self, other: &Stream) -> bool {
@@ -745,6 +793,67 @@ impl Drop for HostRegistration {
             // SAFETY: registered in new(), unregistered once, before the mapping goes.
             unsafe { (reg.unregister)(self.base as *mut c_void) };
         });
+    }
+}
+
+/// Whether `device` pins a `PROT_READ` mapping. Without it a subscriber's mapping cannot be
+/// registered, and a copy from it is staged by the driver on the calling thread.
+pub(crate) fn registers_read_only(device: i32) -> bool {
+    let Ok(core) = Driver::get().usable_core() else {
+        return false;
+    };
+    let mut handle = 0;
+    // SAFETY: handle is a valid out-pointer.
+    let found = unsafe { (core.device_get)(&raw mut handle, device) } == SUCCESS;
+    found && core.attribute(handle, ATTR_READ_ONLY_HOST_REGISTER_SUPPORTED)
+}
+
+/// Pinned host memory of this process, for a device payload copied to the host.
+pub(crate) struct HostBuffer {
+    reg: Option<HostRegistration>,
+    base: usize,
+    bytes: usize,
+}
+
+impl HostBuffer {
+    pub(crate) fn new(bytes: usize, device: i32) -> Result<HostBuffer> {
+        // SAFETY: a fresh private mapping; no address is asked for.
+        let p = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                bytes,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if p == libc::MAP_FAILED {
+            return Err(Error::io(
+                "mmap",
+                "host copy",
+                std::io::Error::last_os_error(),
+            ));
+        }
+        let mut b = HostBuffer {
+            reg: None,
+            base: p as usize,
+            bytes,
+        };
+        b.reg = Some(HostRegistration::new(p.cast(), bytes, false, device)?);
+        Ok(b)
+    }
+
+    pub(crate) fn base(&self) -> *mut u8 {
+        self.base as *mut u8
+    }
+}
+
+impl Drop for HostBuffer {
+    fn drop(&mut self) {
+        drop(self.reg.take());
+        // SAFETY: mapped in new() at this size, unregistered just above.
+        unsafe { libc::munmap(self.base as *mut c_void, self.bytes) };
     }
 }
 
