@@ -23,7 +23,7 @@ const flux::gpu::Platform p = flux::gpu::probe();   // p.route, p.reason
 p = flux.probe()                                     # p.route, p.reason
 ```
 
-확인한 장비는 Jetson AGX Orin(`ShmRegistered`)과 RTX 4070 SUPER(`DeviceHandle`)다. `ShmDirect`는 실제 장비에서 돌려 보지 않았다.
+확인한 장비는 Jetson AGX Orin(JetPack 7.2, `ShmRegistered`)과 RTX 4070 SUPER(`DeviceHandle`)다. `ShmDirect`는 실제 장비에서 돌려 보지 않았다.
 
 ## C++
 

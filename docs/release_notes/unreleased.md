@@ -15,6 +15,9 @@
 * 컴포넌트 컨테이너 `flux_components`(`component_container`). 로드한 노드의 콜백 그룹마다 스레드 하나를 두고, 컴포넌트의 flux 구독도 돌린다
 * C++ flux 구독을 콜백 그룹에 넣으면, 그 그룹을 돌리는 flux executor가 구독도 돌린다. 노드 코드에서 executor를 알 필요가 없다
 * C++ `PartitionedExecutor`에 spin 중에도 노드를 넣고 뺄 수 있고, 모든 그룹 스레드에서 도는 hook을 줄 수 있다. 다른 executor가 이미 돌리는 그룹은 건드리지 않는다
+* `flux` 명령의 bash Tab 자동완성. 하위 명령, `--window`, 이 호스트에 보이는 채널 이름을 채운다
+* 외장 GPU에서 CPU와 GPU의 네 조합을 모두 받는다. 장치 메모리 채널의 CPU 구독과 호스트 메모리 채널의 GPU 구독은 구독자가 take마다 한 번 복사한다. 장치 메모리 채널의 `publish(호스트 배열)`은 슬롯으로 복사해 발행한다. 전에는 각각 `MISMATCH`, `INVALID_ARGUMENT`, `WrongDevice`였다
+* C ABI가 기본값 상수 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_TURN_NS`를 내보낸다
 
 ### 버그 수정
 
@@ -30,6 +33,7 @@
 
 * `flux_bridge`, `flux_bag`, `flux_tools`를 `ros2/` 아래로 옮겼다
 * 동시성 프로토콜을 모델로 검사하는 하니스를 저장소 밖으로 옮겼다
+* 기본값을 core 한 곳에 두고 C++과 Python이 그 값을 쓴다. 값은 바뀌지 않았다
 
 ### 작업 흐름
 
@@ -38,6 +42,7 @@
 -->
 
 * 사용자 문서(`README.md`, `docs/`)를 새로 썼다
+* 지원 환경을 시험한 범위(ROS 2 Humble·Jazzy, JetPack 7.2)로 좁혀 적었다
 * `scripts/build_docs.sh`가 rustdoc, Doxygen, pdoc 레퍼런스를 만든다
 * 문서의 코드 예제를 시험(`test_doc_examples`)으로 돌린다. pre-commit은 문서의 예제가 시험의 예제와 같은지 확인한다(`scripts/check_doc_examples.py`)
 

@@ -39,6 +39,8 @@ flux.Publisher(node, topic, fingerprint=flux.NO_SCHEMA, slot_size=8 << 20, slot_
                memory=None, max_subscribers=16, device="cpu", fence_timeout=None)
 ```
 
+- 기본값은 모듈 상수 `flux.DEFAULT_SLOT_SIZE`, `flux.DEFAULT_SLOT_COUNT`, `flux.DEFAULT_MAX_SUBSCRIBERS`로도 읽는다. C++과 같은 값이다.
+
 - `publish(array)`는 numpy 배열이나 `bytes`를 슬롯에 한 번 복사한다. 배열의 dtype과 shape도 프레임에 함께 담긴다.
 - 받는 dtype은 `uint8`~`uint64`, `int8`~`int64`, `float16`, `float32`, `float64`다. 그 밖의 dtype(`bool`, `complex64` 등)은 `TypeError`를 낸다. 8차원을 넘으면 `Published.TOO_LARGE`를 돌려준다. GPU 배열도 `TypeError`이므로 loan으로 쓴다([gpu.md](gpu.md)).
 - `bfloat16` 프레임은 `loan(shape, "bfloat16")`로 빌려 쓴다. 이때 ml_dtypes가 필요하다. ml_dtypes가 numpy에 그 dtype 이름을 등록하기 때문이다.

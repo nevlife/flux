@@ -53,6 +53,8 @@ flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
                 max_subscribers = 16);
 ```
 
+- 기본값은 `flux.h`의 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`다. Python과 같은 값이다.
+
 - `publish(data, dtype, shape)`는 배열을 슬롯에 한 번 복사한다. `publish(data, nbytes)`는 `u8[nbytes]`로 보낸다.
 - 같은 채널에 살아 있는 발행자가 있으면 생성자가 `flux::Error`(`FLUX_PUBLISHER_EXISTS`)를 던진다.
 - `dropped()`는 링이 가득 차서 버린 프레임 수, `slot_size()`는 슬롯 크기, `topic_name()`은 풀린 토픽 이름이다.
