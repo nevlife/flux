@@ -7,7 +7,7 @@ flux는 같은 호스트의 ROS 2 노드끼리 큰 데이터(이미지, 포인�
   loan()으로 받은 슬롯에 직접 쓴다  ->  /dev/shm 링  ->  콜백이 같은 슬롯을 읽기 전용 view로 받는다
 ```
 
-구독자는 직렬화도 복사도 없이 발행자가 쓴 슬롯을 그대로 읽는다. 구독자가 받는 것은 C++에서는 `FrameView`, Python에서는 읽기 전용 numpy 배열이다. CUDA GPU에서 만든 프레임도 같은 API로 보낸다([GPU](docs/gpu.md)).
+구독자는 직렬화도 복사도 없이 발행자가 쓴 슬롯을 그대로 읽는다. 구독자가 받는 것은 C++에서는 `FrameView`, Python에서는 읽기 전용 numpy 배열이다. CUDA GPU에서 만든 프레임도 같은 API로 보낸다([GPU](docs/gpu.md)). 다만 외장 GPU에서 CPU와 GPU 사이로 보내면 받는 쪽이 프레임마다 한 번 복사한다. CPU 메모리와 GPU 메모리가 물리적으로 떨어져 있기 때문이다.
 
 ## 지원 환경
 
@@ -34,19 +34,24 @@ source install/setup.bash
 
 ## 빠른 시작
 
-C++ 노드가 이미지 배열을 발행한다.
+C++ 노드가 슬롯을 빌려 이미지를 그 안에 바로 쓰고 발행한다.
 
-```cpp doc:cpp_publish
+```cpp doc:readme_loan
 flux::Publisher pub(*node, "image");
 
 constexpr std::size_t kHeight = 480;
 constexpr std::size_t kWidth = 640;
-std::vector<std::uint8_t> pixels(kHeight * kWidth * 3);
-const flux::Published p = pub.publish(pixels.data(), flux::DType::U8, {kHeight, kWidth, 3});
-if (flux::faulted(p)) {
-  RCLCPP_ERROR(node->get_logger(), "publish: %s", flux::to_string(p));
+flux::WriteSlot slot = pub.loan(flux::DType::U8, {kHeight, kWidth, 3});
+if (slot) {
+  auto * pixels = static_cast<std::uint8_t *>(slot.data());
+  std::fill_n(pixels, kHeight * kWidth * 3, std::uint8_t{0});
+  if (flux::faulted(slot.commit())) {
+    RCLCPP_ERROR(node->get_logger(), "commit failed");
+  }
 }
 ```
+
+이미 다른 곳에 만들어진 배열은 `pub.publish(pixels.data(), flux::DType::U8, {kHeight, kWidth, 3})`로 보낸다. 이때는 배열을 슬롯으로 한 번 복사한다([복사 모델](docs/copy_model.md)).
 
 Python 노드가 같은 프레임을 numpy 배열로 받는다.
 

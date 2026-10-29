@@ -141,6 +141,29 @@ TEST_F(Doc, PublishAndLoan)
   EXPECT_EQ(v.size(), std::size_t{1024} * 3 * sizeof(float));
 }
 
+TEST_F(Doc, ReadmeLoan)
+{
+  // [doc:readme_loan]
+  flux::Publisher pub(*node, "image");
+
+  constexpr std::size_t kHeight = 480;
+  constexpr std::size_t kWidth = 640;
+  flux::WriteSlot slot = pub.loan(flux::DType::U8, {kHeight, kWidth, 3});
+  if (slot) {
+    auto * pixels = static_cast<std::uint8_t *>(slot.data());
+    std::fill_n(pixels, kHeight * kWidth * 3, std::uint8_t{0});
+    if (flux::faulted(slot.commit())) {
+      RCLCPP_ERROR(node->get_logger(), "commit failed");
+    }
+  }
+  // [doc:/readme_loan]
+  flux::Subscription image(*node, "image", flux::kNoSchema, flux::QoS(1).transient_local(1));
+  const flux::FrameView sent = image.take();
+  ASSERT_TRUE(sent);
+  EXPECT_EQ(sent.meta().shape[0], kHeight);
+  EXPECT_EQ(sent.size(), kHeight * kWidth * 3);
+}
+
 TEST_F(Doc, SubscribeWithAnExecutor)
 {
   std::thread publisher = feed("image");
