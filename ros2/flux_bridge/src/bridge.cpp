@@ -156,7 +156,7 @@ bool wanted(const rclcpp::Node & node, const std::string & topic)
 class Bridge
 {
 public:
-  explicit Bridge(rclcpp::Node & node) : node_(node) {}
+  explicit Bridge(rclcpp::Node & node) : node_(&node) {}
 
   void tick()
   {
@@ -198,27 +198,27 @@ public:
       // A publisher that came back under another type within one poll is a new channel.
       if (
         now != bridgeable.end() && now->second.fingerprint == it->second->fingerprint() &&
-        wanted(node_, it->first)) {
+        wanted(*node_, it->first)) {
         ++it;
         continue;
       }
       it->second->stop();
       RCLCPP_INFO(
-        node_.get_logger(), "%s: stopped after %llu frames, %llu unreadable", it->first.c_str(),
+        node_->get_logger(), "%s: stopped after %llu frames, %llu unreadable", it->first.c_str(),
         static_cast<unsigned long long>(it->second->published()),    // NOLINT(runtime/int)
         static_cast<unsigned long long>(it->second->unreadable()));  // NOLINT(runtime/int)
       it = relays_.erase(it);
     }
     for (const auto & [key, topic] : bridgeable) {
-      if (relays_.count(key) || left_out_.count(topic.signpost) || !wanted(node_, key)) continue;
+      if (relays_.count(key) || left_out_.count(topic.signpost) || !wanted(*node_, key)) continue;
       const flux::Schemas::Type type = schemas_.at(topic.fingerprint);
       try {
-        relays_.emplace(key, std::make_unique<Relay>(node_, topic, type));
+        relays_.emplace(key, std::make_unique<Relay>(*node_, topic, type));
       } catch (const std::exception & e) {
         left_out(key, topic.signpost, e.what());
         continue;
       }
-      RCLCPP_INFO(node_.get_logger(), "%s: relaying as %s", key.c_str(), type.ros_type().c_str());
+      RCLCPP_INFO(node_->get_logger(), "%s: relaying as %s", key.c_str(), type.ros_type().c_str());
     }
   }
 
@@ -230,22 +230,23 @@ private:
   {
     left_out_[signpost] = flux::read_channel_stats(signpost).epoch;
     RCLCPP_ERROR(
-      node_.get_logger(), "%s: not relayed until its publisher restarts: %s", key.c_str(),
+      node_->get_logger(), "%s: not relayed until its publisher restarts: %s", key.c_str(),
       why.c_str());
   }
 
   void report_unrelayable(const flux::Topic & t, bool valid_name) const
   {
     if (!valid_name) {
-      RCLCPP_WARN(node_.get_logger(), "a channel whose key is not a ROS topic name is not relayed");
+      RCLCPP_WARN(
+        node_->get_logger(), "a channel whose key is not a ROS topic name is not relayed");
       return;
     }
     RCLCPP_INFO(
-      node_.get_logger(), "%s: no installed message type has fingerprint 0x%016llx", t.key.c_str(),
+      node_->get_logger(), "%s: no installed message type has fingerprint 0x%016llx", t.key.c_str(),
       static_cast<unsigned long long>(t.fingerprint));  // NOLINT(runtime/int)
   }
 
-  rclcpp::Node & node_;
+  rclcpp::Node * node_;
   flux::Schemas schemas_;
   std::map<std::string, std::unique_ptr<Relay>> relays_;
   // Signposts of live channels already reported as not relayable.

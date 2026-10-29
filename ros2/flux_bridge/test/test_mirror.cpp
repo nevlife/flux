@@ -9,11 +9,11 @@
 
 #include <dirent.h>
 #include <gtest/gtest.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <chrono>
-#include <cstdio>
-#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -134,12 +134,21 @@ TEST_F(Mirror, AnUnwatchedMirrorHoldsNoReader)
     *node_, topic("idle"), Imu::kFingerprint, kSlot, kSlots, flux::MemoryPolicy{}, 1);
   pub.mirror_to_ros();
   std::this_thread::sleep_for(300ms);
-  const std::string cmd =
-    "python3 -c \"import sys; from flux import _flux as f; "
-    "f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), "
-    "f.MemoryPolicy())\" " +
-    pub.signpost_name() + " " + pub.topic_name() + " " + std::to_string(Imu::kFingerprint);
-  EXPECT_EQ(std::system(cmd.c_str()), 0);
+  const std::string script =
+    "import sys; from flux import _flux as f; "
+    "f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), f.MemoryPolicy())";
+  std::vector<std::string> args{"python3",        "-c",
+                                script,           pub.signpost_name(),
+                                pub.topic_name(), std::to_string(Imu::kFingerprint)};
+  std::vector<char *> argv;
+  argv.reserve(args.size() + 1);
+  for (std::string & a : args) argv.push_back(a.data());
+  argv.push_back(nullptr);
+  pid_t pid = 0;
+  ASSERT_EQ(posix_spawnp(&pid, "python3", nullptr, nullptr, argv.data(), environ), 0);
+  int status = 0;
+  ASSERT_EQ(waitpid(pid, &status, 0), pid);
+  EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
 TEST_F(Mirror, ADeviceBackedPublisherIsRefused)

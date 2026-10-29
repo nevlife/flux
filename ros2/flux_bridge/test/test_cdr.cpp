@@ -22,6 +22,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -244,24 +245,22 @@ Frame overlapping_frame()
   }
   Frame f = frame_of<sensor_msgs::flux_msg::PointCloud2>(m);
   auto * bytes = static_cast<std::uint8_t *>(f.data());
-  std::vector<std::uint32_t *> names;
+  std::vector<std::size_t> names;
   std::uint32_t longest = 0;
   for (std::size_t at = 0; at + 8 <= f.size; at += 4) {
-    std::uint32_t desc[2];
-    std::memcpy(desc, bytes + at, sizeof desc);
+    std::array<std::uint32_t, 2> desc{};
+    std::memcpy(desc.data(), bytes + at, sizeof desc);
     const bool is_name =
       desc[1] >= 1 && desc[1] <= n && desc[0] + desc[1] <= f.size &&
       std::all_of(
         bytes + desc[0], bytes + desc[0] + desc[1], [](std::uint8_t b) { return b == 'a'; });
     if (!is_name) continue;
-    names.push_back(reinterpret_cast<std::uint32_t *>(bytes + at));
+    names.push_back(at);
     if (desc[1] == n) longest = desc[0];
   }
   EXPECT_EQ(names.size(), n);
-  for (std::uint32_t * d : names) {
-    d[0] = longest;
-    d[1] = n;
-  }
+  const std::array<std::uint32_t, 2> to{longest, n};
+  for (const std::size_t at : names) std::memcpy(bytes + at, to.data(), sizeof to);
   return f;
 }
 

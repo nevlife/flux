@@ -48,6 +48,16 @@ repos:
         types_or: [rust, toml]
         pass_filenames: false
 
+      # The fuzz crate is outside the workspace and on its own nightly (fuzz/rust-toolchain.toml).
+      - id: fuzz-lint
+        name: rustfmt and clippy on the fuzz crate
+        entry: >-
+          bash -c 'cd fuzz && cargo fmt --check &&
+          cargo clippy --all-targets --locked -- -D warnings'
+        language: system
+        files: ^(fuzz/|flux_core/)
+        pass_filenames: false
+
       - id: c-header
         name: flux.h matches the Rust sources (cbindgen)
         entry: scripts/gen_c_header.sh --check

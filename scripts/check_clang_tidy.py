@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-PACKAGES = ("flux_cpp", "flux_components", "flux_py", "flux_bag", "flux_tools")
+PACKAGES = ("flux_cpp", "flux_components", "flux_py", "flux_bag", "flux_bridge", "flux_tools")
 # Half the cores at nice 10: a commit should not take the machine away from running nodes.
 JOBS = max(1, (os.cpu_count() or 2) // 2)
 
@@ -59,12 +59,16 @@ def main(argv):
         (Path(tmp) / "compile_commands.json").write_text(json.dumps(entries))
 
         def tidy(f):
-            return subprocess.run(
+            r = subprocess.run(
                 ["nice", "-n", "10", "clang-tidy", "-p", tmp, "--quiet", f],
                 capture_output=True,
                 text=True,
                 cwd=ROOT,
-            ).stdout
+            )
+            # nice's 127: no clang-tidy on PATH, which would otherwise read as no findings.
+            if r.returncode == 127:
+                raise SystemExit(f"clang-tidy not found: {r.stderr.strip()}")
+            return r.stdout
 
         with ThreadPoolExecutor(JOBS) as pool:
             outputs = list(pool.map(tidy, targets))
