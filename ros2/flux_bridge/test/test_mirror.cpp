@@ -7,10 +7,13 @@
 #include "sensor_msgs/flux/imu.hpp"
 #include "sensor_msgs/flux/imu_ros.hpp"
 
+#include <dirent.h>
 #include <gtest/gtest.h>
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -90,6 +93,65 @@ TEST_F(Mirror, AMovedPublisherKeepsItsMirror)
   pub.mirror_to_ros();
   flux::Publisher moved = std::move(pub);
   EXPECT_EQ(node_->count_publishers(moved.topic_name()), 1U);
+}
+
+std::size_t threads()
+{
+  std::size_t n = 0;
+  DIR * d = opendir("/proc/self/task");
+  while (const dirent * e = readdir(d)) n += e->d_name[0] != '.';
+  closedir(d);
+  return n;
+}
+
+template <class P>
+bool eventually(P done, std::chrono::milliseconds limit = 2000ms)
+{
+  const auto end = std::chrono::steady_clock::now() + limit;
+  while (!done()) {
+    if (std::chrono::steady_clock::now() > end) return false;
+    std::this_thread::sleep_for(5ms);
+  }
+  return true;
+}
+
+TEST_F(Mirror, DroppingThePublisherStopsItsThread)
+{
+  const std::size_t before = threads();
+  {
+    flux::Publisher pub(*node_, topic("drop"), Imu::kFingerprint, kSlot, kSlots);
+    pub.mirror_to_ros();
+    EXPECT_EQ(threads(), before + 1);
+  }
+  EXPECT_EQ(threads(), before);
+}
+
+// The only subscriber place stays free while no ROS 2 subscriber wants the mirror. The place is
+// per process, so the subscriber that takes it runs in another one.
+TEST_F(Mirror, AnUnwatchedMirrorHoldsNoReader)
+{
+  flux::Publisher pub(
+    *node_, topic("idle"), Imu::kFingerprint, kSlot, kSlots, flux::MemoryPolicy{}, 1);
+  pub.mirror_to_ros();
+  std::this_thread::sleep_for(300ms);
+  const std::string cmd =
+    "python3 -c \"import sys; from flux import _flux as f; "
+    "f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), "
+    "f.MemoryPolicy())\" " +
+    pub.signpost_name() + " " + pub.topic_name() + " " + std::to_string(Imu::kFingerprint);
+  EXPECT_EQ(std::system(cmd.c_str()), 0);
+}
+
+TEST_F(Mirror, ADeviceBackedPublisherIsRefused)
+{
+  if (flux::gpu::probe().route == flux::gpu::Route::None) GTEST_SKIP() << "no GPU route";
+  flux::Publisher pub(*node_, topic("cuda"), Imu::kFingerprint, kSlot, kSlots, flux::Device::Cuda);
+  try {
+    pub.mirror_to_ros();
+    FAIL() << "a device-backed mirror was accepted";
+  } catch (const flux::Error & e) {
+    EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
+  }
 }
 
 }  // namespace

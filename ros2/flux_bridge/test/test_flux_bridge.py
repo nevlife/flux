@@ -314,3 +314,41 @@ def test_dropping_a_mirrored_publisher_stops_its_thread(node):
 def test_an_untyped_publisher_has_no_mirror(node):
     with pytest.raises(flux.Error):
         flux.Publisher(node, topic("mirror_raw"), mirror_to_ros=True, **SMALL)
+
+
+@pytest.mark.skipif(flux.probe().route == flux.Route.NONE, reason="needs a GPU route")
+def test_a_device_backed_publisher_has_no_mirror(node):
+    with pytest.raises(flux.Error):
+        flux.Publisher(
+            node,
+            topic("mirror_cuda"),
+            fingerprint=imu.FINGERPRINT__,
+            device="cuda",
+            mirror_to_ros=True,
+            **SMALL,
+        )
+
+
+def test_a_mirror_serves_ros_subscribers_that_come_and_go(node):
+    pub = flux.Publisher(
+        node, topic("mirror_churn"), fingerprint=imu.FINGERPRINT__, mirror_to_ros=True, **SMALL
+    )
+    for i in range(5):
+        got = []
+        sub = node.create_subscription(Imu, pub.topic_name, got.append, BEST_EFFORT)
+        assert mirrored(node, pub, got, float(i))
+        node.destroy_subscription(sub)
+        # Long enough for the mirror to see no subscriber and let its flux reader go.
+        time.sleep(0.3)
+
+
+# A ROS 2 publisher that turns up while a relay runs ends the relay: two would deliver twice.
+def test_a_relay_stops_once_another_ros_publisher_appears(node, bridge):
+    _, log = bridge
+    pub = flux.Publisher(node, topic("late_pub"), fingerprint=imu.FINGERPRINT__, **SMALL)
+    sub = node.create_subscription(Imu, pub.topic_name, lambda _m: None, BEST_EFFORT)
+    assert eventually(lambda: f"{pub.topic_name}: relaying" in output(log))
+    other = node.create_publisher(Imu, pub.topic_name, BEST_EFFORT)
+    assert eventually(lambda: f"{pub.topic_name}: stopped after" in output(log))
+    node.destroy_publisher(other)
+    node.destroy_subscription(sub)
