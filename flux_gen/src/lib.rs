@@ -9,6 +9,8 @@ pub mod emit_py;
 pub mod emit_ros;
 pub mod fingerprint;
 pub mod flatten;
+#[cfg(any(test, feature = "fuzz"))]
+pub mod fuzz;
 pub mod layout;
 pub mod model;
 pub mod parse;

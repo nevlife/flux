@@ -64,6 +64,17 @@ target_link_libraries(convert
   rosbag2_storage::rosbag2_storage)
 target_compile_options(convert PRIVATE -Wall -Wextra -Wpedantic)
 
+# libFuzzer targets: -DFLUX_FUZZ=ON with clang (-DCMAKE_CXX_COMPILER=clang++).
+option(FLUX_FUZZ "Build the libFuzzer targets" OFF)
+if(FLUX_FUZZ)
+  add_executable(fuzz_frame test/fuzz_frame.cpp)
+  target_compile_definitions(fuzz_frame PRIVATE FLUX_LIBFUZZER)
+  target_compile_options(fuzz_frame PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_link_options(fuzz_frame PRIVATE -fsanitize=fuzzer,address,undefined)
+  target_include_directories(fuzz_frame PRIVATE include ${flux_std_adapters_INCLUDE_DIRS})
+  target_link_libraries(fuzz_frame flux_cpp::flux_cpp JPEG::JPEG)
+endif()
+
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(flux_msgs REQUIRED)
@@ -71,6 +82,10 @@ if(BUILD_TESTING)
   target_include_directories(test_flux_frame_cdr PRIVATE include)
   target_link_libraries(test_flux_frame_cdr flux_cpp::flux_cpp rclcpp::rclcpp
     ${flux_msgs_TARGETS})
+
+  ament_add_gtest(test_fuzz_frame test/fuzz_frame.cpp)
+  target_include_directories(test_fuzz_frame PRIVATE include ${flux_std_adapters_INCLUDE_DIRS})
+  target_link_libraries(test_fuzz_frame flux_cpp::flux_cpp JPEG::JPEG)
 
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_verbs test/test_verbs.py)

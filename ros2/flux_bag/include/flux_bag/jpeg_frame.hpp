@@ -49,6 +49,19 @@ struct JpegMeta
   }
 };
 
+// A recorded FluxFrame of codec "raw", whose meta.at and meta.len are 0, or "jpeg". The fields of
+// `f` point into `in`.
+inline bool read_frame(
+  const std::uint8_t * in, std::size_t size, FluxFrameFields & f, JpegMeta & meta)
+{
+  if (!FluxFrameCdr::read(in, size, f)) return false;
+  if (f.codec == "raw") {
+    meta.at = meta.len = 0;
+    return meta.raw.read(f.meta, f.meta_size);
+  }
+  return f.codec == "jpeg" && meta.read(f.meta, f.meta_size);
+}
+
 // The libjpeg color space of an Image encoding JPEG holds without loss of channels, or
 // JCS_UNKNOWN.
 inline J_COLOR_SPACE jpeg_space(std::string_view encoding)

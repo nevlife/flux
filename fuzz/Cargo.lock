@@ -44,8 +44,13 @@ name = "flux_fuzz"
 version = "0.0.0"
 dependencies = [
  "flux_core",
+ "flux_gen",
  "libfuzzer-sys",
 ]
+
+[[package]]
+name = "flux_gen"
+version = "0.1.0"
 
 [[package]]
 name = "getrandom"

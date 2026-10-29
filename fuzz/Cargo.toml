@@ -10,6 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 flux_core = { path = "../flux_core", features = ["fuzz"] }
+flux_gen = { path = "../flux_gen", features = ["fuzz"] }
 
 [[bin]]
 name = "frame"
@@ -28,6 +29,13 @@ bench = false
 [[bin]]
 name = "roster"
 path = "fuzz_targets/roster.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cdr"
+path = "fuzz_targets/cdr.rs"
 test = false
 doc = false
 bench = false

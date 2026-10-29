@@ -81,18 +81,12 @@ Options parse(const std::vector<std::string> & args)
   return o;
 }
 
-// A FluxFrame of codec "raw", whose meta.len is 0, or "jpeg".
 bool decode(
   const rosbag2_storage::SerializedBagMessage & msg, flux_bag::FluxFrameFields & f,
   flux_bag::JpegMeta & meta)
 {
   const rcutils_uint8_array_t & raw = *msg.serialized_data;
-  if (!flux_bag::FluxFrameCdr::read(raw.buffer, raw.buffer_length, f)) return false;
-  if (f.codec == "raw") {
-    meta.at = meta.len = 0;
-    return meta.raw.read(f.meta, f.meta_size);
-  }
-  return f.codec == "jpeg" && meta.read(f.meta, f.meta_size);
+  return flux_bag::read_frame(raw.buffer, raw.buffer_length, f, meta);
 }
 
 // A waiting subscriber looks for its channel once per tick.
