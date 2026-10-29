@@ -17,6 +17,9 @@
 namespace flux::detail
 {
 
+// Entities created after their node was added are found by this rescan.
+inline constexpr std::int64_t kRescanNs = 100'000'000;
+
 // Registered by address, so neither copied nor moved.
 class Source
 {

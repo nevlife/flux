@@ -33,7 +33,10 @@ pub const FLUX_NO_SCHEMA: u64 = 0;
 pub const FLUX_MAX_LABEL_LEN: usize = 240;
 pub const FLUX_MAX_DRAIN: u32 = 64;
 pub const FLUX_DEFAULT_TICK_NS: i64 = 100_000_000;
+pub const FLUX_DEFAULT_TURN_NS: i64 = 1_000_000;
 pub const FLUX_DEFAULT_MAX_SUBSCRIBERS: u32 = 16;
+pub const FLUX_DEFAULT_SLOT_SIZE: u32 = 8 << 20;
+pub const FLUX_DEFAULT_SLOT_COUNT: u32 = 16;
 pub const FLUX_MAX_SUBSCRIBERS: u32 = 4096;
 pub const FLUX_NO_STAMP: i32 = -1;
 
@@ -43,7 +46,10 @@ const _: () = {
     assert!(FLUX_MAX_LABEL_LEN == flux_core::MAX_LABEL_LEN);
     assert!(FLUX_MAX_DRAIN == flux_core::MAX_DRAIN);
     assert!(FLUX_DEFAULT_TICK_NS == flux_core::DEFAULT_TICK_NS);
+    assert!(FLUX_DEFAULT_TURN_NS == flux_core::DEFAULT_TURN_NS);
     assert!(FLUX_DEFAULT_MAX_SUBSCRIBERS == flux_core::DEFAULT_MAX_SUBSCRIBERS);
+    assert!(FLUX_DEFAULT_SLOT_SIZE == flux_core::DEFAULT_SLOT_SIZE);
+    assert!(FLUX_DEFAULT_SLOT_COUNT == flux_core::DEFAULT_SLOT_COUNT);
     assert!(FLUX_MAX_SUBSCRIBERS == flux_core::MAX_SUBSCRIBERS);
     assert!(FLUX_NO_STAMP == flux_core::trace::NO_STAMP);
 };

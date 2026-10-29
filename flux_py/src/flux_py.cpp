@@ -1146,6 +1146,11 @@ NB_MODULE(_flux, m)
   // Objects a daemon thread still holds at exit are not a reference counting bug.
   nb::set_leak_warnings(false);
   m.attr("NO_SCHEMA") = flux::kNoSchema;
+  m.attr("DEFAULT_SLOT_SIZE") = FLUX_DEFAULT_SLOT_SIZE;
+  m.attr("DEFAULT_SLOT_COUNT") = FLUX_DEFAULT_SLOT_COUNT;
+  m.attr("DEFAULT_MAX_SUBSCRIBERS") = FLUX_DEFAULT_MAX_SUBSCRIBERS;
+  m.attr("DEFAULT_TICK_NS") = FLUX_DEFAULT_TICK_NS;
+  m.attr("DEFAULT_TURN_NS") = FLUX_DEFAULT_TURN_NS;
 
   static nb::exception<flux::Error> error(m, "Error", PyExc_RuntimeError);
   nb::register_exception_translator([](const std::exception_ptr & p, void *) {

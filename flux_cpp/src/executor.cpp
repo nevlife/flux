@@ -160,11 +160,11 @@ rclcpp::FutureReturnCode Executor::run(
   const auto start = std::chrono::steady_clock::now();
   std::chrono::steady_clock::time_point rescanned{};
   while (!stop_.load() && rclcpp::ok(context_)) {
-    std::int64_t wait = kRescanNs - since_ns(rescanned);
+    std::int64_t wait = detail::kRescanNs - since_ns(rescanned);
     if (wait <= 0) {
       rebridge_ros();
       rescanned = std::chrono::steady_clock::now();
-      wait = kRescanNs;
+      wait = detail::kRescanNs;
     }
     if (timeout.count() >= 0) {
       wait = std::min(wait, std::max<std::int64_t>(0, timeout.count() - since_ns(start)));

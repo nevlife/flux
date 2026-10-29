@@ -62,15 +62,15 @@ __all__ = [
     "ros_type_of",
 ]
 
-DEFAULT_SLOT_SIZE = 8 << 20
-DEFAULT_SLOT_COUNT = 16
+DEFAULT_SLOT_SIZE = _flux.DEFAULT_SLOT_SIZE
+DEFAULT_SLOT_COUNT = _flux.DEFAULT_SLOT_COUNT
 # Subscribing processes, not subscriptions; each adds a counter that every publish reads.
-DEFAULT_MAX_SUBSCRIBERS = 16
-_TICK_NS = 100_000_000
+DEFAULT_MAX_SUBSCRIBERS = _flux.DEFAULT_MAX_SUBSCRIBERS
+_TICK_NS = _flux.DEFAULT_TICK_NS
 # rclpy raises it, not ExternalShutdownException, when the context shuts down as it builds a wait set.
 _RCLError = _rclpy.RCLError
 # How long one dispatch may run before the ROS side gets its turn.
-_TURN_NS = 1_000_000
+_TURN_NS = _flux.DEFAULT_TURN_NS
 # Spins still running, as at exit they may be on daemon threads.
 _live = weakref.WeakSet()
 

@@ -146,7 +146,6 @@ void PartitionedExecutor::spin()
     spinning_ = false;
   });
 
-  constexpr std::int64_t kRescanNs = 100'000'000;
   const auto failed = [this] {
     const std::lock_guard<std::mutex> lk(m_);
     return failure_ != nullptr;
@@ -174,7 +173,7 @@ void PartitionedExecutor::spin()
       check_sync_groups();
     }
     while (!stop_ && !failed() && rclcpp::ok(context_)) {
-      waiter_.wait_for_work(kRescanNs);
+      waiter_.wait_for_work(detail::kRescanNs);
       rescan();
     }
   } catch (...) {

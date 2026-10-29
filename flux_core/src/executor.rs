@@ -19,6 +19,8 @@ use crate::trace::{self, event};
 /// budget is the only thing that ends its pass.
 pub const MAX_DRAIN: u32 = 64;
 pub const DEFAULT_TICK_NS: i64 = 100_000_000;
+/// How long a binding's executor runs one side, ROS or flux, before the other gets its turn.
+pub const DEFAULT_TURN_NS: i64 = 1_000_000;
 /// Set, it makes `Executor::new` choose the parker threads a kernel below 5.16 runs: the tests'
 /// way onto the fallback on a newer kernel.
 const DISABLE_FUTEX_WAITV_ENV: &str = "FLUX_DISABLE_FUTEX_WAITV";

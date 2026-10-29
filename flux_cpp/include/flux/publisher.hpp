@@ -20,8 +20,8 @@ namespace flux
 class Publisher
 {
 public:
-  static constexpr std::uint32_t kDefaultSlotSize = 8U << 20U;
-  static constexpr std::uint32_t kDefaultSlotCount = 16;
+  static constexpr std::uint32_t kDefaultSlotSize = FLUX_DEFAULT_SLOT_SIZE;
+  static constexpr std::uint32_t kDefaultSlotCount = FLUX_DEFAULT_SLOT_COUNT;
   static constexpr std::uint32_t kDefaultMaxSubscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS;
 
   // `max_subscribers` counts subscribing processes (up to FLUX_MAX_SUBSCRIBERS), not

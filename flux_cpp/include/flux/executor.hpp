@@ -81,11 +81,9 @@ protected:
     FLUX_OVERRIDE_SINCE_JAZZY;
 
 private:
-  // Entities created after their node was added are found by this rescan.
-  static constexpr std::int64_t kRescanNs = 100'000'000;
   static constexpr int kRosBudget = FLUX_MAX_DRAIN;
   // How long ROS work runs before waiting flux work gets its turn.
-  static constexpr std::int64_t kTurnNs = 1'000'000;
+  static constexpr std::int64_t kTurnNs = FLUX_DEFAULT_TURN_NS;
 
   // Spins until cancel(), context shutdown, `done()`, or `timeout` (negative: none).
   rclcpp::FutureReturnCode run(

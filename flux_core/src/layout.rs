@@ -25,6 +25,9 @@ pub const CACHE_LINE: usize = 64;
 pub const PAYLOAD_ALIGN: usize = 4096;
 pub const MAX_DIMS: usize = 8;
 pub const DEFAULT_MAX_SUBSCRIBERS: u32 = 16;
+/// What a binding's publisher takes when the caller gives no size or count.
+pub const DEFAULT_SLOT_SIZE: u32 = 8 << 20;
+pub const DEFAULT_SLOT_COUNT: u32 = 16;
 pub const MAX_SUBSCRIBERS: u32 = 4096;
 
 pub const INIT_UNINIT: u32 = 0;
