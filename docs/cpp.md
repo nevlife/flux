@@ -245,6 +245,8 @@ if (flux::faulted(b.commit__())) {
 const sensor_msgs::msg::Image copy = sensor_msgs::flux_msg::frame_to_msg(Image::View(frame));
 ```
 
+ROS 2 노드도 같은 토픽을 구독해야 하면 발행자에서 `mirror_to_ros()`를 부른다. 발행자가 같은 이름의 ROS 2 토픽도 낸다([ros2_tools.md](ros2_tools.md#발행자의-ros-2-mirror)).
+
 ## PartitionedExecutor
 
 `PartitionedExecutor`는 콜백 그룹마다 스레드 하나와 `flux::Executor` 하나를 둔다. 그래서 콜백이 느려도 그 콜백의 그룹만 늦어진다.

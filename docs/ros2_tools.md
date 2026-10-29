@@ -8,6 +8,8 @@ flux 채널은 DDS graph에 없으므로 기본 ROS 2 도구(`ros2 topic`, `rqt`
 | `flux_bag` | flux 채널을 rosbag2 bag에 녹화하고 flux로 재생한다 | 프레임마다 1. DDS를 거치지 않는다 |
 | `flux_tools` | rviz2 display. 공유메모리에서 바로 읽는다 | GPU 업로드 1 |
 
+bridge를 띄우지 않고 발행자가 직접 ROS 2 토픽을 함께 낼 수도 있다([발행자의 ROS 2 mirror](#발행자의-ros-2-mirror)).
+
 ## flux_bridge
 
 ```bash
@@ -19,6 +21,7 @@ bridge는 노드 하나(`flux_bridge_<pid>`)를 띄우고, `--poll`초(기본 1)
 - 발행자가 살아 있고 이름이 정확히 알려진 채널이다.
 - 채널의 fingerprint가 설치된 `.msg` 타입(`AMENT_PREFIX_PATH`)과 맞는다. adapter를 설치하지 않은 타입도 된다.
 - bridge 말고 그 이름의 ROS 2 구독자가 있다.
+- bridge 말고 그 이름의 ROS 2 발행자가 없다. 발행자가 mirror를 켰으면 bridge는 그 토픽을 relay하지 않는다. 둘 다 내면 ROS 2 구독자가 같은 프레임을 두 번 받기 때문이다.
 
 | 항목 | 값 |
 | --- | --- |
@@ -35,7 +38,34 @@ ros2 topic echo_flux /camera/image --no-arr
 ros2 topic hz_flux /camera/image
 ```
 
-기본 `echo`·`hz`를 바로 띄우면, bridge가 다음에 poll할 때까지 토픽이 없다. 그래서 두 verb는 먼저 아무 일도 하지 않는 구독을 만든다. 그리고 bridge의 발행자가 graph에 나타날 때까지 기다린 뒤 기본 verb를 그대로 돌린다. 인자는 기본 verb의 인자에 `--bridge-timeout SEC`(기본 10)가 더해진 것이다. 메시지 타입은 flux가 채널의 fingerprint로 찾으므로 DDS 발견을 기다리지 않는다. 두 verb를 쓰려면 bridge가 떠 있어야 한다.
+기본 `echo`·`hz`를 바로 띄우면, bridge가 다음에 poll할 때까지 토픽이 없다. 그래서 두 verb는 먼저 아무 일도 하지 않는 구독을 만든다. 그리고 그 토픽의 발행자(bridge나 발행자의 mirror)가 graph에 나타날 때까지 기다린 뒤 기본 verb를 그대로 돌린다. 인자는 기본 verb의 인자에 `--bridge-timeout SEC`(기본 10)가 더해진 것이다. 메시지 타입은 flux가 채널의 fingerprint로 찾으므로 DDS 발견을 기다리지 않는다. 두 verb를 쓰려면 bridge가 떠 있거나 발행자가 mirror를 켜야 한다.
+
+## 발행자의 ROS 2 mirror
+
+```cpp
+flux::Publisher pub(*node, "image", Image::kFingerprint);
+pub.mirror_to_ros();
+```
+
+```python
+pub = flux.Publisher(node, "image", fingerprint=Image.FINGERPRINT__, mirror_to_ros=True)
+```
+
+켜면 발행자가 같은 이름의 ROS 2 토픽도 낸다. 일반 ROS 2 노드와 기본 도구가 그 토픽을 바로 구독할 수 있다. flux 구독자가 받는 경로는 바뀌지 않는다.
+
+| 항목 | 값 |
+| --- | --- |
+| 프레임 경로 | 발행자 프로세스 안의 스레드가 자기 채널을 읽는다. 슬롯에서 프레임을 복사하고 view를 놓은 뒤, 그 사본에서 메시지의 CDR을 써서 낸다. bridge와 같은 경로다 |
+| 발행 경로 | `publish()`와 commit은 변환을 기다리지 않는다 |
+| ROS 2 구독자가 없을 때 | flux 구독을 놓고 100 ms마다 구독자 수만 본다. 구독자 번호(`max_subscribers`)를 차지하지 않는다 |
+| ROS 2 구독자가 있을 때 | flux 구독자 하나로 붙으므로 구독자 번호 하나를 쓴다 |
+| DDS QoS | depth 1, best effort, volatile |
+| flux QoS | depth 1, `max_borrow` 1 |
+| 생성 비용 | 켤 때 설치된 `.msg`를 모두 읽는다 |
+| 거절하는 것 | 타입이 없는 발행자(`kNoSchema`, `NO_SCHEMA`)와 fingerprint가 설치된 `.msg`에 없는 발행자, 장치 메모리 발행자. C++은 `flux::Error`, Python은 `flux.Error`(`INVALID_ARGUMENT`)다 |
+| Python | 스레드는 `threading.Thread`이고 rclpy 발행자에 `bytes`로 낸다. 발행자 객체가 사라지면 스레드도 끝난다 |
+
+FHD 이미지처럼 큰 메시지를 여러 토픽으로 보내면 DDS의 UDP 수신 버퍼가 넘쳐 best effort 메시지가 버려질 수 있다. bridge도 같다. `netstat -su`의 `receive buffer errors`가 늘면 rmw 설정에서 소켓 버퍼를 늘린다(Cyclone DDS는 `CYCLONEDDS_URI`의 `SocketReceiveBufferSize`, 상한은 `net.core.rmem_max`다).
 
 ## flux_bag
 

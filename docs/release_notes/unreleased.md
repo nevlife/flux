@@ -20,6 +20,7 @@
 * C ABI가 기본값 상수 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_TURN_NS`를 내보낸다
 * `record_flux`가 `-s`, `--storage-preset-profile`을 rosbag2에 넘긴다. `zstd_fast`로 mcap bag을 무손실 압축한다
 * `record_flux --image-codec jpeg`가 `sensor_msgs/Image`(`rgb8`, `bgr8`, `mono8`)의 픽셀을 JPEG로 저장한다. `play_flux`는 디코딩해 원래 채널에 발행하고, `convert_flux`는 `sensor_msgs/CompressedImage`로 바꾼다
+* 발행자가 같은 이름의 ROS 2 토픽도 낼 수 있다(C++ `mirror_to_ros()`, Python `mirror_to_ros=True`). ROS 2 구독자가 있는 동안만 변환한다. `flux_bridge`는 다른 ROS 2 발행자가 있는 토픽을 relay하지 않고, `echo_flux`·`hz_flux`는 mirror만 있어도 동작한다
 
 ### 버그 수정
 
@@ -58,6 +59,7 @@
 * `flux::Subscription::add_to_callback_group`, `flux::message_filters::Subscriber::add_to_callback_group`
 * `flux::PartitionedExecutor::remove_node`, `flux::PartitionedExecutor::on_thread_start(ThreadStart)`
 * `flux::ComponentManager`, `flux::run_component_container`
+* `flux::Publisher::mirror_to_ros`, Python `Publisher(mirror_to_ros=...)`
 
 ### 호환이 깨지는 변경
 

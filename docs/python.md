@@ -190,6 +190,8 @@ if flux.faulted(b.commit__()):
 copy = frame_to_msg(Image.View(frame))
 ```
 
+ROS 2 노드도 같은 토픽을 구독해야 하면 발행자를 `mirror_to_ros=True`로 만든다. 발행자가 같은 이름의 ROS 2 토픽도 낸다([ros2_tools.md](ros2_tools.md#발행자의-ros-2-mirror)).
+
 ## PartitionedExecutor
 
 `flux.PartitionedExecutor`는 flux 구독을 넣은 콜백 그룹마다 스레드를 하나, 노드마다 rclpy 스레드를 하나 둔다.

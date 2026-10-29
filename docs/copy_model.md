@@ -72,6 +72,7 @@ flux 0 복사 : 없음
 | --- | --- |
 | `frame_to_msg()`로 ROS 메시지를 만든다 | 받는 쪽마다 1. 기존 함수가 메시지 객체를 요구할 때만 쓴다 |
 | `flux_bridge`로 DDS에 다시 발행한다 | 프레임마다 1 + CDR 쓰기 + DDS 전달 |
+| 발행자의 mirror(`mirror_to_ros`)로 DDS에도 발행한다 | ROS 2 구독자가 있는 동안 프레임마다 1 + CDR 쓰기 + DDS 전달. Python은 CDR을 `bytes`로 한 번 더 복사한다 |
 | `flux_bag`으로 녹화한다 | 프레임마다 1(슬롯 -> 녹화 버퍼). 슬롯은 바로 돌려주고, 파일 쓰기는 다른 스레드가 한다 |
 | rviz2 Image display | GPU 텍스처 업로드 1. `Normalize Range`를 켜면 CPU가 16비트와 `32FC1` 프레임을 한 번 더 읽는다. step이 픽셀 크기의 배수가 아닌 행은 CPU에서 먼저 모은다 |
 

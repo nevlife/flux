@@ -5,6 +5,7 @@
 #include "flux/channel.hpp"
 #include "flux/detail/executor.hpp"
 #include "flux/detail/manifest.hpp"
+#include "flux/detail/ros_mirror.hpp"
 #include "flux/detail/subscriber.hpp"
 #include "flux/schemas.hpp"
 #include "flux/topics.hpp"
@@ -746,6 +747,45 @@ private:
   flux::detail::Announcement announced_;
 };
 
+// Publisher(mirror_to_ros=True)'s reader: the thread that publishes on rclpy is Python's.
+class RosMirror
+{
+public:
+  RosMirror(Publisher & publisher, const std::string & signpost, std::uint64_t fingerprint)
+  : core_(publisher.channel(), signpost, fingerprint)
+  {
+  }
+
+  // The CDR bytes of the next frame, or None after `timeout_ns`.
+  nb::object next(std::int64_t timeout_ns)
+  {
+    std::size_t n = 0;
+    {
+      const Unlocked unlocked;
+      n = core_.next(
+        timeout_ns, [] { return false; },
+        [this](std::size_t size) {
+          out_.resize(size);
+          return out_.data();
+        });
+    }
+    if (n == 0) return nb::none();
+    return nb::bytes(out_.data(), n);
+  }
+
+  void detach()
+  {
+    const Unlocked unlocked;
+    core_.detach();
+  }
+
+  std::string ros_type() const { return core_.ros_type(); }
+
+private:
+  flux::detail::RosMirror core_;
+  std::vector<std::uint8_t> out_;
+};
+
 // The thread state of the serve() on this thread while it runs without the GIL. Its callbacks
 // take the GIL back with it: PyGILState_Ensure would look the thread up again, through state a
 // daemon thread finds freed once Python has finalized, where take_gil_back parks it.
@@ -1342,6 +1382,14 @@ NB_MODULE(_flux, m)
       })
     .def_prop_ro("signpost_name", [](Subscription & s) { return s.core().signpost_name(); })
     .def("_require_slots", [](Subscription & s, std::uint32_t n) { s.core().require_slots(n); });
+
+  nb::class_<RosMirror>(m, "_RosMirror")
+    .def(
+      nb::init<Publisher &, const std::string &, std::uint64_t>(), "publisher"_a, "signpost"_a,
+      "fingerprint"_a)
+    .def("next", &RosMirror::next, "timeout_ns"_a)
+    .def("detach", &RosMirror::detach)
+    .def_prop_ro("ros_type", &RosMirror::ros_type);
 
   nb::class_<Executor>(m, "_Executor", nb::type_slots(executor_slots.data()))
     .def(nb::init<>())

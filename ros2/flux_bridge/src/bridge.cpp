@@ -2,9 +2,10 @@
 //
 // Every poll the bridge lists the live channels on the host and, for each one whose fingerprint
 // names an installed message type, asks the ROS graph whether anyone other than itself
-// subscribes to a topic of that name. A relay starts when that becomes true and stops when it
-// stops being true, so a channel nobody watches costs nothing. The frame path is flux slot ->
-// CDR written by flux -> rmw, which is the cost of using stock tools on a flux channel.
+// subscribes to a topic of that name while nobody else publishes on it. A relay starts when that
+// becomes true and stops when it stops being true, so a channel nobody watches costs nothing. The
+// frame path is flux slot -> CDR written by flux -> rmw, which is the cost of using stock tools on
+// a flux channel.
 
 #include "flux/schemas.hpp"
 #include "flux/subscription.hpp"
@@ -134,13 +135,22 @@ private:
   std::thread thread_;
 };
 
-bool external_subscribers(const rclcpp::Node & node, const std::string & topic)
+template <class Infos>
+bool others(const rclcpp::Node & node, const Infos & infos)
 {
-  for (const auto & info : node.get_subscriptions_info_by_topic(topic)) {
+  for (const auto & info : infos) {
     if (info.node_name() != node.get_name() || info.node_namespace() != node.get_namespace())
       return true;
   }
   return false;
+}
+
+// Someone other than the bridge subscribes, and nobody else publishes: a publisher's own ROS 2
+// mirror already serves the topic, and a second publisher would hand every frame over twice.
+bool wanted(const rclcpp::Node & node, const std::string & topic)
+{
+  return others(node, node.get_subscriptions_info_by_topic(topic)) &&
+         !others(node, node.get_publishers_info_by_topic(topic));
 }
 
 class Bridge
@@ -188,7 +198,7 @@ public:
       // A publisher that came back under another type within one poll is a new channel.
       if (
         now != bridgeable.end() && now->second.fingerprint == it->second->fingerprint() &&
-        external_subscribers(node_, it->first)) {
+        wanted(node_, it->first)) {
         ++it;
         continue;
       }
@@ -200,9 +210,7 @@ public:
       it = relays_.erase(it);
     }
     for (const auto & [key, topic] : bridgeable) {
-      if (
-        relays_.count(key) || left_out_.count(topic.signpost) || !external_subscribers(node_, key))
-        continue;
+      if (relays_.count(key) || left_out_.count(topic.signpost) || !wanted(node_, key)) continue;
       const flux::Schemas::Type type = schemas_.at(topic.fingerprint);
       try {
         relays_.emplace(key, std::make_unique<Relay>(node_, topic, type));

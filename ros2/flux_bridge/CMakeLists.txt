@@ -32,6 +32,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_cdr flux_cpp::flux_cpp rclcpp::rclcpp
     ${nav_msgs_TARGETS} ${sensor_msgs_TARGETS} ${stereo_msgs_TARGETS})
   target_compile_options(test_cdr PRIVATE -Wall -Wextra -Werror)
+  ament_add_gtest(test_mirror test/test_mirror.cpp TIMEOUT 60)
+  target_include_directories(test_mirror PRIVATE ${flux_std_adapters_INCLUDE_DIRS})
+  target_link_libraries(test_mirror flux_cpp::flux_cpp rclcpp::rclcpp ${sensor_msgs_TARGETS})
+  target_compile_options(test_mirror PRIVATE -Wall -Wextra -Werror)
 
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_flux_bridge test/test_flux_bridge.py TIMEOUT 120)

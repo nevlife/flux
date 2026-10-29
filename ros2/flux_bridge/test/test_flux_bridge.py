@@ -7,6 +7,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import numpy as np
@@ -241,3 +242,75 @@ def test_a_bridge_timeout_that_is_no_wait_is_refused(value):
     add_arguments(parser)
     with pytest.raises(SystemExit):
         parser.parse_args(["--bridge-timeout", value])
+
+
+def send_imu(node, pub, z):
+    m = Imu()
+    m.header.frame_id = "imu"
+    m.linear_acceleration.z = z
+    imu_ros.msg_to_frame(m, imu.build__(pub)).commit__()
+    rclpy.spin_once(node, timeout_sec=0.01)
+
+
+def mirrored(node, pub, got, z):
+    return eventually(
+        lambda: z in {m.linear_acceleration.z for m in got}, each=lambda: send_imu(node, pub, z)
+    )
+
+
+def test_a_mirrored_publisher_reaches_a_ros_subscriber_without_the_bridge(node):
+    pub = flux.Publisher(
+        node, topic("mirror"), fingerprint=imu.FINGERPRINT__, mirror_to_ros=True, **SMALL
+    )
+    assert node.count_publishers(pub.topic_name) == 1
+    got = []
+    sub = node.create_subscription(Imu, pub.topic_name, got.append, BEST_EFFORT)
+    assert mirrored(node, pub, got, 9.8) and mirrored(node, pub, got, 1.5)
+    assert got[0].header.frame_id == "imu"
+    node.destroy_subscription(sub)
+
+
+def test_the_bridge_leaves_a_mirrored_topic_alone(node, bridge):
+    _, log = bridge
+    pub = flux.Publisher(
+        node, topic("mirror_br"), fingerprint=imu.FINGERPRINT__, mirror_to_ros=True, **SMALL
+    )
+    got = []
+    sub = node.create_subscription(Imu, pub.topic_name, got.append, BEST_EFFORT)
+    assert mirrored(node, pub, got, 2.5)
+    time.sleep(0.3)
+    assert f"{pub.topic_name}: relaying" not in output(log)
+    assert node.count_publishers(pub.topic_name) == 1
+    node.destroy_subscription(sub)
+
+
+# The only subscriber place stays free while no ROS 2 subscriber wants the mirror.
+def test_an_unwatched_mirror_holds_no_reader(node):
+    pub = flux.Publisher(
+        node,
+        topic("mirror_idle"),
+        fingerprint=imu.FINGERPRINT__,
+        mirror_to_ros=True,
+        max_subscribers=1,
+        **SMALL,
+    )
+    time.sleep(0.3)
+    hold = hold_the_only_place(pub, imu.FINGERPRINT__)
+    hold.stdin.close()
+    assert hold.wait(timeout=10) == 0
+
+
+def test_dropping_a_mirrored_publisher_stops_its_thread(node):
+    pub = flux.Publisher(
+        node, topic("mirror_drop"), fingerprint=imu.FINGERPRINT__, mirror_to_ros=True, **SMALL
+    )
+    name = f"flux mirror {pub.topic_name}"
+    assert any(t.name == name for t in threading.enumerate())
+    del pub
+    gc.collect()
+    assert eventually(lambda: all(t.name != name for t in threading.enumerate()), limit=2.0)
+
+
+def test_an_untyped_publisher_has_no_mirror(node):
+    with pytest.raises(flux.Error):
+        flux.Publisher(node, topic("mirror_raw"), mirror_to_ros=True, **SMALL)

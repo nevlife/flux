@@ -1,0 +1,79 @@
+#ifndef FLUX_DETAIL_ROS_MIRROR_HPP
+#define FLUX_DETAIL_ROS_MIRROR_HPP
+
+#include "flux/detail/subscriber.hpp"
+#include "flux/schemas.hpp"
+
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace flux::detail
+{
+
+// The node-free half of a publisher's ROS 2 mirror, shared by the C++ Publisher and the Python
+// binding: reads the publisher's own channel and writes each frame as the CDR of its ROS 2
+// message. Attached only between detach() calls, so a mirror nobody watches holds no reader.
+class RosMirror
+{
+public:
+  // Throws Error (FLUX_INVALID_ARGUMENT) for a device-backed publisher or a fingerprint that
+  // names no installed message type.
+  RosMirror(const Channel & publisher, std::string signpost, std::uint64_t fingerprint)
+  : signpost_(std::move(signpost)),
+    fingerprint_(fingerprint),
+    type_(find(schemas_, fingerprint, publisher.device_backed()))
+  {
+  }
+
+  std::string ros_type() const { return type_.ros_type(); }
+
+  void detach() { sub_.reset(); }
+
+  // Waits up to `timeout_ns`, or until stop(), for a frame and writes its CDR into out(n), which
+  // returns n bytes to write to. The size written, or 0 for no frame or one that does not match
+  // its schema.
+  template <class Stop, class Out>
+  std::size_t next(std::int64_t timeout_ns, Stop stop, Out out)
+  {
+    if (!sub_) sub_.emplace(signpost_, fingerprint_, QoS(1).max_borrow(1), MemoryPolicy{});
+    FrameView frame = sub_->take_blocking(timeout_ns, stop);
+    if (!frame) return 0;
+    // Sizing and writing must read the same bytes, and a peer can still write a committed slot.
+    const auto * data = static_cast<const std::uint8_t *>(frame.data());
+    bytes_.assign(data, data + frame.size());
+    frame.release();
+    try {
+      const std::size_t n = type_.cdr_size(bytes_.data(), bytes_.size());
+      return type_.write_cdr(bytes_.data(), bytes_.size(), out(n), n);
+    } catch (const Error &) {
+      return 0;
+    }
+  }
+
+private:
+  static Schemas::Type find(const Schemas & s, std::uint64_t fingerprint, bool device_backed)
+  {
+    if (device_backed) {
+      throw Error(FLUX_INVALID_ARGUMENT, "flux: a device-backed publisher has no ROS 2 mirror");
+    }
+    if (!s.contains(fingerprint)) {
+      throw Error(FLUX_INVALID_ARGUMENT, "flux: no installed message type has this fingerprint");
+    }
+    return s.at(fingerprint);
+  }
+
+  std::string signpost_;
+  std::uint64_t fingerprint_;
+  Schemas schemas_;
+  Schemas::Type type_;
+  std::optional<Subscriber> sub_;
+  std::vector<std::uint8_t> bytes_;
+};
+
+}  // namespace flux::detail
+
+#endif  // FLUX_DETAIL_ROS_MIRROR_HPP

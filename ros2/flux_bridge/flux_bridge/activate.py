@@ -3,8 +3,8 @@
 The bridge relays a channel only while a ROS 2 subscriber for its name exists, and it looks once
 per poll. A stock verb started cold would therefore miss the first second and, for `hz`, wait on
 a topic with no publisher. The helpers here hold a subscription that does nothing on a private
-rclpy context, wait until the bridge's publisher is on the graph, and only then hand over to the
-stock verb. The channel's type comes from flux itself: its fingerprint names an installed
+rclpy context, wait until a publisher is on the graph (the bridge's, or the flux publisher's own
+ROS 2 mirror), and only then hand over to the stock verb. The channel's type comes from flux itself: its fingerprint names an installed
 message type, so no DDS discovery is needed to learn it.
 """
 
@@ -16,8 +16,6 @@ import time
 
 import flux
 
-# The bridge's node is named flux_bridge_<pid> (src/bridge.cpp).
-NODE_PREFIX = "flux_bridge_"
 DEFAULT_TIMEOUT = 10.0
 
 
@@ -59,14 +57,6 @@ def _dummy_qos():
     )
 
 
-def _bridge_publishers(node, topic):
-    return [
-        info
-        for info in node.get_publishers_info_by_topic(topic)
-        if info.node_name.startswith(NODE_PREFIX)
-    ]
-
-
 @contextlib.contextmanager
 def private_node(name):
     import rclpy
@@ -86,10 +76,10 @@ def private_node(name):
 def wait_for_bridge(node, topic, timeout, interval=0.2):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _bridge_publishers(node, topic):
+        if node.count_publishers(topic) > 0:
             return True
         time.sleep(interval)
-    return bool(_bridge_publishers(node, topic))
+    return node.count_publishers(topic) > 0
 
 
 def run_with_bridge(args, names, action):

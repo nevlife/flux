@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <memory>
 #include <string>
 
 namespace flux
@@ -41,6 +42,14 @@ public:
     const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
     std::uint32_t slot_size, std::uint32_t slot_count, const gpu::Stream & stream,
     MemoryPolicy mem = {}, std::uint32_t max_subscribers = kDefaultMaxSubscribers);
+  Publisher(const Publisher &) = delete;
+  Publisher & operator=(const Publisher &) = delete;
+  Publisher(Publisher &&) noexcept;
+  Publisher & operator=(Publisher &&) noexcept;
+  ~Publisher();
+
+  // Also publishes each frame as its ROS 2 message on this topic while a ROS 2 subscriber wants it.
+  void mirror_to_ros();
 
   // Backpressure while every slot is borrowed: the frame is dropped.
   Published publish(const void * data, std::size_t nbytes) noexcept
@@ -81,10 +90,16 @@ public:
   const std::string & signpost_name() const noexcept { return signpost_; }
 
 private:
+  class RosMirror;
+
+  NodeRef node_;
+  std::uint64_t fingerprint_;
   std::string topic_;
   std::string signpost_;
   detail::Channel ch_;
   detail::Announcement announced_;
+  // Last, so its thread stops before the channel goes.
+  std::unique_ptr<RosMirror> mirror_;
 };
 
 }  // namespace flux

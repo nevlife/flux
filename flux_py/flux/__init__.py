@@ -69,10 +69,12 @@ DEFAULT_MAX_SUBSCRIBERS = _flux.DEFAULT_MAX_SUBSCRIBERS
 _TICK_NS = _flux.DEFAULT_TICK_NS
 # rclpy raises it, not ExternalShutdownException, when the context shuts down as it builds a wait set.
 _RCLError = _rclpy.RCLError
+_InvalidHandle = _rclpy.InvalidHandle
 # How long one dispatch may run before the ROS side gets its turn.
 _TURN_NS = _flux.DEFAULT_TURN_NS
 # Spins still running, as at exit they may be on daemon threads.
 _live = weakref.WeakSet()
+_MIRROR_POLL_S = 0.1
 
 
 def _cuda(device):
@@ -96,6 +98,46 @@ def _timeout_ns(seconds):
     return max(1, int(seconds * 1e9))
 
 
+def _start_mirror(publisher, node):
+    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+    from rosidl_runtime_py.utilities import get_message
+
+    mirror = _flux._RosMirror(publisher, publisher.signpost_name, publisher._fingerprint)
+    ros_pub = node.create_publisher(
+        get_message(mirror.ros_type),
+        publisher.topic_name,
+        QoSProfile(
+            depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE
+        ),
+    )
+    stop = threading.Event()
+    # The thread holds the mirror, not the publisher, so dropping the publisher stops it.
+    weakref.finalize(publisher, stop.set)
+    threading.Thread(
+        target=_mirror,
+        args=(mirror, ros_pub, stop, node.get_logger()),
+        name=f"flux mirror {publisher.topic_name}",
+        daemon=True,
+    ).start()
+
+
+def _mirror(mirror, ros_pub, stop, logger):
+    try:
+        while not stop.is_set():
+            if ros_pub.get_subscription_count() == 0:
+                mirror.detach()
+                stop.wait(_MIRROR_POLL_S)
+                continue
+            data = mirror.next(int(_MIRROR_POLL_S * 1e9))
+            if data is not None:
+                ros_pub.publish(data)
+    except (_InvalidHandle, _RCLError):
+        pass  # the node or its context went first
+    except Exception as e:
+        # Raised on a thread, it would only reach stderr.
+        logger.error(f"{ros_pub.topic_name}: ROS 2 mirror stopped: {e}")
+
+
 class Publisher(_flux._Publisher):
     """One per topic on the host: Error with Status.PUBLISHER_EXISTS while another is live.
 
@@ -114,13 +156,16 @@ class Publisher(_flux._Publisher):
         max_subscribers=DEFAULT_MAX_SUBSCRIBERS,
         device="cpu",
         fence_timeout=None,
+        mirror_to_ros=False,
     ):
         """fence_timeout, in seconds, bounds each commit's wait for the stream; None waits as long
         as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
-        work is done."""
+        work is done. mirror_to_ros also publishes every frame as its ROS 2 message on the same
+        topic while a ROS 2 subscriber wants it (depth 1, best effort, volatile)."""
         bound = _timeout_ns(fence_timeout)
         self.topic_name = node.resolve_topic_name(topic)
         self.signpost_name = _flux.signpost_name(self.topic_name, fingerprint)
+        self._fingerprint = fingerprint
         super().__init__(
             self.signpost_name,
             self.topic_name,
@@ -133,6 +178,8 @@ class Publisher(_flux._Publisher):
             _cuda(device),
         )
         self._set_fence_timeout(bound)
+        if mirror_to_ros:
+            _start_mirror(self, node)
 
     def publish(self, array):
         """A host array. A device array is refused: loan() a slot and write it on the device."""
