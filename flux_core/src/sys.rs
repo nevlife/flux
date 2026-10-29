@@ -514,6 +514,9 @@ impl<T> PiMutex<T> {
             .is_err()
         {
             self.futex_op(libc::FUTEX_LOCK_PI);
+            // The kernel handed the lock over. Its ordering is the futex's; this acquire, paired
+            // with the release before FUTEX_UNLOCK_PI, is the edge ThreadSanitizer can see.
+            self.word.load(Ordering::Acquire);
         }
     }
 
@@ -538,6 +541,7 @@ impl<T> PiMutex<T> {
             .compare_exchange(tid(), 0, Ordering::Release, Ordering::Relaxed)
             .is_err()
         {
+            self.word.fetch_or(0, Ordering::Release);
             self.futex_op(libc::FUTEX_UNLOCK_PI);
         }
     }
