@@ -402,3 +402,127 @@ def test_a_channel_of_no_installed_type_stays_a_flux_frame(tmp_path):
     got = messages(out)
     assert got["/raw/flux"][0] == FRAME_TYPE
     assert len(got["/raw/flux"][1]) == 3
+
+
+def picture(i, height, width, channels):
+    """A smooth picture that moves with i, which JPEG keeps close."""
+    y, x = np.mgrid[0:height, 0:width]
+    planes = [128 + 60 * np.sin((x + i * 3) / 9 + c) * np.cos(y / 7) for c in range(channels)]
+    return np.stack(planes, axis=-1).astype(np.uint8).reshape(height, width * channels)
+
+
+def publish_images(pub, encoding, channels, count, height=48, width=64, pad=8):
+    """Images with `pad` bytes past each row, as some drivers send them."""
+    from sensor_msgs_flux.image import Image
+
+    sent = []
+    for i in range(count):
+        rows = np.zeros((height, width * channels + pad), np.uint8)
+        rows[:, : width * channels] = picture(i, height, width, channels)
+        b = Image.build__(pub)
+        b.set__header__stamp(100 + i, 7)
+        b.header__frame_id = "cam"
+        b.height, b.width, b.encoding = height, width, encoding
+        b.step = rows.shape[1]
+        b.alloc__data(rows.size)[:] = rows.reshape(-1)
+        assert b.commit__() == flux.Published.OK
+        sent.append(rows)
+        time.sleep(0.02)
+    return sent
+
+
+@pytest.mark.parametrize("encoding,channels", [("rgb8", 3), ("bgr8", 3), ("mono8", 1)])
+def test_an_image_recorded_as_jpeg_plays_back_close_to_what_was_sent(
+    node, tmp_path, encoding, channels
+):
+    from sensor_msgs_flux.image import Image
+
+    k = key("jpeg_" + encoding)
+    bag = str(tmp_path / "bag")
+    pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=1 << 16, slot_count=4)
+    rec = record(bag, k, "--image-codec", "jpeg", "--jpeg-quality", "95")
+    time.sleep(0.5)
+    sent = publish_images(pub, encoding, channels, 20)
+    stop(rec)
+    del pub
+    gc.collect()
+    recorded = frames(bag)
+    assert recorded and all(f.codec == "jpeg" for _, f in recorded)
+    assert all(len(f.data) < sent[0].size / 2 for _, f in recorded)
+
+    sub = flux.Subscription(node, k, fingerprint=Image.FINGERPRINT__, qos=flux.QoS(depth=16))
+    got = play_into(sub, bag)
+    assert len(got) == len(recorded)
+    first = len(sent) - len(got)
+    for n, (dtype, shape, data) in enumerate(got):
+        img = Image.View(data)
+        assert (img.encoding, img.width, img.height, img.step) == (
+            encoding,
+            64,
+            48,
+            64 * channels + 8,
+        )
+        assert (img.header__stamp, img.header__frame_id) == ((100 + first + n, 7), "cam")
+        rows = np.asarray(img.data).reshape(48, -1).astype(int)
+        want = sent[first + n].astype(int)
+        assert np.abs(rows[:, : 64 * channels] - want[:, : 64 * channels]).mean() < 3
+        assert not rows[:, 64 * channels :].any()
+
+
+def test_an_image_jpeg_cannot_hold_is_recorded_as_it_is(node, tmp_path):
+    from sensor_msgs_flux.image import Image
+
+    k = key("jpeg_mono16")
+    bag = str(tmp_path / "bag")
+    pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=1 << 16, slot_count=4)
+    rec = record(bag, k, "--image-codec", "jpeg")
+    time.sleep(0.5)
+    publish_images(pub, "mono16", 2, 10)
+    stop(rec)
+    recorded = frames(bag)
+    assert recorded and all(f.codec == "raw" for _, f in recorded)
+
+
+def test_a_jpeg_image_converts_to_a_compressed_image(node, tmp_path):
+    from sensor_msgs.msg import CompressedImage
+    from sensor_msgs_flux.image import Image
+
+    k = key("jpeg_convert")
+    bag, out = str(tmp_path / "bag"), str(tmp_path / "ros")
+    pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=1 << 16, slot_count=4)
+    rec = record(bag, k, "--image-codec", "jpeg")
+    time.sleep(0.5)
+    publish_images(pub, "rgb8", 3, 10)
+    stop(rec)
+    recorded = frames(bag)
+
+    convert(bag, out)
+    got = messages(out)
+    assert got[k + "/compressed"][0] == "sensor_msgs/msg/CompressedImage"
+    msgs = [deserialize_message(data, CompressedImage) for _, data in got[k + "/compressed"][1]]
+    assert len(msgs) == len(recorded)
+    for m, (_, f) in zip(msgs, recorded):
+        assert m.format == "rgb8; jpeg compressed bgr8"
+        assert m.header.frame_id == "cam"
+        assert bytes(m.data[:2]) == b"\xff\xd8"
+        assert bytes(m.data) == bytes(f.data)[-len(m.data) :]
+    assert not any(t.endswith("/flux") for t in got)
+
+
+def test_a_bag_recorded_with_zstd_reads_back_whole_and_smaller(node, tmp_path):
+    k = key("zstd")
+    bag = str(tmp_path / "bag")
+    pub = flux.Publisher(node, k, slot_size=1 << 20, slot_count=4)
+    rec = record(bag, k, "-s", "mcap", "--storage-preset-profile", "zstd_fast")
+    time.sleep(0.5)
+    for i in range(20):
+        assert pub.publish(np.full(1 << 19, i, dtype=np.uint8))
+        time.sleep(0.02)
+    stop(rec)
+    recorded = frames(bag)
+    assert len(recorded) > 10
+    assert [bytes(f.data) for _, f in recorded] == [
+        bytes(np.full(1 << 19, int(f.data[0]), np.uint8)) for _, f in recorded
+    ]
+    size = sum(os.path.getsize(os.path.join(bag, n)) for n in os.listdir(bag))
+    assert size < len(recorded) * (1 << 19) / 10

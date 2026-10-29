@@ -35,6 +35,26 @@ class RecordFluxVerb(VerbExtension):
             help="Memory flux frames may wait in for the bag; a frame past it is dropped and "
             "reported (default: 1 GiB).",
         )
+        parser.add_argument(
+            "-s", "--storage", help="rosbag2 storage plugin, as in ros2 bag record."
+        )
+        parser.add_argument(
+            "--storage-preset-profile",
+            metavar="PROFILE",
+            help="Storage preset, as in ros2 bag record; zstd_fast compresses an mcap bag.",
+        )
+        parser.add_argument(
+            "--image-codec",
+            choices=("raw", "jpeg"),
+            help="jpeg stores the pixels of rgb8, bgr8 and mono8 sensor_msgs/Image frames as "
+            "JPEG (default: raw).",
+        )
+        parser.add_argument(
+            "--jpeg-quality",
+            type=int,
+            metavar="Q",
+            help="JPEG quality from 1 to 100 (default: 90).",
+        )
 
     def main(self, *, args):
         argv = list(args.topics)
@@ -46,6 +66,10 @@ class RecordFluxVerb(VerbExtension):
             ("-o", args.output),
             ("--poll", args.poll),
             ("--max-cache-size", args.max_cache_size),
+            ("-s", args.storage),
+            ("--storage-preset-profile", args.storage_preset_profile),
+            ("--image-codec", args.image_codec),
+            ("--jpeg-quality", args.jpeg_quality),
         ):
             if value is not None:
                 argv += [flag, str(value)]

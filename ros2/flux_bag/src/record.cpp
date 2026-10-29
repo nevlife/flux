@@ -3,6 +3,7 @@
 #include "flux/trace.h"
 #include "flux_bag/bag_time.hpp"
 #include "flux_bag/flux_frame_cdr.hpp"
+#include "flux_bag/jpeg_frame.hpp"
 #include "flux_bag/raw_meta.hpp"
 #include "flux_bag/spin_thread.hpp"
 #include "flux_bridge/tools.hpp"
@@ -15,6 +16,8 @@
 #include <rosbag2_storage/topic_metadata.hpp>
 #include <rosbag2_transport/record_options.hpp>
 #include <rosbag2_transport/recorder.hpp>
+
+#include "sensor_msgs/flux/image.hpp"
 #if FLUX_ROSBAG2_MINOR >= 26
 #include <rosbag2_transport/topic_filter.hpp>
 #else
@@ -65,17 +68,25 @@ struct Options
   rosbag2_transport::RecordOptions record;
   std::chrono::duration<double> poll{1.0};
   std::uint64_t cache_bytes = 1ULL << 30;
+  // 0 records images as they are.
+  int jpeg_quality = 0;
 };
 
 constexpr const char * kUsage =
   "usage: ros2 bag record_flux [-a] [TOPIC ...] [-e REGEX] [-x REGEX]\n"
   "                             [--exclude-topics TOPIC ...] [-o OUT] [--poll SEC]\n"
-  "                             [--max-cache-size BYTES]\n"
+  "                             [--max-cache-size BYTES] [-s STORAGE]\n"
+  "                             [--storage-preset-profile PROFILE]\n"
+  "                             [--image-codec raw|jpeg] [--jpeg-quality Q]\n"
   "\n"
   "Records the selected flux channels and ROS topics into one bag. A flux channel NAME\n"
   "is stored as flux_msgs/FluxFrame on NAME/flux; ROS topics are stored as they are.\n"
   "flux frames wait for the bag in memory, up to BYTES (default 1 GiB); a frame that does\n"
-  "not fit is dropped and reported, the publisher never waits.\n";
+  "not fit is dropped and reported, the publisher never waits.\n"
+  "-s and --storage-preset-profile go to rosbag2 as in ros2 bag record (zstd_fast\n"
+  "compresses an mcap bag). --image-codec jpeg stores the pixels of sensor_msgs/Image\n"
+  "frames in rgb8, bgr8 or mono8 as JPEG of quality Q (1-100, default 90); other frames\n"
+  "are stored as they are.\n";
 
 std::string default_uri()
 {
@@ -102,6 +113,8 @@ Options parse(const std::vector<std::string> & args)
 {
   Options o;
   std::vector<std::string> * list = &o.record.topics;
+  std::string image_codec = "raw";
+  int quality = 90;
   for (std::size_t i = 1; i < args.size(); ++i) {
     const std::string & a = args[i];
     auto value = [&]() -> const std::string & {
@@ -131,6 +144,22 @@ Options parse(const std::vector<std::string> & args)
 #endif
       (a == "-o" || a == "--output") {
       o.storage.uri = value();
+    } else if (a == "-s" || a == "--storage") {
+      o.storage.storage_id = value();
+    } else if (a == "--storage-preset-profile") {
+      o.storage.storage_preset_profile = value();
+    } else if (a == "--image-codec") {
+      const std::string & v = value();
+      if (v != "raw" && v != "jpeg") throw std::invalid_argument("--image-codec takes raw or jpeg");
+      image_codec = v;
+    } else if (a == "--jpeg-quality") {
+      const std::string & v = value();
+      if (
+        v.empty() || v.size() > 3 || v.find_first_not_of("0123456789") != std::string::npos ||
+        std::stoi(v) < 1 || std::stoi(v) > 100) {
+        throw std::invalid_argument("--jpeg-quality takes a number from 1 to 100");
+      }
+      quality = std::stoi(v);
     } else if (a == "--poll") {
       o.poll = std::chrono::duration<double>(flux_bridge::positive_number("--poll", value()));
     } else if (a == "--max-cache-size") {
@@ -149,6 +178,7 @@ Options parse(const std::vector<std::string> & args)
     }
   }
   if (o.storage.uri.empty()) o.storage.uri = default_uri();
+  if (image_codec == "jpeg") o.jpeg_quality = quality;
   set_output_format(o.record, 0);
   return o;
 }
@@ -293,7 +323,7 @@ class ChannelRecorder
 public:
   ChannelRecorder(
     rosbag2_transport::Recorder & recorder, const flux::Topic & topic, rosbag2_cpp::Writer & writer,
-    WriteQueue & queue)
+    WriteQueue & queue, int jpeg_quality)
   : recorder_(recorder),
     queue_(queue),
     flux_topic_(topic.key),
@@ -301,6 +331,9 @@ public:
     fingerprint_(topic.fingerprint),
     sub_(recorder, topic.key, topic.fingerprint)
   {
+    if (jpeg_quality > 0 && fingerprint_ == sensor_msgs::flux_msg::Image::kFingerprint) {
+      jpeg_ = std::make_unique<flux_bag::JpegEncoder>(jpeg_quality);
+    }
     rosbag2_storage::TopicMetadata meta;
     meta.name = bag_topic_;
     meta.type = kFrameType;
@@ -380,7 +413,7 @@ private:
     meta_.dtype = static_cast<flux::DType>(m.dtype);
     meta_.ndim = m.ndim;
     std::memcpy(meta_.shape.data(), m.shape, sizeof(meta_.shape));
-    std::array<std::uint8_t, flux_bag::RawMeta::kMaxSize> meta_bytes{};
+    std::array<std::uint8_t, flux_bag::JpegMeta::kMaxSize> meta_bytes{};
 
     flux_bag::FluxFrameFields f;
     f.sec = static_cast<std::int32_t>(sent / 1'000'000'000);
@@ -392,6 +425,7 @@ private:
     f.meta_size = meta_.write(meta_bytes.data());
     f.data = v.data();
     f.data_size = v.size();
+    if (jpeg_) compress(v, f, meta_bytes.data());
 
     auto msg = queue_.message(flux_bag::FluxFrameCdr::size(f));
     msg->topic_name = bag_topic_;
@@ -409,6 +443,40 @@ private:
     }
   }
 
+  // An Image frame JPEG holds becomes codec "jpeg" in `f`, its data in packed_; any other frame
+  // stays raw.
+  void compress(const flux::FrameView & v, flux_bag::FluxFrameFields & f, std::uint8_t * meta)
+  {
+    const sensor_msgs::flux_msg::Image::View img(v);
+    const std::uint32_t width = img.width();
+    const std::uint32_t height = img.height();
+    const std::uint32_t step = img.step();
+    const J_COLOR_SPACE space = flux_bag::jpeg_space(img.encoding());
+    const auto pixels = img.data();
+    if (
+      !img.ok__() || space == JCS_UNKNOWN ||
+      std::uint64_t{width} * flux_bag::jpeg_channels(space) > step ||
+      pixels.size() != std::uint64_t{step} * height) {
+      return;
+    }
+    const std::size_t n = jpeg_->encode(pixels.data(), width, height, step, space);
+    if (n == 0) return;
+    const auto * frame = static_cast<const std::uint8_t *>(v.data());
+    flux_bag::JpegMeta jm;
+    jm.raw = meta_;
+    jm.at = static_cast<std::uint64_t>(pixels.data() - frame);
+    jm.len = pixels.size();
+    const std::size_t rest = v.size() - jm.at - jm.len;
+    packed_.resize(jm.at + rest + n);
+    std::memcpy(packed_.data(), frame, jm.at);
+    std::memcpy(packed_.data() + jm.at, frame + jm.at + jm.len, rest);
+    std::memcpy(packed_.data() + jm.at + rest, jpeg_->data(), n);
+    f.codec = "jpeg";
+    f.meta_size = jm.write(meta);
+    f.data = packed_.data();
+    f.data_size = packed_.size();
+  }
+
   rosbag2_transport::Recorder & recorder_;
   WriteQueue & queue_;
   std::string flux_topic_;
@@ -417,6 +485,8 @@ private:
   flux::Subscription sub_;
   std::uint32_t generation_ = 0;
   flux_bag::RawMeta meta_;
+  std::unique_ptr<flux_bag::JpegEncoder> jpeg_;
+  std::vector<std::uint8_t> packed_;
   std::uint64_t queued_ = 0;
   std::uint64_t dropped_ = 0;
   std::uint64_t reported_lost_ = 0;
@@ -586,7 +656,7 @@ void run(Options & opt)
       for (const flux::Topic * t : live[key]) {
         std::unique_ptr<ChannelRecorder> r;
         try {
-          r = std::make_unique<ChannelRecorder>(*recorder, *t, *writer, *queue);
+          r = std::make_unique<ChannelRecorder>(*recorder, *t, *writer, *queue, opt.jpeg_quality);
         } catch (const flux::Error & e) {
           leave_out(key, t->signpost, e.what());
           continue;

@@ -42,6 +42,7 @@ ros2 topic hz_flux /camera/image
 ```bash
 ros2 bag record_flux -a                         # 모든 flux 채널과 ROS 토픽
 ros2 bag record_flux /camera/image /imu         # 이름으로. flux와 ROS 이름은 한 목록이다
+ros2 bag record_flux -a -s mcap --storage-preset-profile zstd_fast --image-codec jpeg   # 압축
 ros2 bag play_flux rosbag2_2026_10_23-10_00_00
 ros2 bag convert_flux rosbag2_2026_10_23-10_00_00 -o converted
 ```
@@ -51,6 +52,8 @@ ros2 bag convert_flux rosbag2_2026_10_23-10_00_00 -o converted
 ```text
 ros2 bag record_flux [-a] [TOPIC ...] [-e REGEX] [-x REGEX] [--exclude-topics TOPIC ...]
                      [-o OUT] [--poll SEC] [--max-cache-size BYTES]
+                     [-s STORAGE] [--storage-preset-profile PROFILE]
+                     [--image-codec raw|jpeg] [--jpeg-quality Q]
 ```
 
 flux 채널 `NAME`의 프레임은 토픽 `NAME/flux`에 `flux_msgs/msg/FluxFrame`으로 들어간다. ROS 토픽은 같은 bag에 그대로 들어간다.
@@ -59,20 +62,24 @@ flux 채널 `NAME`의 프레임은 토픽 `NAME/flux`에 `flux_msgs/msg/FluxFram
 std_msgs/Header header   # commit 시각
 string flux_topic        # 채널 이름
 uint64 fingerprint       # 채널의 스키마 지문
-string codec             # "raw"
+string codec             # "raw" 또는 "jpeg"
 uint8[] meta             # raw: slot_size u32, slot_count u32, dtype u8, ndim u8, shape u64[ndim]
-uint8[] data             # 슬롯에 있던 프레임 바이트 그대로
+                         # jpeg: raw의 meta 뒤에 픽셀 구간의 offset u64, 길이 u64
+uint8[] data             # raw: 슬롯에 있던 프레임 바이트 그대로
+                         # jpeg: 픽셀 구간을 뺀 프레임 바이트 뒤에 JPEG 바이트
 ```
 
 | 항목 | 값 |
 | --- | --- |
 | 선택 | `ros2 bag record`와 같은 규칙을 flux 채널 이름과 ROS 토픽 이름에 똑같이 적용한다. `--exclude-topics`는 rosbag2 0.26(Jazzy) 이상이 필요하다 |
 | 채널 찾기 | `/dev/shm`의 변화를 inotify로 바로 본다. 그 밖에는 `--poll`초(기본 1)마다 다시 읽는다. 10초 넘게 내려간 채널은 놓는다 |
-| 복사 | 채널 스레드가 프레임을 자기 버퍼로 복사하고 슬롯을 바로 돌려준다. bag 쓰기는 스레드 하나가 한다 |
+| 복사 | 채널 스레드가 프레임을 자기 버퍼로 복사하고 슬롯을 바로 돌려준다. jpeg로 저장하는 프레임은 인코딩이 끝난 뒤 돌려준다. bag 쓰기는 스레드 하나가 한다 |
 | 쓰기 대기 | 디스크가 느린 동안 프레임은 메모리에서 기다린다. 상한은 `--max-cache-size`(기본 1 GiB)이고, 넘는 프레임은 버리고 알린다. 발행자는 기다리지 않는다 |
 | 시각 | send 시각과 header stamp는 commit 시각, recv 시각은 take 시각이다 |
 | 일시정지 | `~/pause`·`~/resume` 서비스(rosbag2와 같다). 멈춘 동안의 프레임은 받되 쓰지 않는다 |
-| 저장 형식 | rosbag2 기본값(Jazzy는 mcap) |
+| 저장 형식 | `-s`가 없으면 rosbag2 기본값(Humble은 sqlite3, Jazzy는 mcap)이다. `-s`와 `--storage-preset-profile`은 `ros2 bag record`의 같은 옵션처럼 rosbag2에 넘긴다 |
+| 무손실 압축 | `-s mcap --storage-preset-profile zstd_fast`는 mcap chunk를 zstd로 압축한다. flux 채널과 ROS 토픽에 모두 적용된다. 읽는 쪽(`play_flux`, `convert_flux`, `ros2 bag play`)은 옵션 없이 읽는다 |
+| 이미지 압축 | `--image-codec jpeg`는 `sensor_msgs/Image` 채널의 `rgb8`, `bgr8`, `mono8` 프레임의 픽셀을 JPEG(품질 `--jpeg-quality`, 기본 90)로 저장한다. 손실 압축이다. 픽셀 밖의 바이트(header, encoding, step 등)는 그대로 둔다. 다른 encoding과 다른 타입의 프레임은 raw로 저장한다. 기본은 `raw`다 |
 | 끝날 때 | 채널마다 큐에 넣은 수, 캐시가 차서 버린 수, `lost`를 로그로 남긴다 |
 
 ### 재생
@@ -85,6 +92,7 @@ ros2 bag play_flux BAG [-r RATE]
 
 - 재생은 발행자를 만든 뒤 200 ms 기다리고 시작한다. 먼저 떠 있던 구독자가 붙을 시간을 주기 위해서다.
 - 프레임의 `slot_size`나 `slot_count`가 바뀌면 발행자를 다시 만든다. dtype x shape가 데이터 크기와 다른 프레임은 건너뛴다.
+- jpeg 프레임은 픽셀을 디코딩해 원래 크기의 프레임으로 발행한다. 픽셀 값은 원본과 다르다. 행 끝의 padding(`step`이 `width` x 채널 수보다 긴 부분)은 0이다.
 - seek는 ROS 토픽만 옮긴다.
 
 ### 변환
@@ -93,7 +101,7 @@ ros2 bag play_flux BAG [-r RATE]
 ros2 bag convert_flux BAG -o OUT
 ```
 
-bag을 새 bag으로 옮긴다. `FluxFrame`의 fingerprint가 설치된 타입을 가리키면, 그 프레임을 ROS 메시지로 바꿔 채널 이름의 토픽에 넣는다. 녹화 시각은 그대로 둔다. 타입을 못 찾거나 같은 이름의 ROS 토픽이 다른 타입이면 `FluxFrame`으로 남긴다. 나머지 토픽은 그대로 복사한다. 변환한 토픽은 flux 없이 읽을 수 있다. 남은 `FluxFrame`을 읽으려면 `flux_msgs`가 있어야 한다. 스키마와 맞지 않는 프레임이 있으면 변환이 exit code 1로 멈춘다.
+bag을 새 bag으로 옮긴다. `FluxFrame`의 fingerprint가 설치된 타입을 가리키면, 그 프레임을 ROS 메시지로 바꿔 채널 이름의 토픽에 넣는다. 녹화 시각은 그대로 둔다. 타입을 못 찾거나 같은 이름의 ROS 토픽이 다른 타입이면 `FluxFrame`으로 남긴다. jpeg 프레임은 `sensor_msgs/msg/CompressedImage`로 바꿔 `채널 이름/compressed`에 넣는다. `format`은 compressed_image_transport와 같은 꼴(`rgb8; jpeg compressed bgr8`)이고, `data`는 녹화한 JPEG 바이트 그대로다. 나머지 토픽은 그대로 복사한다. 변환한 토픽은 flux 없이 읽을 수 있다. 남은 `FluxFrame`을 읽으려면 `flux_msgs`가 있어야 한다. 스키마와 맞지 않는 프레임이 있으면 변환이 exit code 1로 멈춘다.
 
 ## flux_tools(rviz2)
 

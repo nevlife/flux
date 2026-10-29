@@ -1,6 +1,7 @@
 #include "flux/publisher.hpp"
 #include "flux_bag/bag_time.hpp"
 #include "flux_bag/flux_frame_cdr.hpp"
+#include "flux_bag/jpeg_frame.hpp"
 #include "flux_bag/raw_meta.hpp"
 #include "flux_bag/spin_thread.hpp"
 #include "flux_bridge/tools.hpp"
@@ -80,13 +81,18 @@ Options parse(const std::vector<std::string> & args)
   return o;
 }
 
+// A FluxFrame of codec "raw", whose meta.len is 0, or "jpeg".
 bool decode(
   const rosbag2_storage::SerializedBagMessage & msg, flux_bag::FluxFrameFields & f,
-  flux_bag::RawMeta & meta)
+  flux_bag::JpegMeta & meta)
 {
   const rcutils_uint8_array_t & raw = *msg.serialized_data;
-  return flux_bag::FluxFrameCdr::read(raw.buffer, raw.buffer_length, f) && f.codec == "raw" &&
-         meta.read(f.meta, f.meta_size);
+  if (!flux_bag::FluxFrameCdr::read(raw.buffer, raw.buffer_length, f)) return false;
+  if (f.codec == "raw") {
+    meta.at = meta.len = 0;
+    return meta.raw.read(f.meta, f.meta_size);
+  }
+  return f.codec == "jpeg" && meta.read(f.meta, f.meta_size);
 }
 
 // A waiting subscriber looks for its channel once per tick.
@@ -121,8 +127,8 @@ public:
       if (!first.has_next()) continue;
       const auto msg = first.read_next();
       flux_bag::FluxFrameFields f;
-      flux_bag::RawMeta meta;
-      if (decode(*msg, f, meta)) publisher_for(f, meta);
+      flux_bag::JpegMeta meta;
+      if (decode(*msg, f, meta)) publisher_for(f, meta.raw);
     }
     if (!pubs_.empty()) std::this_thread::sleep_for(kAttachWait);
     reader_.open(storage);
@@ -330,23 +336,31 @@ private:
   void publish(const rosbag2_storage::SerializedBagMessage & msg)
   {
     flux_bag::FluxFrameFields f;
-    flux_bag::RawMeta meta;
+    flux_bag::JpegMeta meta;
     if (!decode(msg, f, meta)) {
       RCLCPP_ERROR_ONCE(
-        node_.get_logger(), "%s: not a raw FluxFrame, skipped", msg.topic_name.c_str());
+        node_.get_logger(), "%s: not a raw or jpeg FluxFrame, skipped", msg.topic_name.c_str());
       return;
     }
-    if (meta.nbytes() != f.data_size) {
+    const bool jpeg = f.codec == "jpeg";
+    if (!jpeg && meta.raw.nbytes() != f.data_size) {
       RCLCPP_ERROR_ONCE(
         node_.get_logger(), "%s: a frame's data does not match its dtype and shape, skipped",
         msg.topic_name.c_str());
       return;
     }
-    flux::Publisher * pub = publisher_for(f, meta);
+    flux::Publisher * pub = publisher_for(f, meta.raw);
     if (pub == nullptr) return;
-    flux::WriteSlot w = pub->loan(meta.dtype, meta.shape.data(), meta.ndim);
+    flux::WriteSlot w = pub->loan(meta.raw.dtype, meta.raw.shape.data(), meta.raw.ndim);
     if (!w) return;
-    std::memcpy(w.data(), f.data, f.data_size);
+    if (!jpeg) {
+      std::memcpy(w.data(), f.data, f.data_size);
+    } else if (!flux_bag::unpack_jpeg(f, meta, static_cast<std::uint8_t *>(w.data()))) {
+      RCLCPP_ERROR_ONCE(
+        node_.get_logger(), "%s: a jpeg frame that does not decode, skipped",
+        msg.topic_name.c_str());
+      return;
+    }
     if (const flux::Published p = w.commit(); flux::faulted(p)) {
       RCLCPP_ERROR_ONCE(node_.get_logger(), "publish refused: %s", flux::to_string(p));
     }

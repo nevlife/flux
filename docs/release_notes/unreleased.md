@@ -18,6 +18,8 @@
 * `flux` 명령의 bash Tab 자동완성. 하위 명령, `--window`, 이 호스트에 보이는 채널 이름을 채운다
 * 외장 GPU에서 CPU와 GPU의 네 조합을 모두 받는다. 장치 메모리 채널의 CPU 구독과 호스트 메모리 채널의 GPU 구독은 구독자가 take마다 한 번 복사한다. 장치 메모리 채널의 `publish(호스트 배열)`은 슬롯으로 복사해 발행한다. 전에는 각각 `MISMATCH`, `INVALID_ARGUMENT`, `WrongDevice`였다
 * C ABI가 기본값 상수 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_TURN_NS`를 내보낸다
+* `record_flux`가 `-s`, `--storage-preset-profile`을 rosbag2에 넘긴다. `zstd_fast`로 mcap bag을 무손실 압축한다
+* `record_flux --image-codec jpeg`가 `sensor_msgs/Image`(`rgb8`, `bgr8`, `mono8`)의 픽셀을 JPEG로 저장한다. `play_flux`는 디코딩해 원래 채널에 발행하고, `convert_flux`는 `sensor_msgs/CompressedImage`로 바꾼다
 
 ### 버그 수정
 

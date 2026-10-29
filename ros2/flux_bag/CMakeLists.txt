@@ -15,20 +15,25 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(flux_bridge REQUIRED)
 find_package(flux_cpp REQUIRED)
+find_package(flux_std_adapters REQUIRED)
+find_package(JPEG REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)
 find_package(rosbag2_transport REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 # Humble's rosbag2 (0.15) keeps one time per message, has no TopicFilter, and its Player::play()
 # blocks without the playback hooks; the code reads which by this minor version.
 add_compile_definitions(FLUX_ROSBAG2_MINOR=${rosbag2_transport_VERSION_MINOR})
 
 add_executable(record src/record.cpp)
-target_include_directories(record PRIVATE include ${flux_bridge_INCLUDE_DIRS})
+target_include_directories(record PRIVATE include ${flux_bridge_INCLUDE_DIRS}
+  ${flux_std_adapters_INCLUDE_DIRS})
 target_link_libraries(record
   flux_cpp::flux_cpp
+  JPEG::JPEG
   rclcpp::rclcpp
   rcutils::rcutils
   rosbag2_cpp::rosbag2_cpp
@@ -37,9 +42,11 @@ target_link_libraries(record
 target_compile_options(record PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(play src/play.cpp)
-target_include_directories(play PRIVATE include ${flux_bridge_INCLUDE_DIRS})
+target_include_directories(play PRIVATE include ${flux_bridge_INCLUDE_DIRS}
+  ${flux_std_adapters_INCLUDE_DIRS})
 target_link_libraries(play
   flux_cpp::flux_cpp
+  JPEG::JPEG
   rclcpp::rclcpp
   rosbag2_cpp::rosbag2_cpp
   rosbag2_storage::rosbag2_storage
@@ -47,9 +54,11 @@ target_link_libraries(play
 target_compile_options(play PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(convert src/convert.cpp)
-target_include_directories(convert PRIVATE include)
+target_include_directories(convert PRIVATE include ${flux_std_adapters_INCLUDE_DIRS})
 target_link_libraries(convert
   flux_cpp::flux_cpp
+  JPEG::JPEG
+  ${sensor_msgs_TARGETS}
   rclcpp::rclcpp
   rosbag2_cpp::rosbag2_cpp
   rosbag2_storage::rosbag2_storage)

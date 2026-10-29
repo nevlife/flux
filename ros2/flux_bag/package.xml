@@ -15,12 +15,15 @@
 
   <build_depend>flux_bridge</build_depend>
   <depend>flux_cpp</depend>
+  <build_depend>flux_std_adapters</build_depend>
   <depend>flux_msgs</depend>
+  <depend>libjpeg</depend>
   <depend>rclcpp</depend>
   <depend>rcutils</depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
   <depend>rosbag2_transport</depend>
+  <depend>sensor_msgs</depend>
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>ros2bag</exec_depend>
@@ -32,6 +35,7 @@
   <test_depend>python3-pytest</test_depend>
   <test_depend>rosbag2_interfaces</test_depend>
   <test_depend>rosbag2_py</test_depend>
+  <test_depend>rosbag2_storage_mcap</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
