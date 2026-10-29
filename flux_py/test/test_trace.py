@@ -44,7 +44,10 @@ def test_endpoints_frames_and_the_gil_are_traced(tmp_path):
     log = tmp_path / "trace.log"
     env = dict(
         os.environ,
-        LD_PRELOAD=os.environ["FLUX_TRACE_LOG_LIB"],
+        # After what is already preloaded (a sanitizer run time), not in its place.
+        LD_PRELOAD=" ".join(
+            filter(None, [os.environ.get("LD_PRELOAD"), os.environ["FLUX_TRACE_LOG_LIB"]])
+        ),
         FLUX_TRACE_LOG=str(log),
         PYTHONPATH=os.pathsep.join([str(tmp_path), os.environ.get("PYTHONPATH", "")]),
     )

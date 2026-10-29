@@ -370,7 +370,9 @@ def test_a_daemon_thread_in_serve_outlives_interpreter_exit():
     # Preloaded, an exit handler sleeps once Python has finalized, and the serving thread's next
     # tick tries to take the GIL meanwhile. A tick that lands during finalization is safe either
     # way, hence several runs.
-    env = dict(os.environ, LD_PRELOAD=os.environ["FLUX_EXIT_DELAY"])
+    # After what is already preloaded (a sanitizer run time), not in its place.
+    preload = " ".join(filter(None, [os.environ.get("LD_PRELOAD"), os.environ["FLUX_EXIT_DELAY"]]))
+    env = dict(os.environ, LD_PRELOAD=preload)
     runs = [
         subprocess.Popen([sys.executable, "-c", SERVE, topic(f"exit{i}")], env=env)
         for i in range(8)
