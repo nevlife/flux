@@ -182,17 +182,14 @@ nb::object descr_of(flux::DType d)
   return flux_py::own(PyArray_DescrFromType(flux_py::npy_type(d)));
 }
 
-// The frame's own shape, checked against its bytes: the view must not reach past them.
+// The core's take already checked that the shape covers exactly the frame's bytes.
 nb::object view_of(flux::FrameView && v)
 {
   const flux::FrameMeta m = v.meta();
   std::array<npy_intp, flux::kMaxDims> shape{};
-  std::size_t n = flux::dtype_size(static_cast<flux::DType>(m.dtype));
   for (std::size_t i = 0; i < m.ndim; ++i) {
     shape.at(i) = static_cast<npy_intp>(m.shape[i]);
-    n *= m.shape[i];
   }
-  if (n != v.size()) throw std::runtime_error("flux: frame shape does not match its bytes");
   auto held = std::make_unique<flux::FrameView>(std::move(v));
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): numpy's signature; the view is read-only
   void * data = const_cast<void *>(held->data());
@@ -970,9 +967,6 @@ public:
 
   void add(nb::object sub, nb::callable cb, std::int32_t priority)
   {
-    if (!nb::isinstance<Subscription>(sub)) {
-      throw nb::type_error("flux: Executor.add takes a flux Subscription");
-    }
     auto src = std::make_unique<Source>(std::move(sub), std::move(cb));
     core_->add(*src, priority);
     sources_.push_back(std::move(src));

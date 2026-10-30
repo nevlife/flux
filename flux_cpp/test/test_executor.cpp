@@ -213,22 +213,4 @@ TEST_F(ExecutorTest, ARunFlagEndsTheSpin)
   EXPECT_EQ(passes, 2);
 }
 
-TEST_F(ExecutorTest, AMovedExecutorKeepsItsSources)
-{
-  flux::detail::Executor & ex = *ex_;
-  Feed f;
-  ex.add(f);
-  flux::detail::Executor moved = std::move(ex);
-  ASSERT_EQ(f.ch.publish("a", 1), flux::Published::Ok);
-  EXPECT_EQ(moved.dispatch(), 1u);
-  // NOLINTBEGIN(bugprone-use-after-move): what a moved-from executor does is the test
-  EXPECT_EQ(ex.size(), 0u);
-  EXPECT_FALSE(ex.ready());
-  EXPECT_THROW(ex.add(f), std::logic_error);
-  EXPECT_THROW(ex.dispatch(), std::logic_error);
-  EXPECT_THROW(ex.spin(), std::logic_error);
-  EXPECT_THROW((void)ex.handle(), std::logic_error);
-  // NOLINTEND(bugprone-use-after-move)
-}
-
 }  // namespace

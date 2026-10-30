@@ -69,7 +69,7 @@ bool Subscription::deliver_one()
   const FrameView v = sub_.take_for_executor();
   report_refusal();
   if (!v) return false;
-  if (cb_) cb_(v);
+  cb_(v);
   return true;
 }
 

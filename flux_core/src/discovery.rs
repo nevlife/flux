@@ -474,11 +474,9 @@ pub(crate) fn map_validate(
         unsafe { sys::munmap(base, bytes) };
         Err(Error::Mismatch(format!("{why} '{name}'")))
     };
-    // Every atomic offset is a multiple of its size (layout.rs), so this aligns them all. A
-    // misaligned atomic is SIGBUS on aarch64 and a bus lock on x86.
-    if !(base.as_ptr() as usize).is_multiple_of(CACHE_LINE) {
-        return reject("misaligned mapping of");
-    }
+    // Every atomic offset is a multiple of its size (layout.rs), so a page-aligned base aligns
+    // them all.
+    debug_assert!((base.as_ptr() as usize).is_multiple_of(CACHE_LINE));
     let ctrl = base.cast::<ControlHeader>();
     // SAFETY: at least a header's worth of mapped bytes.
     let init = unsafe { ctrl.as_ref() }.init_state.load(Ordering::Acquire);

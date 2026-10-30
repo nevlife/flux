@@ -10,7 +10,6 @@
 #include <exception>
 #include <functional>
 #include <memory>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -64,8 +63,7 @@ private:
   std::shared_ptr<flux_handle> h_;
 };
 
-// An exception from a source or on_pass is rethrown from the call that ran it. A moved-from
-// executor throws std::logic_error from the calls that act and reads as empty.
+// An exception from a source or on_pass is rethrown from the call that ran it.
 class Executor
 {
 public:
@@ -75,7 +73,7 @@ public:
     check(flux_executor_new(&ex_));
   }
   ~Executor() { flux_executor_free(ex_); }
-  Executor(Executor && o) noexcept : ex_(o.ex_), st_(std::move(o.st_)) { o.ex_ = nullptr; }
+  Executor(Executor &&) = delete;
   Executor & operator=(Executor &&) = delete;
   Executor(const Executor &) = delete;
   Executor & operator=(const Executor &) = delete;
@@ -83,7 +81,6 @@ public:
   // Not owned: `src` outlives the executor. Equal priorities take turns. Not while spinning.
   void add(Source & src, std::int32_t priority = 0)
   {
-    live();
     st_->entries.push_back(std::make_unique<Entry>(Entry{&src, st_.get()}));
     const flux_source s{
       st_->entries.back().get(),
@@ -95,19 +92,18 @@ public:
       src.endpoint()};
     check(flux_executor_add(ex_, s, priority));
   }
-  std::size_t size() const noexcept { return ex_ ? flux_executor_size(ex_) : 0; }
+  std::size_t size() const noexcept { return flux_executor_size(ex_); }
 
-  void set_pass_budget(std::uint32_t n) { check(flux_executor_set_pass_budget(live(), n)); }
-  std::uint32_t pass_budget() const noexcept { return ex_ ? flux_executor_pass_budget(ex_) : 0; }
+  void set_pass_budget(std::uint32_t n) { check(flux_executor_set_pass_budget(ex_, n)); }
+  std::uint32_t pass_budget() const noexcept { return flux_executor_pass_budget(ex_); }
   // The last pass ran out of budget, not of frames.
-  bool has_more() const noexcept { return ex_ && flux_executor_has_more(ex_); }
+  bool has_more() const noexcept { return flux_executor_has_more(ex_); }
   // Work the next pass would find, read without a syscall.
-  bool ready() const noexcept { return ex_ && flux_executor_ready(ex_); }
+  bool ready() const noexcept { return flux_executor_ready(ex_); }
 
   // Runs after every pass of spin.
   void on_pass(std::function<void()> f)
   {
-    live();
     st_->on_pass = std::move(f);
     check(flux_executor_on_pass(ex_, &on_pass_cb, st_.get()));
   }
@@ -115,7 +111,7 @@ public:
   std::size_t dispatch()
   {
     std::size_t n = 0;
-    run(flux_executor_dispatch(live(), &n));
+    run(flux_executor_dispatch(ex_, &n));
     return n;
   }
   // `yield_now() -> bool` is asked between callbacks, never before the first. It must not throw.
@@ -124,32 +120,23 @@ public:
   {
     std::size_t n = 0;
     const auto ask = [](void * ctx) noexcept -> bool { return (*static_cast<F *>(ctx))(); };
-    run(flux_executor_dispatch_yielding(live(), ask, &yield_now, &n));
+    run(flux_executor_dispatch_yielding(ex_, ask, &yield_now, &n));
     return n;
   }
   // Never overlapping a dispatch. A negative timeout waits forever.
-  void wait_for_work(std::int64_t timeout_ns)
-  {
-    run(flux_executor_wait_for_work(live(), timeout_ns));
-  }
-  void spin(std::int64_t tick_ns = FLUX_DEFAULT_TICK_NS)
-  {
-    run(flux_executor_spin(live(), tick_ns));
-  }
+  void wait_for_work(std::int64_t timeout_ns) { run(flux_executor_wait_for_work(ex_, timeout_ns)); }
+  void spin(std::int64_t tick_ns = FLUX_DEFAULT_TICK_NS) { run(flux_executor_spin(ex_, tick_ns)); }
   // Also ends when `run_flag` turns false.
   void spin(std::atomic<bool> & run_flag, std::int64_t tick_ns = FLUX_DEFAULT_TICK_NS)
   {
     static_assert(
       sizeof(std::atomic<bool>) == sizeof(bool) && std::atomic<bool>::is_always_lock_free);
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast): the C side reads it atomically.
-    run(flux_executor_spin_while(live(), reinterpret_cast<bool *>(&run_flag), tick_ns));
+    run(flux_executor_spin_while(ex_, reinterpret_cast<bool *>(&run_flag), tick_ns));
   }
-  void clear_interrupt() noexcept
-  {
-    if (ex_) flux_executor_clear_interrupt(ex_);
-  }
+  void clear_interrupt() noexcept { flux_executor_clear_interrupt(ex_); }
 
-  ExecutorHandle handle() const { return ExecutorHandle(flux_executor_handle(live())); }
+  ExecutorHandle handle() const { return ExecutorHandle(flux_executor_handle(ex_)); }
 
 private:
   struct State;
@@ -164,12 +151,6 @@ private:
     std::function<void()> on_pass;
     std::vector<std::unique_ptr<Entry>> entries;
   };
-
-  flux_executor * live() const
-  {
-    if (!ex_) throw std::logic_error("flux: this executor was moved from");
-    return ex_;
-  }
 
   // channel() cannot fail the C call, so its exception surfaces once that call returns.
   void run(Status s)

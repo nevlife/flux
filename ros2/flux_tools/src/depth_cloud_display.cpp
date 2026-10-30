@@ -184,9 +184,6 @@ bool DepthCloudDisplay::ensureTexture(
   texture_ = tm.createManual(
     "FluxDepthCloudTexture" + std::to_string(next_id()), material_->getGroup(), Ogre::TEX_TYPE_2D,
     width, height, 0, format, Ogre::TU_DYNAMIC_WRITE_ONLY_DISCARDABLE);
-  if (!texture_) {
-    return false;
-  }
   material_->getTechnique(0)->getPass(0)->getTextureUnitState(0)->setTexture(texture_);
   format_ = format;
   return ensureGrid(width, height);
