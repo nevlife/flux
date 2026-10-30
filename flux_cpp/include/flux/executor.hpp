@@ -54,31 +54,14 @@ public:
   void spin() override;
   void spin_some(std::chrono::nanoseconds max_duration = std::chrono::nanoseconds(0)) override;
   void spin_all(std::chrono::nanoseconds max_duration) override;
-  // Before Jazzy (rclcpp 28) cancel() is not virtual and rclcpp's spin_until_future_complete()
-  // has no impl to override: both reach this executor only through its own type.
-#if RCLCPP_VERSION_MAJOR >= 28
-#define FLUX_OVERRIDE_SINCE_JAZZY override
-#else
-#define FLUX_OVERRIDE_SINCE_JAZZY
-  template <typename FutureT, typename TimeRepT = int64_t, typename TimeT = std::milli>
-  rclcpp::FutureReturnCode spin_until_future_complete(
-    const FutureT & future,
-    std::chrono::duration<TimeRepT, TimeT> timeout = std::chrono::duration<TimeRepT, TimeT>(-1))
-  {
-    return spin_until_future_complete_impl(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(timeout),
-      [&future](std::chrono::nanoseconds t) { return future.wait_for(t); });
-  }
-#endif
   // Ends spin() from any thread; one sent before spin() starts ends that spin() at once.
-  void cancel() FLUX_OVERRIDE_SINCE_JAZZY;
+  void cancel() override;
 
 protected:
   void spin_once_impl(std::chrono::nanoseconds timeout) override;
   rclcpp::FutureReturnCode spin_until_future_complete_impl(
     std::chrono::nanoseconds timeout,
-    const std::function<std::future_status(std::chrono::nanoseconds)> & wait_for_future)
-    FLUX_OVERRIDE_SINCE_JAZZY;
+    const std::function<std::future_status(std::chrono::nanoseconds)> & wait_for_future) override;
 
 private:
   static constexpr int kRosBudget = FLUX_MAX_DRAIN;

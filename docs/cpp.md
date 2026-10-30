@@ -146,7 +146,6 @@ flux::Subscription(node, topic, fingerprint = flux::kNoSchema, const QoS & qos =
 - 한 executor에 flux 구독은 127개까지다. 더 많으면 `PartitionedExecutor`로 나눈다.
 - 구독이 붙을 때 거절되면(구독 프로세스 자리 부족, 메모리 부족 등) executor는 이유를 로그로 한 번 남기고 그 구독을 뺀다. 나머지 구독은 계속 돈다. 뺀 구독은 발행자가 재시작하면 다시 붙기를 시도한다.
 - 콜백의 예외는 `spin()` 밖으로 나온다.
-- Humble(rclcpp 28 미만)에서는 `cancel()`과 `spin_until_future_complete()`를 `flux::Executor` 타입으로 부른다. `rclcpp::Executor &`로 부르면 rclcpp의 구현이 돈다.
 
 ## executor 없이 읽기
 

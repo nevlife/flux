@@ -19,7 +19,6 @@ from std_msgs.msg import Int32
 
 import flux
 from flux_msgs.msg import FluxFrame
-from rosbag2_compat import topic_metadata
 
 FINGERPRINT = 0xBA6
 FRAME_TYPE = "flux_msgs/msg/FluxFrame"
@@ -53,9 +52,15 @@ def write_bag(path, topic, n, step_ns, nbytes=16, ros_topic=None):
     writer = rosbag2_py.SequentialWriter()
     writer.open(rosbag2_py.StorageOptions(uri=path), rosbag2_py.ConverterOptions("cdr", "cdr"))
     name = topic + "/flux"
-    writer.create_topic(topic_metadata(0, name, FRAME_TYPE))
+    writer.create_topic(
+        rosbag2_py.TopicMetadata(id=0, name=name, type=FRAME_TYPE, serialization_format="cdr")
+    )
     if ros_topic:
-        writer.create_topic(topic_metadata(1, ros_topic, "std_msgs/msg/Int32"))
+        writer.create_topic(
+            rosbag2_py.TopicMetadata(
+                id=1, name=ros_topic, type="std_msgs/msg/Int32", serialization_format="cdr"
+            )
+        )
     f = FluxFrame()
     f.flux_topic = topic
     f.fingerprint = FINGERPRINT

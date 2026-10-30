@@ -1,7 +1,6 @@
 #include "flux/subscription.hpp"
 #include "flux/topics.hpp"
 #include "flux/trace.h"
-#include "flux_bag/bag_time.hpp"
 #include "flux_bag/flux_frame_cdr.hpp"
 #include "flux_bag/jpeg_frame.hpp"
 #include "flux_bag/raw_meta.hpp"
@@ -16,13 +15,9 @@
 #include <rosbag2_storage/topic_metadata.hpp>
 #include <rosbag2_transport/record_options.hpp>
 #include <rosbag2_transport/recorder.hpp>
+#include <rosbag2_transport/topic_filter.hpp>
 
 #include "sensor_msgs/flux/image.hpp"
-#if FLUX_ROSBAG2_MINOR >= 26
-#include <rosbag2_transport/topic_filter.hpp>
-#else
-#include <regex>
-#endif
 
 #include <poll.h>
 #include <rcutils/types/uint8_array.h>
@@ -96,19 +91,6 @@ std::string default_uri()
   return buf.data();
 }
 
-// Lyrical deprecates rmw_serialization_format for output_serialization_format; Jazzy has only
-// the former.
-template <class RecordOptions>
-auto set_output_format(RecordOptions & o, int) -> decltype(o.output_serialization_format, void())
-{
-  o.output_serialization_format = rmw_get_serialization_format();
-}
-template <class RecordOptions>
-void set_output_format(RecordOptions & o, long)  // NOLINT(runtime/int)
-{
-  o.rmw_serialization_format = rmw_get_serialization_format();
-}
-
 Options parse(const std::vector<std::string> & args)
 {
   Options o;
@@ -121,7 +103,6 @@ Options parse(const std::vector<std::string> & args)
       if (i + 1 >= args.size()) throw std::invalid_argument(a + " needs a value");
       return args[++i];
     };
-#if FLUX_ROSBAG2_MINOR >= 26
     if (a == "-a" || a == "--all") {
       o.record.all_topics = true;
     } else if (a == "-e" || a == "--regex") {
@@ -130,19 +111,7 @@ Options parse(const std::vector<std::string> & args)
       o.record.exclude_regex = value();
     } else if (a == "--exclude-topics") {
       list = &o.record.exclude_topics;
-    } else if
-#else
-    if (a == "-a" || a == "--all") {
-      o.record.all = true;
-    } else if (a == "-e" || a == "--regex") {
-      o.record.regex = value();
-    } else if (a == "-x" || a == "--exclude-regex") {
-      o.record.exclude = value();
-    } else if (a == "--exclude-topics") {
-      throw std::invalid_argument("--exclude-topics needs rosbag2 0.26 (Jazzy) or newer");
-    } else if
-#endif
-      (a == "-o" || a == "--output") {
+    } else if (a == "-o" || a == "--output") {
       o.storage.uri = value();
     } else if (a == "-s" || a == "--storage") {
       o.storage.storage_id = value();
@@ -179,7 +148,7 @@ Options parse(const std::vector<std::string> & args)
   }
   if (o.storage.uri.empty()) o.storage.uri = default_uri();
   if (image_codec == "jpeg") o.jpeg_quality = quality;
-  set_output_format(o.record, 0);
+  o.record.rmw_serialization_format = rmw_get_serialization_format();
   return o;
 }
 
@@ -434,7 +403,8 @@ private:
     v.release();
 
     // As rosbag2 records a DDS message: received now, sent when its publisher committed it.
-    flux_bag::set_times(*msg, stamp.nanoseconds(), sent);
+    msg->recv_timestamp = stamp.nanoseconds();
+    msg->send_timestamp = sent;
     if (queue_.push(std::move(msg), channel, ticket)) {
       ++queued_;
     } else {
@@ -557,19 +527,6 @@ private:
   int fd_;
 };
 
-#if FLUX_ROSBAG2_MINOR < 26
-// rosbag2 0.15's TopicFilter, which it does not install.
-bool selected(const rosbag2_transport::RecordOptions & o, const std::string & key)
-{
-  if (!o.topics.empty() && std::find(o.topics.begin(), o.topics.end(), key) == o.topics.end()) {
-    return false;
-  }
-  if (!o.exclude.empty() && std::regex_search(key, std::regex(o.exclude))) return false;
-  if (!o.all && !o.regex.empty() && !std::regex_search(key, std::regex(o.regex))) return false;
-  return o.include_hidden_topics || key.find("/_") == std::string::npos;
-}
-#endif
-
 void run(Options & opt)
 {
   auto writer = std::make_shared<rosbag2_cpp::Writer>();
@@ -581,9 +538,7 @@ void run(Options & opt)
   exec.add_node(recorder);
   const flux_bag::SpinThread spin(exec);
 
-#if FLUX_ROSBAG2_MINOR >= 26
   rosbag2_transport::TopicFilter filter(opt.record, nullptr, /*allow_unknown_types=*/true);
-#endif
   auto queue = std::make_unique<WriteQueue>(writer, opt.cache_bytes);
   // By signpost: one name can carry channels of two fingerprints, each recorded on its own.
   std::map<std::string, Recorded> channels;
@@ -647,12 +602,7 @@ void run(Options & opt)
       if (!why.empty()) leave_out(it->second.recorder->key(), it->first, why);
       it = gone || !why.empty() ? channels.erase(it) : std::next(it);
     }
-#if FLUX_ROSBAG2_MINOR >= 26
     for (const auto & [key, type] : filter.filter_topics(candidates)) {
-#else
-    for (const auto & [key, type] : candidates) {
-      if (!selected(opt.record, key)) continue;
-#endif
       for (const flux::Topic * t : live[key]) {
         std::unique_ptr<ChannelRecorder> r;
         try {

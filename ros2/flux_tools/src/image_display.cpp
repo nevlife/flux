@@ -362,7 +362,7 @@ void ImageDisplay::fitRectangleToImage()
   }
 }
 
-void ImageDisplay::update(UpdateDt, UpdateDt)
+void ImageDisplay::update(float, float)
 {
   const flux::FrameView frame = take();
   if (!frame) {

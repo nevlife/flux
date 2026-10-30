@@ -304,7 +304,7 @@ void DepthCloudDisplay::unsubscribe()
 
 // The view lives inside this function: the slot goes back to the publisher right after the
 // texture upload, before rviz renders.
-void DepthCloudDisplay::update(UpdateDt, UpdateDt)
+void DepthCloudDisplay::update(float, float)
 {
   sensor_msgs::msg::CameraInfo::ConstSharedPtr info;
   {

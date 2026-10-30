@@ -4,10 +4,7 @@
 #include "flux/topics.hpp"
 #include "flux/trace.h"
 
-// Humble has no EventsExecutor, the other executor that hooks entities.
-#if __has_include(<rclcpp/experimental/executors/events_executor/events_executor.hpp>)
 #include <rclcpp/experimental/executors/events_executor/events_executor.hpp>
-#endif
 #include <rclcpp/rclcpp.hpp>
 
 #include <std_msgs/msg/string.hpp>
@@ -307,11 +304,6 @@ TEST_F(Ros, TakeBlockingEndsWhenTheContextShutsDown)
   EXPECT_FALSE(w.get());
 }
 
-// GoogleTest before 1.12 (Humble) has no GTEST_FLAG_SET.
-#ifndef GTEST_FLAG_SET
-#define GTEST_FLAG_SET(name, value) (void)(::testing::GTEST_FLAG(name) = value)
-#endif
-
 // rclcpp's handler shuts the context down on SIGINT and SIGTERM.
 TEST_F(Ros, ASignalEndsATakeBlockingLoop)
 {
@@ -591,7 +583,6 @@ TEST_F(Ros, ASubscriptionAnExecutorServesRefusesTake)
   EXPECT_THROW(sub.take_blocking(0), std::logic_error);
 }
 
-#if __has_include(<rclcpp/experimental/executors/events_executor/events_executor.hpp>)
 // Another executor hooks a node this one let go; dropping this one must leave those hooks alone.
 TEST_F(Ros, ANodeMovedToAnotherExecutorKeepsItsHooks)
 {
@@ -618,6 +609,5 @@ TEST_F(Ros, ANodeMovedToAnotherExecutorKeepsItsHooks)
   other.cancel();
   t.join();
 }
-#endif
 
 }  // namespace

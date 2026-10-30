@@ -20,7 +20,6 @@ from rclpy.serialization import deserialize_message, serialize_message
 import flux
 from flux import _flux
 from flux_msgs.msg import FluxFrame
-from rosbag2_compat import topic_metadata
 
 FINGERPRINT = 0xBA6
 FRAME_TYPE = "flux_msgs/msg/FluxFrame"
@@ -115,7 +114,9 @@ def write_bag_channels(path, channels, step_ns=100_000_000):
     writer.open(rosbag2_py.StorageOptions(uri=path), rosbag2_py.ConverterOptions("cdr", "cdr"))
     for n, (topic, frame_list) in enumerate(channels.items()):
         name = topic + "/flux"
-        writer.create_topic(topic_metadata(n, name, FRAME_TYPE))
+        writer.create_topic(
+            rosbag2_py.TopicMetadata(id=n, name=name, type=FRAME_TYPE, serialization_format="cdr")
+        )
         for i, (slot_size, slot_count, dtype, shape, data) in enumerate(frame_list):
             f = FluxFrame()
             f.flux_topic = topic

@@ -24,10 +24,6 @@ find_package(rosbag2_storage REQUIRED)
 find_package(rosbag2_transport REQUIRED)
 find_package(sensor_msgs REQUIRED)
 
-# Humble's rosbag2 (0.15) keeps one time per message, has no TopicFilter, and its Player::play()
-# blocks without the playback hooks; the code reads which by this minor version.
-add_compile_definitions(FLUX_ROSBAG2_MINOR=${rosbag2_transport_VERSION_MINOR})
-
 add_executable(record src/record.cpp)
 target_include_directories(record PRIVATE include ${flux_bridge_INCLUDE_DIRS}
   ${flux_std_adapters_INCLUDE_DIRS})

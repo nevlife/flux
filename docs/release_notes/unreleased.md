@@ -45,7 +45,7 @@
 -->
 
 * 사용자 문서(`README.md`, `docs/`)를 새로 썼다
-* 지원 환경을 시험한 범위(ROS 2 Humble·Jazzy, JetPack 7.2)로 좁혀 적었다
+* 지원 환경을 시험한 범위(ROS 2 Jazzy, JetPack 7.2)로 좁혀 적었다
 * `scripts/build_docs.sh`가 rustdoc, Doxygen, pdoc 레퍼런스를 만든다
 * 문서의 코드 예제를 시험(`test_doc_examples`)으로 돌린다. pre-commit은 문서의 예제가 시험의 예제와 같은지 확인한다(`scripts/check_doc_examples.py`)
 

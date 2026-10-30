@@ -3,7 +3,6 @@
 
 #ifndef Q_MOC_RUN
 #include "flux/subscription.hpp"
-#include "flux_tools/rviz/update_dt.hpp"
 #include "rviz_common/display.hpp"
 #include "rviz_common/properties/editable_enum_property.hpp"
 

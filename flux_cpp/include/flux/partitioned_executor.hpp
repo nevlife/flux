@@ -25,7 +25,7 @@ namespace flux
 // One thread and flux::Executor per callback group of the added nodes, groups created while
 // spinning included, but not one left out of automatic adding unless a subscription is assigned to
 // it, nor one another executor serves. A group named in add() or on_thread_start() is kept alive;
-// any other is held by its thread until this is its last owner (Humble's rclcpp waits on it).
+// any other is held by its thread until this is its last owner.
 class PartitionedExecutor
 {
 public:

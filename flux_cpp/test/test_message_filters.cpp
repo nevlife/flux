@@ -66,14 +66,9 @@ bool eventually(P done, std::chrono::milliseconds limit = 3000ms)
   return true;
 }
 
-// rclcpp's message_filters took an rmw profile up to Jazzy and an rclcpp::QoS after.
 auto ros_qos()
 {
-#if RCLCPP_VERSION_MAJOR >= 29
-  return rclcpp::QoS(10);
-#else
   return rmw_qos_profile_default;
-#endif
 }
 
 class Filters : public ::testing::Test

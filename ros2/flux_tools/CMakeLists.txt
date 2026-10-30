@@ -23,8 +23,7 @@ find_package(rviz_default_plugins REQUIRED)
 find_package(rviz_ogre_vendor REQUIRED)
 find_package(rviz_rendering REQUIRED)
 find_package(sensor_msgs REQUIRED)
-# Qt comes with rviz_common, which finds the Qt it was built with (6 from Lyrical on, 5 on
-# Jazzy). Looking for Qt6 here would find one rviz on Jazzy does not use.
+# Qt comes with rviz_common, which finds the Qt it was built with (5 on Jazzy).
 
 add_library(flux_tools_rviz SHARED
   src/channel_display.cpp
@@ -37,7 +36,6 @@ add_library(flux_tools_rviz SHARED
   include/flux_tools/rviz/depth_cloud_display.hpp
   include/flux_tools/rviz/image_display.hpp
   include/flux_tools/rviz/point_cloud2_display.hpp
-  include/flux_tools/rviz/update_dt.hpp
   include/flux_tools/whole_pixel_rows.hpp)
 target_include_directories(flux_tools_rviz
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -52,9 +50,6 @@ target_link_libraries(flux_tools_rviz
   rviz_rendering::rviz_rendering
   rviz_ogre_vendor::OgreMain)
 target_compile_options(flux_tools_rviz PRIVATE -Wall -Wextra)
-if(rviz_common_VERSION VERSION_GREATER_EQUAL 15)
-  target_compile_definitions(flux_tools_rviz PRIVATE FLUX_TOOLS_CHRONO_UPDATE)
-endif()
 
 pluginlib_export_plugin_description_file(rviz_common plugins_description.xml)
 

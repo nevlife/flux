@@ -45,7 +45,6 @@ INPUT_FILTER          = "sed -e '/NOLINT/!s|^\([[:space:]]*\)// |\1/// |'"
 EXTRACT_ALL           = YES
 ENABLE_PREPROCESSING  = YES
 MACRO_EXPANSION       = YES
-PREDEFINED            = RCLCPP_VERSION_MAJOR=28 FLUX_OVERRIDE_SINCE_JAZZY=override
 GENERATE_LATEX        = NO
 QUIET                 = YES
 WARNINGS              = NO

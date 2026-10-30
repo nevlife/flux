@@ -17,7 +17,6 @@ from rclpy.serialization import deserialize_message
 from rosbag2_interfaces.srv import Pause, Resume
 
 import flux
-import rosbag2_compat
 from flux_msgs.msg import FluxFrame
 
 
@@ -81,7 +80,6 @@ def call(node, srv_type, name):
     node.destroy_client(client)
 
 
-@pytest.mark.skipif(rosbag2_compat.MINOR < 26, reason="rosbag2 0.15's recorder has no services")
 def test_frames_published_while_paused_are_not_recorded(node, tmp_path):
     k = key("paused")
     bag = str(tmp_path / "bag")

@@ -1,5 +1,4 @@
 #include "flux/publisher.hpp"
-#include "flux_bag/bag_time.hpp"
 #include "flux_bag/flux_frame_cdr.hpp"
 #include "flux_bag/jpeg_frame.hpp"
 #include "flux_bag/raw_meta.hpp"
@@ -28,7 +27,6 @@
 #include <cstring>
 #include <deque>
 #include <exception>
-#include <future>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -277,7 +275,7 @@ private:
         wake_.wait(lock);
         continue;
       }
-      const rcutils_time_point_value_t due = flux_bag::received(*queue_.front());
+      const rcutils_time_point_value_t due = queue_.front()->recv_timestamp;
       const rcutils_time_point_value_t now = clock_.now();
       stepped = step_ && now < due;
       if (stepped) {
@@ -379,63 +377,21 @@ private:
   std::thread sender_;
 };
 
-#if FLUX_ROSBAG2_MINOR < 26
-// Where rosbag2 0.15's player starts without a start offset; it keeps its own private.
-rcutils_time_point_value_t bag_start(const rosbag2_storage::StorageOptions & s)
-{
-  const rosbag2_storage::BagMetadata m = rosbag2_cpp::Info().read_metadata(s.uri, s.storage_id);
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(m.starting_time.time_since_epoch())
-    .count();
-}
-#endif
-
 // The stock player for the ROS topics, its pause, resume and rate also driving the flux clock:
 // its services and keys call these through the base class. seek is not virtual, so it moves the
 // ROS topics only. play_next and burst step the ROS topics, the flux channels following to the
-// last message played; once no ROS message is left they step the flux frames. rosbag2 0.15 tells
-// nothing of the message played, so there the flux channels stay put while ROS topics step.
+// last message played; once no ROS message is left they step the flux frames.
 class BagPlayer : public rosbag2_transport::Player
 {
 public:
   BagPlayer(const Options & o, const std::vector<std::string> & flux_topics)
   : rosbag2_transport::Player(o.storage, o.play, "flux_bag_play"),
     options_(o.play),
-#if FLUX_ROSBAG2_MINOR >= 26
     flux_(*this, o.storage, flux_topics, get_starting_time(), o.play.rate)
   {
     add_on_play_message_post_callback(
-      [this](const MessagePtr & m) { played_ = flux_bag::received(*m); });
+      [this](const MessagePtr & m) { played_ = m->recv_timestamp; });
   }
-#else
-    flux_(*this, o.storage, flux_topics, bag_start(o.storage), o.play.rate)
-  {
-  }
-
-  // rosbag2 0.15's play() returns at the end of the bag, so it runs on a thread of its own.
-  void play()
-  {
-    playing_ = std::async(std::launch::async, [this] { rosbag2_transport::Player::play(); });
-  }
-
-  // Started paused, play() keeps the queue ready until resumed.
-  void wait_for_playback_to_start()
-  {
-    std::unique_lock<std::mutex> lock(ready_to_play_from_queue_mutex_);
-    ready_to_play_from_queue_cv_.wait(lock, [this] { return is_ready_to_play_from_queue_; });
-  }
-
-  bool wait_for_playback_to_finish(std::chrono::milliseconds timeout)
-  {
-    return playing_.wait_for(timeout) == std::future_status::ready;
-  }
-
-  // rosbag2 0.15's play loop ends only with the context.
-  void stop()
-  {
-    rclcpp::shutdown();
-    playing_.wait();
-  }
-#endif
 
   // Both clocks set going from the bag's start at once. The keys come last: rosbag2's own would
   // call into this object before it is built.
@@ -477,18 +433,14 @@ public:
   bool play_next() override
   {
     if (!rosbag2_transport::Player::play_next()) return flux_.play_next();
-#if FLUX_ROSBAG2_MINOR >= 26
     flux_.jump(played_);
-#endif
     return true;
   }
 
   std::size_t burst(const std::size_t num_messages) override
   {
     std::size_t played = rosbag2_transport::Player::burst(num_messages);
-#if FLUX_ROSBAG2_MINOR >= 26
     if (played > 0) flux_.jump(played_);
-#endif
     while ((num_messages == 0 || played < num_messages) && flux_.play_next()) ++played;
     return played;
   }
@@ -497,11 +449,7 @@ private:
   rosbag2_transport::PlayOptions options_;
   FluxPlayer flux_;
   KeyboardHandler keyboard_;
-#if FLUX_ROSBAG2_MINOR >= 26
   std::atomic<rcutils_time_point_value_t> played_{0};
-#else
-  std::future<void> playing_;
-#endif
 };
 
 // Global: a signal handler reaches nothing else.
@@ -515,17 +463,7 @@ void run(Options & opt)
   for (const auto & t : metadata.topics_with_message_count) {
     if (t.topic_metadata.type == kFrameType) flux_topics.push_back(t.topic_metadata.name);
   }
-#if FLUX_ROSBAG2_MINOR >= 26
   opt.play.exclude_topics_to_filter = flux_topics;
-#else
-  // rosbag2 0.15 filters by inclusion only: the ROS topics, or with none a name no topic has.
-  for (const auto & t : metadata.topics_with_message_count) {
-    if (t.topic_metadata.type != kFrameType) {
-      opt.play.topics_to_filter.push_back(t.topic_metadata.name);
-    }
-  }
-  if (opt.play.topics_to_filter.empty()) opt.play.topics_to_filter = {""};
-#endif
   opt.play.disable_keyboard_controls = true;  // BagPlayer::start adds them
   opt.play.start_paused = true;               // until BagPlayer::start resumes both clocks
 

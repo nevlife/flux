@@ -33,15 +33,9 @@ public:
   std::int32_t priority() const noexcept { return priority_; }
   void served() noexcept { served_ = true; }
 
-#if RCLCPP_VERSION_MAJOR >= 28
   void add_to_wait_set(rcl_wait_set_t &) override { refuse_outside_flux(); }
   bool is_ready(const rcl_wait_set_t &) override { return false; }
   void execute(const std::shared_ptr<void> &) override {}
-#else
-  void add_to_wait_set(rcl_wait_set_t *) override { refuse_outside_flux(); }
-  bool is_ready(rcl_wait_set_t *) override { return false; }
-  void execute(std::shared_ptr<void> &) override {}
-#endif
   std::shared_ptr<void> take_data() override { return nullptr; }
   void set_on_ready_callback(std::function<void(std::size_t, int)>) override
   {

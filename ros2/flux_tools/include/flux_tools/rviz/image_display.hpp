@@ -43,7 +43,7 @@ public:
   ~ImageDisplay() override;
 
   void onInitialize() override;
-  void update(UpdateDt wall_dt, UpdateDt ros_dt) override;
+  void update(float wall_dt, float ros_dt) override;
 
 protected:
   void onDisable() override;

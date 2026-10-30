@@ -59,7 +59,7 @@ sensor_msgs::msg::PointCloud2::SharedPtr PointCloud2Display::takeFrame()
   return msg;
 }
 
-void PointCloud2Display::update(UpdateDt wall_dt, UpdateDt ros_dt)
+void PointCloud2Display::update(float wall_dt, float ros_dt)
 {
   if (sensor_msgs::msg::PointCloud2::SharedPtr msg = takeFrame()) {
     common_->addMessage(msg);

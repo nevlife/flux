@@ -107,7 +107,7 @@ uint8[] data             # raw: 슬롯에 있던 프레임 바이트 그대로
 | 쓰기 대기 | 디스크가 느린 동안 프레임은 메모리에서 기다린다. 상한은 `--max-cache-size`(기본 1 GiB)이고, 넘는 프레임은 버리고 알린다. 발행자는 기다리지 않는다 |
 | 시각 | send 시각과 header stamp는 commit 시각, recv 시각은 take 시각이다 |
 | 일시정지 | `~/pause`·`~/resume` 서비스(rosbag2와 같다). 멈춘 동안의 프레임은 받되 쓰지 않는다 |
-| 저장 형식 | `-s`가 없으면 rosbag2 기본값(Humble은 sqlite3, Jazzy는 mcap)이다. `-s`와 `--storage-preset-profile`은 `ros2 bag record`의 같은 옵션처럼 rosbag2에 넘긴다 |
+| 저장 형식 | `-s`가 없으면 rosbag2 기본값(mcap)이다. `-s`와 `--storage-preset-profile`은 `ros2 bag record`의 같은 옵션처럼 rosbag2에 넘긴다 |
 | 무손실 압축 | `-s mcap --storage-preset-profile zstd_fast`는 mcap chunk를 zstd로 압축한다. flux 채널과 ROS 토픽에 모두 적용된다. 읽는 쪽(`play_flux`, `convert_flux`, `ros2 bag play`)은 옵션 없이 읽는다 |
 | 이미지 압축 | `--image-codec jpeg`는 `sensor_msgs/Image` 채널의 `rgb8`, `bgr8`, `mono8` 프레임의 픽셀을 JPEG(품질 `--jpeg-quality`, 기본 90)로 저장한다. 손실 압축이다. 픽셀 밖의 바이트(header, encoding, step 등)는 그대로 둔다. 다른 encoding과 다른 타입의 프레임은 raw로 저장한다. 기본은 `raw`다 |
 | 끝날 때 | 채널마다 큐에 넣은 수, 캐시가 차서 버린 수, `lost`를 로그로 남긴다 |
@@ -118,7 +118,7 @@ uint8[] data             # raw: 슬롯에 있던 프레임 바이트 그대로
 ros2 bag play_flux BAG [-r RATE]
 ```
 
-`FluxFrame` 토픽은 파일에서 읽어 바로 원래 채널에 발행한다. 이때 bag에 기록된 fingerprint, `slot_size`, `slot_count`를 쓴다. 나머지 토픽은 rosbag2 player가 재생한다. flux 채널은 자기 시계를 따른다. player의 pause, resume, rate(서비스와 키보드)는 이 시계도 함께 움직인다. play_next와 burst는 ROS 토픽을 옮기고, flux 채널은 그 뒤를 따라간다. ROS 메시지가 다 떨어지면 play_next와 burst는 flux 프레임을 옮긴다. Humble(rosbag2 0.15)에서는 ROS 토픽만 옮기고 flux 채널은 그대로다.
+`FluxFrame` 토픽은 파일에서 읽어 바로 원래 채널에 발행한다. 이때 bag에 기록된 fingerprint, `slot_size`, `slot_count`를 쓴다. 나머지 토픽은 rosbag2 player가 재생한다. flux 채널은 자기 시계를 따른다. player의 pause, resume, rate(서비스와 키보드)는 이 시계도 함께 움직인다. play_next와 burst는 ROS 토픽을 옮기고, flux 채널은 그 뒤를 따라간다. ROS 메시지가 다 떨어지면 play_next와 burst는 flux 프레임을 옮긴다.
 
 - 재생은 발행자를 만든 뒤 200 ms 기다리고 시작한다. 먼저 떠 있던 구독자가 붙을 시간을 주기 위해서다.
 - 프레임의 `slot_size`나 `slot_count`가 바뀌면 발행자를 다시 만든다. dtype x shape가 데이터 크기와 다른 프레임은 건너뛴다.

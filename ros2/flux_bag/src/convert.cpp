@@ -1,5 +1,4 @@
 #include "flux/schemas.hpp"
-#include "flux_bag/bag_time.hpp"
 #include "flux_bag/flux_frame_cdr.hpp"
 #include "flux_bag/jpeg_frame.hpp"
 #include "flux_bag/raw_meta.hpp"
@@ -141,7 +140,8 @@ private:
     cdr.buffer_length = r.type->write_cdr(f.data, f.data_size, cdr.buffer, cdr.buffer_capacity);
     auto converted = std::make_shared<rosbag2_storage::SerializedBagMessage>();
     converted->serialized_data = std::shared_ptr<rcutils_uint8_array_t>(out, &cdr);
-    flux_bag::copy_times(*msg, *converted);
+    converted->recv_timestamp = msg->recv_timestamp;
+    converted->send_timestamp = msg->send_timestamp;
     converted->topic_name = r.topic;
     writer_.write(converted);
     ++r.converted;
@@ -195,7 +195,8 @@ private:
     auto converted = std::make_shared<rosbag2_storage::SerializedBagMessage>();
     converted->serialized_data =
       std::shared_ptr<rcutils_uint8_array_t>(cdr, &cdr->get_rcl_serialized_message());
-    flux_bag::copy_times(*msg, *converted);
+    converted->recv_timestamp = msg->recv_timestamp;
+    converted->send_timestamp = msg->send_timestamp;
     converted->topic_name = topic;
     writer_.write(converted);
     ++r.converted;

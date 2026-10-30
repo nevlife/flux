@@ -43,35 +43,13 @@ void unhook_if(Map & map, const std::unordered_set<const void *> & keep, Clear c
   }
 }
 
-#if RCLCPP_VERSION_MAJOR >= 28
-rclcpp::Clock::SharedPtr clock_of(const rclcpp::TimerBase & timer)
-{
-  return timer.get_clock();
-}
-#else
-// rclcpp before Jazzy keeps the timer's clock protected; a member pointer formed in a derived
-// class reads it from any TimerBase.
-struct TimerClock : rclcpp::TimerBase
-{
-  static rclcpp::Clock::SharedPtr of(const rclcpp::TimerBase & timer)
-  {
-    return timer.*(&TimerClock::clock_);
-  }
-};
-
-rclcpp::Clock::SharedPtr clock_of(const rclcpp::TimerBase & timer)
-{
-  return TimerClock::of(timer);
-}
-#endif
-
 // As rcl_wait does, a timer on active ROS time is left to its clock: the time it reports is ROS
 // time, which can run at any rate, and the jump hook pokes once it is due.
 template <class Poke>
 rclcpp::JumpHandler::SharedPtr on_ros_time(
   const rclcpp::TimerBase::SharedPtr & timer, const Poke & poke)
 {
-  const rclcpp::Clock::SharedPtr clock = clock_of(*timer);
+  const rclcpp::Clock::SharedPtr clock = timer->get_clock();
   if (clock->get_clock_type() != RCL_ROS_TIME) return nullptr;
   rcl_jump_threshold_t any{};
   any.on_clock_change = true;
@@ -346,7 +324,7 @@ std::int64_t Executor::next_ros_timeout(std::int64_t limit_ns)
   std::int64_t best = limit_ns;
   for (const auto & entry : timers_) {
     const auto timer = entry.second.lock();
-    if (!timer || (entry.second.jump && clock_of(*timer)->ros_time_is_active())) continue;
+    if (!timer || (entry.second.jump && timer->get_clock()->ros_time_is_active())) continue;
     const std::int64_t due = timer->time_until_trigger().count();
     const std::int64_t wait = due > 0 ? due : 0;
     if (best < 0 || wait < best) best = wait;

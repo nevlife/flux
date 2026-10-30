@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
+from rclpy.experimental import EventsExecutor
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -19,13 +20,7 @@ import flux
 
 SMALL = {"slot_size": 4096, "slot_count": 4}
 
-# Humble's rclpy has no EventsExecutor.
-try:
-    from rclpy.experimental import EventsExecutor
-
-    ROS_EXECUTORS = [SingleThreadedExecutor, EventsExecutor]
-except ImportError:
-    ROS_EXECUTORS = [SingleThreadedExecutor]
+ROS_EXECUTORS = [SingleThreadedExecutor, EventsExecutor]
 
 
 def topic(name):

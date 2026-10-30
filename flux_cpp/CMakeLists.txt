@@ -63,8 +63,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_partitioned ${rclcpp_lifecycle_TARGETS})
   target_compile_definitions(test_gpu PRIVATE
     FLUX_KERNEL_LOG="${CMAKE_CURRENT_SOURCE_DIR}/../scripts/kernel_log.sh")
-  # Again on the parker threads a kernel below 5.16 waits with. ament_add_gtest_test takes no
-  # TEST_NAME on Humble.
+  # Again on the parker threads a kernel below 5.16 waits with.
   foreach(t test_executor test_ros test_partitioned)
     set(_result ${AMENT_TEST_RESULTS_DIR}/${PROJECT_NAME}/${t}_parked.gtest.xml)
     ament_add_test(${t}_parked
