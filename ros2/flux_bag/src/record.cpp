@@ -19,11 +19,8 @@
 
 #include "sensor_msgs/flux/image.hpp"
 
-#include <poll.h>
 #include <rcutils/types/uint8_array.h>
 #include <rmw/rmw.h>
-#include <sys/inotify.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <array>
@@ -61,7 +58,7 @@ struct Options
 {
   rosbag2_storage::StorageOptions storage;
   rosbag2_transport::RecordOptions record;
-  std::chrono::duration<double> poll{1.0};
+  std::chrono::duration<double> poll{0.1};
   std::uint64_t cache_bytes = 1ULL << 30;
   // 0 records images as they are.
   int jpeg_quality = 0;
@@ -496,10 +493,6 @@ std::atomic<bool> g_stop{false};  // NOLINT(*-avoid-non-const-global-variables)
 // A channel down this long is let go. A restarted publisher is usually back sooner, and its
 // recorder re-attaches to it without waiting for the next listing.
 constexpr auto kKeepDown = std::chrono::seconds(10);
-// A publisher's last change to /dev/shm comes before it stores the epoch and key that make its
-// channel recordable, so the channels are listed this often until changes stop for kSettle.
-constexpr auto kRecheck = std::chrono::milliseconds(10);
-constexpr auto kSettle = std::chrono::milliseconds(500);
 constexpr auto kStopCheck = std::chrono::milliseconds(100);
 
 struct Recorded
@@ -507,51 +500,6 @@ struct Recorded
   std::unique_ptr<ChannelRecorder> recorder;
   // Set by the first listing that found the channel down, cleared by one that finds it up.
   std::optional<std::chrono::steady_clock::time_point> down_since;
-};
-
-// Flux signposts and segments created, sized or removed in /dev/shm.
-class ShmWatch
-{
-public:
-  ShmWatch() : fd_(inotify_init1(IN_NONBLOCK | IN_CLOEXEC))
-  {
-    if (fd_ < 0) {
-      throw std::system_error(errno, std::generic_category(), "inotify_init1");
-    }
-    if (inotify_add_watch(fd_, "/dev/shm", IN_CREATE | IN_MOVED_TO | IN_MODIFY | IN_DELETE) < 0) {
-      const int e = errno;
-      ::close(fd_);
-      throw std::system_error(e, std::generic_category(), "inotify_add_watch /dev/shm");
-    }
-  }
-  ShmWatch(const ShmWatch &) = delete;
-  auto operator=(const ShmWatch &) -> ShmWatch & = delete;
-  ShmWatch(ShmWatch &&) = delete;
-  auto operator=(ShmWatch &&) -> ShmWatch & = delete;
-  ~ShmWatch() { ::close(fd_); }
-
-  // Waits up to `timeout` for a change; reads every queued event, flux or not.
-  [[nodiscard]] auto changed(std::chrono::milliseconds timeout) const -> bool
-  {
-    pollfd p{fd_, POLLIN, 0};
-    if (::poll(&p, 1, static_cast<int>(timeout.count())) <= 0) {
-      return false;
-    }
-    alignas(inotify_event) std::array<char, 4096> buf{};
-    bool flux = false;
-    for (ssize_t n = 0; (n = ::read(fd_, buf.data(), buf.size())) > 0;) {
-      for (ssize_t at = 0; at < n;) {
-        // NOLINTNEXTLINE(*-reinterpret-cast)
-        const auto * e = reinterpret_cast<const inotify_event *>(buf.data() + at);
-        flux = flux || (e->len > 0 && std::strncmp(e->name, "flux.", 5) == 0);
-        at += static_cast<ssize_t>(sizeof(inotify_event) + e->len);
-      }
-    }
-    return flux;
-  }
-
-private:
-  int fd_;
 };
 
 void run(Options & opt)
@@ -580,8 +528,6 @@ void run(Options & opt)
         recorder->get_logger(), "flux channel %s not recorded until its publisher restarts: %s",
         key.c_str(), why.c_str());
     };
-  const ShmWatch watch;
-  std::chrono::steady_clock::time_point settle_until;
   std::exception_ptr error;
   while (!g_stop && !error) {
     const auto listed = std::chrono::steady_clock::now();
@@ -652,20 +598,13 @@ void run(Options & opt)
         channels.emplace(t->signpost, Recorded{std::move(r), std::nullopt});
       }
     }
-    const std::chrono::duration<double> period =
-      listed < settle_until ? std::chrono::duration<double>(kRecheck) : opt.poll;
     while (!g_stop) {
       const std::chrono::duration<double> left =
-        period - (std::chrono::steady_clock::now() - listed);
+        opt.poll - (std::chrono::steady_clock::now() - listed);
       if (left <= left.zero()) {
         break;
       }
-      const auto wait = std::chrono::ceil<std::chrono::milliseconds>(
-        std::min<std::chrono::duration<double>>(left, kStopCheck));
-      if (watch.changed(wait)) {
-        settle_until = std::chrono::steady_clock::now() + kSettle;
-        break;
-      }
+      std::this_thread::sleep_for(std::min<std::chrono::duration<double>>(left, kStopCheck));
     }
     for (const auto & [signpost, channel] : channels) {
       if (!error) {

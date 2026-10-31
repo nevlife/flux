@@ -103,7 +103,7 @@ def test_frames_published_while_paused_are_not_recorded(node, tmp_path):
 def test_a_channel_made_after_the_recorder_started_is_recorded_from_its_start(node, tmp_path):
     k = key("late")
     bag = str(tmp_path / "bag")
-    rec = record(bag, k, poll="30")
+    rec = record(bag, k)
     time.sleep(1.0)
     pub = flux.Publisher(node, k, slot_size=4096, slot_count=4)
     publish(pub, 0, 50)
@@ -118,7 +118,7 @@ def test_a_channel_made_after_the_recorder_started_is_recorded_from_its_start(no
 def test_a_publisher_back_after_its_channel_was_let_go_is_recorded_at_once(node, tmp_path):
     k = key("back")
     bag = str(tmp_path / "bag")
-    rec = record(bag, k, poll="5")
+    rec = record(bag, k)
     pub = flux.Publisher(node, k, slot_size=4096, slot_count=4)
     signpost = "/dev/shm" + pub.signpost_name
     time.sleep(1.0)
