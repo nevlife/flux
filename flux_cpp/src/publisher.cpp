@@ -34,9 +34,9 @@ public:
   {
   }
   RosMirror(const RosMirror &) = delete;
-  RosMirror & operator=(const RosMirror &) = delete;
+  auto operator=(const RosMirror &) -> RosMirror & = delete;
   RosMirror(RosMirror &&) = delete;
-  RosMirror & operator=(RosMirror &&) = delete;
+  auto operator=(RosMirror &&) -> RosMirror & = delete;
   ~RosMirror()
   {
     stop_ = true;
@@ -71,7 +71,9 @@ private:
           msg.reserve(size);
           return raw.buffer;
         });
-      if (n == 0) continue;
+      if (n == 0) {
+        continue;
+      }
       raw.buffer_length = n;
       pub_->publish(msg);
     }
@@ -118,12 +120,14 @@ Publisher::Publisher(
 }
 
 Publisher::Publisher(Publisher &&) noexcept = default;
-Publisher & Publisher::operator=(Publisher &&) noexcept = default;
+auto Publisher::operator=(Publisher &&) noexcept -> Publisher & = default;
 Publisher::~Publisher() = default;
 
 void Publisher::mirror_to_ros()
 {
-  if (!mirror_) mirror_ = std::make_unique<RosMirror>(node_, ch_, topic_, signpost_, fingerprint_);
+  if (!mirror_) {
+    mirror_ = std::make_unique<RosMirror>(node_, ch_, topic_, signpost_, fingerprint_);
+  }
 }
 
 }  // namespace flux

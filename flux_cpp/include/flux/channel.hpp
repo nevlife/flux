@@ -27,7 +27,7 @@ class Error : public std::runtime_error
 {
 public:
   Error(Status status, const char * what) : std::runtime_error(what), status_(status) {}
-  Status status() const noexcept { return status_; }
+  [[nodiscard]] auto status() const noexcept -> Status { return status_; }
 
 private:
   Status status_;
@@ -39,7 +39,9 @@ class Channel;
 
 inline void check(Status st)
 {
-  if (st != FLUX_OK) throw Error(st, flux_last_error());
+  if (st != FLUX_OK) {
+    throw Error(st, flux_last_error());
+  }
 }
 
 // The library loaded at run time must be the one these headers describe: another lays out views,
@@ -47,7 +49,9 @@ inline void check(Status st)
 inline void require_abi()
 {
   static const std::uint32_t lib = flux_abi_version();
-  if (lib == FLUX_ABI_VERSION) return;
+  if (lib == FLUX_ABI_VERSION) {
+    return;
+  }
   throw Error(
     FLUX_MISMATCH, ("flux: the libflux_ffi loaded has ABI version " + std::to_string(lib) +
                     ", and the flux headers this was built with need " +
@@ -95,7 +99,7 @@ struct Platform
 };
 
 // Initializes CUDA on first use. Never throws: a host without a GPU is Route::None with a reason.
-inline Platform probe(int device = 0)
+inline auto probe(int device = 0) -> Platform
 {
   flux_gpu_platform p{};
   const flux_status st = flux_gpu_probe(device, &p);
@@ -112,7 +116,7 @@ inline Platform probe(int device = 0)
 
 // The sticky CUresult that wedged this process's GPU, 0 while none has. After one, every GPU
 // channel refuses at once and only a restart helps.
-inline int wedged() noexcept
+inline auto wedged() noexcept -> int
 {
   return flux_gpu_wedged();
 }
@@ -126,7 +130,7 @@ public:
   Stream() = default;
 
   // A stream flux owns, on the current context or the current device's primary one.
-  static Stream create()
+  static auto create() -> Stream
   {
     flux_stream * s = nullptr;
     detail::check(flux_stream_create(&s));
@@ -135,19 +139,25 @@ public:
 
   // The caller's cudaStream_t, which must outlive every channel and view declared on it. The
   // legacy default stream (nullptr) is refused: it is a different stream on each thread.
-  static Stream from_native(void * native)
+  static auto from_native(void * native) -> Stream
   {
     flux_stream * s = nullptr;
     detail::check(flux_stream_from_native(native, &s));
     return Stream(s);
   }
 
-  bool declared() const noexcept { return s_ != nullptr; }
-  void * native() const noexcept { return s_ ? flux_stream_native(s_.get()) : nullptr; }
+  [[nodiscard]] auto declared() const noexcept -> bool { return s_ != nullptr; }
+  [[nodiscard]] auto native() const noexcept -> void *
+  {
+    return s_ ? flux_stream_native(s_.get()) : nullptr;
+  }
   // The ordinal of the stream's device, -1 when none is declared.
-  int device() const noexcept { return s_ ? flux_stream_device(s_.get()) : -1; }
-  bool wait() const noexcept { return !s_ || flux_stream_wait(s_.get()); }
-  const flux_stream * raw() const noexcept { return s_.get(); }
+  [[nodiscard]] auto device() const noexcept -> int
+  {
+    return s_ ? flux_stream_device(s_.get()) : -1;
+  }
+  [[nodiscard]] auto wait() const noexcept -> bool { return !s_ || flux_stream_wait(s_.get()); }
+  [[nodiscard]] auto raw() const noexcept -> const flux_stream * { return s_.get(); }
 
 private:
   explicit Stream(flux_stream * s) : s_(s, flux_stream_free) {}
@@ -156,7 +166,7 @@ private:
 };
 
 // Device::Cpu declares nothing; Device::Cuda creates a stream.
-inline Stream stream_for(Device device)
+inline auto stream_for(Device device) -> Stream
 {
   return device == Device::Cpu ? Stream() : Stream::create();
 }
@@ -203,7 +213,7 @@ enum class [[nodiscard]] Published : std::int32_t {
   GpuWedged = FLUX_PUBLISHED_GPU_WEDGED,
 };
 
-inline std::size_t dtype_size(DType d) noexcept
+inline auto dtype_size(DType d) noexcept -> std::size_t
 {
   switch (d) {
     case DType::U8:
@@ -227,12 +237,12 @@ inline std::size_t dtype_size(DType d) noexcept
 }
 
 // Backpressure is a full ring, which the next publish may not hit. The rest repeat until fixed.
-inline bool faulted(Published p) noexcept
+inline auto faulted(Published p) noexcept -> bool
 {
   return p != Published::Ok && p != Published::Backpressure;
 }
 
-inline const char * to_string(Published p) noexcept
+inline auto to_string(Published p) noexcept -> const char *
 {
   switch (p) {
     case Published::Ok:
@@ -264,20 +274,20 @@ public:
   QoS() : q_(flux_qos_default()) {}
   QoS(std::uint32_t depth) : QoS() { q_.depth = depth; }  // NOLINT(runtime/explicit): QoS q = 4;
 
-  QoS & transient_local(std::uint32_t replay)
+  auto transient_local(std::uint32_t replay) -> QoS &
   {
     q_.replay = replay;
     return *this;
   }
-  QoS & max_borrow(std::uint32_t n)
+  auto max_borrow(std::uint32_t n) -> QoS &
   {
     q_.max_borrow = n;
     return *this;
   }
 
-  std::uint32_t depth() const noexcept { return q_.depth; }
-  std::uint32_t replay() const noexcept { return q_.replay; }
-  std::uint32_t borrow_limit() const noexcept { return q_.max_borrow; }
+  [[nodiscard]] auto depth() const noexcept -> std::uint32_t { return q_.depth; }
+  [[nodiscard]] auto replay() const noexcept -> std::uint32_t { return q_.replay; }
+  [[nodiscard]] auto borrow_limit() const noexcept -> std::uint32_t { return q_.max_borrow; }
 
 private:
   friend class detail::Channel;
@@ -291,7 +301,7 @@ public:
   FrameView() = default;
   ~FrameView() { release(); }
   FrameView(FrameView && o) noexcept { detail::relocate(v_, o.v_); }
-  FrameView & operator=(FrameView && o) noexcept
+  auto operator=(FrameView && o) noexcept -> FrameView &
   {
     if (this != &o) {
       release();
@@ -300,46 +310,55 @@ public:
     return *this;
   }
   FrameView(const FrameView &) = delete;
-  FrameView & operator=(const FrameView &) = delete;
+  auto operator=(const FrameView &) -> FrameView & = delete;
 
-  bool valid() const noexcept { return flux_view_valid(raw()); }
+  [[nodiscard]] auto valid() const noexcept -> bool { return flux_view_valid(raw()); }
   explicit operator bool() const noexcept { return valid(); }
 
   // Null when the payload is device memory, while size() is still the frame's: use device_ptr().
-  const void * data() const noexcept
+  [[nodiscard]] auto data() const noexcept -> const void *
   {
     std::size_t n = 0;
     return flux_view_data(raw(), &n);
   }
-  std::size_t size() const noexcept
+  [[nodiscard]] auto size() const noexcept -> std::size_t
   {
     const FrameMeta * m = flux_view_meta(raw());
     return m != nullptr ? static_cast<std::size_t>(m->nbytes) : 0;
   }
   // Null on a host channel; read-only memory on a subscriber's mapping.
-  const void * device_ptr() const noexcept
+  [[nodiscard]] auto device_ptr() const noexcept -> const void *
   {
     return reinterpret_cast<const void *>(  // NOLINT(*-reinterpret-cast,performance-no-int-to-ptr)
       static_cast<std::uintptr_t>(flux_view_device_ptr(raw())));
   }
   // The channel's cudaStream_t: queue the frame's work on it, since the release waits for it.
-  void * stream() const noexcept { return flux_view_stream(raw()); }
+  [[nodiscard]] auto stream() const noexcept -> void * { return flux_view_stream(raw()); }
   // Orders the channel stream's next work after what s has queued, on the device: a deferred
   // release then covers work that read the frame on s.
-  bool after(const gpu::Stream & s) const noexcept { return flux_view_after(raw(), s.raw()); }
+  [[nodiscard]] auto after(const gpu::Stream & s) const noexcept -> bool
+  {
+    return flux_view_after(raw(), s.raw());
+  }
   // Requires valid().
-  const FrameMeta & meta() const noexcept { return *flux_view_meta(raw()); }
-  std::uint64_t ticket() const noexcept { return flux_view_ticket(raw()); }
+  [[nodiscard]] auto meta() const noexcept -> const FrameMeta & { return *flux_view_meta(raw()); }
+  [[nodiscard]] auto ticket() const noexcept -> std::uint64_t { return flux_view_ticket(raw()); }
   // The channel as trace events name it (flux/trace.h).
-  const void * trace_channel() const noexcept { return flux_view_trace_channel(raw()); }
+  [[nodiscard]] auto trace_channel() const noexcept -> const void *
+  {
+    return flux_view_trace_channel(raw());
+  }
   // CLOCK_MONOTONIC at commit.
-  std::uint64_t publish_ns() const noexcept { return flux_view_publish_ns(raw()); }
+  [[nodiscard]] auto publish_ns() const noexcept -> std::uint64_t
+  {
+    return flux_view_publish_ns(raw());
+  }
 
   void release() noexcept { flux_view_release(&v_); }
 
 private:
   friend class detail::Channel;
-  const flux_view * raw() const noexcept { return &v_; }
+  [[nodiscard]] auto raw() const noexcept -> const flux_view * { return &v_; }
   flux_view v_{};
 };
 
@@ -352,7 +371,7 @@ public:
   WriteSlot() = default;
   ~WriteSlot() { abort(); }
   WriteSlot(WriteSlot && o) noexcept { detail::relocate(l_, o.l_); }
-  WriteSlot & operator=(WriteSlot && o) noexcept
+  auto operator=(WriteSlot && o) noexcept -> WriteSlot &
   {
     if (this != &o) {
       abort();
@@ -361,35 +380,35 @@ public:
     return *this;
   }
   WriteSlot(const WriteSlot &) = delete;
-  WriteSlot & operator=(const WriteSlot &) = delete;
+  auto operator=(const WriteSlot &) -> WriteSlot & = delete;
 
-  bool valid() const noexcept { return flux_loan_valid(raw()); }
+  [[nodiscard]] auto valid() const noexcept -> bool { return flux_loan_valid(raw()); }
   explicit operator bool() const noexcept { return valid(); }
 
   // Null when the payload is device memory: use device_ptr().
-  void * data() noexcept
+  auto data() noexcept -> void *
   {
     std::size_t n = 0;
     return flux_loan_data(&l_, &n);
   }
   // Null on a host channel.
-  void * device_ptr() const noexcept
+  [[nodiscard]] auto device_ptr() const noexcept -> void *
   {
     return reinterpret_cast<void *>(  // NOLINT(*-reinterpret-cast,performance-no-int-to-ptr)
       static_cast<std::uintptr_t>(flux_loan_device_ptr(raw())));
   }
   // The channel's cudaStream_t: queue the producing work on it, since the commit waits for it.
-  void * stream() const noexcept { return flux_loan_stream(raw()); }
-  std::size_t capacity() noexcept
+  [[nodiscard]] auto stream() const noexcept -> void * { return flux_loan_stream(raw()); }
+  auto capacity() noexcept -> std::size_t
   {
     std::size_t n = 0;
     flux_loan_data(&l_, &n);
     return n;
   }
 
-  Published commit() noexcept { return static_cast<Published>(flux_loan_commit(&l_)); }
+  auto commit() noexcept -> Published { return static_cast<Published>(flux_loan_commit(&l_)); }
   // Shrinks a one-dimensional loan to nbytes.
-  Published commit(std::size_t nbytes) noexcept
+  auto commit(std::size_t nbytes) noexcept -> Published
   {
     return static_cast<Published>(flux_loan_commit_len(&l_, nbytes));
   }
@@ -397,7 +416,7 @@ public:
 
 private:
   friend class detail::Channel;
-  const flux_loan * raw() const noexcept { return &l_; }
+  [[nodiscard]] auto raw() const noexcept -> const flux_loan * { return &l_; }
   flux_loan l_{};
 };
 
@@ -416,17 +435,20 @@ public:
   }
   ~Watch() { flux_watch_free(w_); }
   Watch(const Watch &) = delete;
-  Watch & operator=(const Watch &) = delete;
+  auto operator=(const Watch &) -> Watch & = delete;
   Watch(Watch &&) = delete;
-  Watch & operator=(Watch &&) = delete;
+  auto operator=(Watch &&) -> Watch & = delete;
 
   // 0 until the first publisher; it changes with every restart.
-  std::uint32_t epoch() const noexcept { return flux_watch_epoch(w_); }
+  [[nodiscard]] auto epoch() const noexcept -> std::uint32_t { return flux_watch_epoch(w_); }
   // Notes the epoch now, for wait() and an executor to wait until it moves. Returns it.
-  std::uint32_t arm() const noexcept { return flux_watch_arm(w_); }
+  [[nodiscard]] auto arm() const noexcept -> std::uint32_t { return flux_watch_arm(w_); }
   // False only on a timeout. A negative timeout waits forever.
-  bool wait(std::int64_t timeout_ns) const noexcept { return flux_watch_wait(w_, timeout_ns); }
-  const flux_watch * raw() const noexcept { return w_; }
+  [[nodiscard]] auto wait(std::int64_t timeout_ns) const noexcept -> bool
+  {
+    return flux_watch_wait(w_, timeout_ns);
+  }
+  [[nodiscard]] auto raw() const noexcept -> const flux_watch * { return w_; }
 
 private:
   flux_watch * w_ = nullptr;
@@ -447,10 +469,11 @@ public:
 
   // Error with FLUX_PUBLISHER_EXISTS while another publisher of `name` is live.
   // A declared `stream` makes a GPU channel for its life.
-  static Channel create(
+  static auto create(
     const std::string & name, std::uint32_t slot_size, std::uint32_t slot_count,
     std::uint64_t fingerprint = kNoSchema, MemoryPolicy mem = {},
-    std::uint32_t max_subscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS, const gpu::Stream & stream = {})
+    std::uint32_t max_subscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS,
+    const gpu::Stream & stream = {}) -> Channel
   {
     require_abi();
     flux_channel * ch = nullptr;
@@ -461,9 +484,9 @@ public:
   }
 
   // Error with FLUX_NOT_READY until a publisher is up.
-  static Channel open(
+  static auto open(
     const std::string & name, std::uint64_t fingerprint = kNoSchema, MemoryPolicy mem = {},
-    const gpu::Stream & stream = {})
+    const gpu::Stream & stream = {}) -> Channel
   {
     require_abi();
     flux_channel * ch = nullptr;
@@ -474,9 +497,9 @@ public:
 
   // Through a watch, which arms it first. Once the watch has attached, a channel starts at its
   // publisher's oldest frame: they all came after this subscriber joined.
-  static Channel open(
+  static auto open(
     const Watch & watch, std::uint64_t fingerprint, const QoS & qos, MemoryPolicy mem = {},
-    const gpu::Stream & stream = {})
+    const gpu::Stream & stream = {}) -> Channel
   {
     flux_channel * ch = nullptr;
     detail::check(flux_channel_open_watched(
@@ -486,7 +509,7 @@ public:
 
   ~Channel() { flux_channel_free(ch_); }
   Channel(Channel && o) noexcept : ch_(o.ch_) { o.ch_ = nullptr; }
-  Channel & operator=(Channel && o) noexcept
+  auto operator=(Channel && o) noexcept -> Channel &
   {
     if (this != &o) {
       flux_channel_free(ch_);
@@ -496,74 +519,100 @@ public:
     return *this;
   }
   Channel(const Channel &) = delete;
-  Channel & operator=(const Channel &) = delete;
+  auto operator=(const Channel &) -> Channel & = delete;
 
-  Published publish(const void * data, std::size_t n) noexcept
+  auto publish(const void * data, std::size_t n) noexcept -> Published
   {
-    if (!ch_) return Published::InvalidArgument;
+    if (!ch_) {
+      return Published::InvalidArgument;
+    }
     return static_cast<Published>(
       flux_channel_publish(ch_, static_cast<const std::uint8_t *>(data), n));
   }
-  Published publish(
-    const void * data, DType dtype, const std::uint64_t * shape, std::size_t ndim) noexcept
+  auto publish(
+    const void * data, DType dtype, const std::uint64_t * shape,
+    std::size_t ndim) noexcept -> Published
   {
-    if (!ch_) return Published::InvalidArgument;
+    if (!ch_) {
+      return Published::InvalidArgument;
+    }
     std::size_t n = dtype_size(dtype);
-    for (std::size_t i = 0; i < ndim; ++i) n *= shape[i];
+    for (std::size_t i = 0; i < ndim; ++i) {
+      n *= shape[i];
+    }
     return static_cast<Published>(flux_channel_publish_typed(
       ch_, static_cast<const std::uint8_t *>(data), n, static_cast<std::uint8_t>(dtype), shape,
       ndim));
   }
-  Published publish(
-    const void * data, DType dtype, std::initializer_list<std::uint64_t> shape) noexcept
+  auto publish(const void * data, DType dtype, std::initializer_list<std::uint64_t> shape) noexcept
+    -> Published
   {
     return publish(data, dtype, shape.begin(), shape.size());
   }
 
   // Empty when every slot is borrowed or this is a subscriber.
-  WriteSlot loan() noexcept
+  auto loan() noexcept -> WriteSlot
   {
     WriteSlot w;
-    if (ch_) flux_channel_loan(ch_, &w.l_);
+    if (ch_) {
+      flux_channel_loan(ch_, &w.l_);
+    }
     return w;
   }
   // The shape is checked at commit.
-  WriteSlot loan(DType dtype, const std::uint64_t * shape, std::size_t ndim) noexcept
+  auto loan(DType dtype, const std::uint64_t * shape, std::size_t ndim) noexcept -> WriteSlot
   {
     WriteSlot w;
-    if (ch_) flux_channel_loan_typed(ch_, static_cast<std::uint8_t>(dtype), shape, ndim, &w.l_);
+    if (ch_) {
+      flux_channel_loan_typed(ch_, static_cast<std::uint8_t>(dtype), shape, ndim, &w.l_);
+    }
     return w;
   }
-  WriteSlot loan(DType dtype, std::initializer_list<std::uint64_t> shape) noexcept
+  auto loan(DType dtype, std::initializer_list<std::uint64_t> shape) noexcept -> WriteSlot
   {
     return loan(dtype, shape.begin(), shape.size());
   }
 
   // The oldest frame newer than the cursor.
-  FrameView take() noexcept
+  auto take() noexcept -> FrameView
   {
     FrameView v;
-    if (ch_) flux_channel_take(ch_, &v.v_);
+    if (ch_) {
+      flux_channel_take(ch_, &v.v_);
+    }
     return v;
   }
   // A negative timeout waits forever.
-  FrameView take_blocking(std::int64_t timeout_ns) noexcept
+  auto take_blocking(std::int64_t timeout_ns) noexcept -> FrameView
   {
     FrameView v;
-    if (ch_) flux_channel_take_blocking(ch_, timeout_ns, &v.v_);
+    if (ch_) {
+      flux_channel_take_blocking(ch_, timeout_ns, &v.v_);
+    }
     return v;
   }
 
   void qos(const QoS & q)
   {
-    if (!ch_) throw Error(FLUX_INVALID_ARGUMENT, "flux: this channel was moved from");
+    if (!ch_) {
+      throw Error(FLUX_INVALID_ARGUMENT, "flux: this channel was moved from");
+    }
     detail::check(flux_channel_set_qos(ch_, q.q_));
   }
-  QoS qos() const noexcept { return ch_ ? QoS(flux_channel_qos(ch_)) : QoS(); }
+  [[nodiscard]] auto qos() const noexcept -> QoS
+  {
+    return ch_ ? QoS(flux_channel_qos(ch_)) : QoS();
+  }
 
-  Refused refused() const noexcept { return ch_ ? flux_channel_refused(ch_) : Refused{}; }
-  std::uint64_t fence_failed() const noexcept { return ch_ ? flux_channel_fence_failed(ch_) : 0; }
-  gpu::FenceWait fence_wait() const noexcept
+  [[nodiscard]] auto refused() const noexcept -> Refused
+  {
+    return ch_ ? flux_channel_refused(ch_) : Refused{};
+  }
+  [[nodiscard]] auto fence_failed() const noexcept -> std::uint64_t
+  {
+    return ch_ ? flux_channel_fence_failed(ch_) : 0;
+  }
+  [[nodiscard]] auto fence_wait() const noexcept -> gpu::FenceWait
   {
     return ch_ ? flux_channel_fence_wait(ch_) : gpu::FenceWait{};
   }
@@ -571,44 +620,80 @@ public:
   // in fence_failed() and keeps its slot until the work is done.
   void set_fence_timeout(std::chrono::nanoseconds t) const noexcept
   {
-    if (ch_)
+    if (ch_) {
       flux_channel_set_fence_timeout(
         ch_, t.count() > 0 ? static_cast<std::uint64_t>(t.count()) : 0);
+    }
   }
   void set_release_mode(gpu::ReleaseMode m) const noexcept
   {
-    if (ch_) flux_channel_set_release_mode(ch_, static_cast<std::int32_t>(m));
+    if (ch_) {
+      flux_channel_set_release_mode(ch_, static_cast<std::int32_t>(m));
+    }
   }
-  bool device_backed() const noexcept { return ch_ && flux_channel_device_backed(ch_); }
-  bool ready() const noexcept { return ch_ && flux_channel_ready(ch_); }
-  bool can_borrow() const noexcept { return ch_ && flux_channel_can_borrow(ch_); }
-  std::uint64_t lost() const noexcept { return ch_ ? flux_channel_lost(ch_) : 0; }
-  std::uint64_t dropped() const noexcept { return ch_ ? flux_channel_dropped(ch_) : 0; }
-  std::uint32_t attach_generation() const noexcept
+  [[nodiscard]] auto device_backed() const noexcept -> bool
+  {
+    return ch_ && flux_channel_device_backed(ch_);
+  }
+  [[nodiscard]] auto ready() const noexcept -> bool { return ch_ && flux_channel_ready(ch_); }
+  [[nodiscard]] auto can_borrow() const noexcept -> bool
+  {
+    return ch_ && flux_channel_can_borrow(ch_);
+  }
+  [[nodiscard]] auto lost() const noexcept -> std::uint64_t
+  {
+    return ch_ ? flux_channel_lost(ch_) : 0;
+  }
+  [[nodiscard]] auto dropped() const noexcept -> std::uint64_t
+  {
+    return ch_ ? flux_channel_dropped(ch_) : 0;
+  }
+  [[nodiscard]] auto attach_generation() const noexcept -> std::uint32_t
   {
     return ch_ ? flux_channel_attach_generation(ch_) : 0;
   }
-  bool orphaned() const noexcept { return ch_ && flux_channel_orphaned(ch_); }
+  [[nodiscard]] auto orphaned() const noexcept -> bool { return ch_ && flux_channel_orphaned(ch_); }
   // Throws why a restarted publisher refused this subscriber; takes find nothing until it restarts.
   void check_attach()
   {
-    if (ch_) detail::check(flux_channel_attach_status(ch_));
+    if (ch_) {
+      detail::check(flux_channel_attach_status(ch_));
+    }
   }
-  bool inherited() const noexcept { return ch_ && flux_channel_inherited(ch_); }
-  std::uint32_t slot_size() const noexcept { return ch_ ? flux_channel_slot_size(ch_) : 0; }
-  std::uint32_t slot_count() const noexcept { return ch_ ? flux_channel_slot_count(ch_) : 0; }
-  bool payload_readonly() const noexcept { return ch_ && flux_channel_payload_readonly(ch_); }
-  bool pages_committed() const noexcept { return ch_ && flux_channel_pages_committed(ch_); }
-  bool pages_locked() const noexcept { return ch_ && flux_channel_pages_locked(ch_); }
+  [[nodiscard]] auto inherited() const noexcept -> bool
+  {
+    return ch_ && flux_channel_inherited(ch_);
+  }
+  [[nodiscard]] auto slot_size() const noexcept -> std::uint32_t
+  {
+    return ch_ ? flux_channel_slot_size(ch_) : 0;
+  }
+  [[nodiscard]] auto slot_count() const noexcept -> std::uint32_t
+  {
+    return ch_ ? flux_channel_slot_count(ch_) : 0;
+  }
+  [[nodiscard]] auto payload_readonly() const noexcept -> bool
+  {
+    return ch_ && flux_channel_payload_readonly(ch_);
+  }
+  [[nodiscard]] auto pages_committed() const noexcept -> bool
+  {
+    return ch_ && flux_channel_pages_committed(ch_);
+  }
+  [[nodiscard]] auto pages_locked() const noexcept -> bool
+  {
+    return ch_ && flux_channel_pages_locked(ch_);
+  }
 
-  const flux_channel * raw() const noexcept { return ch_; }
+  [[nodiscard]] auto raw() const noexcept -> const flux_channel * { return ch_; }
 
 private:
   explicit Channel(flux_channel * ch) noexcept : ch_(ch) {}
   flux_channel * ch_ = nullptr;
 };
 
-inline std::string signpost_name(const std::string & key, std::uint64_t fingerprint = kNoSchema)
+inline auto signpost_name(const std::string & key, std::uint64_t fingerprint = kNoSchema)
+  -> std::string
 {
   require_abi();
   std::string out(256, '\0');

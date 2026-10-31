@@ -9,6 +9,8 @@ Checks: >
   concurrency-*,
   performance-*,
   cppcoreguidelines-*,
+  modernize-use-trailing-return-type,
+  modernize-use-nodiscard,
   -cppcoreguidelines-pro-bounds-*,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-non-private-member-variables-in-classes,
@@ -26,3 +28,4 @@ Checks: >
   -performance-inefficient-string-concatenation
 CheckOptions:
   performance-unnecessary-value-param.AllowedTypes: '^::nanobind::'
+  modernize-use-trailing-return-type.TransformLambdas: none

@@ -16,13 +16,17 @@ namespace
 constexpr std::uint64_t kMaxFrame = std::uint64_t{4} << 20;
 
 // True if the frame reached the JPEG decoder and decoded.
-bool replay(const std::uint8_t * data, std::size_t size)
+auto replay(const std::uint8_t * data, std::size_t size) -> bool
 {
   flux_bag::FluxFrameFields f;
   flux_bag::JpegMeta m;
-  if (!flux_bag::read_frame(data, size, f, m) || f.codec != "jpeg") return false;
+  if (!flux_bag::read_frame(data, size, f, m) || f.codec != "jpeg") {
+    return false;
+  }
   const std::uint64_t n = m.raw.nbytes();
-  if (n > kMaxFrame) return false;
+  if (n > kMaxFrame) {
+    return false;
+  }
   std::vector<std::uint8_t> out(n);
   return flux_bag::unpack_jpeg(f, m, out.data());
 }
@@ -51,7 +55,7 @@ namespace
 {
 
 // The bytes record_flux writes for one Image frame of `encoding`.
-std::vector<std::uint8_t> recorded(const char * encoding, std::uint32_t channels)
+auto recorded(const char * encoding, std::uint32_t channels) -> std::vector<std::uint8_t>
 {
   constexpr std::uint32_t kW = 16;
   constexpr std::uint32_t kH = 8;
@@ -64,7 +68,9 @@ std::vector<std::uint8_t> recorded(const char * encoding, std::uint32_t channels
   b.set__encoding(encoding);
   b.set__step(step);
   auto px = b.alloc__data(std::size_t{step} * kH);
-  for (std::size_t i = 0; i < px.size(); ++i) px.data()[i] = static_cast<std::uint8_t>(i * 7);
+  for (std::size_t i = 0; i < px.size(); ++i) {
+    px.data()[i] = static_cast<std::uint8_t>(i * 7);
+  }
   const auto * frame = reinterpret_cast<const std::uint8_t *>(storage.data());  // NOLINT
   const std::size_t size = b.size__();
 
@@ -95,7 +101,7 @@ std::vector<std::uint8_t> recorded(const char * encoding, std::uint32_t channels
   return out;
 }
 
-std::uint64_t next(std::uint64_t & s)
+auto next(std::uint64_t & s) -> std::uint64_t
 {
   s ^= s << 13;
   s ^= s >> 7;
@@ -114,7 +120,9 @@ TEST(FuzzFrame, RecordedFramesDecodeAndDamagedOnesStayInBounds)
       std::ofstream(std::string(dir) + "/" + encoding, std::ios::binary)
         << std::string(good.begin(), good.end());
     }
-    for (std::size_t n = 0; n < good.size(); ++n) replay(good.data(), n);
+    for (std::size_t n = 0; n < good.size(); ++n) {
+      replay(good.data(), n);
+    }
     for (int round = 0; round < 4000; ++round) {
       std::vector<std::uint8_t> bad = good;
       for (int flips = 1 + static_cast<int>(next(seed) % 4); flips > 0; --flips) {

@@ -25,7 +25,7 @@ namespace
 constexpr std::size_t kTypes = 9;
 
 template <class Adapter>
-bool read(const void * data, std::size_t size)
+auto read(const void * data, std::size_t size) -> bool
 {
   const typename Adapter::View v(data, size);
   try {
@@ -38,9 +38,11 @@ bool read(const void * data, std::size_t size)
 }
 
 // True if the frame matched its schema.
-bool replay(const std::uint8_t * data, std::size_t size)
+auto replay(const std::uint8_t * data, std::size_t size) -> bool
 {
-  if (size == 0) return false;
+  if (size == 0) {
+    return false;
+  }
   // A slot starts 8-byte aligned; libFuzzer's buffer need not.
   std::vector<std::uint64_t> words((size - 1 + 7) / 8 + 1);
   std::memcpy(words.data(), data + 1, size - 1);
@@ -88,7 +90,7 @@ namespace
 {
 
 template <class Adapter, class Msg>
-std::vector<std::uint8_t> frame(std::uint8_t pick, const Msg & m)
+auto frame(std::uint8_t pick, const Msg & m) -> std::vector<std::uint8_t>
 {
   std::vector<std::uint64_t> words(1 << 14);
   typename Adapter::Builder b(words.data(), words.size() * 8);
@@ -100,7 +102,7 @@ std::vector<std::uint8_t> frame(std::uint8_t pick, const Msg & m)
   return out;
 }
 
-std::vector<std::vector<std::uint8_t> > seeds()
+auto seeds() -> std::vector<std::vector<std::uint8_t> >
 {
   sensor_msgs::msg::Image img;
   img.header.frame_id = "cam";
@@ -148,7 +150,7 @@ std::vector<std::vector<std::uint8_t> > seeds()
     frame<nav_msgs::flux_msg::Odometry>(8, odom)};
 }
 
-std::uint64_t next(std::uint64_t & s)
+auto next(std::uint64_t & s) -> std::uint64_t
 {
   s ^= s << 13;
   s ^= s >> 7;
@@ -165,7 +167,9 @@ TEST(FuzzViews, WrittenFramesReadAndDamagedOnesStayInBounds)
       std::ofstream(std::string(dir) + "/" + std::to_string(good[0]), std::ios::binary)
         << std::string(good.begin(), good.end());
     }
-    for (std::size_t n = 1; n < good.size(); ++n) replay(good.data(), n);
+    for (std::size_t n = 1; n < good.size(); ++n) {
+      replay(good.data(), n);
+    }
     for (int round = 0; round < 2000; ++round) {
       std::vector<std::uint8_t> bad = good;
       for (int flips = 1 + static_cast<int>(next(seed) % 4); flips > 0; --flips) {

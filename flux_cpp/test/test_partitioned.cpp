@@ -28,23 +28,25 @@ using namespace std::chrono_literals;
 constexpr std::uint32_t kSlot = 4096;
 constexpr std::uint32_t kSlots = 4;
 
-std::string topic(const char * name)
+auto topic(const char * name) -> std::string
 {
   return "/p" + std::to_string(getpid()) + "_" + name;
 }
 
-std::size_t threads()
+auto threads() -> std::size_t
 {
   const std::filesystem::directory_iterator tasks("/proc/self/task");
   return static_cast<std::size_t>(std::distance(begin(tasks), end(tasks)));
 }
 
 template <class P>
-bool eventually(P done, std::chrono::milliseconds limit = 3000ms)
+auto eventually(P done, std::chrono::milliseconds limit = 3000ms) -> bool
 {
   const auto end = std::chrono::steady_clock::now() + limit;
   while (!done()) {
-    if (std::chrono::steady_clock::now() > end) return false;
+    if (std::chrono::steady_clock::now() > end) {
+      return false;
+    }
     std::this_thread::sleep_for(1ms);
   }
   return true;
@@ -55,7 +57,9 @@ class Partitioned : public ::testing::Test
 protected:
   static void SetUpTestSuite()
   {
-    if (!rclcpp::ok()) rclcpp::init(0, nullptr);
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
   }
 
   void SetUp() override
@@ -65,7 +69,7 @@ protected:
     b_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
   }
 
-  flux::Publisher pub(const char * name)
+  auto pub(const char * name) -> flux::Publisher
   {
     return flux::Publisher(*node_, topic(name), flux::kNoSchema, kSlot, kSlots);
   }
@@ -85,11 +89,11 @@ protected:
     {
     }
     Spinning(const Spinning &) = delete;
-    Spinning & operator=(const Spinning &) = delete;
+    auto operator=(const Spinning &) -> Spinning & = delete;
     Spinning(Spinning &&) = delete;
-    Spinning & operator=(Spinning &&) = delete;
+    auto operator=(Spinning &&) -> Spinning & = delete;
     ~Spinning() { stop(); }
-    std::string stop()
+    auto stop() -> std::string
     {
       if (t_.joinable()) {
         ex_.cancel();
@@ -118,7 +122,9 @@ TEST_F(Partitioned, ABlockedGroupDoesNotStallAnother)
   std::atomic<int> b_got{0};
   flux::Subscription sa(*node_, topic("blocka"), flux::kNoSchema, 4, [&](const flux::FrameView &) {
     ++a_in;
-    while (!release) std::this_thread::sleep_for(1ms);
+    while (!release) {
+      std::this_thread::sleep_for(1ms);
+    }
   });
   flux::Subscription sb(
     *node_, topic("blockb"), flux::kNoSchema, 4, [&](const flux::FrameView &) { ++b_got; });
@@ -258,7 +264,7 @@ TEST_F(Partitioned, CancelTakesNoLockSpinMayHold)
   struct CancelsWhileAdded
   {
     flux::PartitionedExecutor * ex;
-    rclcpp::SubscriptionBase::SharedPtr getSubscriber()
+    auto getSubscriber() -> rclcpp::SubscriptionBase::SharedPtr
     {
       ex->cancel();
       return nullptr;
@@ -324,11 +330,15 @@ TEST_F(Partitioned, AHookForEveryThreadGetsItsNodeAndGroup)
     const std::lock_guard<std::mutex> lk(m);
     EXPECT_EQ(node, node_->get_node_base_interface());
     hooked.insert(g.get());
-    if (g == group) group_thread = std::this_thread::get_id();
+    if (g == group) {
+      group_thread = std::this_thread::get_id();
+    }
   });
   ex.on_thread_start(group, [&] {
     const std::lock_guard<std::mutex> lk(m);
-    if (hooked.count(group.get()) != 0) specific_after = std::this_thread::get_id();
+    if (hooked.count(group.get()) != 0) {
+      specific_after = std::this_thread::get_id();
+    }
   });
   EXPECT_THROW(ex.on_thread_start([](const auto &, const auto &) {}), std::invalid_argument);
   Spinning spin(ex);

@@ -20,17 +20,17 @@ public:
   {
   public:
     // pkg/msg/Name, as rclcpp names a type.
-    std::string ros_type() const { return flux_schema_ros_type(s_); }
+    [[nodiscard]] auto ros_type() const -> std::string { return flux_schema_ros_type(s_); }
     // A frame of this type as the CDR bytes rmw publishes for the ROS message. Throws Error
     // (FLUX_MISMATCH) for a frame that does not match the schema.
-    std::size_t cdr_size(const void * data, std::size_t size) const
+    auto cdr_size(const void * data, std::size_t size) const -> std::size_t
     {
       std::size_t n = 0;
       detail::check(flux_schema_cdr_size(s_, static_cast<const std::uint8_t *>(data), size, &n));
       return n;
     }
-    std::size_t write_cdr(
-      const void * data, std::size_t size, std::uint8_t * out, std::size_t cap) const
+    auto write_cdr(const void * data, std::size_t size, std::uint8_t * out, std::size_t cap) const
+      -> std::size_t
     {
       std::size_t n = 0;
       detail::check(
@@ -47,19 +47,19 @@ public:
   // A .msg that does not parse is left out; throws Error only when a directory cannot be read.
   Schemas() : s_(load()) {}
 
-  std::size_t size() const noexcept { return flux_schemas_size(s_.get()); }
-  bool contains(std::uint64_t fingerprint) const noexcept
+  [[nodiscard]] auto size() const noexcept -> std::size_t { return flux_schemas_size(s_.get()); }
+  [[nodiscard]] auto contains(std::uint64_t fingerprint) const noexcept -> bool
   {
     return flux_schemas_find(s_.get(), fingerprint) != nullptr;
   }
   // Requires contains(fingerprint). Valid while this Schemas lives.
-  Type at(std::uint64_t fingerprint) const noexcept
+  [[nodiscard]] auto at(std::uint64_t fingerprint) const noexcept -> Type
   {
     return Type(flux_schemas_find(s_.get(), fingerprint));
   }
 
 private:
-  static flux_schemas * load()
+  static auto load() -> flux_schemas *
   {
     detail::require_abi();
     flux_schemas * s = nullptr;

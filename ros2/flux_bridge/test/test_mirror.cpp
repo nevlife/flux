@@ -28,7 +28,7 @@ using Imu = sensor_msgs::flux_msg::Imu;
 constexpr std::uint32_t kSlot = 4096;
 constexpr std::uint32_t kSlots = 4;
 
-std::string topic(const char * name)
+auto topic(const char * name) -> std::string
 {
   return "/m" + std::to_string(getpid()) + "_" + name;
 }
@@ -63,7 +63,9 @@ TEST_F(Mirror, AFrameReachesARosSubscriber)
   for (;;) {
     {
       const std::lock_guard<std::mutex> lock(m);
-      if (!got.empty() || std::chrono::steady_clock::now() > end) break;
+      if (!got.empty() || std::chrono::steady_clock::now() > end) {
+        break;
+      }
     }
     Imu::Builder b = Imu::build__(pub);
     sensor_msgs::flux_msg::msg_to_frame(msg, b);
@@ -95,21 +97,25 @@ TEST_F(Mirror, AMovedPublisherKeepsItsMirror)
   EXPECT_EQ(node_->count_publishers(moved.topic_name()), 1U);
 }
 
-std::size_t threads()
+auto threads() -> std::size_t
 {
   std::size_t n = 0;
   DIR * d = opendir("/proc/self/task");
-  while (const dirent * e = readdir(d)) n += e->d_name[0] != '.';
+  while (const dirent * e = readdir(d)) {
+    n += e->d_name[0] != '.';
+  }
   closedir(d);
   return n;
 }
 
 template <class P>
-bool eventually(P done, std::chrono::milliseconds limit = 2000ms)
+auto eventually(P done, std::chrono::milliseconds limit = 2000ms) -> bool
 {
   const auto end = std::chrono::steady_clock::now() + limit;
   while (!done()) {
-    if (std::chrono::steady_clock::now() > end) return false;
+    if (std::chrono::steady_clock::now() > end) {
+      return false;
+    }
     std::this_thread::sleep_for(5ms);
   }
   return true;
@@ -142,7 +148,9 @@ TEST_F(Mirror, AnUnwatchedMirrorHoldsNoReader)
                                 pub.topic_name(), std::to_string(Imu::kFingerprint)};
   std::vector<char *> argv;
   argv.reserve(args.size() + 1);
-  for (std::string & a : args) argv.push_back(a.data());
+  for (std::string & a : args) {
+    argv.push_back(a.data());
+  }
   argv.push_back(nullptr);
   pid_t pid = 0;
   ASSERT_EQ(posix_spawnp(&pid, "python3", nullptr, nullptr, argv.data(), environ), 0);
@@ -153,7 +161,9 @@ TEST_F(Mirror, AnUnwatchedMirrorHoldsNoReader)
 
 TEST_F(Mirror, ADeviceBackedPublisherIsRefused)
 {
-  if (flux::gpu::probe().route == flux::gpu::Route::None) GTEST_SKIP() << "no GPU route";
+  if (flux::gpu::probe().route == flux::gpu::Route::None) {
+    GTEST_SKIP() << "no GPU route";
+  }
   flux::Publisher pub(*node_, topic("cuda"), Imu::kFingerprint, kSlot, kSlots, flux::Device::Cuda);
   try {
     pub.mirror_to_ros();

@@ -19,9 +19,13 @@ static int32_t attach(void * ctx)
 static int32_t deliver_one(void * ctx)
 {
   source_ctx * s = ctx;
-  if (s->fail) return -5;
+  if (s->fail) {
+    return -5;
+  }
   flux_view v = {0};
-  if (!flux_channel_take(s->ch, &v)) return 0;
+  if (!flux_channel_take(s->ch, &v)) {
+    return 0;
+  }
   flux_view_release(&v);
   s->delivered++;
   return 1;
@@ -90,7 +94,9 @@ static void a_failed_add_drops_the_source(void)
   CHECK(flux_executor_add(ex, bad, 0) == FLUX_INVALID_ARGUMENT);
   CHECK(s.dropped == 1);
   int added = 0;
-  while (flux_executor_add(ex, source(&s), 0) == FLUX_OK) added++;
+  while (flux_executor_add(ex, source(&s), 0) == FLUX_OK) {
+    added++;
+  }
   CHECK(s.dropped == 2);
   flux_executor_free(ex);
   CHECK(s.dropped == 2 + added);
@@ -119,7 +125,9 @@ static atomic_bool stopped;
 static int32_t run_until_stopped(void * ctx)
 {
   (void)ctx;
-  while (!atomic_load(&stopped)) sched_yield();
+  while (!atomic_load(&stopped)) {
+    sched_yield();
+  }
   return 0;
 }
 
@@ -149,7 +157,9 @@ static void a_partitioned_stop_reaches_an_external_loop(void)
   flux_handle * h = flux_partitioned_handle(px);
   pthread_t t;
   CHECK(pthread_create(&t, NULL, spin, px) == 0);
-  while (!flux_handle_is_spinning(h)) sched_yield();
+  while (!flux_handle_is_spinning(h)) {
+    sched_yield();
+  }
   flux_handle_stop(h);
   void * r = NULL;
   pthread_join(t, &r);

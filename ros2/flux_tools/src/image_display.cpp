@@ -42,7 +42,7 @@ using rviz_common::properties::StatusProperty;
 
 // Only the encodings Ogre uploads as-is. 16-bit and float go up as-is too and are scaled to a
 // range in the fragment shader; YUV is NV12 only.
-Ogre::PixelFormat pixel_format(std::string_view encoding)
+auto pixel_format(std::string_view encoding) -> Ogre::PixelFormat
 {
   if (encoding == "rgb8") {
     return Ogre::PF_BYTE_RGB;
@@ -68,7 +68,7 @@ Ogre::PixelFormat pixel_format(std::string_view encoding)
   return Ogre::PF_UNKNOWN;
 }
 
-bool is_range_format(Ogre::PixelFormat format)
+auto is_range_format(Ogre::PixelFormat format) -> bool
 {
   return format == Ogre::PF_L16 || format == Ogre::PF_FLOAT32_R;
 }
@@ -76,8 +76,8 @@ bool is_range_format(Ogre::PixelFormat format)
 // One read pass over the slot, no copy. NaN and inf (32FC1 no-return pixels) are skipped, as
 // are zeros in 16UC1 (the no-return value of the depth cameras that publish it).
 template <typename T>
-std::pair<float, float> scan_range(
-  const std::uint8_t * data, std::uint32_t w, std::uint32_t h, std::uint32_t step)
+auto scan_range(const std::uint8_t * data, std::uint32_t w, std::uint32_t h, std::uint32_t step)
+  -> std::pair<float, float>
 {
   float lo = std::numeric_limits<float>::infinity();
   float hi = -std::numeric_limits<float>::infinity();
@@ -100,7 +100,7 @@ std::pair<float, float> scan_range(
   return {lo, hi};
 }
 
-int next_id()
+auto next_id() -> int
 {
   static int count = 0;
   return count++;
@@ -270,7 +270,9 @@ void ImageDisplay::setupNv12Material(const std::string & id)
 
 void ImageDisplay::ensureNv12Textures(std::uint32_t width, std::uint32_t height)
 {
-  if (y_texture_ && width == width_ && height == height_ && nv12_active_) return;
+  if (y_texture_ && width == width_ && height == height_ && nv12_active_) {
+    return;
+  }
   auto & tm = Ogre::TextureManager::getSingleton();
   if (y_texture_) {
     tm.remove(y_texture_);

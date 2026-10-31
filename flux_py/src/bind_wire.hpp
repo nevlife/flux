@@ -29,12 +29,12 @@ struct TensorFields
 };
 
 // WireError when they do not fit the frame.
-TensorFields read_tensor(const void * frame, std::size_t size, const TensorAt & at);
+auto read_tensor(const void * frame, std::size_t size, const TensorAt & at) -> TensorFields;
 
 // A DLPack capsule of `t` with its first element at `addr`, holding `owner`.
-nanobind::object tensor_dlpack(
+auto tensor_dlpack(
   const TensorFields & t, std::uintptr_t addr, nanobind::handle owner, int device_type,
-  int device_id);
+  int device_id) -> nanobind::object;
 
 }  // namespace flux_py
 

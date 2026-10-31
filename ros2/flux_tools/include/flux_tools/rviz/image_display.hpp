@@ -37,9 +37,9 @@ class ImageDisplay : public ChannelDisplay
 public:
   ImageDisplay();
   ImageDisplay(const ImageDisplay &) = delete;
-  ImageDisplay & operator=(const ImageDisplay &) = delete;
+  auto operator=(const ImageDisplay &) -> ImageDisplay & = delete;
   ImageDisplay(ImageDisplay &&) = delete;
-  ImageDisplay & operator=(ImageDisplay &&) = delete;
+  auto operator=(ImageDisplay &&) -> ImageDisplay & = delete;
   ~ImageDisplay() override;
 
   void onInitialize() override;

@@ -21,7 +21,9 @@ public:
   {
     const flux_manifest_entry e{signpost.c_str(), key.c_str(), label.c_str(), publisher};
     flux_announcement * a = nullptr;
-    if (flux_announce(&e, &a) == FLUX_OK) a_.reset(a);
+    if (flux_announce(&e, &a) == FLUX_OK) {
+      a_.reset(a);
+    }
   }
 
 private:

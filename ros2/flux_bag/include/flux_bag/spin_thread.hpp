@@ -15,9 +15,9 @@ class SpinThread
 public:
   explicit SpinThread(rclcpp::Executor & exec) : exec_(exec), thread_([&exec] { exec.spin(); }) {}
   SpinThread(const SpinThread &) = delete;
-  SpinThread & operator=(const SpinThread &) = delete;
+  auto operator=(const SpinThread &) -> SpinThread & = delete;
   SpinThread(SpinThread &&) = delete;
-  SpinThread & operator=(SpinThread &&) = delete;
+  auto operator=(SpinThread &&) -> SpinThread & = delete;
   ~SpinThread()
   {
     exec_.cancel();

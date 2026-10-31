@@ -24,19 +24,21 @@ struct RawMeta
 
   static constexpr std::size_t kMaxSize = 4 + 4 + 1 + 1 + 8 * flux::kMaxDims;
 
-  std::size_t size() const { return 10 + 8 * static_cast<std::size_t>(ndim); }
+  [[nodiscard]] auto size() const -> std::size_t { return 10 + 8 * static_cast<std::size_t>(ndim); }
 
   // What dtype and shape say the frame holds; UINT64_MAX when the product overflows.
-  std::uint64_t nbytes() const
+  [[nodiscard]] auto nbytes() const -> std::uint64_t
   {
     std::uint64_t n = flux::dtype_size(dtype);
     for (std::size_t i = 0; i < ndim; ++i) {
-      if (__builtin_mul_overflow(n, shape[i], &n)) return UINT64_MAX;
+      if (__builtin_mul_overflow(n, shape[i], &n)) {
+        return UINT64_MAX;
+      }
     }
     return n;
   }
 
-  std::size_t write(std::uint8_t * out) const
+  auto write(std::uint8_t * out) const -> std::size_t
   {
     std::memcpy(out, &slot_size, 4);
     std::memcpy(out + 4, &slot_count, 4);
@@ -46,7 +48,7 @@ struct RawMeta
     return size();
   }
 
-  bool read(const void * in, std::size_t n)
+  auto read(const void * in, std::size_t n) -> bool
   {
     const auto * p = static_cast<const std::uint8_t *>(in);
     if (n < 10 || p[9] > flux::kMaxDims || n != 10 + 8 * static_cast<std::size_t>(p[9])) {

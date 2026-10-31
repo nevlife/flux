@@ -12,9 +12,10 @@ namespace flux_tools
 // Ogre counts a row pitch in pixels, so rows whose step is not a whole number of pixels are packed
 // into `scratch` first. Returns the rows to upload and sets `pitch`, in pixels. The caller has
 // checked that `height` rows of `step` bytes are there and that `row_bytes` <= `step`.
-inline const std::uint8_t * whole_pixel_rows(
+inline auto whole_pixel_rows(
   const std::uint8_t * rows, std::size_t row_bytes, std::size_t height, std::size_t step,
-  std::size_t pixel_bytes, std::vector<std::uint8_t> & scratch, std::size_t & pitch)
+  std::size_t pixel_bytes, std::vector<std::uint8_t> & scratch,
+  std::size_t & pitch) -> const std::uint8_t *
 {
   if (step % pixel_bytes == 0) {
     pitch = step / pixel_bytes;

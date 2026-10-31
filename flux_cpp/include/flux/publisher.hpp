@@ -43,51 +43,52 @@ public:
     std::uint32_t slot_size, std::uint32_t slot_count, const gpu::Stream & stream,
     MemoryPolicy mem = {}, std::uint32_t max_subscribers = kDefaultMaxSubscribers);
   Publisher(const Publisher &) = delete;
-  Publisher & operator=(const Publisher &) = delete;
+  auto operator=(const Publisher &) -> Publisher & = delete;
   Publisher(Publisher &&) noexcept;
-  Publisher & operator=(Publisher &&) noexcept;
+  auto operator=(Publisher &&) noexcept -> Publisher &;
   ~Publisher();
 
   // Also publishes each frame as its ROS 2 message on this topic while a ROS 2 subscriber wants it.
   void mirror_to_ros();
 
   // Backpressure while every slot is borrowed: the frame is dropped.
-  Published publish(const void * data, std::size_t nbytes) noexcept
+  auto publish(const void * data, std::size_t nbytes) noexcept -> Published
   {
     return ch_.publish(data, nbytes);
   }
-  Published publish(
-    const void * data, DType dtype, const std::uint64_t * shape, std::size_t ndim) noexcept
+  auto publish(
+    const void * data, DType dtype, const std::uint64_t * shape,
+    std::size_t ndim) noexcept -> Published
   {
     return ch_.publish(data, dtype, shape, ndim);
   }
-  Published publish(
-    const void * data, DType dtype, std::initializer_list<std::uint64_t> shape) noexcept
+  auto publish(const void * data, DType dtype, std::initializer_list<std::uint64_t> shape) noexcept
+    -> Published
   {
     return ch_.publish(data, dtype, shape);
   }
   // The slot is out of the ring until the loan is committed or destroyed.
-  WriteSlot loan() noexcept { return ch_.loan(); }
-  WriteSlot loan(DType dtype, const std::uint64_t * shape, std::size_t ndim) noexcept
+  auto loan() noexcept -> WriteSlot { return ch_.loan(); }
+  auto loan(DType dtype, const std::uint64_t * shape, std::size_t ndim) noexcept -> WriteSlot
   {
     return ch_.loan(dtype, shape, ndim);
   }
-  WriteSlot loan(DType dtype, std::initializer_list<std::uint64_t> shape) noexcept
+  auto loan(DType dtype, std::initializer_list<std::uint64_t> shape) noexcept -> WriteSlot
   {
     return ch_.loan(dtype, shape);
   }
 
-  std::uint64_t dropped() const noexcept { return ch_.dropped(); }
+  [[nodiscard]] auto dropped() const noexcept -> std::uint64_t { return ch_.dropped(); }
   // Commits that could not wait for the stream, each holding its slot; see set_fence_timeout.
-  std::uint64_t fence_failed() const noexcept { return ch_.fence_failed(); }
-  gpu::FenceWait fence_wait() const noexcept { return ch_.fence_wait(); }
+  [[nodiscard]] auto fence_failed() const noexcept -> std::uint64_t { return ch_.fence_failed(); }
+  [[nodiscard]] auto fence_wait() const noexcept -> gpu::FenceWait { return ch_.fence_wait(); }
   // Zero, the default, is no bound. A commit that runs out is FenceFailed until its work is done.
   void set_fence_timeout(std::chrono::nanoseconds t) const noexcept { ch_.set_fence_timeout(t); }
   // The payload is device memory: publish() copies host bytes to it and a loan's data() is null.
-  bool device_backed() const noexcept { return ch_.device_backed(); }
-  std::uint32_t slot_size() const noexcept { return ch_.slot_size(); }
-  const std::string & topic_name() const noexcept { return topic_; }
-  const std::string & signpost_name() const noexcept { return signpost_; }
+  [[nodiscard]] auto device_backed() const noexcept -> bool { return ch_.device_backed(); }
+  [[nodiscard]] auto slot_size() const noexcept -> std::uint32_t { return ch_.slot_size(); }
+  [[nodiscard]] auto topic_name() const noexcept -> const std::string & { return topic_; }
+  [[nodiscard]] auto signpost_name() const noexcept -> const std::string & { return signpost_; }
 
 private:
   class RosMirror;

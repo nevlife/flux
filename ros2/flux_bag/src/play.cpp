@@ -55,13 +55,15 @@ constexpr const char * kUsage =
   "Plays a bag. flux_msgs/FluxFrame topics go straight from the file back into the flux\n"
   "channel they were recorded from; every other topic is played by the stock player.\n";
 
-Options parse(const std::vector<std::string> & args)
+auto parse(const std::vector<std::string> & args) -> Options
 {
   Options o;
   for (std::size_t i = 1; i < args.size(); ++i) {
     const std::string & a = args[i];
     auto value = [&]() -> const std::string & {
-      if (i + 1 >= args.size()) throw std::invalid_argument(a + " needs a value");
+      if (i + 1 >= args.size()) {
+        throw std::invalid_argument(a + " needs a value");
+      }
       return args[++i];
     };
     if (a == "-r" || a == "--rate") {
@@ -74,14 +76,18 @@ Options parse(const std::vector<std::string> & args)
       throw std::invalid_argument("one bag only");
     }
   }
-  if (o.storage.uri.empty()) throw std::invalid_argument("BAG is required");
-  if (!(o.play.rate > 0)) throw std::invalid_argument("argument -r: Value must be positive");
+  if (o.storage.uri.empty()) {
+    throw std::invalid_argument("BAG is required");
+  }
+  if (!(o.play.rate > 0)) {
+    throw std::invalid_argument("argument -r: Value must be positive");
+  }
   return o;
 }
 
-bool decode(
+auto decode(
   const rosbag2_storage::SerializedBagMessage & msg, flux_bag::FluxFrameFields & f,
-  flux_bag::JpegMeta & meta)
+  flux_bag::JpegMeta & meta) -> bool
 {
   const rcutils_uint8_array_t & raw = *msg.serialized_data;
   return flux_bag::read_frame(raw.buffer, raw.buffer_length, f, meta);
@@ -116,13 +122,19 @@ public:
       rosbag2_storage::StorageFilter only;
       only.topics = {topic};
       first.set_filter(only);
-      if (!first.has_next()) continue;
+      if (!first.has_next()) {
+        continue;
+      }
       const auto msg = first.read_next();
       flux_bag::FluxFrameFields f;
       flux_bag::JpegMeta meta;
-      if (decode(*msg, f, meta)) publisher_for(f, meta.raw);
+      if (decode(*msg, f, meta)) {
+        publisher_for(f, meta.raw);
+      }
     }
-    if (!pubs_.empty()) std::this_thread::sleep_for(kAttachWait);
+    if (!pubs_.empty()) {
+      std::this_thread::sleep_for(kAttachWait);
+    }
     reader_.open(storage);
     rosbag2_storage::StorageFilter filter;
     filter.topics = topics;
@@ -131,9 +143,9 @@ public:
   }
 
   FluxPlayer(const FluxPlayer &) = delete;
-  FluxPlayer & operator=(const FluxPlayer &) = delete;
+  auto operator=(const FluxPlayer &) -> FluxPlayer & = delete;
   FluxPlayer(FluxPlayer &&) = delete;
-  FluxPlayer & operator=(FluxPlayer &&) = delete;
+  auto operator=(FluxPlayer &&) -> FluxPlayer & = delete;
   ~FluxPlayer() { stop(); }
 
   // The clock starts paused at the bag's start; resume() sets it going.
@@ -150,18 +162,22 @@ public:
     }
     wake_.notify_all();
     room_.notify_all();
-    if (loader_.joinable()) loader_.join();
-    if (sender_.joinable()) sender_.join();
+    if (loader_.joinable()) {
+      loader_.join();
+    }
+    if (sender_.joinable()) {
+      sender_.join();
+    }
   }
 
-  bool finished() const
+  auto finished() const -> bool
   {
     const std::lock_guard<std::mutex> lock(mutex_);
     return finished_;
   }
 
   // What ended a thread early, rethrown on the main thread.
-  std::exception_ptr error() const
+  auto error() const -> std::exception_ptr
   {
     const std::lock_guard<std::mutex> lock(mutex_);
     return error_;
@@ -186,10 +202,12 @@ public:
 
   // While paused, sends the next frame not yet due and moves the clock to it. False when there is
   // none.
-  bool play_next()
+  auto play_next() -> bool
   {
     std::unique_lock<std::mutex> lock(mutex_);
-    if (!clock_.is_paused() || finished_) return false;
+    if (!clock_.is_paused() || finished_) {
+      return false;
+    }
     const std::uint64_t before = steps_;
     step_ = true;
     wake_.notify_all();
@@ -220,7 +238,9 @@ private:
   void fail(std::exception_ptr e)
   {
     const std::lock_guard<std::mutex> lock(mutex_);
-    if (!error_) error_ = std::move(e);
+    if (!error_) {
+      error_ = std::move(e);
+    }
     wake_.notify_all();
   }
 
@@ -231,7 +251,9 @@ private:
         MessagePtr msg = reader_.read_next();
         std::unique_lock<std::mutex> lock(mutex_);
         room_.wait(lock, [this] { return stop_ || queued_bytes_ < kReadAheadBytes; });
-        if (stop_) return;
+        if (stop_) {
+          return;
+        }
         queued_bytes_ += msg->serialized_data->buffer_length;
         queue_.push_back(std::move(msg));
         wake_.notify_all();
@@ -266,11 +288,13 @@ private:
 
   // The next frame once the clock reaches it or play_next asks for it; null at the end of the
   // bag, on stop and after an error.
-  MessagePtr next_due(bool & stepped)
+  auto next_due(bool & stepped) -> MessagePtr
   {
     std::unique_lock<std::mutex> lock(mutex_);
     for (;;) {
-      if (stop_ || error_ || (queue_.empty() && loaded_)) return nullptr;
+      if (stop_ || error_ || (queue_.empty() && loaded_)) {
+        return nullptr;
+      }
       if (queue_.empty()) {
         wake_.wait(lock);
         continue;
@@ -299,13 +323,16 @@ private:
     }
   }
 
-  flux::Publisher * publisher_for(
-    const flux_bag::FluxFrameFields & f, const flux_bag::RawMeta & meta)
+  auto publisher_for(const flux_bag::FluxFrameFields & f, const flux_bag::RawMeta & meta)
+    -> flux::Publisher *
   {
     Channel & c = pubs_[Key(f.flux_topic, f.fingerprint)];
-    if (c.ignored) return nullptr;
-    if (c.pub && c.slot_size == meta.slot_size && c.slot_count == meta.slot_count)
+    if (c.ignored) {
+      return nullptr;
+    }
+    if (c.pub && c.slot_size == meta.slot_size && c.slot_count == meta.slot_count) {
       return c.pub.get();
+    }
     c.pub.reset();  // one publisher per channel: the old one goes first
     try {
       c.pub = std::make_unique<flux::Publisher>(
@@ -342,9 +369,13 @@ private:
       return;
     }
     flux::Publisher * pub = publisher_for(f, meta.raw);
-    if (pub == nullptr) return;
+    if (pub == nullptr) {
+      return;
+    }
     flux::WriteSlot w = pub->loan(meta.raw.dtype, meta.raw.shape.data(), meta.raw.ndim);
-    if (!w) return;
+    if (!w) {
+      return;
+    }
     if (!jpeg) {
       std::memcpy(w.data(), f.data, f.data_size);
     } else if (!flux_bag::unpack_jpeg(f, meta, static_cast<std::uint8_t *>(w.data()))) {
@@ -409,7 +440,7 @@ public:
       [this](auto, auto) { set_rate(get_rate() - 0.1); }, o.decrease_rate_key);
   }
 
-  FluxPlayer & flux() { return flux_; }
+  auto flux() -> FluxPlayer & { return flux_; }
 
   void pause() override
   {
@@ -423,25 +454,33 @@ public:
     flux_.resume();
   }
 
-  bool set_rate(double rate) override
+  auto set_rate(double rate) -> bool override
   {
-    if (!rosbag2_transport::Player::set_rate(rate)) return false;
+    if (!rosbag2_transport::Player::set_rate(rate)) {
+      return false;
+    }
     flux_.set_rate(rate);
     return true;
   }
 
-  bool play_next() override
+  auto play_next() -> bool override
   {
-    if (!rosbag2_transport::Player::play_next()) return flux_.play_next();
+    if (!rosbag2_transport::Player::play_next()) {
+      return flux_.play_next();
+    }
     flux_.jump(played_);
     return true;
   }
 
-  std::size_t burst(const std::size_t num_messages) override
+  auto burst(const std::size_t num_messages) -> std::size_t override
   {
     std::size_t played = rosbag2_transport::Player::burst(num_messages);
-    if (played > 0) flux_.jump(played_);
-    while ((num_messages == 0 || played < num_messages) && flux_.play_next()) ++played;
+    if (played > 0) {
+      flux_.jump(played_);
+    }
+    while ((num_messages == 0 || played < num_messages) && flux_.play_next()) {
+      ++played;
+    }
     return played;
   }
 
@@ -461,7 +500,9 @@ void run(Options & opt)
     rosbag2_cpp::Info().read_metadata(opt.storage.uri, opt.storage.storage_id);
   std::vector<std::string> flux_topics;
   for (const auto & t : metadata.topics_with_message_count) {
-    if (t.topic_metadata.type == kFrameType) flux_topics.push_back(t.topic_metadata.name);
+    if (t.topic_metadata.type == kFrameType) {
+      flux_topics.push_back(t.topic_metadata.name);
+    }
   }
   opt.play.exclude_topics_to_filter = flux_topics;
   opt.play.disable_keyboard_controls = true;  // BagPlayer::start adds them
@@ -486,12 +527,14 @@ void run(Options & opt)
   }
   flux.stop();
   player->stop();
-  if (const std::exception_ptr e = flux.error()) std::rethrow_exception(e);
+  if (const std::exception_ptr e = flux.error()) {
+    std::rethrow_exception(e);
+  }
 }
 
 }  // namespace
 
-int main(int argc, char ** argv)
+auto main(int argc, char ** argv) -> int
 {
   rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
   std::signal(SIGINT, [](int) { g_stop = true; });

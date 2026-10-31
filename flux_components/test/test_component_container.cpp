@@ -37,17 +37,19 @@ using composition_interfaces::srv::LoadNode;
 using composition_interfaces::srv::UnloadNode;
 
 template <class P>
-bool eventually(P done, std::chrono::milliseconds limit = 5000ms)
+auto eventually(P done, std::chrono::milliseconds limit = 5000ms) -> bool
 {
   const auto end = std::chrono::steady_clock::now() + limit;
   while (!done()) {
-    if (std::chrono::steady_clock::now() > end) return false;
+    if (std::chrono::steady_clock::now() > end) {
+      return false;
+    }
     std::this_thread::sleep_for(1ms);
   }
   return true;
 }
 
-bool alive(pid_t tid)
+auto alive(pid_t tid) -> bool
 {
   return std::filesystem::exists("/proc/self/task/" + std::to_string(tid));
 }
@@ -59,11 +61,13 @@ class Manager : public flux::ComponentManager
 public:
   explicit Manager(const std::string & name) : flux::ComponentManager(name) {}
 
-  std::vector<ComponentResource> get_component_resources(
-    const std::string & package, const std::string &) const override
+  auto get_component_resources(const std::string & package, const std::string &) const
+    -> std::vector<ComponentResource> override
   {
     std::vector<ComponentResource> found;
-    if (package != "flux_components_test") return found;
+    if (package != "flux_components_test") {
+      return found;
+    }
     for (const char * name : {"Plain", "FluxSub", "Late", "Reentrant", "Clocked"}) {
       found.emplace_back(std::string("flux_components_test::") + name, FLUX_TEST_COMPONENTS);
     }
@@ -87,7 +91,9 @@ class Container : public ::testing::Test
 protected:
   static void SetUpTestSuite()
   {
-    if (!rclcpp::ok()) rclcpp::init(0, nullptr);
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
   }
 
   void SetUp() override
@@ -119,9 +125,9 @@ protected:
   }
 
   template <class Srv>
-  typename Srv::Response::SharedPtr call(
+  auto call(
     const typename rclcpp::Client<Srv>::SharedPtr & client,
-    const typename Srv::Request::SharedPtr & request)
+    const typename Srv::Request::SharedPtr & request) -> typename Srv::Response::SharedPtr
   {
     auto future = client->async_send_request(request);
     rclcpp::executors::SingleThreadedExecutor ex;
@@ -130,26 +136,30 @@ protected:
     return future.get();
   }
 
-  LoadNode::Response::SharedPtr load(
+  auto load(
     const std::string & plugin, const std::string & node,
-    const std::vector<rclcpp::Parameter> & parameters = {})
+    const std::vector<rclcpp::Parameter> & parameters = {}) -> LoadNode::Response::SharedPtr
   {
     auto request = std::make_shared<LoadNode::Request>();
     request->package_name = "flux_components_test";
     request->plugin_name = "flux_components_test::" + plugin;
     request->node_name = node + tag_;
-    for (const auto & p : parameters) request->parameters.push_back(p.to_parameter_msg());
+    for (const auto & p : parameters) {
+      request->parameters.push_back(p.to_parameter_msg());
+    }
     return call<LoadNode>(load_, request);
   }
 
   // Records of the node loaded as `node` in this test.
-  std::vector<probe::Event> events(const std::string & node, const std::string & label) const
+  [[nodiscard]] auto events(const std::string & node, const std::string & label) const
+    -> std::vector<probe::Event>
   {
     return probe::events(node + tag_ + "/" + label);
   }
 
   // The hook ran on the thread of the group that recorded `label`, before its first callback.
-  pid_t hooked_thread(const std::string & node, const std::string & label) const
+  [[nodiscard]] auto hooked_thread(const std::string & node, const std::string & label) const
+    -> pid_t
   {
     const std::string what = node + "/" + label;
     const auto first = events(node, label).front();
@@ -187,7 +197,9 @@ TEST_F(Container, EachGroupOfAPlainComponentRunsOnItsOwnThread)
   EXPECT_EQ(tids.size(), 3u);
   EXPECT_EQ(tids.count(gettid()), 0u);
   for (const char * label : {"default", "a", "b"}) {
-    for (const auto & e : events("plain", label)) EXPECT_EQ(e.tid, events("plain", label)[0].tid);
+    for (const auto & e : events("plain", label)) {
+      EXPECT_EQ(e.tid, events("plain", label)[0].tid);
+    }
   }
 }
 
@@ -217,14 +229,18 @@ TEST_F(Container, UnloadEndsTheThreadsOfItsNodeBeforeItReturns)
   ASSERT_TRUE(eventually([&] {
     tids.clear();
     for (const auto & hook : probe::events("hook/unloaded" + tag_)) {
-      if (alive(hook.tid)) tids.push_back(hook.tid);
+      if (alive(hook.tid)) {
+        tids.push_back(hook.tid);
+      }
     }
     return tids.size() == 3;
   }));
   const std::size_t before = events("unloaded", "a").size();
 
   ASSERT_TRUE(call<UnloadNode>(unload_, request)->success);
-  for (const pid_t tid : tids) EXPECT_FALSE(alive(tid)) << tid;
+  for (const pid_t tid : tids) {
+    EXPECT_FALSE(alive(tid)) << tid;
+  }
   const std::size_t after = events("unloaded", "a").size();
   std::this_thread::sleep_for(100ms);
   EXPECT_EQ(events("unloaded", "a").size(), after);
@@ -276,7 +292,9 @@ TEST(ContainerProcess, IsNamedAfterItsNodeAndEndsOnSigint)
                                 "__node:=" + name, "--log-level", "warn"};
   std::vector<char *> argv;
   argv.reserve(args.size() + 1);
-  for (auto & a : args) argv.push_back(a.data());
+  for (auto & a : args) {
+    argv.push_back(a.data());
+  }
   argv.push_back(nullptr);
   pid_t pid = 0;
   ASSERT_EQ(posix_spawn(&pid, FLUX_CONTAINER, nullptr, nullptr, argv.data(), environ), 0);

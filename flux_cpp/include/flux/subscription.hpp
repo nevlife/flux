@@ -53,38 +53,44 @@ public:
     const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
     Callback cb, const gpu::Stream & stream, MemoryPolicy mem = {});
 
-  FrameView take() { return sub_.take(); }
+  auto take() -> FrameView { return sub_.take(); }
   // With no publisher yet it also waits for one. A negative timeout waits forever. Empty once the
   // node's context is shut down, as rclcpp::wait_for_message, and at once while max_borrow views
   // are held.
-  FrameView take_blocking(std::int64_t timeout_ns = -1);
+  auto take_blocking(std::int64_t timeout_ns = -1) -> FrameView;
 
   // Served by the executor serving `group` (null: default group), which it outlives. Not add()ed.
   void add_to_callback_group(
     const NodeRef & node, const std::shared_ptr<rclcpp::CallbackGroup> & group = nullptr,
     std::int32_t priority = 0);
 
-  bool has_callback() const noexcept { return static_cast<bool>(cb_); }
-  bool attached() const noexcept { return sub_.attached(); }
-  const std::string & topic_name() const noexcept { return topic_; }
-  const std::string & signpost_name() const noexcept { return sub_.signpost_name(); }
-  const QoS & qos() const noexcept { return sub_.qos(); }
-  std::uint64_t lost() const noexcept { return sub_.lost(); }
+  [[nodiscard]] auto has_callback() const noexcept -> bool { return static_cast<bool>(cb_); }
+  [[nodiscard]] auto attached() const noexcept -> bool { return sub_.attached(); }
+  [[nodiscard]] auto topic_name() const noexcept -> const std::string & { return topic_; }
+  [[nodiscard]] auto signpost_name() const noexcept -> const std::string &
+  {
+    return sub_.signpost_name();
+  }
+  [[nodiscard]] auto qos() const noexcept -> const QoS & { return sub_.qos(); }
+  [[nodiscard]] auto lost() const noexcept -> std::uint64_t { return sub_.lost(); }
   // Changes on every re-attach. lost() goes on counting across it.
-  std::uint32_t attach_generation() const noexcept { return sub_.attach_generation(); }
-  Refused refused() const noexcept { return sub_.refused(); }
+  [[nodiscard]] auto attach_generation() const noexcept -> std::uint32_t
+  {
+    return sub_.attach_generation();
+  }
+  [[nodiscard]] auto refused() const noexcept -> Refused { return sub_.refused(); }
   // Releases that could not wait for the stream, each holding its slot; as of the last take.
-  std::uint64_t fence_failed() const noexcept { return sub_.fence_failed(); }
-  gpu::FenceWait fence_wait() const noexcept { return sub_.fence_wait(); }
+  [[nodiscard]] auto fence_failed() const noexcept -> std::uint64_t { return sub_.fence_failed(); }
+  [[nodiscard]] auto fence_wait() const noexcept -> gpu::FenceWait { return sub_.fence_wait(); }
   // Bounds each release fence (zero: none); this and the release mode are kept across a re-attach.
   void set_fence_timeout(std::chrono::nanoseconds t) noexcept { sub_.set_fence_timeout(t); }
   void set_release_mode(gpu::ReleaseMode m) noexcept { sub_.set_release_mode(m); }
 
-  bool attach() override;
-  bool deliver_one() override;
-  const detail::Channel * channel() const override { return sub_.channel(); }
-  const detail::Watch * watch() const override { return sub_.watch(); }
-  const void * endpoint() const override { return this; }
+  auto attach() -> bool override;
+  auto deliver_one() -> bool override;
+  [[nodiscard]] auto channel() const -> const detail::Channel * override { return sub_.channel(); }
+  [[nodiscard]] auto watch() const -> const detail::Watch * override { return sub_.watch(); }
+  [[nodiscard]] auto endpoint() const -> const void * override { return this; }
 
 private:
   template <class Adapter>

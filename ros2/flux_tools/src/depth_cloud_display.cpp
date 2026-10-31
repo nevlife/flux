@@ -44,7 +44,7 @@ using rviz_common::properties::StatusProperty;
 // Far limit of the depth-to-color ramp when Max Range is 0.
 constexpr float kColorSpanMeters = 10.0f;
 
-int next_id()
+auto next_id() -> int
 {
   static int count = 0;
   return count++;
@@ -58,7 +58,7 @@ struct DepthFormat
   float to_meters = 0.0f;
 };
 
-DepthFormat depth_format(std::string_view encoding)
+auto depth_format(std::string_view encoding) -> DepthFormat
 {
   if (encoding == "16UC1" || encoding == "mono16") {
     return {Ogre::PF_L16, sizeof(std::uint16_t), 65.535f};
@@ -170,8 +170,8 @@ void DepthCloudDisplay::setupMaterial()
   params->setNamedConstant("extent", Ogre::Vector4::ZERO);
 }
 
-bool DepthCloudDisplay::ensureTexture(
-  std::uint32_t width, std::uint32_t height, Ogre::PixelFormat format)
+auto DepthCloudDisplay::ensureTexture(
+  std::uint32_t width, std::uint32_t height, Ogre::PixelFormat format) -> bool
 {
   if (texture_ && width == width_ && height == height_ && format == format_) {
     return true;
@@ -189,7 +189,7 @@ bool DepthCloudDisplay::ensureTexture(
   return ensureGrid(width, height);
 }
 
-bool DepthCloudDisplay::ensureGrid(std::uint32_t width, std::uint32_t height)
+auto DepthCloudDisplay::ensureGrid(std::uint32_t width, std::uint32_t height) -> bool
 {
   if (grid_ && width == width_ && height == height_) {
     return true;

@@ -33,16 +33,21 @@ struct FluxFrameFields
 class FluxFrameCdr
 {
 public:
-  static std::size_t size(const FluxFrameFields & f) { return encode(f, nullptr); }
+  static auto size(const FluxFrameFields & f) -> std::size_t { return encode(f, nullptr); }
 
   // `out` must hold size(f) bytes. Returns the bytes written.
-  static std::size_t write(const FluxFrameFields & f, std::uint8_t * out) { return encode(f, out); }
+  static auto write(const FluxFrameFields & f, std::uint8_t * out) -> std::size_t
+  {
+    return encode(f, out);
+  }
 
   // The inverse: the string and sequence fields of `f` point into `in`, which must outlive
   // them. False when `in` is not a well-formed little-endian FluxFrame.
-  static bool read(const std::uint8_t * in, std::size_t size, FluxFrameFields & f)
+  static auto read(const std::uint8_t * in, std::size_t size, FluxFrameFields & f) -> bool
   {
-    if (size < 4 || in[0] != 0x00 || in[1] != 0x01) return false;
+    if (size < 4 || in[0] != 0x00 || in[1] != 0x01) {
+      return false;
+    }
     Reader r{in + 4, size - 4};
     return r.scalar(f.sec) && r.scalar(f.nanosec) && r.string(f.frame_id) &&
            r.string(f.flux_topic) && r.scalar(f.fingerprint) && r.string(f.codec) &&
@@ -60,12 +65,16 @@ private:
     void align(std::size_t n)
     {
       const std::size_t padded = (pos + n - 1) / n * n;
-      if (out) std::memset(out + pos, 0, padded - pos);
+      if (out) {
+        std::memset(out + pos, 0, padded - pos);
+      }
       pos = padded;
     }
     void bytes(const void * src, std::size_t n)
     {
-      if (out && n) std::memcpy(out + pos, src, n);
+      if (out && n) {
+        std::memcpy(out + pos, src, n);
+      }
       pos += n;
     }
     template <typename T>
@@ -94,46 +103,56 @@ private:
     std::size_t size = 0;
     std::size_t pos = 0;
 
-    bool take(std::size_t n, const std::uint8_t *& at)
+    auto take(std::size_t n, const std::uint8_t *& at) -> bool
     {
-      if (size - pos < n) return false;
+      if (size - pos < n) {
+        return false;
+      }
       at = in + pos;
       pos += n;
       return true;
     }
     template <typename T>
-    bool scalar(T & v)
+    auto scalar(T & v) -> bool
     {
       pos = (pos + sizeof(T) - 1) / sizeof(T) * sizeof(T);
       const std::uint8_t * at = nullptr;
-      if (pos > size || !take(sizeof(T), at)) return false;
+      if (pos > size || !take(sizeof(T), at)) {
+        return false;
+      }
       std::memcpy(&v, at, sizeof(T));
       return true;
     }
-    bool string(std::string_view & s)
+    auto string(std::string_view & s) -> bool
     {
       std::uint32_t n = 0;
       const std::uint8_t * at = nullptr;
-      if (!scalar(n) || n == 0 || !take(n, at) || at[n - 1] != 0) return false;
+      if (!scalar(n) || n == 0 || !take(n, at) || at[n - 1] != 0) {
+        return false;
+      }
       s =
         std::string_view(reinterpret_cast<const char *>(at), n - 1);  // NOLINT(*-reinterpret-cast)
       return true;
     }
-    bool sequence(const void *& p, std::size_t & n)
+    auto sequence(const void *& p, std::size_t & n) -> bool
     {
       std::uint32_t len = 0;
       const std::uint8_t * at = nullptr;
-      if (!scalar(len) || !take(len, at)) return false;
+      if (!scalar(len) || !take(len, at)) {
+        return false;
+      }
       p = at;
       n = len;
       return true;
     }
   };
 
-  static std::size_t encode(const FluxFrameFields & f, std::uint8_t * out)
+  static auto encode(const FluxFrameFields & f, std::uint8_t * out) -> std::size_t
   {
     static constexpr std::array<std::uint8_t, 4> kEncapsulation = {0x00, 0x01, 0x00, 0x00};
-    if (out) std::memcpy(out, kEncapsulation.data(), kEncapsulation.size());
+    if (out) {
+      std::memcpy(out, kEncapsulation.data(), kEncapsulation.size());
+    }
     Cursor c{out ? out + kEncapsulation.size() : nullptr};
     c.scalar(f.sec);
     c.scalar(f.nanosec);

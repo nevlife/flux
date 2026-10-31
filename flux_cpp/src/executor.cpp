@@ -16,7 +16,7 @@ namespace flux
 namespace
 {
 
-std::int64_t since_ns(std::chrono::steady_clock::time_point t0)
+auto since_ns(std::chrono::steady_clock::time_point t0) -> std::int64_t
 {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0)
     .count();
@@ -24,7 +24,7 @@ std::int64_t since_ns(std::chrono::steady_clock::time_point t0)
 
 // Hooked again if the address now holds a different entity than the one hooked.
 template <class Map, class Ptr>
-bool hooked(const Map & map, const Ptr & p)
+auto hooked(const Map & map, const Ptr & p) -> bool
 {
   const auto it = map.find(p.get());
   return it != map.end() && it->second.lock() == p;
@@ -38,7 +38,9 @@ void unhook_if(Map & map, const std::unordered_set<const void *> & keep, Clear c
       ++it;
       continue;
     }
-    if (auto p = it->second.lock()) clear(*p);
+    if (auto p = it->second.lock()) {
+      clear(*p);
+    }
     it = map.erase(it);
   }
 }
@@ -46,11 +48,13 @@ void unhook_if(Map & map, const std::unordered_set<const void *> & keep, Clear c
 // As rcl_wait does, a timer on active ROS time is left to its clock: the time it reports is ROS
 // time, which can run at any rate, and the jump hook pokes once it is due.
 template <class Poke>
-rclcpp::JumpHandler::SharedPtr on_ros_time(
-  const rclcpp::TimerBase::SharedPtr & timer, const Poke & poke)
+auto on_ros_time(const rclcpp::TimerBase::SharedPtr & timer, const Poke & poke)
+  -> rclcpp::JumpHandler::SharedPtr
 {
   const rclcpp::Clock::SharedPtr clock = timer->get_clock();
-  if (clock->get_clock_type() != RCL_ROS_TIME) return nullptr;
+  if (clock->get_clock_type() != RCL_ROS_TIME) {
+    return nullptr;
+  }
   rcl_jump_threshold_t any{};
   any.on_clock_change = true;
   any.min_forward.nanoseconds = 1;
@@ -100,7 +104,9 @@ void Executor::add(Subscription & sub, std::int32_t priority)
 // the sources being changed.
 void Executor::add(detail::Source & src, std::int32_t priority)
 {
-  if (spinning.exchange(true)) throw std::logic_error("flux: add() while spinning");
+  if (spinning.exchange(true)) {
+    throw std::logic_error("flux: add() while spinning");
+  }
   const detail::OnExit release([this] { spinning.store(false); });
   core_.add(src, priority);
 }
@@ -110,19 +116,22 @@ void Executor::spin()
   run(std::chrono::nanoseconds(-1), [] { return false; });
 }
 
-rclcpp::FutureReturnCode Executor::spin_until_future_complete_impl(
+auto Executor::spin_until_future_complete_impl(
   std::chrono::nanoseconds timeout,
   const std::function<std::future_status(std::chrono::nanoseconds)> & wait_for_future)
+  -> rclcpp::FutureReturnCode
 {
   const auto ready = [&] {
     return wait_for_future(std::chrono::nanoseconds(0)) == std::future_status::ready;
   };
-  if (ready()) return rclcpp::FutureReturnCode::SUCCESS;
+  if (ready()) {
+    return rclcpp::FutureReturnCode::SUCCESS;
+  }
   return run(timeout, ready);
 }
 
-rclcpp::FutureReturnCode Executor::run(
-  std::chrono::nanoseconds timeout, const std::function<bool()> & done)
+auto Executor::run(std::chrono::nanoseconds timeout, const std::function<bool()> & done)
+  -> rclcpp::FutureReturnCode
 {
   if (spinning.exchange(true)) {
     throw std::runtime_error("flux: spin() while already spinning or in add()");
@@ -148,7 +157,9 @@ rclcpp::FutureReturnCode Executor::run(
       wait = std::min(wait, std::max<std::int64_t>(0, timeout.count() - since_ns(start)));
     }
     pass(wait);
-    if (done()) return rclcpp::FutureReturnCode::SUCCESS;
+    if (done()) {
+      return rclcpp::FutureReturnCode::SUCCESS;
+    }
     // After the pass, as in rclcpp: a zero timeout still runs the work that is ready.
     if (timeout.count() >= 0 && since_ns(start) >= timeout.count()) {
       return rclcpp::FutureReturnCode::TIMEOUT;
@@ -208,7 +219,7 @@ void Executor::pass(std::int64_t wait_ns)
 
 // Once flux has work the run ends after kTurnNs, so cheap ROS callbacks still drain together but
 // a slow one does not hold flux behind it. True when ROS work may be left.
-bool Executor::pump_ros()
+auto Executor::pump_ros() -> bool
 {
   int n = 0;
   const auto start = std::chrono::steady_clock::now();
@@ -218,7 +229,9 @@ bool Executor::pump_ros()
     execute_any_executable(any);
     any = rclcpp::AnyExecutable();
     ++n;
-    if (since_ns(start) >= kTurnNs && core_.ready()) return true;
+    if (since_ns(start) >= kTurnNs && core_.ready()) {
+      return true;
+    }
   }
   return n == kRosBudget;
 }
@@ -229,7 +242,9 @@ void Executor::rebridge_ros()
   seen_.clear();
   const auto groups = get_all_callback_groups();
   for (const auto & weak : groups) {
-    if (auto group = weak.lock()) bridge_group(group);
+    if (auto group = weak.lock()) {
+      bridge_group(group);
+    }
   }
   forget_moved(groups);
   unhook_unseen();
@@ -241,10 +256,14 @@ void Executor::forget_moved(const std::vector<rclcpp::CallbackGroup::WeakPtr> & 
 {
   for (const auto & weak : groups_) {
     const auto group = weak.lock();
-    if (!group || !group->get_associated_with_executor_atomic().load()) continue;
+    if (!group || !group->get_associated_with_executor_atomic().load()) {
+      continue;
+    }
     const bool ours =
       std::any_of(now.begin(), now.end(), [&](const auto & w) { return w.lock() == group; });
-    if (ours) continue;
+    if (ours) {
+      continue;
+    }
     group->collect_all_ptrs(
       [&](const rclcpp::SubscriptionBase::SharedPtr & e) { subs_.erase(e.get()); },
       [&](const rclcpp::ServiceBase::SharedPtr & e) { services_.erase(e.get()); },
@@ -264,7 +283,9 @@ void Executor::bridge_group(const rclcpp::CallbackGroup::SharedPtr & group)
   group->collect_all_ptrs(
     [&](const rclcpp::SubscriptionBase::SharedPtr & sub) {
       seen_.insert(sub.get());
-      if (hooked(subs_, sub)) return;
+      if (hooked(subs_, sub)) {
+        return;
+      }
       sub->set_on_new_message_callback(poke);
       // Intra-process messages arrive through their own waitable, not the rmw queue.
       if (sub->get_intra_process_waitable() != nullptr) {
@@ -274,33 +295,43 @@ void Executor::bridge_group(const rclcpp::CallbackGroup::SharedPtr & group)
     },
     [&](const rclcpp::ServiceBase::SharedPtr & srv) {
       seen_.insert(srv.get());
-      if (hooked(services_, srv)) return;
+      if (hooked(services_, srv)) {
+        return;
+      }
       srv->set_on_new_request_callback(poke);
       services_[srv.get()] = srv;
     },
     [&](const rclcpp::ClientBase::SharedPtr & cli) {
       seen_.insert(cli.get());
-      if (hooked(clients_, cli)) return;
+      if (hooked(clients_, cli)) {
+        return;
+      }
       cli->set_on_new_response_callback(poke);
       clients_[cli.get()] = cli;
     },
     // A steady or system timer has no readiness event: next_ros_timeout() serves it.
     [&](const rclcpp::TimerBase::SharedPtr & timer) {
       seen_.insert(timer.get());
-      if (hooked(timers_, timer)) return;
+      if (hooked(timers_, timer)) {
+        return;
+      }
       timers_[timer.get()] = {timer, on_ros_time(timer, poke)};
     },
     // Action servers and clients are waitables, and so are flux sources put in the group.
     [&](const rclcpp::Waitable::SharedPtr & wt) {
       if (const auto member = std::dynamic_pointer_cast<detail::GroupMember>(wt)) {
-        if (hooked(members_, member)) return;
+        if (hooked(members_, member)) {
+          return;
+        }
         core_.add(member->source(), member->priority());
         member->served();
         members_[member.get()] = member;
         return;
       }
       seen_.insert(wt.get());
-      if (hooked(waitables_, wt)) return;
+      if (hooked(waitables_, wt)) {
+        return;
+      }
       wt->set_on_ready_callback([poke](std::size_t n, int) { poke(n); });
       waitables_[wt.get()] = wt;
     });
@@ -311,7 +342,9 @@ void Executor::unhook_unseen()
 {
   unhook_if(subs_, seen_, [](rclcpp::SubscriptionBase & s) {
     s.clear_on_new_message_callback();
-    if (s.get_intra_process_waitable() != nullptr) s.clear_on_new_intra_process_message_callback();
+    if (s.get_intra_process_waitable() != nullptr) {
+      s.clear_on_new_intra_process_message_callback();
+    }
   });
   unhook_if(services_, seen_, [](rclcpp::ServiceBase & s) { s.clear_on_new_request_callback(); });
   unhook_if(clients_, seen_, [](rclcpp::ClientBase & c) { c.clear_on_new_response_callback(); });
@@ -319,15 +352,19 @@ void Executor::unhook_unseen()
   unhook_if(timers_, seen_, [](rclcpp::TimerBase &) {});
 }
 
-std::int64_t Executor::next_ros_timeout(std::int64_t limit_ns)
+auto Executor::next_ros_timeout(std::int64_t limit_ns) -> std::int64_t
 {
   std::int64_t best = limit_ns;
   for (const auto & entry : timers_) {
     const auto timer = entry.second.lock();
-    if (!timer || (entry.second.jump && timer->get_clock()->ros_time_is_active())) continue;
+    if (!timer || (entry.second.jump && timer->get_clock()->ros_time_is_active())) {
+      continue;
+    }
     const std::int64_t due = timer->time_until_trigger().count();
     const std::int64_t wait = due > 0 ? due : 0;
-    if (best < 0 || wait < best) best = wait;
+    if (best < 0 || wait < best) {
+      best = wait;
+    }
   }
   return best;
 }

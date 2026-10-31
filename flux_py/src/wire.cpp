@@ -42,17 +42,24 @@ class Buffer
 public:
   Buffer(nb::handle obj, bool writable)
   {
-    if (PyObject_GetBuffer(obj.ptr(), &b_, writable ? PyBUF_WRITABLE : PyBUF_SIMPLE) != 0)
+    if (PyObject_GetBuffer(obj.ptr(), &b_, writable ? PyBUF_WRITABLE : PyBUF_SIMPLE) != 0) {
       throw nb::python_error();
+    }
   }
   ~Buffer() { PyBuffer_Release(&b_); }
   Buffer(const Buffer &) = delete;
-  Buffer & operator=(const Buffer &) = delete;
+  auto operator=(const Buffer &) -> Buffer & = delete;
   Buffer(Buffer &&) = delete;
-  Buffer & operator=(Buffer &&) = delete;
+  auto operator=(Buffer &&) -> Buffer & = delete;
 
-  std::byte * data() const noexcept { return static_cast<std::byte *>(b_.buf); }
-  std::size_t size() const noexcept { return static_cast<std::size_t>(b_.len); }
+  [[nodiscard]] auto data() const noexcept -> std::byte *
+  {
+    return static_cast<std::byte *>(b_.buf);
+  }
+  [[nodiscard]] auto size() const noexcept -> std::size_t
+  {
+    return static_cast<std::size_t>(b_.len);
+  }
 
 private:
   Py_buffer b_{};
@@ -66,10 +73,12 @@ struct DType
   nb::object held;
 };
 
-DType resolve(nb::handle t)
+auto resolve(nb::handle t) -> DType
 {
   PyArray_Descr * d = nullptr;
-  if (PyArray_DescrConverter(t.ptr(), &d) != NPY_SUCCEED) throw nb::python_error();
+  if (PyArray_DescrConverter(t.ptr(), &d) != NPY_SUCCEED) {
+    throw nb::python_error();
+  }
   DType v{d, flux_py::elsize(d), flux_py::own(d)};
   // The frame holds plain numbers: an object dtype would turn its bytes into pointers.
   const bool number = d->kind == 'b' || d->kind == 'i' || d->kind == 'u' || d->kind == 'f';
@@ -81,12 +90,16 @@ DType resolve(nb::handle t)
 
 // The numpy scalar types generated code passes are resolved once each and held for good. Other
 // dtype arguments, such as names built at run time, are resolved on each call.
-DType dtype_of(nb::handle t)
+auto dtype_of(nb::handle t) -> DType
 {
   static std::vector<std::pair<PyObject *, DType>> types;
-  if (!PyType_Check(t.ptr())) return resolve(t);
+  if (!PyType_Check(t.ptr())) {
+    return resolve(t);
+  }
   for (const auto & [k, v] : types) {
-    if (k == t.ptr()) return v;
+    if (k == t.ptr()) {
+      return v;
+    }
   }
   DType v = resolve(t);
   v.held.release();
@@ -112,16 +125,18 @@ auto by_size(std::size_t size, F f)
 // region() divides by the stride and aligns up by `align`.
 void check_layout(std::size_t stride, std::size_t align)
 {
-  if (stride == 0 || align == 0) throw nb::value_error("flux: stride and align must be positive");
+  if (stride == 0 || align == 0) {
+    throw nb::value_error("flux: stride and align must be positive");
+  }
 }
 
 // Views alias the buffer; `owner` keeps it alive while any of them does.
-nb::object ro_array(const void * p, std::size_t n, const DType & t, nb::handle owner)
+auto ro_array(const void * p, std::size_t n, const DType & t, nb::handle owner) -> nb::object
 {
   return flux_py::numpy_view(p, n, t.descr, owner, false);
 }
 
-nb::object rw_array(void * p, std::size_t n, const DType & t, nb::handle owner)
+auto rw_array(void * p, std::size_t n, const DType & t, nb::handle owner) -> nb::object
 {
   return flux_py::numpy_view(p, n, t.descr, owner, true);
 }
@@ -131,8 +146,11 @@ class Reader
 public:
   explicit Reader(nb::handle buf) : buf_(buf, false) {}
 
-  std::size_t size() const noexcept { return buf_.size(); }
-  flux::wire::Reader reader() const noexcept { return {buf_.data(), buf_.size()}; }
+  [[nodiscard]] auto size() const noexcept -> std::size_t { return buf_.size(); }
+  [[nodiscard]] auto reader() const noexcept -> flux::wire::Reader
+  {
+    return {buf_.data(), buf_.size()};
+  }
 
   static void check(const flux::wire::Reader & r, const char * what, std::size_t off)
   {
@@ -146,7 +164,7 @@ private:
   Buffer buf_;
 };
 
-nb::object reader_block(nb::handle self, std::size_t off, nb::handle dtype, std::size_t n)
+auto reader_block(nb::handle self, std::size_t off, nb::handle dtype, std::size_t n) -> nb::object
 {
   const Reader & r = *nb::inst_ptr<Reader>(self);
   const DType t = dtype_of(dtype);
@@ -157,17 +175,18 @@ nb::object reader_block(nb::handle self, std::size_t off, nb::handle dtype, std:
   return ro_array(p, n, t, self);
 }
 
-nb::object reader_get(nb::handle self, std::size_t off, nb::handle dtype)
+auto reader_get(nb::handle self, std::size_t off, nb::handle dtype) -> nb::object
 {
   const Reader & r = *nb::inst_ptr<Reader>(self);
   const DType t = dtype_of(dtype);
-  if (!flux::wire::detail::fits(off, t.size, r.size()))
+  if (!flux::wire::detail::fits(off, t.size, r.size())) {
     throw WireError("flux: scalar at " + std::to_string(off) + " escapes the frame");
+  }
   const flux::wire::Reader w = r.reader();
   return flux_py::numpy_scalar(w.base() + off, t.descr);
 }
 
-nb::object reader_span(nb::handle self, std::size_t off, nb::handle dtype)
+auto reader_span(nb::handle self, std::size_t off, nb::handle dtype) -> nb::object
 {
   const Reader & r = *nb::inst_ptr<Reader>(self);
   const DType t = dtype_of(dtype);
@@ -182,14 +201,14 @@ nb::object reader_span(nb::handle self, std::size_t off, nb::handle dtype)
 
 // As rclpy decodes a string field: up to the first NUL, and bytes that are not UTF-8 become
 // U+FFFD so the frame stays readable. C++ hands the bytes over unchecked, as rclcpp does.
-nb::str decode(std::string_view s)
+auto decode(std::string_view s) -> nb::str
 {
   s = s.substr(0, s.find('\0'));
   return nb::steal<nb::str>(
     PyUnicode_DecodeUTF8(s.data(), static_cast<Py_ssize_t>(s.size()), "replace"));
 }
 
-nb::str reader_string(const Reader & r, std::size_t off)
+auto reader_string(const Reader & r, std::size_t off) -> nb::str
 {
   const flux::wire::Reader w = r.reader();
   const std::string_view s = w.str(off);
@@ -199,7 +218,7 @@ nb::str reader_string(const Reader & r, std::size_t off)
 
 // A writer never points two descriptors at the same bytes, so the strings cannot add up to more
 // than the frame: one that does would make a small frame decode to gigabytes.
-nb::list reader_strings(const Reader & r, std::size_t off)
+auto reader_strings(const Reader & r, std::size_t off) -> nb::list
 {
   const flux::wire::Reader w = r.reader();
   const std::size_t n = w.len(off, sizeof(flux::wire::Desc), alignof(flux::wire::Desc));
@@ -219,8 +238,8 @@ nb::list reader_strings(const Reader & r, std::size_t off)
   return out;
 }
 
-std::pair<std::size_t, std::size_t> reader_elems(
-  const Reader & r, std::size_t off, std::size_t stride, std::size_t align)
+auto reader_elems(const Reader & r, std::size_t off, std::size_t stride, std::size_t align)
+  -> std::pair<std::size_t, std::size_t>
 {
   check_layout(stride, align);
   const flux::wire::Reader w = r.reader();
@@ -242,10 +261,10 @@ public:
     }
   }
 
-  bool bad() const noexcept { return w_.bad() || poisoned_; }
+  [[nodiscard]] auto bad() const noexcept -> bool { return w_.bad() || poisoned_; }
   void poison() noexcept { poisoned_ = true; }
-  std::size_t size() const noexcept { return w_.size(); }
-  flux::wire::Writer & w() noexcept { return w_; }
+  [[nodiscard]] auto size() const noexcept -> std::size_t { return w_.size(); }
+  auto w() noexcept -> flux::wire::Writer & { return w_; }
 
   // A write that does not fit has latched bad() in wire.hpp before this raises.
   void check(const char * what, std::size_t off) const
@@ -273,16 +292,20 @@ auto poisoning(Writer & w, F f)
   }
 }
 
-std::size_t count_of(nb::handle n)
+auto count_of(nb::handle n) -> std::size_t
 {
   const nb::object i = nb::steal(PyNumber_Index(n.ptr()));
-  if (!i.is_valid()) throw nb::python_error();
+  if (!i.is_valid()) {
+    throw nb::python_error();
+  }
   const std::size_t v = PyLong_AsSize_t(i.ptr());
-  if (v == static_cast<std::size_t>(-1) && PyErr_Occurred() != nullptr) throw nb::python_error();
+  if (v == static_cast<std::size_t>(-1) && PyErr_Occurred() != nullptr) {
+    throw nb::python_error();
+  }
   return v;
 }
 
-nb::object writer_block(nb::handle self, std::size_t off, nb::handle dtype, std::size_t n)
+auto writer_block(nb::handle self, std::size_t off, nb::handle dtype, std::size_t n) -> nb::object
 {
   Writer & w = *nb::inst_ptr<Writer>(self);
   const DType t = dtype_of(dtype);
@@ -298,12 +321,18 @@ void check_range(nb::handle value, const nb::object & a)
 {
   PyArray_Descr * d = PyArray_DESCR(flux_py::as_array(a));
   const char kind = d->kind;
-  if ((kind != 'i' && kind != 'u') || PyIndex_Check(value.ptr()) == 0) return;
+  if ((kind != 'i' && kind != 'u') || PyIndex_Check(value.ptr()) == 0) {
+    return;
+  }
   const nb::object i = nb::steal(PyNumber_Index(value.ptr()));
-  if (!i.is_valid()) throw nb::python_error();
+  if (!i.is_valid()) {
+    throw nb::python_error();
+  }
   int over = 0;
   const long long v = PyLong_AsLongLongAndOverflow(i.ptr(), &over);
-  if (v == -1 && PyErr_Occurred() != nullptr) throw nb::python_error();
+  if (v == -1 && PyErr_Occurred() != nullptr) {
+    throw nb::python_error();
+  }
   const std::size_t bits = 8 * flux_py::elsize(d);
   bool fits = false;
   if (kind == 'i') {
@@ -336,7 +365,8 @@ void writer_put(nb::handle self, std::size_t off, nb::handle dtype, nb::handle v
   });
 }
 
-nb::object writer_alloc(nb::handle self, std::size_t off, nb::handle count, nb::handle dtype)
+auto writer_alloc(nb::handle self, std::size_t off, nb::handle count, nb::handle dtype)
+  -> nb::object
 {
   Writer & w = *nb::inst_ptr<Writer>(self);
   return poisoning(w, [&] {
@@ -351,12 +381,16 @@ nb::object writer_alloc(nb::handle self, std::size_t off, nb::handle count, nb::
 
 // A str is stored as rclpy stores it: UTF-8, cut at the first NUL. Like rclpy, nothing else is
 // taken, and a lone surrogate is a UnicodeEncodeError.
-std::string_view text_of(nb::handle s)
+auto text_of(nb::handle s) -> std::string_view
 {
-  if (!PyUnicode_Check(s.ptr())) throw nb::type_error("flux: a string field takes a str");
+  if (!PyUnicode_Check(s.ptr())) {
+    throw nb::type_error("flux: a string field takes a str");
+  }
   Py_ssize_t n = 0;
   const char * p = PyUnicode_AsUTF8AndSize(s.ptr(), &n);
-  if (p == nullptr) throw nb::python_error();
+  if (p == nullptr) {
+    throw nb::python_error();
+  }
   const std::string_view v(p, static_cast<std::size_t>(n));
   return v.substr(0, v.find('\0'));
 }
@@ -378,7 +412,9 @@ void writer_put_strs(
       throw nb::type_error("flux: a string array takes a sequence of str, not a str");
     }
     nb::list list;
-    for (nb::handle h : nb::iter(items)) list.append(h);
+    for (nb::handle h : nb::iter(items)) {
+      list.append(h);
+    }
     if (count && list.size() != *count) {
       throw nb::value_error(("flux: a string[" + std::to_string(*count) + "] takes exactly " +
                              std::to_string(*count) + " strings, got " +
@@ -394,8 +430,9 @@ void writer_put_strs(
   });
 }
 
-std::size_t writer_alloc_elems(
-  Writer & w, std::size_t off, nb::handle count, std::size_t stride, std::size_t align)
+auto writer_alloc_elems(
+  Writer & w, std::size_t off, nb::handle count, std::size_t stride,
+  std::size_t align) -> std::size_t
 {
   return poisoning(w, [&] {
     check_layout(stride, align);
@@ -405,15 +442,17 @@ std::size_t writer_alloc_elems(
   });
 }
 
-flux::wire::TensorAt at_of(const flux_py::TensorAt & a)
+auto at_of(const flux_py::TensorAt & a) -> flux::wire::TensorAt
 {
   return {a[0], a[1], a[2], a[3], a[4], a[5], a[6]};
 }
 
 // The dtypes numpy names, -1 for the rest.
-int npy_of(flux::wire::DlType t)
+auto npy_of(flux::wire::DlType t) -> int
 {
-  if (flux::wire::dl_itemsize(t) == 0) return -1;
+  if (flux::wire::dl_itemsize(t) == 0) {
+    return -1;
+  }
   switch (t.code) {
     case flux::wire::kDlInt:
       return t.bits == 8    ? NPY_INT8
@@ -437,7 +476,7 @@ int npy_of(flux::wire::DlType t)
 }
 
 // DLPack's names for the dtypes numpy lacks, which ml_dtypes gives numpy under the same names.
-flux::wire::DlType dl_named(nb::handle dtype)
+auto dl_named(nb::handle dtype) -> flux::wire::DlType
 {
   static const std::array<std::pair<const char *, std::uint8_t>, 9> named{{
     {"bfloat16", flux::wire::kDlBfloat},
@@ -453,16 +492,24 @@ flux::wire::DlType dl_named(nb::handle dtype)
   PyArray_Descr * d = nullptr;
   std::string name;
   nb::object held;
-  if (PyUnicode_Check(dtype.ptr())) name = nb::cast<std::string>(dtype);
-  for (const auto & [n, code] : named) {
-    if (name == n) return {code, static_cast<std::uint8_t>(code == 4 ? 16 : 8), 1};
+  if (PyUnicode_Check(dtype.ptr())) {
+    name = nb::cast<std::string>(dtype);
   }
-  if (PyArray_DescrConverter(dtype.ptr(), &d) != NPY_SUCCEED) throw nb::python_error();
+  for (const auto & [n, code] : named) {
+    if (name == n) {
+      return {code, static_cast<std::uint8_t>(code == 4 ? 16 : 8), 1};
+    }
+  }
+  if (PyArray_DescrConverter(dtype.ptr(), &d) != NPY_SUCCEED) {
+    throw nb::python_error();
+  }
   held = flux_py::own(d);
   if (d->type_num >= NPY_USERDEF) {
     name = nb::cast<std::string>(held.attr("name"));
     for (const auto & [n, code] : named) {
-      if (name == n) return {code, static_cast<std::uint8_t>(8 * flux_py::elsize(d)), 1};
+      if (name == n) {
+        return {code, static_cast<std::uint8_t>(8 * flux_py::elsize(d)), 1};
+      }
     }
   }
   if (!PyArray_ISNBO(d->byteorder)) {
@@ -484,15 +531,21 @@ flux::wire::DlType dl_named(nb::handle dtype)
   return t;
 }
 
-std::vector<std::int64_t> dims_of(nb::handle shape)
+auto dims_of(nb::handle shape) -> std::vector<std::int64_t>
 {
   std::vector<std::int64_t> dims;
   for (nb::handle h : nb::iter(shape)) {
     const nb::object i = nb::steal(PyNumber_Index(h.ptr()));
-    if (!i.is_valid()) throw nb::python_error();
+    if (!i.is_valid()) {
+      throw nb::python_error();
+    }
     const long long v = PyLong_AsLongLong(i.ptr());
-    if (v == -1 && PyErr_Occurred() != nullptr) throw nb::python_error();
-    if (v < 0) throw nb::value_error("flux: a tensor's shape has no negative extent");
+    if (v == -1 && PyErr_Occurred() != nullptr) {
+      throw nb::python_error();
+    }
+    if (v < 0) {
+      throw nb::value_error("flux: a tensor's shape has no negative extent");
+    }
     dims.push_back(v);
   }
   return dims;
@@ -508,9 +561,9 @@ public:
   {
   }
 
-  bool named() const { return npy_of(f_.dtype) >= 0; }
+  [[nodiscard]] auto named() const -> bool { return npy_of(f_.dtype) >= 0; }
 
-  nb::object array() const
+  [[nodiscard]] auto array() const -> nb::object
   {
     if (!named()) {
       throw nb::type_error(
@@ -520,10 +573,12 @@ public:
     return view(npy_of(f_.dtype));
   }
 
-  nb::object bits() const
+  [[nodiscard]] auto bits() const -> nb::object
   {
     const std::size_t size = flux::wire::dl_itemsize(f_.dtype);
-    if (size == 16) throw nb::type_error("flux: numpy has no 128-bit unsigned integer");
+    if (size == 16) {
+      throw nb::type_error("flux: numpy has no 128-bit unsigned integer");
+    }
     return view(
       size == 1   ? NPY_UINT8
       : size == 2 ? NPY_UINT16
@@ -531,29 +586,36 @@ public:
                   : NPY_UINT64);
   }
 
-  nb::object dlpack() const
+  [[nodiscard]] auto dlpack() const -> nb::object
   {
     const auto addr = reinterpret_cast<std::uintptr_t>(f_.data);  // NOLINT(*-reinterpret-cast)
     return flux_py::tensor_dlpack(f_, addr, owner_, 1, 0);
   }
 
-  nb::tuple shape() const
+  [[nodiscard]] auto shape() const -> nb::tuple
   {
     nb::list l;
-    for (const std::int64_t s : f_.shape) l.append(s);
+    for (const std::int64_t s : f_.shape) {
+      l.append(s);
+    }
     return nb::tuple(l);
   }
 
-  nb::tuple dtype() const { return nb::make_tuple(f_.dtype.code, f_.dtype.bits, f_.dtype.lanes); }
+  [[nodiscard]] auto dtype() const -> nb::tuple
+  {
+    return nb::make_tuple(f_.dtype.code, f_.dtype.bits, f_.dtype.lanes);
+  }
 
 private:
-  nb::object view(int type) const
+  [[nodiscard]] auto view(int type) const -> nb::object
   {
     const std::size_t size = flux::wire::dl_itemsize(f_.dtype);
     std::vector<npy_intp> shape(f_.shape.begin(), f_.shape.end());
     std::vector<npy_intp> strides;
     bool empty = false;
-    for (const std::int64_t n : f_.shape) empty = empty || n == 0;
+    for (const std::int64_t n : f_.shape) {
+      empty = empty || n == 0;
+    }
     // A stride under an extent of 0 or 1 is never stepped, so tensor_fault() left it unbounded.
     for (std::size_t i = 0; i < f_.strides.size(); ++i) {
       const bool stepped = !empty && f_.shape[i] > 1;
@@ -572,20 +634,20 @@ private:
   bool writable_;
 };
 
-nb::object handed_out(Tensor && t)
+auto handed_out(Tensor && t) -> nb::object
 {
   return t.named() ? t.array() : nb::cast(std::move(t));
 }
 
-nb::object reader_tensor(nb::handle self, const flux_py::TensorAt & at, bool array)
+auto reader_tensor(nb::handle self, const flux_py::TensorAt & at, bool array) -> nb::object
 {
   const flux::wire::Reader w = nb::inst_ptr<Reader>(self)->reader();
   Tensor t(self, flux_py::read_tensor(w.base(), w.size(), at), false);
   return array ? handed_out(std::move(t)) : nb::cast(std::move(t));
 }
 
-nb::object writer_tensor(
-  nb::handle self, const flux_py::TensorAt & at, nb::handle dtype, nb::handle shape)
+auto writer_tensor(
+  nb::handle self, const flux_py::TensorAt & at, nb::handle dtype, nb::handle shape) -> nb::object
 {
   Writer & w = *nb::inst_ptr<Writer>(self);
   return poisoning(w, [&] {
@@ -598,7 +660,7 @@ nb::object writer_tensor(
 }
 
 // What a Builder with no slot hands out: the tensor it asked for, in memory of its own.
-nb::object scratch_tensor(nb::handle dtype, nb::handle shape)
+auto scratch_tensor(nb::handle dtype, nb::handle shape) -> nb::object
 {
   const flux::wire::DlType t = dl_named(dtype);
   std::vector<std::int64_t> dims = dims_of(shape);
@@ -610,7 +672,9 @@ nb::object scratch_tensor(nb::handle dtype, nb::handle shape)
   }
   npy_intp n = static_cast<npy_intp>(bytes + flux::wire::kTensorAlign);
   const nb::object buf = nb::steal(PyArray_SimpleNew(1, &n, NPY_UINT8));
-  if (!buf.is_valid()) throw nb::python_error();
+  if (!buf.is_valid()) {
+    throw nb::python_error();
+  }
   auto * p = static_cast<std::uint8_t *>(PyArray_DATA(flux_py::as_array(buf)));
   const auto a = reinterpret_cast<std::uintptr_t>(p);  // NOLINT(*-reinterpret-cast)
   p += flux::wire::detail::align_up(a, flux::wire::kTensorAlign) - a;
@@ -619,8 +683,8 @@ nb::object scratch_tensor(nb::handle dtype, nb::handle shape)
 
 }  // namespace
 
-flux_py::TensorFields flux_py::read_tensor(
-  const void * frame, std::size_t size, const TensorAt & at)
+auto flux_py::read_tensor(const void * frame, std::size_t size, const TensorAt & at)
+  -> flux_py::TensorFields
 {
   const flux::wire::Reader w(frame, size);
   const flux::wire::DlType t{
@@ -644,8 +708,9 @@ flux_py::TensorFields flux_py::read_tensor(
   return f;
 }
 
-nb::object flux_py::tensor_dlpack(
-  const TensorFields & t, std::uintptr_t addr, nb::handle owner, int device_type, int device_id)
+auto flux_py::tensor_dlpack(
+  const TensorFields & t, std::uintptr_t addr, nb::handle owner, int device_type,
+  int device_id) -> nb::object
 {
   const std::vector<std::size_t> shape(t.shape.begin(), t.shape.end());
   const nb::ndarray<> arr(

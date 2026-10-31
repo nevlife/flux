@@ -42,12 +42,12 @@ using MsgPtr = std::shared_ptr<const Msg>;
 using std::placeholders::_1;
 using std::placeholders::_2;
 
-std::string topic(const char * name)
+auto topic(const char * name) -> std::string
 {
   return "/m" + std::to_string(getpid()) + "_" + name;
 }
 
-flux::Published send(flux::Publisher & p, std::int32_t sec, std::uint8_t payload)
+auto send(flux::Publisher & p, std::int32_t sec, std::uint8_t payload) -> flux::Published
 {
   auto b = Stamped::build__(p);
   b.set__header__stamp(sec, 0);
@@ -56,11 +56,13 @@ flux::Published send(flux::Publisher & p, std::int32_t sec, std::uint8_t payload
 }
 
 template <class P>
-bool eventually(P done, std::chrono::milliseconds limit = 3000ms)
+auto eventually(P done, std::chrono::milliseconds limit = 3000ms) -> bool
 {
   const auto end = std::chrono::steady_clock::now() + limit;
   while (!done()) {
-    if (std::chrono::steady_clock::now() > end) return false;
+    if (std::chrono::steady_clock::now() > end) {
+      return false;
+    }
     std::this_thread::sleep_for(1ms);
   }
   return true;
@@ -76,18 +78,20 @@ class Filters : public ::testing::Test
 protected:
   static void SetUpTestSuite()
   {
-    if (!rclcpp::ok()) rclcpp::init(0, nullptr);
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
   }
 
   void SetUp() override { node_ = std::make_shared<rclcpp::Node>("flux_mf_test"); }
 
-  flux::Publisher pub(const char * name, std::uint32_t slots = 8)
+  auto pub(const char * name, std::uint32_t slots = 8) -> flux::Publisher
   {
     return flux::Publisher(*node_, topic(name), Stamped::kFingerprint, 64, slots);
   }
 
   // Queued frames hold slots: the borrow limit covers the synchronizer's queue.
-  static flux::QoS qos() { return flux::QoS(8).max_borrow(8); }
+  static auto qos() -> flux::QoS { return flux::QoS(8).max_borrow(8); }
 
   std::shared_ptr<rclcpp::Node> node_;
 };
@@ -100,9 +104,9 @@ public:
   {
   }
   Spinner(const Spinner &) = delete;
-  Spinner & operator=(const Spinner &) = delete;
+  auto operator=(const Spinner &) -> Spinner & = delete;
   Spinner(Spinner &&) = delete;
-  Spinner & operator=(Spinner &&) = delete;
+  auto operator=(Spinner &&) -> Spinner & = delete;
   ~Spinner()
   {
     stop_();
@@ -197,14 +201,18 @@ TEST_F(Filters, AQueuedFrameOutlivesTheDeliveryThatQueuedIt)
   std::vector<std::shared_ptr<const Msg>> kept;
   a.registerCallback(std::function<void(const std::shared_ptr<const Msg> &)>(
     [&](const std::shared_ptr<const Msg> & msg) {
-      if (kept.size() < 3) kept.push_back(msg);
+      if (kept.size() < 3) {
+        kept.push_back(msg);
+      }
     }));
   for (std::uint8_t i = 0; i < 20; ++i) {
     ASSERT_EQ(send(pa, i, i), flux::Published::Ok);
     ASSERT_TRUE(a.deliver_one());
   }
   ASSERT_EQ(kept.size(), 3U);
-  for (std::uint8_t i = 0; i < 3; ++i) EXPECT_EQ(kept[i]->view().payload(), i);
+  for (std::uint8_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(kept[i]->view().payload(), i);
+  }
 }
 
 TEST_F(Filters, ACacheWithTheDefaultQoSKeepsUp)

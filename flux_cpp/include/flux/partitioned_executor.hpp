@@ -37,9 +37,9 @@ public:
   PartitionedExecutor();
   ~PartitionedExecutor();
   PartitionedExecutor(const PartitionedExecutor &) = delete;
-  PartitionedExecutor & operator=(const PartitionedExecutor &) = delete;
+  auto operator=(const PartitionedExecutor &) -> PartitionedExecutor & = delete;
   PartitionedExecutor(PartitionedExecutor &&) = delete;
-  PartitionedExecutor & operator=(PartitionedExecutor &&) = delete;
+  auto operator=(PartitionedExecutor &&) -> PartitionedExecutor & = delete;
 
   // `sub` outlives this executor, and `group` belongs to a node given to add_node(). Not while
   // spinning.
@@ -72,7 +72,9 @@ public:
   {
     static_assert(sizeof...(Inputs) >= 2, "a synchronizer has at least two inputs");
     const std::lock_guard<std::mutex> lk(m_);
-    if (spinning_) throw std::logic_error("flux: add_sync_group() while spinning");
+    if (spinning_) {
+      throw std::logic_error("flux: add_sync_group() while spinning");
+    }
     sync_groups_.push_back({sync_input(inputs)...});
   }
   // Runs on the group's thread before it spins.
@@ -98,7 +100,7 @@ private:
     rclcpp::SubscriptionBase::SharedPtr ros;
   };
   template <class T>
-  static SyncInput sync_input(T & input)
+  static auto sync_input(T & input) -> SyncInput
   {
     if constexpr (std::is_base_of_v<detail::Source, T>) {
       return {&input, nullptr};
@@ -116,7 +118,8 @@ private:
 
   void rescan();
   // Under groups_m_.
-  std::vector<rclcpp::CallbackGroup::SharedPtr> unserved_groups(const NodeBase::SharedPtr & node);
+  auto unserved_groups(const NodeBase::SharedPtr & node)
+    -> std::vector<rclcpp::CallbackGroup::SharedPtr>;
   void spawn(const rclcpp::CallbackGroup::SharedPtr & group, const NodeBase::SharedPtr & node);
   void check_sync_groups();
   void fail(std::exception_ptr e);

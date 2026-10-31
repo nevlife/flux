@@ -42,9 +42,9 @@ class DepthCloudDisplay : public ChannelDisplay
 public:
   DepthCloudDisplay();
   DepthCloudDisplay(const DepthCloudDisplay &) = delete;
-  DepthCloudDisplay & operator=(const DepthCloudDisplay &) = delete;
+  auto operator=(const DepthCloudDisplay &) -> DepthCloudDisplay & = delete;
   DepthCloudDisplay(DepthCloudDisplay &&) = delete;
-  DepthCloudDisplay & operator=(DepthCloudDisplay &&) = delete;
+  auto operator=(DepthCloudDisplay &&) -> DepthCloudDisplay & = delete;
   ~DepthCloudDisplay() override;
 
   void onInitialize() override;
@@ -66,8 +66,8 @@ private Q_SLOTS:
 private:
   void subscribeCameraInfo();
   void setupMaterial();
-  bool ensureTexture(std::uint32_t width, std::uint32_t height, Ogre::PixelFormat format);
-  bool ensureGrid(std::uint32_t width, std::uint32_t height);
+  auto ensureTexture(std::uint32_t width, std::uint32_t height, Ogre::PixelFormat format) -> bool;
+  auto ensureGrid(std::uint32_t width, std::uint32_t height) -> bool;
   void destroyGrid();
 
   rviz_common::properties::StringProperty * info_topic_property_;

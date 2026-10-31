@@ -32,7 +32,7 @@
 namespace
 {
 
-const flux::Schemas & schemas()
+auto schemas() -> const flux::Schemas &
 {
   static const flux::Schemas s;
   return s;
@@ -43,12 +43,15 @@ struct Frame
 {
   std::vector<std::uint64_t> words = std::vector<std::uint64_t>(1 << 17);
   std::size_t size = 0;
-  void * data() { return words.data(); }
-  std::size_t capacity() const { return words.size() * sizeof(std::uint64_t); }
+  auto data() -> void * { return words.data(); }
+  [[nodiscard]] auto capacity() const -> std::size_t
+  {
+    return words.size() * sizeof(std::uint64_t);
+  }
 };
 
 template <class Adapter, class Msg>
-Frame frame_of(const Msg & m)
+auto frame_of(const Msg & m) -> Frame
 {
   Frame f;
   typename Adapter::Builder b(f.data(), f.capacity());
@@ -87,7 +90,7 @@ void expect_rmw_bytes(const Msg & m)
   EXPECT_EQ(out, m);
 }
 
-std_msgs::msg::Header header(const char * frame_id)
+auto header(const char * frame_id) -> std_msgs::msg::Header
 {
   std_msgs::msg::Header h;
   h.stamp.sec = 1700000000;
@@ -103,7 +106,9 @@ TEST(Cdr, Imu)
   m.orientation.w = 1.0;
   m.angular_velocity.x = 0.5;
   m.linear_acceleration.z = 9.81;
-  for (std::size_t i = 0; i < 9; ++i) m.orientation_covariance[i] = static_cast<double>(i);
+  for (std::size_t i = 0; i < 9; ++i) {
+    m.orientation_covariance[i] = static_cast<double>(i);
+  }
   expect_rmw_bytes<sensor_msgs::flux_msg::Imu>(m);
 }
 
@@ -116,7 +121,9 @@ TEST(Cdr, ImageWithAnOddLengthAndAnEmptyBody)
   m.encoding = "mono8";
   m.is_bigendian = 1;
   m.step = 13;
-  for (std::uint8_t i = 0; i < 13; ++i) m.data.push_back(i);
+  for (std::uint8_t i = 0; i < 13; ++i) {
+    m.data.push_back(i);
+  }
   expect_rmw_bytes<sensor_msgs::flux_msg::Image>(m);
   m.data.clear();
   m.encoding.clear();
@@ -234,7 +241,7 @@ TEST(Cdr, AFrameThatDoesNotMatchItsSchemaIsRefused)
 }
 
 // A PointCloud2 frame with every field name pointing at the longest one, as a crafted frame would.
-Frame overlapping_frame()
+auto overlapping_frame() -> Frame
 {
   sensor_msgs::msg::PointCloud2 m;
   const std::size_t n = 200;
@@ -254,13 +261,19 @@ Frame overlapping_frame()
       desc[1] >= 1 && desc[1] <= n && desc[0] + desc[1] <= f.size &&
       std::all_of(
         bytes + desc[0], bytes + desc[0] + desc[1], [](std::uint8_t b) { return b == 'a'; });
-    if (!is_name) continue;
+    if (!is_name) {
+      continue;
+    }
     names.push_back(at);
-    if (desc[1] == n) longest = desc[0];
+    if (desc[1] == n) {
+      longest = desc[0];
+    }
   }
   EXPECT_EQ(names.size(), n);
   const std::array<std::uint32_t, 2> to{longest, n};
-  for (const std::size_t at : names) std::memcpy(bytes + at, to.data(), sizeof to);
+  for (const std::size_t at : names) {
+    std::memcpy(bytes + at, to.data(), sizeof to);
+  }
   return f;
 }
 
@@ -327,7 +340,7 @@ TEST(Cdr, AStringEndsAtItsFirstNulAsRclpyReadsIt)
 
 // The byte of a bool object: one holding anything but 0 or 1 is undefined to read as a bool.
 template <class T>
-unsigned char byte_of(const T & b)
+auto byte_of(const T & b) -> unsigned char
 {
   unsigned char raw = 0;
   std::memcpy(&raw, &b, 1);

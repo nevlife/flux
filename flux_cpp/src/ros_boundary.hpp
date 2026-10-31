@@ -15,15 +15,16 @@ namespace flux::detail
 {
 
 // Remapped and fully qualified, so every node names a topic the same way.
-inline std::string resolve(const NodeRef & node, const std::string & topic)
+inline auto resolve(const NodeRef & node, const std::string & topic) -> std::string
 {
   return node.topics()->resolve_topic_name(topic);
 }
 
 // The roster label is the node's fully qualified name: a collector reads a label starting with
 // '/' as the node (trace contract 2).
-inline Announcement announce(
-  const NodeRef & node, const std::string & signpost, const std::string & topic, bool publisher)
+inline auto announce(
+  const NodeRef & node, const std::string & signpost, const std::string & topic,
+  bool publisher) -> Announcement
 {
   return Announcement(signpost, topic, node.base()->get_fully_qualified_name(), publisher);
 }

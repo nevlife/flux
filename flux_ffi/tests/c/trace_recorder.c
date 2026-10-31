@@ -14,7 +14,9 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 __attribute__((constructor)) static void open_log(void)
 {
   const char * path = getenv("FLUX_TRACE_LOG");
-  if (path == NULL || (out = fopen(path, "w")) == NULL) abort();
+  if (path == NULL || (out = fopen(path, "w")) == NULL) {
+    abort();
+  }
 }
 
 __attribute__((destructor)) static void close_log(void)

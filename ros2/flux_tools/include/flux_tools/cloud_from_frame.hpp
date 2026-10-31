@@ -29,7 +29,7 @@ struct XyzOffsets
   bool found = false;
 };
 
-inline XyzOffsets xyz_offsets(const sensor_msgs::msg::PointCloud2 & m)
+inline auto xyz_offsets(const sensor_msgs::msg::PointCloud2 & m) -> XyzOffsets
 {
   XyzOffsets o;
   int seen = 0;
@@ -53,7 +53,7 @@ inline XyzOffsets xyz_offsets(const sensor_msgs::msg::PointCloud2 & m)
 }
 
 // 0 for a datatype PointField does not define.
-inline std::uint32_t field_bytes(std::uint8_t datatype)
+inline auto field_bytes(std::uint8_t datatype) -> std::uint32_t
 {
   using F = sensor_msgs::msg::PointField;
   switch (datatype) {
@@ -74,7 +74,7 @@ inline std::uint32_t field_bytes(std::uint8_t datatype)
   }
 }
 
-inline bool finite_at(const std::uint8_t * p, std::uint32_t at)
+inline auto finite_at(const std::uint8_t * p, std::uint32_t at) -> bool
 {
   float v = 0;
   std::memcpy(&v, p + at, sizeof v);
@@ -116,8 +116,8 @@ inline void copy_valid_points(
 // The points of the frame whose x, y and z are finite, or nullptr with `error` saying why the
 // frame is refused. Every size the frame states is checked against the bytes it has before
 // anything is copied, so a frame cannot make this allocate or read more than it holds.
-inline sensor_msgs::msg::PointCloud2::SharedPtr cloud_from_frame(
-  const void * frame, std::size_t frame_size, std::string & error)
+inline auto cloud_from_frame(const void * frame, std::size_t frame_size, std::string & error)
+  -> sensor_msgs::msg::PointCloud2::SharedPtr
 {
   using Cloud = sensor_msgs::flux_msg::PointCloud2;
   const Cloud::View view(frame, frame_size);

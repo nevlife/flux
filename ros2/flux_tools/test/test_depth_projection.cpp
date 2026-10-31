@@ -10,7 +10,7 @@ constexpr float kFy = 400.0f;
 constexpr float kCx = 320.0f;
 constexpr float kCy = 240.0f;
 
-sensor_msgs::msg::CameraInfo make_info(std::uint32_t w = 640, std::uint32_t h = 480)
+auto make_info(std::uint32_t w = 640, std::uint32_t h = 480) -> sensor_msgs::msg::CameraInfo
 {
   sensor_msgs::msg::CameraInfo info;
   info.width = w;

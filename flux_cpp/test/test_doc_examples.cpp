@@ -40,7 +40,7 @@ using sensor_msgs::flux_msg::Image;
 
 using MemsetAsync = int (*)(std::uint64_t, unsigned char, std::size_t, void *);
 
-MemsetAsync cu_memset()
+auto cu_memset() -> MemsetAsync
 {
   static const MemsetAsync f = [] {
     void * lib = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_LOCAL);
@@ -78,7 +78,7 @@ protected:
   }
 
   // Publishes on `topic` from another thread until the context is shut down, which ends a spin.
-  std::thread feed(const std::string & topic, std::uint64_t fingerprint = flux::kNoSchema)
+  auto feed(const std::string & topic, std::uint64_t fingerprint = flux::kNoSchema) -> std::thread
   {
     return std::thread([this, topic, fingerprint] {
       flux::Publisher pub(*node, topic, fingerprint, 1U << 20U, 16);
@@ -209,7 +209,9 @@ TEST_F(Doc, TakeWithoutAnExecutor)
 TEST_F(Doc, Qos)
 {
   flux::Publisher pub(*node, "cmd", flux::kNoSchema, 4096, 8);
-  for (const char * c : {"a", "b", "c"}) ASSERT_EQ(pub.publish(c, 1), flux::Published::Ok);
+  for (const char * c : {"a", "b", "c"}) {
+    ASSERT_EQ(pub.publish(c, 1), flux::Published::Ok);
+  }
   // [doc:cpp_qos]
   const flux::QoS qos = flux::QoS(4).transient_local(2).max_borrow(2);
   flux::Subscription sub(*node, "cmd", flux::kNoSchema, qos);

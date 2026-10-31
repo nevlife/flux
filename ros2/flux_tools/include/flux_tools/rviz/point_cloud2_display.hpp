@@ -25,9 +25,9 @@ class PointCloud2Display : public ChannelDisplay
 public:
   PointCloud2Display();
   PointCloud2Display(const PointCloud2Display &) = delete;
-  PointCloud2Display & operator=(const PointCloud2Display &) = delete;
+  auto operator=(const PointCloud2Display &) -> PointCloud2Display & = delete;
   PointCloud2Display(PointCloud2Display &&) = delete;
-  PointCloud2Display & operator=(PointCloud2Display &&) = delete;
+  auto operator=(PointCloud2Display &&) -> PointCloud2Display & = delete;
   ~PointCloud2Display() override = default;
 
   void onInitialize() override;
@@ -38,7 +38,7 @@ protected:
   void onDisable() override;
 
 private:
-  sensor_msgs::msg::PointCloud2::SharedPtr takeFrame();
+  auto takeFrame() -> sensor_msgs::msg::PointCloud2::SharedPtr;
 
   std::unique_ptr<rviz_default_plugins::PointCloudCommon> common_;
 };

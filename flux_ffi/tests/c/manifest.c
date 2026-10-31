@@ -14,7 +14,9 @@ int main(void)
   const flux_topic_info * found = NULL;
   for (size_t i = 0; i < flux_topic_list_size(list); i++) {
     const flux_topic_info * t = flux_topic_list_get(list, i);
-    if (strcmp(t->signpost, name) == 0) found = t;
+    if (strcmp(t->signpost, name) == 0) {
+      found = t;
+    }
   }
   CHECK(found != NULL);
   CHECK(found->key_exact && strcmp(found->key, key) == 0);

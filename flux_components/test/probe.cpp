@@ -16,7 +16,7 @@ struct Record
   std::vector<Event> all;
 };
 
-Record & record_of_process()
+auto record_of_process() -> Record &
 {
   static Record r;
   return r;
@@ -31,13 +31,15 @@ void record(const std::string & what, const void * key, double value)
   r.all.push_back({what, key, gettid(), r.all.size(), value});
 }
 
-std::vector<Event> events(const std::string & what)
+auto events(const std::string & what) -> std::vector<Event>
 {
   Record & r = record_of_process();
   const std::lock_guard<std::mutex> lk(r.m);
   std::vector<Event> out;
   for (const Event & e : r.all) {
-    if (e.what == what) out.push_back(e);
+    if (e.what == what) {
+      out.push_back(e);
+    }
   }
   return out;
 }

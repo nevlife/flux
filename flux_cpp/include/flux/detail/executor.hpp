@@ -26,20 +26,20 @@ public:
   Source() = default;
   virtual ~Source() = default;
   Source(const Source &) = delete;
-  Source & operator=(const Source &) = delete;
+  auto operator=(const Source &) -> Source & = delete;
   Source(Source &&) = delete;
-  Source & operator=(Source &&) = delete;
+  auto operator=(Source &&) -> Source & = delete;
   // False while there is nothing to attach to yet.
-  virtual bool attach() = 0;
+  virtual auto attach() -> bool = 0;
   // False when no frame was there.
-  virtual bool deliver_one() = 0;
+  virtual auto deliver_one() -> bool = 0;
   // Null until attached.
-  virtual const Channel * channel() const = 0;
+  [[nodiscard]] virtual auto channel() const -> const Channel * = 0;
   // While channel() is null: the watch whose publisher ends the wait, armed by the last attach.
   // Without one, an unattached source is retried once a tick.
-  virtual const Watch * watch() const { return nullptr; }
+  [[nodiscard]] virtual auto watch() const -> const Watch * { return nullptr; }
   // The endpoint flux_trace_endpoint_init named, for trace events.
-  virtual const void * endpoint() const { return nullptr; }
+  [[nodiscard]] virtual auto endpoint() const -> const void * { return nullptr; }
 };
 
 // Stop, interrupt and wake from any thread.
@@ -51,7 +51,10 @@ public:
   void interrupt() const noexcept { flux_handle_interrupt(h_.get()); }
   // Breaks the wait so a pass runs.
   void wake() const noexcept { flux_handle_wake(h_.get()); }
-  bool is_spinning() const noexcept { return flux_handle_is_spinning(h_.get()); }
+  [[nodiscard]] auto is_spinning() const noexcept -> bool
+  {
+    return flux_handle_is_spinning(h_.get());
+  }
 
 private:
   friend class Executor;
@@ -74,9 +77,9 @@ public:
   }
   ~Executor() { flux_executor_free(ex_); }
   Executor(Executor &&) = delete;
-  Executor & operator=(Executor &&) = delete;
+  auto operator=(Executor &&) -> Executor & = delete;
   Executor(const Executor &) = delete;
-  Executor & operator=(const Executor &) = delete;
+  auto operator=(const Executor &) -> Executor & = delete;
 
   // Not owned: `src` outlives the executor. Equal priorities take turns. Not while spinning.
   void add(Source & src, std::int32_t priority = 0)
@@ -92,14 +95,17 @@ public:
       src.endpoint()};
     check(flux_executor_add(ex_, s, priority));
   }
-  std::size_t size() const noexcept { return flux_executor_size(ex_); }
+  [[nodiscard]] auto size() const noexcept -> std::size_t { return flux_executor_size(ex_); }
 
   void set_pass_budget(std::uint32_t n) { check(flux_executor_set_pass_budget(ex_, n)); }
-  std::uint32_t pass_budget() const noexcept { return flux_executor_pass_budget(ex_); }
+  [[nodiscard]] auto pass_budget() const noexcept -> std::uint32_t
+  {
+    return flux_executor_pass_budget(ex_);
+  }
   // The last pass ran out of budget, not of frames.
-  bool has_more() const noexcept { return flux_executor_has_more(ex_); }
+  [[nodiscard]] auto has_more() const noexcept -> bool { return flux_executor_has_more(ex_); }
   // Work the next pass would find, read without a syscall.
-  bool ready() const noexcept { return flux_executor_ready(ex_); }
+  [[nodiscard]] auto ready() const noexcept -> bool { return flux_executor_ready(ex_); }
 
   // Runs after every pass of spin.
   void on_pass(std::function<void()> f)
@@ -108,7 +114,7 @@ public:
     check(flux_executor_on_pass(ex_, &on_pass_cb, st_.get()));
   }
 
-  std::size_t dispatch()
+  auto dispatch() -> std::size_t
   {
     std::size_t n = 0;
     run(flux_executor_dispatch(ex_, &n));
@@ -116,7 +122,7 @@ public:
   }
   // `yield_now() -> bool` is asked between callbacks, never before the first. It must not throw.
   template <class F>
-  std::size_t dispatch(F & yield_now)
+  auto dispatch(F & yield_now) -> std::size_t
   {
     std::size_t n = 0;
     const auto ask = [](void * ctx) noexcept -> bool { return (*static_cast<F *>(ctx))(); };
@@ -136,7 +142,10 @@ public:
   }
   void clear_interrupt() noexcept { flux_executor_clear_interrupt(ex_); }
 
-  ExecutorHandle handle() const { return ExecutorHandle(flux_executor_handle(ex_)); }
+  [[nodiscard]] auto handle() const -> ExecutorHandle
+  {
+    return ExecutorHandle(flux_executor_handle(ex_));
+  }
 
 private:
   struct State;
@@ -155,12 +164,14 @@ private:
   // channel() cannot fail the C call, so its exception surfaces once that call returns.
   void run(Status s)
   {
-    if (st_->error) std::rethrow_exception(std::exchange(st_->error, {}));
+    if (st_->error) {
+      std::rethrow_exception(std::exchange(st_->error, {}));
+    }
     check(s);
   }
 
   template <bool (Source::*F)()>
-  static std::int32_t call(void * ctx) noexcept
+  static auto call(void * ctx) noexcept -> std::int32_t
   {
     auto * e = static_cast<Entry *>(ctx);
     try {
@@ -170,7 +181,7 @@ private:
       return -1;
     }
   }
-  static const flux_channel * channel_cb(void * ctx) noexcept
+  static auto channel_cb(void * ctx) noexcept -> const flux_channel *
   {
     auto * e = static_cast<Entry *>(ctx);
     try {
@@ -181,7 +192,7 @@ private:
       return nullptr;
     }
   }
-  static const flux_watch * watch_cb(void * ctx) noexcept
+  static auto watch_cb(void * ctx) noexcept -> const flux_watch *
   {
     auto * e = static_cast<Entry *>(ctx);
     try {
@@ -192,7 +203,7 @@ private:
       return nullptr;
     }
   }
-  static std::int32_t on_pass_cb(void * ctx) noexcept
+  static auto on_pass_cb(void * ctx) noexcept -> std::int32_t
   {
     auto * st = static_cast<State *>(ctx);
     try {

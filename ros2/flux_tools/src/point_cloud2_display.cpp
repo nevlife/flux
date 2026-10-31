@@ -42,7 +42,7 @@ void PointCloud2Display::reset()
   common_->reset();
 }
 
-sensor_msgs::msg::PointCloud2::SharedPtr PointCloud2Display::takeFrame()
+auto PointCloud2Display::takeFrame() -> sensor_msgs::msg::PointCloud2::SharedPtr
 {
   const flux::FrameView frame = take();
   if (!frame) {

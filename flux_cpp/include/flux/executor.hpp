@@ -42,9 +42,9 @@ public:
   Executor();
   ~Executor() override;
   Executor(const Executor &) = delete;
-  Executor & operator=(const Executor &) = delete;
+  auto operator=(const Executor &) -> Executor & = delete;
   Executor(Executor &&) = delete;
-  Executor & operator=(Executor &&) = delete;
+  auto operator=(Executor &&) -> Executor & = delete;
 
   // `sub` outlives this executor and is served by no other. Not while spinning.
   void add(Subscription & sub, std::int32_t priority = 0);
@@ -59,9 +59,10 @@ public:
 
 protected:
   void spin_once_impl(std::chrono::nanoseconds timeout) override;
-  rclcpp::FutureReturnCode spin_until_future_complete_impl(
+  auto spin_until_future_complete_impl(
     std::chrono::nanoseconds timeout,
-    const std::function<std::future_status(std::chrono::nanoseconds)> & wait_for_future) override;
+    const std::function<std::future_status(std::chrono::nanoseconds)> & wait_for_future)
+    -> rclcpp::FutureReturnCode override;
 
 private:
   static constexpr int kRosBudget = FLUX_MAX_DRAIN;
@@ -69,16 +70,16 @@ private:
   static constexpr std::int64_t kTurnNs = FLUX_DEFAULT_TURN_NS;
 
   // Spins until cancel(), context shutdown, `done()`, or `timeout` (negative: none).
-  rclcpp::FutureReturnCode run(
-    std::chrono::nanoseconds timeout, const std::function<bool()> & done);
+  auto run(std::chrono::nanoseconds timeout, const std::function<bool()> & done)
+    -> rclcpp::FutureReturnCode;
   // Waits up to `wait_ns` (negative: no limit) and runs what is ready.
   void pass(std::int64_t wait_ns);
-  bool pump_ros();
+  auto pump_ros() -> bool;
   void rebridge_ros();
   void bridge_group(const rclcpp::CallbackGroup::SharedPtr & group);
   void forget_moved(const std::vector<rclcpp::CallbackGroup::WeakPtr> & now);
   void unhook_unseen();
-  std::int64_t next_ros_timeout(std::int64_t limit_ns);
+  auto next_ros_timeout(std::int64_t limit_ns) -> std::int64_t;
 
   detail::Executor core_;
   detail::ExecutorHandle handle_;
@@ -99,7 +100,7 @@ private:
     rclcpp::TimerBase::WeakPtr timer;
     // Null unless the timer runs on ROS time.
     rclcpp::JumpHandler::SharedPtr jump;
-    rclcpp::TimerBase::SharedPtr lock() const { return timer.lock(); }
+    [[nodiscard]] auto lock() const -> rclcpp::TimerBase::SharedPtr { return timer.lock(); }
   };
   std::unordered_map<const void *, Timer> timers_;
   // Never taken out again, as core_ has no remove: such a source outlives this executor.

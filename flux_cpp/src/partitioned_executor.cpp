@@ -41,11 +41,17 @@ void PartitionedExecutor::add(
   detail::Source & src, const rclcpp::CallbackGroup::SharedPtr & group, std::int32_t priority)
 {
   const std::lock_guard<std::mutex> lk(m_);
-  if (spinning_) throw std::logic_error("flux: add() while spinning");
-  if (!group) throw std::invalid_argument("flux: add() needs a callback group");
+  if (spinning_) {
+    throw std::logic_error("flux: add() while spinning");
+  }
+  if (!group) {
+    throw std::invalid_argument("flux: add() needs a callback group");
+  }
   for (const auto & entry : assigned_) {
     for (const Assigned & a : entry.second) {
-      if (a.src == &src) throw std::invalid_argument("flux: source assigned twice");
+      if (a.src == &src) {
+        throw std::invalid_argument("flux: source assigned twice");
+      }
     }
   }
   assigned_[group.get()].push_back({&src, priority});
@@ -56,7 +62,9 @@ void PartitionedExecutor::add_node(const NodeBase::SharedPtr & node)
 {
   const std::lock_guard<std::mutex> lk(groups_m_);
   if (serving_) {
-    for (const auto & group : unserved_groups(node)) spawn(group, node);
+    for (const auto & group : unserved_groups(node)) {
+      spawn(group, node);
+    }
   }
   nodes_.push_back(node);
 }
@@ -83,7 +91,9 @@ void PartitionedExecutor::remove_node(const NodeBase::SharedPtr & node)
       gone.push_back(std::move(*it));
       it = children_.erase(it);
     }
-    for (const rclcpp::CallbackGroup * group : groups) claimed_.erase(group);
+    for (const rclcpp::CallbackGroup * group : groups) {
+      claimed_.erase(group);
+    }
   }
   {
     const std::lock_guard<std::mutex> lk(m_);
@@ -100,8 +110,12 @@ void PartitionedExecutor::on_thread_start(
   const rclcpp::CallbackGroup::SharedPtr & group, std::function<void()> init)
 {
   const std::lock_guard<std::mutex> lk(m_);
-  if (spinning_) throw std::logic_error("flux: on_thread_start() while spinning");
-  if (!group || !init) throw std::invalid_argument("flux: on_thread_start() needs both");
+  if (spinning_) {
+    throw std::logic_error("flux: on_thread_start() while spinning");
+  }
+  if (!group || !init) {
+    throw std::invalid_argument("flux: on_thread_start() needs both");
+  }
   if (!init_.emplace(group.get(), std::move(init)).second) {
     throw std::invalid_argument("flux: the group already has a thread-start hook");
   }
@@ -111,9 +125,15 @@ void PartitionedExecutor::on_thread_start(
 void PartitionedExecutor::on_thread_start(ThreadStart init)
 {
   const std::lock_guard<std::mutex> lk(m_);
-  if (spinning_) throw std::logic_error("flux: on_thread_start() while spinning");
-  if (!init) throw std::invalid_argument("flux: on_thread_start() needs a hook");
-  if (any_init_) throw std::invalid_argument("flux: every thread already has a thread-start hook");
+  if (spinning_) {
+    throw std::logic_error("flux: on_thread_start() while spinning");
+  }
+  if (!init) {
+    throw std::invalid_argument("flux: on_thread_start() needs a hook");
+  }
+  if (any_init_) {
+    throw std::invalid_argument("flux: every thread already has a thread-start hook");
+  }
   any_init_ = std::move(init);
 }
 
@@ -127,7 +147,9 @@ void PartitionedExecutor::fail(std::exception_ptr e)
 {
   {
     const std::lock_guard<std::mutex> lk(m_);
-    if (!failure_) failure_ = std::move(e);
+    if (!failure_) {
+      failure_ = std::move(e);
+    }
   }
   wake_.wake();
 }
@@ -136,7 +158,9 @@ void PartitionedExecutor::spin()
 {
   {
     const std::lock_guard<std::mutex> lk(m_);
-    if (spinning_) throw std::logic_error("flux: spin() while already spinning");
+    if (spinning_) {
+      throw std::logic_error("flux: spin() while already spinning");
+    }
     spinning_ = true;
   }
   const detail::OnExit reset([this] {
@@ -185,7 +209,9 @@ void PartitionedExecutor::spin()
     const std::lock_guard<std::mutex> lk(m_);
     failure = failure_;
   }
-  if (failure) std::rethrow_exception(failure);
+  if (failure) {
+    std::rethrow_exception(failure);
+  }
 }
 
 void PartitionedExecutor::stop_children()
@@ -202,8 +228,12 @@ void PartitionedExecutor::stop_children()
 
 void PartitionedExecutor::join(std::vector<Child> & children)
 {
-  for (Child & c : children) c.ex->cancel();
-  for (Child & c : children) c.thread.join();
+  for (Child & c : children) {
+    c.ex->cancel();
+  }
+  for (Child & c : children) {
+    c.thread.join();
+  }
   children.clear();
 }
 
@@ -213,7 +243,9 @@ void PartitionedExecutor::check_sync_groups()
     if (in.flux != nullptr) {
       for (const auto & entry : assigned_) {
         for (const Assigned & a : entry.second) {
-          if (a.src == in.flux) return entry.first;
+          if (a.src == in.flux) {
+            return entry.first;
+          }
         }
       }
       throw std::invalid_argument("flux: a synchronizer input was never assigned to a group");
@@ -266,24 +298,30 @@ void PartitionedExecutor::rescan()
       it = nodes_.erase(it);
       continue;
     }
-    for (const auto & group : unserved_groups(base)) spawn(group, base);
+    for (const auto & group : unserved_groups(base)) {
+      spawn(group, base);
+    }
     ++it;
   }
 }
 
 // Collected before any is spawned: the walk holds the node's group lock, which is not recursive,
 // and a thread-start hook may walk the node's groups too.
-std::vector<rclcpp::CallbackGroup::SharedPtr> PartitionedExecutor::unserved_groups(
-  const NodeBase::SharedPtr & node)
+auto PartitionedExecutor::unserved_groups(const NodeBase::SharedPtr & node)
+  -> std::vector<rclcpp::CallbackGroup::SharedPtr>
 {
   std::set<const rclcpp::CallbackGroup *> assigned;
   {
     const std::lock_guard<std::mutex> lk(m_);
-    for (const auto & entry : assigned_) assigned.insert(entry.first);
+    for (const auto & entry : assigned_) {
+      assigned.insert(entry.first);
+    }
   }
   std::vector<rclcpp::CallbackGroup::SharedPtr> found;
   node->for_each_callback_group([&](const rclcpp::CallbackGroup::SharedPtr & group) {
-    if (claimed_.count(group.get()) != 0) return;
+    if (claimed_.count(group.get()) != 0) {
+      return;
+    }
     if (
       assigned.count(group.get()) == 0 && (!group->automatically_add_to_executor_with_node() ||
                                            group->get_associated_with_executor_atomic().load())) {
@@ -310,9 +348,13 @@ void PartitionedExecutor::spawn(
   {
     const std::lock_guard<std::mutex> lk(m_);
     if (const auto it = assigned_.find(group.get()); it != assigned_.end()) {
-      for (const Assigned & a : it->second) ex->add(*a.src, a.priority);
+      for (const Assigned & a : it->second) {
+        ex->add(*a.src, a.priority);
+      }
     }
-    if (const auto it = init_.find(group.get()); it != init_.end()) init = it->second;
+    if (const auto it = init_.find(group.get()); it != init_.end()) {
+      init = it->second;
+    }
     any = any_init_;
   }
   ex->add_callback_group(group, node);
@@ -326,9 +368,13 @@ void PartitionedExecutor::spawn(
       if (any) {
         const auto n = weak_node.lock();
         const auto g = weak_group.lock();
-        if (n && g) any(n, g);
+        if (n && g) {
+          any(n, g);
+        }
       }
-      if (init) init();
+      if (init) {
+        init();
+      }
       raw->spin();
     } catch (...) {
       fail(std::current_exception());

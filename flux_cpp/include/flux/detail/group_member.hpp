@@ -29,14 +29,14 @@ public:
   {
   }
 
-  Source & source() const noexcept { return src_; }
-  std::int32_t priority() const noexcept { return priority_; }
+  [[nodiscard]] auto source() const noexcept -> Source & { return src_; }
+  [[nodiscard]] auto priority() const noexcept -> std::int32_t { return priority_; }
   void served() noexcept { served_ = true; }
 
   void add_to_wait_set(rcl_wait_set_t &) override { refuse_outside_flux(); }
-  bool is_ready(const rcl_wait_set_t &) override { return false; }
+  auto is_ready(const rcl_wait_set_t &) -> bool override { return false; }
   void execute(const std::shared_ptr<void> &) override {}
-  std::shared_ptr<void> take_data() override { return nullptr; }
+  auto take_data() -> std::shared_ptr<void> override { return nullptr; }
   void set_on_ready_callback(std::function<void(std::size_t, int)>) override
   {
     refuse_outside_flux();
@@ -45,7 +45,7 @@ public:
 
   // Set on a thread while a flux executor runs on it. Each copy of flux_cpp has its own, as a
   // component library links one, so served() is what settles it once the member is bridged.
-  static bool & in_flux_executor() noexcept;
+  static auto in_flux_executor() noexcept -> bool &;
 
 private:
   void refuse_outside_flux();
@@ -58,9 +58,10 @@ private:
 };
 
 // Adds `src` to `group`, or to the node's default group when it is null.
-std::shared_ptr<GroupMember> join_group(
+auto join_group(
   const NodeRef & node, Source & src, const std::string & topic,
-  const rclcpp::CallbackGroup::SharedPtr & group, std::int32_t priority);
+  const rclcpp::CallbackGroup::SharedPtr & group,
+  std::int32_t priority) -> std::shared_ptr<GroupMember>;
 
 }  // namespace flux::detail
 

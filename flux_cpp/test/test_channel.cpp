@@ -26,17 +26,17 @@
 namespace
 {
 
-std::string text(const flux::FrameView & v)
+auto text(const flux::FrameView & v) -> std::string
 {
   return std::string(static_cast<const char *>(v.data()), v.size());
 }
 
-std::string unique_name(const char * test, std::uint64_t fingerprint = flux::kNoSchema)
+auto unique_name(const char * test, std::uint64_t fingerprint = flux::kNoSchema) -> std::string
 {
   return flux::detail::signpost_name("/cpp" + std::to_string(getpid()) + "_" + test, fingerprint);
 }
 
-flux::Status status_of(void (*f)(const std::string &), const std::string & name)
+auto status_of(void (*f)(const std::string &), const std::string & name) -> flux::Status
 {
   try {
     f(name);
@@ -203,7 +203,9 @@ TEST(Subscriber, ARefusedAttachLeavesItOutUntilThePublisherRestarts)
   if (child == 0) {
     const auto held = flux::detail::Channel::open(name);
     const char c = 1;
-    if (write(ready[1], &c, 1) != 1) _exit(1);
+    if (write(ready[1], &c, 1) != 1) {
+      _exit(1);
+    }
     pause();
     _exit(0);
   }
@@ -243,13 +245,17 @@ TEST(Subscriber, ARefusedReAttachLeavesItOutUntilThePublisherRestarts)
   if (child == 0) {
     const auto held = flux::detail::Channel::open(name);
     const char c = 1;
-    if (write(ready[1], &c, 1) != 1) _exit(1);
+    if (write(ready[1], &c, 1) != 1) {
+      _exit(1);
+    }
     pause();
     _exit(0);
   }
   char c = 0;
   ASSERT_EQ(read(ready[0], &c, 1), 1);
-  for (int i = 0; i < 3 && sub.refusal().empty(); ++i) EXPECT_FALSE(sub.take_for_executor());
+  for (int i = 0; i < 3 && sub.refusal().empty(); ++i) {
+    EXPECT_FALSE(sub.take_for_executor());
+  }
   kill(child, SIGKILL);
   waitpid(child, nullptr, 0);
   ASSERT_NE(sub.new_refusal(), nullptr);

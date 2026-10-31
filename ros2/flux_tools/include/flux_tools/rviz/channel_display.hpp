@@ -26,9 +26,9 @@ class ChannelDisplay : public rviz_common::Display
 public:
   ChannelDisplay(const char * description, std::uint64_t fingerprint);
   ChannelDisplay(const ChannelDisplay &) = delete;
-  ChannelDisplay & operator=(const ChannelDisplay &) = delete;
+  auto operator=(const ChannelDisplay &) -> ChannelDisplay & = delete;
   ChannelDisplay(ChannelDisplay &&) = delete;
-  ChannelDisplay & operator=(ChannelDisplay &&) = delete;
+  auto operator=(ChannelDisplay &&) -> ChannelDisplay & = delete;
   ~ChannelDisplay() override = default;
 
   void onInitialize() override;
@@ -41,7 +41,7 @@ protected:
   virtual void unsubscribe();
   // The next frame, or none. A channel that refuses this subscription is shown in the status
   // rather than thrown out of update(), which would end rviz.
-  flux::FrameView take();
+  auto take() -> flux::FrameView;
   // Counts a frame shown, in the Topic status.
   void shown();
 

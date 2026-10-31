@@ -89,7 +89,7 @@ void ChannelDisplay::unsubscribe()
   sub_.reset();
 }
 
-flux::FrameView ChannelDisplay::take()
+auto ChannelDisplay::take() -> flux::FrameView
 {
   if (!sub_) {
     return {};

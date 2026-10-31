@@ -8,7 +8,7 @@
 
 namespace
 {
-std::FILE * log_file()
+auto log_file() -> std::FILE *
 {
   // NOLINTNEXTLINE(cppcoreguidelines-owning-memory): open until the process exits.
   static std::FILE * f = std::fopen(std::getenv("FLUX_TRACE_LOG"), "w");

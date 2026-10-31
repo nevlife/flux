@@ -50,7 +50,7 @@ private:
 // A container's main(). The process takes the manager node's name: containers would otherwise
 // share one.
 template <class Manager = ComponentManager>
-int run_component_container(int argc, char ** argv)
+auto run_component_container(int argc, char ** argv) -> int
 {
   try {
     rclcpp::init(argc, argv);

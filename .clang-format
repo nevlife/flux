@@ -12,6 +12,7 @@ BraceWrapping:
   AfterNamespace: true
   AfterStruct: true
 BreakBeforeBraces: Custom
+InsertBraces: true
 ColumnLimit: 100
 ConstructorInitializerIndentWidth: 0
 ContinuationIndentWidth: 2

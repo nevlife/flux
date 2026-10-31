@@ -21,7 +21,7 @@ struct Event
 };
 
 void record(const std::string & what, const void * key = nullptr, double value = 0);
-std::vector<Event> events(const std::string & what);
+auto events(const std::string & what) -> std::vector<Event>;
 
 }  // namespace probe
 

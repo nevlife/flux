@@ -72,6 +72,8 @@ repos:
         language: python
         additional_dependencies: [clang-tidy==22.1.8]
         types_or: [c++, c]
+        # One run: a changed header checks every translation unit, so parallel batches multiply.
+        require_serial: true
 
       # Reads every document and both example sources, so any of them changing reruns it.
       - id: doc-examples

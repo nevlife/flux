@@ -13,9 +13,9 @@ public:
   explicit OnExit(F f) : f_(std::move(f)) {}
   ~OnExit() { f_(); }
   OnExit(const OnExit &) = delete;
-  OnExit & operator=(const OnExit &) = delete;
+  auto operator=(const OnExit &) -> OnExit & = delete;
   OnExit(OnExit &&) = delete;
-  OnExit & operator=(OnExit &&) = delete;
+  auto operator=(OnExit &&) -> OnExit & = delete;
 
 private:
   F f_;

@@ -62,27 +62,29 @@ public:
   {
   }
   Relay(const Relay &) = delete;
-  Relay & operator=(const Relay &) = delete;
+  auto operator=(const Relay &) -> Relay & = delete;
   Relay(Relay &&) = delete;
-  Relay & operator=(Relay &&) = delete;
+  auto operator=(Relay &&) -> Relay & = delete;
   ~Relay() { stop(); }
 
   // Joins, so the counts read after it are final.
   void stop()
   {
     stop_ = true;
-    if (thread_.joinable()) thread_.join();
+    if (thread_.joinable()) {
+      thread_.join();
+    }
   }
 
-  std::uint64_t fingerprint() const noexcept { return fingerprint_; }
-  const std::string & signpost() const noexcept { return signpost_; }
+  [[nodiscard]] auto fingerprint() const noexcept -> std::uint64_t { return fingerprint_; }
+  [[nodiscard]] auto signpost() const noexcept -> const std::string & { return signpost_; }
   // What ended the relay's thread early, or null.
-  const std::string * failure() const noexcept
+  [[nodiscard]] auto failure() const noexcept -> const std::string *
   {
     return failed_.load(std::memory_order_acquire) ? &failure_ : nullptr;
   }
-  std::uint64_t published() const noexcept { return published_; }
-  std::uint64_t unreadable() const noexcept { return unreadable_; }
+  [[nodiscard]] auto published() const noexcept -> std::uint64_t { return published_; }
+  [[nodiscard]] auto unreadable() const noexcept -> std::uint64_t { return unreadable_; }
 
 private:
   void run()
@@ -101,7 +103,9 @@ private:
     std::vector<std::uint8_t> bytes;
     while (!stop_) {
       flux::FrameView frame = sub_.take_blocking(kWaitNs);
-      if (!frame) continue;
+      if (!frame) {
+        continue;
+      }
       // Sizing and writing must read the same bytes, and a peer can still write a committed slot.
       const auto * data = static_cast<const std::uint8_t *>(frame.data());
       bytes.assign(data, data + frame.size());
@@ -136,18 +140,19 @@ private:
 };
 
 template <class Infos>
-bool others(const rclcpp::Node & node, const Infos & infos)
+auto others(const rclcpp::Node & node, const Infos & infos) -> bool
 {
   for (const auto & info : infos) {
-    if (info.node_name() != node.get_name() || info.node_namespace() != node.get_namespace())
+    if (info.node_name() != node.get_name() || info.node_namespace() != node.get_namespace()) {
       return true;
+    }
   }
   return false;
 }
 
 // Someone other than the bridge subscribes, and nobody else publishes: a publisher's own ROS 2
 // mirror already serves the topic, and a second publisher would hand every frame over twice.
-bool wanted(const rclcpp::Node & node, const std::string & topic)
+auto wanted(const rclcpp::Node & node, const std::string & topic) -> bool
 {
   return others(node, node.get_subscriptions_info_by_topic(topic)) &&
          !others(node, node.get_publishers_info_by_topic(topic));
@@ -163,7 +168,9 @@ public:
     std::map<std::string, flux::Topic> bridgeable;
     std::set<std::string> seen;
     for (flux::Topic & t : flux::enumerate_topics()) {
-      if (!t.key_exact) continue;
+      if (!t.key_exact) {
+        continue;
+      }
       seen.insert(t.signpost);
       const bool valid = flux_bridge::is_ros_topic_name(t.key);
       if (!valid || !schemas_.contains(t.fingerprint)) {
@@ -175,9 +182,13 @@ public:
         continue;
       }
       const flux::ChannelStats stats = flux::read_channel_stats(t.signpost);
-      if (!stats.live) continue;
+      if (!stats.live) {
+        continue;
+      }
       if (const auto out = left_out_.find(t.signpost); out != left_out_.end()) {
-        if (out->second == stats.epoch) continue;
+        if (out->second == stats.epoch) {
+          continue;
+        }
         left_out_.erase(out);  // a new publisher: tried again
       }
       bridgeable.emplace(t.key, std::move(t));
@@ -210,7 +221,9 @@ public:
       it = relays_.erase(it);
     }
     for (const auto & [key, topic] : bridgeable) {
-      if (relays_.count(key) || left_out_.count(topic.signpost) || !wanted(*node_, key)) continue;
+      if (relays_.count(key) || left_out_.count(topic.signpost) || !wanted(*node_, key)) {
+        continue;
+      }
       const flux::Schemas::Type type = schemas_.at(topic.fingerprint);
       try {
         relays_.emplace(key, std::make_unique<Relay>(*node_, topic, type));
@@ -222,7 +235,7 @@ public:
     }
   }
 
-  std::size_t types() const noexcept { return schemas_.size(); }
+  [[nodiscard]] auto types() const noexcept -> std::size_t { return schemas_.size(); }
 
 private:
   // Tried again once its publisher restarts; the other channels keep relaying.
@@ -256,19 +269,22 @@ private:
 };
 
 // Empty for -h: the usage goes to stdout and the bridge does not start.
-std::optional<std::chrono::duration<double>> parse(const std::vector<std::string> & args)
+auto parse(const std::vector<std::string> & args) -> std::optional<std::chrono::duration<double>>
 {
   constexpr std::string_view kPollEq = "--poll=";
   std::chrono::duration<double> poll{1.0};
   for (std::size_t i = 1; i < args.size(); ++i) {
     const std::string & a = args[i];
-    if (a == "-h" || a == "--help") return std::nullopt;
+    if (a == "-h" || a == "--help") {
+      return std::nullopt;
+    }
     std::string text;
     if (a.compare(0, kPollEq.size(), kPollEq) == 0) {
       text = a.substr(kPollEq.size());
     } else if (a == "--poll") {
-      if (i + 1 >= args.size())
+      if (i + 1 >= args.size()) {
         throw std::invalid_argument("argument --poll: expected one argument");
+      }
       text = args[++i];
     } else {
       throw std::invalid_argument("unknown argument " + a);
@@ -280,7 +296,7 @@ std::optional<std::chrono::duration<double>> parse(const std::vector<std::string
 
 }  // namespace
 
-int main(int argc, char ** argv)
+auto main(int argc, char ** argv) -> int
 {
   // Signals are taken here, not by rclcpp, so relays stop before the context they publish on.
   rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);

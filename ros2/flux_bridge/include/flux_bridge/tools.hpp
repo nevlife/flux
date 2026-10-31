@@ -16,7 +16,7 @@ namespace flux_bridge
 
 // The value of `option`: a decimal number with nothing after it, finite and above 0. For --poll
 // SEC, nan would make the loop spin and inf would make it never look again.
-inline double positive_number(const std::string & option, const std::string & text)
+inline auto positive_number(const std::string & option, const std::string & text) -> double
 {
   double v = 0;
   const char * end = text.data() + text.size();
@@ -24,15 +24,18 @@ inline double positive_number(const std::string & option, const std::string & te
   if (text.empty() || ec != std::errc() || at != end) {
     throw std::invalid_argument("argument " + option + ": Expects a floating point number");
   }
-  if (!std::isfinite(v))
+  if (!std::isfinite(v)) {
     throw std::invalid_argument("argument " + option + ": Value must be finite");
-  if (v <= 0.0) throw std::invalid_argument("argument " + option + ": Value must be positive");
+  }
+  if (v <= 0.0) {
+    throw std::invalid_argument("argument " + option + ": Value must be positive");
+  }
   return v;
 }
 
 // A channel's key comes from another process. rclcpp throws on a name that breaks the ROS rules,
 // and such a name can hold terminal escapes, so it is neither used nor printed.
-inline bool is_ros_topic_name(const std::string & key)
+inline auto is_ros_topic_name(const std::string & key) -> bool
 {
   int result = RMW_TOPIC_VALID;
   std::size_t index = 0;

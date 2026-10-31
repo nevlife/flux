@@ -33,7 +33,7 @@ struct Topic
 };
 
 // Every channel on this host with a signpost, sorted by signpost.
-inline std::vector<Topic> enumerate_topics()
+inline auto enumerate_topics() -> std::vector<Topic>
 {
   struct Free
   {
@@ -57,7 +57,7 @@ inline std::vector<Topic> enumerate_topics()
 }
 
 // A missing or unreadable channel reads as not live.
-inline ChannelStats read_channel_stats(const std::string & signpost)
+inline auto read_channel_stats(const std::string & signpost) -> ChannelStats
 {
   detail::require_abi();
   ChannelStats s{};

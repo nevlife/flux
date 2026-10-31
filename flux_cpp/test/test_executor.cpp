@@ -32,19 +32,28 @@ struct Feed : flux::detail::Source
   bool fail = false;
   std::atomic<int> delivered{0};
 
-  bool attach() override
+  auto attach() -> bool override
   {
-    if (fail && !attached) throw std::runtime_error("attach failed");
+    if (fail && !attached) {
+      throw std::runtime_error("attach failed");
+    }
     return attached;
   }
-  bool deliver_one() override
+  auto deliver_one() -> bool override
   {
-    if (fail) throw std::runtime_error("deliver failed");
-    if (!ch.take()) return false;
+    if (fail) {
+      throw std::runtime_error("deliver failed");
+    }
+    if (!ch.take()) {
+      return false;
+    }
     ++delivered;
     return true;
   }
-  const flux::detail::Channel * channel() const override { return attached ? &ch : nullptr; }
+  [[nodiscard]] auto channel() const -> const flux::detail::Channel * override
+  {
+    return attached ? &ch : nullptr;
+  }
 };
 
 // A subscription made before its publisher, as flux::Subscription is.
@@ -54,18 +63,23 @@ struct Late : flux::detail::Source
   flux::detail::Subscriber sub;
   std::atomic<int> delivered{0};
 
-  bool attach() override { return sub.attach_for_executor(); }
-  bool deliver_one() override
+  auto attach() -> bool override { return sub.attach_for_executor(); }
+  auto deliver_one() -> bool override
   {
-    if (!sub.take_for_executor()) return false;
+    if (!sub.take_for_executor()) {
+      return false;
+    }
     ++delivered;
     return true;
   }
-  const flux::detail::Channel * channel() const override { return sub.channel(); }
-  const flux::detail::Watch * watch() const override { return sub.watch(); }
+  [[nodiscard]] auto channel() const -> const flux::detail::Channel * override
+  {
+    return sub.channel();
+  }
+  [[nodiscard]] auto watch() const -> const flux::detail::Watch * override { return sub.watch(); }
 };
 
-int parker_threads()
+auto parker_threads() -> int
 {
   int n = 0;
   for (const auto & task : std::filesystem::directory_iterator("/proc/self/task")) {
@@ -106,7 +120,9 @@ TEST_F(ExecutorTest, APublisherComingUpWakesASubscriptionWaitingForIt)
   ex.add(late);
   const flux::detail::ExecutorHandle h = ex.handle();
   std::thread spin([&] { ex.spin(10'000'000'000); });
-  while (!h.is_spinning()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  while (!h.is_spinning()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   auto pub = flux::detail::Channel::create(name, 16, 4);
   const auto t0 = std::chrono::steady_clock::now();
@@ -159,7 +175,7 @@ TEST_F(ExecutorTest, AnExceptionFromAttachLeavesTheSpin)
 
 struct BrokenChannel : Feed
 {
-  const flux::detail::Channel * channel() const override
+  [[nodiscard]] auto channel() const -> const flux::detail::Channel * override
   {
     throw std::runtime_error("channel failed");
   }
@@ -180,7 +196,9 @@ TEST_F(ExecutorTest, OnPassRunsAndItsExceptionLeavesTheSpin)
   flux::detail::Executor & ex = *ex_;
   int passes = 0;
   ex.on_pass([&] {
-    if (++passes == 3) throw std::logic_error("third pass");
+    if (++passes == 3) {
+      throw std::logic_error("third pass");
+    }
   });
   EXPECT_THROW(ex.spin(1'000'000), std::logic_error);
   EXPECT_EQ(passes, 3);
@@ -193,9 +211,13 @@ TEST_F(ExecutorTest, AHandleStopsASpinOnAnotherThread)
   ex.add(f);
   flux::detail::ExecutorHandle h = ex.handle();
   std::thread t([&] { ex.spin(); });
-  while (!h.is_spinning()) std::this_thread::yield();
+  while (!h.is_spinning()) {
+    std::this_thread::yield();
+  }
   ASSERT_EQ(f.ch.publish("a", 1), flux::Published::Ok);
-  while (f.delivered == 0) std::this_thread::yield();
+  while (f.delivered == 0) {
+    std::this_thread::yield();
+  }
   h.stop();
   t.join();
   EXPECT_FALSE(h.is_spinning());
@@ -207,7 +229,9 @@ TEST_F(ExecutorTest, ARunFlagEndsTheSpin)
   std::atomic<bool> run{true};
   int passes = 0;
   ex.on_pass([&] {
-    if (++passes == 2) run = false;
+    if (++passes == 2) {
+      run = false;
+    }
   });
   ex.spin(run, 1'000'000);
   EXPECT_EQ(passes, 2);

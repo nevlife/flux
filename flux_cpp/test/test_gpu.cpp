@@ -31,12 +31,14 @@ struct Driver
   CopyDtoH copy = nullptr;
 };
 
-const Driver * driver()
+auto driver() -> const Driver *
 {
   static const Driver d = [] {
     Driver out;
     void * lib = dlopen("libcuda.so.1", RTLD_LAZY | RTLD_LOCAL);
-    if (lib == nullptr) return out;
+    if (lib == nullptr) {
+      return out;
+    }
     // NOLINTBEGIN(*-reinterpret-cast): dlsym hands back an untyped address.
     out.memset = reinterpret_cast<MemsetAsync>(dlsym(lib, "cuMemsetD8Async"));
     out.copy = reinterpret_cast<CopyDtoH>(dlsym(lib, "cuMemcpyDtoH_v2"));
@@ -46,38 +48,44 @@ const Driver * driver()
   return d.memset != nullptr && d.copy != nullptr ? &d : nullptr;
 }
 
-std::uint64_t addr(const void * p)
+auto addr(const void * p) -> std::uint64_t
 {
   return reinterpret_cast<std::uintptr_t>(p);  // NOLINT(*-reinterpret-cast)
 }
 
-std::vector<unsigned char> read_back(const void * device, std::size_t n)
+auto read_back(const void * device, std::size_t n) -> std::vector<unsigned char>
 {
   std::vector<unsigned char> out(n);
   EXPECT_EQ(driver()->copy(out.data(), addr(device), n), 0);
   return out;
 }
 
-bool all(const std::vector<unsigned char> & v, unsigned char b)
+auto all(const std::vector<unsigned char> & v, unsigned char b) -> bool
 {
   for (const unsigned char x : v) {
-    if (x != b) return false;
+    if (x != b) {
+      return false;
+    }
   }
   return true;
 }
 
 // The exit status of a shell command, and its standard output in out.
-int shell(const std::string & cmd, std::string & out)
+auto shell(const std::string & cmd, std::string & out) -> int
 {
   FILE * p = popen(cmd.c_str(), "r");  // NOLINT(bugprone-command-processor): our own script
-  if (p == nullptr) return -1;
+  if (p == nullptr) {
+    return -1;
+  }
   std::array<char, 256> buf{};
-  while (std::fgets(buf.data(), buf.size(), p) != nullptr) out += buf.data();
+  while (std::fgets(buf.data(), buf.size(), p) != nullptr) {
+    out += buf.data();
+  }
   const int status = pclose(p);
   return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-std::string unique_name(const char * test)
+auto unique_name(const char * test) -> std::string
 {
   return flux::detail::signpost_name("/gpu" + std::to_string(getpid()) + "_" + test);
 }
@@ -91,7 +99,9 @@ protected:
   {
     mark_.clear();
     readable_ = shell(FLUX_KERNEL_LOG " mark", mark_) == 0;
-    if (!mark_.empty() && mark_.back() == '\n') mark_.pop_back();
+    if (!mark_.empty() && mark_.back() == '\n') {
+      mark_.pop_back();
+    }
   }
   static void TearDownTestSuite()
   {
@@ -165,7 +175,9 @@ TEST_F(Gpu, AFrameWrittenOnTheDeviceReachesHostAndDeviceSubscribers)
 
 TEST_F(Gpu, PublisherAndSubscriptionTakeADevice)
 {
-  if (!rclcpp::ok()) rclcpp::init(0, nullptr);
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
   auto node = std::make_shared<rclcpp::Node>("flux_gpu_test");
   const std::string topic = "/gpu" + std::to_string(getpid()) + "_node";
   flux::Publisher pub(*node, topic, flux::kNoSchema, 1 << 16, 4, flux::Device::Cuda);
@@ -189,7 +201,9 @@ TEST_F(Gpu, PublisherAndSubscriptionTakeADevice)
 
 TEST_F(Gpu, ABoundedFenceWaitsForWorkThatEndsInTime)
 {
-  if (!rclcpp::ok()) rclcpp::init(0, nullptr);
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
   auto node = std::make_shared<rclcpp::Node>("flux_gpu_bound");
   const std::string topic = "/gpu" + std::to_string(getpid()) + "_bound";
   flux::Publisher pub(*node, topic, flux::kNoSchema, 1 << 16, 4, flux::Device::Cuda);
@@ -214,7 +228,9 @@ TEST_F(Gpu, ABoundedFenceWaitsForWorkThatEndsInTime)
 
 TEST_F(Gpu, ADeferredReleaseReturnsTheSlotOnceTheDeviceIsDone)
 {
-  if (!rclcpp::ok()) rclcpp::init(0, nullptr);
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
   auto node = std::make_shared<rclcpp::Node>("flux_gpu_deferred");
   const std::string topic = "/gpu" + std::to_string(getpid()) + "_deferred";
   flux::Publisher pub(*node, topic, flux::kNoSchema, 1 << 16, 4, flux::Device::Cuda);

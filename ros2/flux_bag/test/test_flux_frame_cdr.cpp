@@ -17,7 +17,7 @@
 namespace
 {
 
-flux_msgs::msg::FluxFrame round_trip(const flux_bag::FluxFrameFields & f)
+auto round_trip(const flux_bag::FluxFrameFields & f) -> flux_msgs::msg::FluxFrame
 {
   std::vector<std::uint8_t> bytes(flux_bag::FluxFrameCdr::size(f));
   EXPECT_EQ(flux_bag::FluxFrameCdr::write(f, bytes.data()), bytes.size());
@@ -31,7 +31,7 @@ flux_msgs::msg::FluxFrame round_trip(const flux_bag::FluxFrameFields & f)
   return out;
 }
 
-std::vector<std::uint8_t> rmw_bytes(const flux_msgs::msg::FluxFrame & m)
+auto rmw_bytes(const flux_msgs::msg::FluxFrame & m) -> std::vector<std::uint8_t>
 {
   rclcpp::SerializedMessage serialized;
   rclcpp::Serialization<flux_msgs::msg::FluxFrame>().serialize_message(&m, &serialized);

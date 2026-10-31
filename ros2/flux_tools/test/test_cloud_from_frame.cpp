@@ -16,8 +16,9 @@ namespace
 using Cloud = sensor_msgs::flux_msg::PointCloud2;
 
 // x, y, z float32 at 0, 4, 8, and rgb at `rgb`; point_step 16.
-std::vector<std::uint8_t> cloud(
-  std::uint32_t width, std::uint32_t height, const std::vector<float> & xyz, std::uint32_t rgb = 12)
+auto cloud(
+  std::uint32_t width, std::uint32_t height, const std::vector<float> & xyz,
+  std::uint32_t rgb = 12) -> std::vector<std::uint8_t>
 {
   std::vector<std::uint8_t> buf(4096);
   Cloud::Builder b(buf.data(), buf.size());

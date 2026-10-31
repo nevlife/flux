@@ -48,12 +48,12 @@ public:
   Span() = default;
   Span(T * p, std::size_t n) noexcept : p_(p), n_(n) {}
 
-  T * data() const noexcept { return p_; }
-  std::size_t size() const noexcept { return n_; }
-  bool empty() const noexcept { return n_ == 0; }
-  T * begin() const noexcept { return p_; }
-  T * end() const noexcept { return p_ + n_; }
-  T & operator[](std::size_t i) const noexcept { return p_[i]; }
+  [[nodiscard]] auto data() const noexcept -> T * { return p_; }
+  [[nodiscard]] auto size() const noexcept -> std::size_t { return n_; }
+  [[nodiscard]] auto empty() const noexcept -> bool { return n_ == 0; }
+  [[nodiscard]] auto begin() const noexcept -> T * { return p_; }
+  [[nodiscard]] auto end() const noexcept -> T * { return p_ + n_; }
+  auto operator[](std::size_t i) const noexcept -> T & { return p_[i]; }
 
 private:
   T * p_ = nullptr;
@@ -64,12 +64,12 @@ namespace detail
 {
 
 // off + bytes <= size, without overflowing.
-inline bool fits(std::size_t off, std::size_t bytes, std::size_t size) noexcept
+inline auto fits(std::size_t off, std::size_t bytes, std::size_t size) noexcept -> bool
 {
   return off <= size && bytes <= size - off;
 }
 
-inline std::size_t align_up(std::size_t n, std::size_t a) noexcept
+inline auto align_up(std::size_t n, std::size_t a) noexcept -> std::size_t
 {
   return (n + a - 1) / a * a;
 }
@@ -78,7 +78,7 @@ inline std::size_t align_up(std::size_t n, std::size_t a) noexcept
 
 // A bool stored in a frame. Its byte may hold any value, and reading one other than 0 or 1 as a
 // bool is undefined: any nonzero byte is true, as the Python adapter and the CDR bridge read it.
-inline bool as_bool(const bool & b) noexcept
+inline auto as_bool(const bool & b) noexcept -> bool
 {
   unsigned char c = 0;
   std::memcpy(&c, &b, 1);
@@ -87,7 +87,7 @@ inline bool as_bool(const bool & b) noexcept
 
 // A frame string up to its first NUL, the string a ROS message holds: rclpy cuts there, and
 // rclcpp refuses to serialize one with a NUL inside.
-inline std::string_view until_nul(std::string_view s) noexcept
+inline auto until_nul(std::string_view s) noexcept -> std::string_view
 {
   return s.substr(0, s.find('\0'));
 }
@@ -114,7 +114,7 @@ constexpr std::size_t kTensorAlign = 64;
 
 // 0 for a dtype flux does not hand out: lanes other than 1, opaque handles, sub-byte floats,
 // codes DLPack does not define.
-constexpr std::size_t dl_itemsize(DlType t) noexcept
+constexpr auto dl_itemsize(DlType t) noexcept -> std::size_t
 {
   const std::size_t b = t.bits;
   const bool whole = b == 8 || b == 16 || b == 32 || b == 64;
@@ -139,7 +139,7 @@ constexpr std::size_t dl_itemsize(DlType t) noexcept
 }
 
 template <class T>
-constexpr DlType dl_type() noexcept
+constexpr auto dl_type() noexcept -> DlType
 {
   static_assert(std::is_arithmetic_v<T>);
   constexpr auto bits = static_cast<std::uint8_t>(8 * sizeof(T));
@@ -169,7 +169,7 @@ struct Tensor
 
   // Null unless the frame's dtype is T's.
   template <class T>
-  const T * as() const noexcept
+  auto as() const noexcept -> const T *
   {
     constexpr DlType t = dl_type<T>();
     return dtype.code == t.code && dtype.bits == t.bits && dtype.lanes == 1
@@ -180,9 +180,9 @@ struct Tensor
 
 // Why these fields put an element of `t` outside the `len` bytes at `field`, or off a boundary
 // of its size; nullptr when every element is inside and aligned.
-inline const char * tensor_fault(
+inline auto tensor_fault(
   const void * field, std::size_t len, DlType t, Span<const std::int64_t> shape,
-  Span<const std::int64_t> strides, std::uint64_t byte_offset) noexcept
+  Span<const std::int64_t> strides, std::uint64_t byte_offset) noexcept -> const char *
 {
   const auto size = static_cast<std::int64_t>(dl_itemsize(t));
   if (size == 0) {
@@ -243,13 +243,13 @@ public:
   {
   }
 
-  bool bad() const noexcept { return bad_; }
+  auto bad() const noexcept -> bool { return bad_; }
   explicit operator bool() const noexcept { return !bad_; }
-  std::size_t size() const noexcept { return size_; }
-  const std::byte * base() const noexcept { return base_; }
+  auto size() const noexcept -> std::size_t { return size_; }
+  auto base() const noexcept -> const std::byte * { return base_; }
 
   template <class T>
-  T get(std::size_t off) const noexcept
+  auto get(std::size_t off) const noexcept -> T
   {
     static_assert(std::is_trivially_copyable_v<T>);
     T v{};
@@ -266,7 +266,7 @@ public:
 
   // A fixed T[N] block, inline in the scalar block rather than behind a descriptor.
   template <class T>
-  Span<const T> block(std::size_t off, std::size_t n) const noexcept
+  auto block(std::size_t off, std::size_t n) const noexcept -> Span<const T>
   {
     if (!region(off, n, sizeof(T), alignof(T))) {
       return {};
@@ -274,10 +274,10 @@ public:
     return Span<const T>(reinterpret_cast<const T *>(base_ + off), n);
   }
 
-  Desc desc(std::size_t off) const noexcept { return get<Desc>(off); }
+  auto desc(std::size_t off) const noexcept -> Desc { return get<Desc>(off); }
   // Element count of a variable array. 0 (and bad()) if its `esize`-byte elements do not fit, so
   // a loop bounded by it never indexes past the frame.
-  std::size_t len(std::size_t off, std::size_t esize, std::size_t align) const noexcept
+  auto len(std::size_t off, std::size_t esize, std::size_t align) const noexcept -> std::size_t
   {
     const Desc d = desc(off);
     return region(d.off, d.len, esize, align) ? d.len : 0;
@@ -286,7 +286,7 @@ public:
   // Elements of a variable array, aliasing the frame. Empty (and bad()) if the descriptor does
   // not fit or points somewhere a T cannot be read from.
   template <class T>
-  Span<const T> span(std::size_t off) const noexcept
+  auto span(std::size_t off) const noexcept -> Span<const T>
   {
     const Desc d = desc(off);
     if (!region(d.off, d.len, sizeof(T), alignof(T))) {
@@ -295,7 +295,7 @@ public:
     return Span<const T>(reinterpret_cast<const T *>(base_ + d.off), d.len);
   }
 
-  std::string_view str(std::size_t off) const noexcept
+  auto str(std::size_t off) const noexcept -> std::string_view
   {
     const Desc d = desc(off);
     if (bad_ || !detail::fits(d.off, d.len, size_)) {
@@ -306,7 +306,7 @@ public:
   }
 
   // Entry `i` of a string array whose descriptor is at `off`.
-  std::string_view str_at(std::size_t off, std::size_t i) const noexcept
+  auto str_at(std::size_t off, std::size_t i) const noexcept -> std::string_view
   {
     const Desc d = desc(off);
     if (!region(d.off, d.len, sizeof(Desc), alignof(Desc)) || i >= d.len) {
@@ -317,8 +317,8 @@ public:
   }
 
   // Frame offset of element `i` of a record/jagged array whose descriptor is at `off`.
-  std::size_t elem(
-    std::size_t off, std::size_t i, std::size_t stride, std::size_t align) const noexcept
+  auto elem(std::size_t off, std::size_t i, std::size_t stride, std::size_t align) const noexcept
+    -> std::size_t
   {
     const Desc d = desc(off);
     if (!region(d.off, d.len, stride, align) || i >= d.len) {
@@ -330,7 +330,7 @@ public:
 
   // Aliases the data field. Empty (and bad()) when tensor_fault() finds one; `why` then names it,
   // unless a descriptor escaped the frame first.
-  Tensor tensor(const TensorAt & at, const char ** why = nullptr) const noexcept
+  auto tensor(const TensorAt & at, const char ** why = nullptr) const noexcept -> Tensor
   {
     const DlType t{
       get<std::uint8_t>(at.code), get<std::uint8_t>(at.bits), get<std::uint16_t>(at.lanes)};
@@ -353,7 +353,8 @@ public:
   }
 
 private:
-  bool region(std::size_t off, std::size_t n, std::size_t esize, std::size_t align) const noexcept
+  auto region(std::size_t off, std::size_t n, std::size_t esize, std::size_t align) const noexcept
+    -> bool
   {
     if (bad_ || off % align != 0 || off > size_ || n > (size_ - off) / esize) {
       bad_ = true;
@@ -387,10 +388,10 @@ public:
     }
   }
 
-  bool bad() const noexcept { return bad_; }
+  [[nodiscard]] auto bad() const noexcept -> bool { return bad_; }
   explicit operator bool() const noexcept { return !bad_; }
-  std::size_t size() const noexcept { return used_; }  // bytes to commit
-  std::byte * base() const noexcept { return base_; }
+  [[nodiscard]] auto size() const noexcept -> std::size_t { return used_; }  // bytes to commit
+  [[nodiscard]] auto base() const noexcept -> std::byte * { return base_; }
 
   template <class T>
   void put(std::size_t off, const T & v) noexcept
@@ -405,7 +406,7 @@ public:
 
   // A fixed T[N] block, writable in place.
   template <class T>
-  Span<T> block(std::size_t off, std::size_t n) noexcept
+  auto block(std::size_t off, std::size_t n) noexcept -> Span<T>
   {
     // Divide rather than multiply, as region() and reserve() do: `n * sizeof(T)` wraps for a
     // large n and the wrapped product then passes the bound it was meant to fail.
@@ -420,7 +421,7 @@ public:
   // filling it is the 0-copy write path. Contents are left as they were -- the caller is about
   // to overwrite them, and zeroing first would double the write traffic.
   template <class T>
-  Span<T> alloc(std::size_t off, std::size_t n) noexcept
+  auto alloc(std::size_t off, std::size_t n) noexcept -> Span<T>
   {
     void * p = reserve(off, n, sizeof(T), alignof(T), false);
     return p ? Span<T>(static_cast<T *>(p), n) : Span<T>();
@@ -428,7 +429,7 @@ public:
 
   // On an `align` boundary past T's own; the frame base has it, as a page does.
   template <class T>
-  Span<T> alloc(std::size_t off, std::size_t n, std::size_t align) noexcept
+  auto alloc(std::size_t off, std::size_t n, std::size_t align) noexcept -> Span<T>
   {
     void * p = reserve(off, n, sizeof(T), align > alignof(T) ? align : alignof(T), false);
     return p ? Span<T>(static_cast<T *>(p), n) : Span<T>();
@@ -437,7 +438,7 @@ public:
   // A C-contiguous tensor of `shape` in a tensor message: its dtype, shape, empty strides and
   // zero byte_offset, and data on a kTensorAlign boundary. Null (and bad()) if it does not fit
   // or `t` is not a dtype flux reads.
-  void * tensor(const TensorAt & at, DlType t, Span<const std::int64_t> shape) noexcept
+  auto tensor(const TensorAt & at, DlType t, Span<const std::int64_t> shape) noexcept -> void *
   {
     std::size_t bytes = dl_itemsize(t);
     bool ok = bytes != 0;
@@ -462,7 +463,7 @@ public:
   }
 
   template <class T>
-  Span<T> tensor(const TensorAt & at, Span<const std::int64_t> shape) noexcept
+  auto tensor(const TensorAt & at, Span<const std::int64_t> shape) noexcept -> Span<T>
   {
     void * p = tensor(at, dl_type<T>(), shape);
     std::size_t n = 1;
@@ -472,7 +473,7 @@ public:
     return p ? Span<T>(static_cast<T *>(p), n) : Span<T>();
   }
 
-  bool put_str(std::size_t off, std::string_view s) noexcept
+  auto put_str(std::size_t off, std::string_view s) noexcept -> bool
   {
     void * p = reserve(off, s.size(), 1, 1, false);
     if (p == nullptr) {
@@ -483,12 +484,12 @@ public:
   }
 
   // Reserve a string array of n entries; entry i is written with put_str_at.
-  bool alloc_strs(std::size_t off, std::size_t n) noexcept
+  auto alloc_strs(std::size_t off, std::size_t n) noexcept -> bool
   {
     return reserve(off, n, sizeof(Desc), alignof(Desc), true) != nullptr;
   }
 
-  bool put_str_at(std::size_t off, std::size_t i, std::string_view s) noexcept
+  auto put_str_at(std::size_t off, std::size_t i, std::string_view s) noexcept -> bool
   {
     if (bad_ || !detail::fits(off, sizeof(Desc), cap_)) {
       bad_ = true;
@@ -506,16 +507,17 @@ public:
   // Reserve n element blocks of `stride` bytes and return the first one's frame offset;
   // element i starts at that + i * stride. Zeroed: an element block holds descriptors, and one
   // its writer skips must read as empty rather than as a stale offset into this frame.
-  std::size_t alloc_elems(
-    std::size_t off, std::size_t n, std::size_t stride, std::size_t align) noexcept
+  auto alloc_elems(std::size_t off, std::size_t n, std::size_t stride, std::size_t align) noexcept
+    -> std::size_t
   {
     void * p = reserve(off, n, stride, align, true);
     return p ? static_cast<std::size_t>(static_cast<std::byte *>(p) - base_) : 0;
   }
 
 private:
-  void * reserve(
-    std::size_t off, std::size_t n, std::size_t esize, std::size_t align, bool zero) noexcept
+  auto reserve(
+    std::size_t off, std::size_t n, std::size_t esize, std::size_t align,
+    bool zero) noexcept -> void *
   {
     if (bad_ || !detail::fits(off, sizeof(Desc), cap_)) {
       bad_ = true;

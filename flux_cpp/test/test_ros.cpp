@@ -40,7 +40,7 @@ struct EndpointInit
   std::uint64_t fingerprint;
   std::int32_t role, lang;
 };
-std::vector<EndpointInit> & endpoint_inits()
+auto endpoint_inits() -> std::vector<EndpointInit> &
 {
   static std::vector<EndpointInit> v;
   return v;
@@ -62,23 +62,25 @@ using namespace std::chrono_literals;
 constexpr std::uint32_t kSlot = 4096;
 constexpr std::uint32_t kSlots = 4;
 
-std::string topic(const char * name)
+auto topic(const char * name) -> std::string
 {
   return "/t" + std::to_string(getpid()) + "_" + name;
 }
 
 template <class P>
-bool eventually(P done, std::chrono::milliseconds limit = 2000ms)
+auto eventually(P done, std::chrono::milliseconds limit = 2000ms) -> bool
 {
   const auto end = std::chrono::steady_clock::now() + limit;
   while (!done()) {
-    if (std::chrono::steady_clock::now() > end) return false;
+    if (std::chrono::steady_clock::now() > end) {
+      return false;
+    }
     std::this_thread::sleep_for(1ms);
   }
   return true;
 }
 
-std::string text(const flux::FrameView & v)
+auto text(const flux::FrameView & v) -> std::string
 {
   return std::string(static_cast<const char *>(v.data()), v.size());
 }
@@ -88,7 +90,9 @@ class Ros : public ::testing::Test
 protected:
   static void SetUpTestSuite()
   {
-    if (!rclcpp::ok()) rclcpp::init(0, nullptr);
+    if (!rclcpp::ok()) {
+      rclcpp::init(0, nullptr);
+    }
   }
 
   void SetUp() override
@@ -103,9 +107,9 @@ protected:
   public:
     explicit Spinning(flux::Executor & ex) : ex_(ex), t_([this] { ex_.spin(); }) {}
     Spinning(const Spinning &) = delete;
-    Spinning & operator=(const Spinning &) = delete;
+    auto operator=(const Spinning &) -> Spinning & = delete;
     Spinning(Spinning &&) = delete;
-    Spinning & operator=(Spinning &&) = delete;
+    auto operator=(Spinning &&) -> Spinning & = delete;
     ~Spinning()
     {
       ex_.cancel();
@@ -126,7 +130,9 @@ TEST_F(Ros, AFrameReachesTheCallback)
   flux::Publisher pub(*node_, topic("cb"), flux::kNoSchema, kSlot, kSlots);
   std::atomic<int> got{0};
   flux::Subscription sub(*node_, topic("cb"), flux::kNoSchema, 4, [&](const flux::FrameView & v) {
-    if (text(v) == "frame") ++got;
+    if (text(v) == "frame") {
+      ++got;
+    }
   });
   ex_->add(sub);
   const Spinning spin{*ex_};
@@ -159,7 +165,7 @@ TEST_F(Ros, ASubscriptionInAGroupIsServedWithItsNode)
   }));
 }
 
-std::vector<std::string> & logged()
+auto logged() -> std::vector<std::string> &
 {
   static std::vector<std::string> lines;
   return lines;
@@ -317,7 +323,9 @@ TEST_F(Ros, ASignalEndsATakeBlockingLoop)
           std::this_thread::sleep_for(200ms);
           std::raise(sig);
         }).detach();
-        while (rclcpp::ok()) (void)sub.take_blocking();
+        while (rclcpp::ok()) {
+          (void)sub.take_blocking();
+        }
         std::exit(0);
       },
       ::testing::ExitedWithCode(0), "")
@@ -344,7 +352,9 @@ TEST_F(Ros, LostCountsOverTheSubscriptionsLife)
   std::optional<flux::Publisher> pub;
   pub.emplace(*node_, topic("lost"), flux::kNoSchema, kSlot, kSlots);
   flux::Subscription sub(*node_, topic("lost"), flux::kNoSchema, flux::QoS(1));
-  for (int i = 0; i < 3; ++i) ASSERT_EQ(pub->publish("a", 1), flux::Published::Ok);
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_EQ(pub->publish("a", 1), flux::Published::Ok);
+  }
   ASSERT_TRUE(sub.take());
   ASSERT_EQ(sub.lost(), 2U);
   pub.reset();
@@ -358,7 +368,9 @@ TEST_F(Ros, LostCountsOverTheSubscriptionsLife)
     (void)sub.take();
     return sub.attached();
   }));
-  for (int i = 0; i < 3; ++i) ASSERT_EQ(pub->publish("b", 1), flux::Published::Ok);
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_EQ(pub->publish("b", 1), flux::Published::Ok);
+  }
   ASSERT_TRUE(sub.take());
   EXPECT_EQ(sub.lost(), 4U);
 }
@@ -443,7 +455,9 @@ TEST_F(Ros, OverloadedFluxWorkDoesNotStarveRos)
   // Three cheap entities due every 10 ms: each turn between flux callbacks must run them all.
   std::vector<rclcpp::TimerBase::SharedPtr> timers;
   timers.reserve(3);
-  for (int i = 0; i < 3; ++i) timers.push_back(node_->create_wall_timer(10ms, [&] { ++ticks; }));
+  for (int i = 0; i < 3; ++i) {
+    timers.push_back(node_->create_wall_timer(10ms, [&] { ++ticks; }));
+  }
   ex_->add(sub);
   ex_->add_node(node_);
   const Spinning spin{*ex_};

@@ -83,7 +83,7 @@ constexpr const char * kUsage =
   "frames in rgb8, bgr8 or mono8 as JPEG of quality Q (1-100, default 90); other frames\n"
   "are stored as they are.\n";
 
-std::string default_uri()
+auto default_uri() -> std::string
 {
   const std::time_t now = std::time(nullptr);
   std::array<char, 64> buf{};
@@ -91,7 +91,7 @@ std::string default_uri()
   return buf.data();
 }
 
-Options parse(const std::vector<std::string> & args)
+auto parse(const std::vector<std::string> & args) -> Options
 {
   Options o;
   std::vector<std::string> * list = &o.record.topics;
@@ -100,7 +100,9 @@ Options parse(const std::vector<std::string> & args)
   for (std::size_t i = 1; i < args.size(); ++i) {
     const std::string & a = args[i];
     auto value = [&]() -> const std::string & {
-      if (i + 1 >= args.size()) throw std::invalid_argument(a + " needs a value");
+      if (i + 1 >= args.size()) {
+        throw std::invalid_argument(a + " needs a value");
+      }
       return args[++i];
     };
     if (a == "-a" || a == "--all") {
@@ -119,7 +121,9 @@ Options parse(const std::vector<std::string> & args)
       o.storage.storage_preset_profile = value();
     } else if (a == "--image-codec") {
       const std::string & v = value();
-      if (v != "raw" && v != "jpeg") throw std::invalid_argument("--image-codec takes raw or jpeg");
+      if (v != "raw" && v != "jpeg") {
+        throw std::invalid_argument("--image-codec takes raw or jpeg");
+      }
       image_codec = v;
     } else if (a == "--jpeg-quality") {
       const std::string & v = value();
@@ -146,20 +150,25 @@ Options parse(const std::vector<std::string> & args)
       list->push_back(a);
     }
   }
-  if (o.storage.uri.empty()) o.storage.uri = default_uri();
-  if (image_codec == "jpeg") o.jpeg_quality = quality;
+  if (o.storage.uri.empty()) {
+    o.storage.uri = default_uri();
+  }
+  if (image_codec == "jpeg") {
+    o.jpeg_quality = quality;
+  }
   o.record.rmw_serialization_format = rmw_get_serialization_format();
   return o;
 }
 
 // `mono_ns` (CLOCK_MONOTONIC) as a time on the clock `now` came from, `now` having been read
 // when CLOCK_MONOTONIC was `mono_now_ns`.
-std::int64_t on_clock(std::uint64_t mono_ns, std::int64_t mono_now_ns, const rclcpp::Time & now)
+auto on_clock(std::uint64_t mono_ns, std::int64_t mono_now_ns, const rclcpp::Time & now)
+  -> std::int64_t
 {
   return now.nanoseconds() - (mono_now_ns - static_cast<std::int64_t>(mono_ns));
 }
 
-std::int64_t monotonic_ns()
+auto monotonic_ns() -> std::int64_t
 {
   timespec ts{};
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -177,9 +186,9 @@ public:
   {
   }
   WriteQueue(const WriteQueue &) = delete;
-  WriteQueue & operator=(const WriteQueue &) = delete;
+  auto operator=(const WriteQueue &) -> WriteQueue & = delete;
   WriteQueue(WriteQueue &&) = delete;
-  WriteQueue & operator=(WriteQueue &&) = delete;
+  auto operator=(WriteQueue &&) -> WriteQueue & = delete;
   // Writes what is queued, then ends.
   ~WriteQueue()
   {
@@ -193,7 +202,7 @@ public:
 
   // A message for `n` bytes: one the writer is done with, so its pages are already mapped (a
   // fresh frame-sized buffer costs a page fault per page, slower than the frames come).
-  std::shared_ptr<rosbag2_storage::SerializedBagMessage> message(std::size_t n)
+  auto message(std::size_t n) -> std::shared_ptr<rosbag2_storage::SerializedBagMessage>
   {
     std::shared_ptr<rosbag2_storage::SerializedBagMessage> msg;
     {
@@ -215,9 +224,9 @@ public:
   }
 
   // False when the frame does not fit in the budget.
-  bool push(
+  auto push(
     std::shared_ptr<rosbag2_storage::SerializedBagMessage> msg, const void * channel,
-    std::uint64_t ticket)
+    std::uint64_t ticket) -> bool
   {
     const std::size_t n = msg->serialized_data->buffer_length;
     {
@@ -234,7 +243,7 @@ public:
   }
 
   // The first write that failed; the frames after it are reported as they fail too.
-  std::exception_ptr error() const
+  auto error() const -> std::exception_ptr
   {
     const std::lock_guard<std::mutex> lock(mutex_);
     return error_;
@@ -253,7 +262,9 @@ private:
     std::unique_lock<std::mutex> lock(mutex_);
     for (;;) {
       ready_.wait(lock, [this] { return stop_ || !queue_.empty(); });
-      if (queue_.empty()) return;
+      if (queue_.empty()) {
+        return;
+      }
       Item item = std::move(queue_.front());
       queue_.pop_front();
       lock.unlock();
@@ -268,7 +279,9 @@ private:
       lock.lock();
       bytes_ -= n;
       free_.push_back(std::move(item.msg));
-      if (failed && !error_) error_ = failed;
+      if (failed && !error_) {
+        error_ = failed;
+      }
     }
   }
 
@@ -312,9 +325,9 @@ public:
   }
 
   ChannelRecorder(const ChannelRecorder &) = delete;
-  ChannelRecorder & operator=(const ChannelRecorder &) = delete;
+  auto operator=(const ChannelRecorder &) -> ChannelRecorder & = delete;
   ChannelRecorder(ChannelRecorder &&) = delete;
-  ChannelRecorder & operator=(ChannelRecorder &&) = delete;
+  auto operator=(ChannelRecorder &&) -> ChannelRecorder & = delete;
   ~ChannelRecorder()
   {
     stop_ = true;
@@ -326,7 +339,7 @@ public:
   }
 
   // What ended the thread early, rethrown on the main thread so the bag is still closed.
-  std::exception_ptr error() const
+  auto error() const -> std::exception_ptr
   {
     const std::lock_guard<std::mutex> lock(error_mutex_);
     return error_;
@@ -334,9 +347,9 @@ public:
 
   // Why the channel refused this recorder later on (a re-attach), or empty: only this channel
   // stops, the bag goes on.
-  const std::string & key() const noexcept { return flux_topic_; }
+  auto key() const noexcept -> const std::string & { return flux_topic_; }
 
-  std::string left_out() const
+  auto left_out() const -> std::string
   {
     const std::lock_guard<std::mutex> lock(error_mutex_);
     return left_out_;
@@ -346,7 +359,9 @@ private:
   void run()
   {
     try {
-      while (!stop_) record_one();
+      while (!stop_) {
+        record_one();
+      }
     } catch (const flux::Error & e) {
       const std::lock_guard<std::mutex> lock(error_mutex_);
       left_out_ = e.what();
@@ -359,7 +374,9 @@ private:
   void record_one()
   {
     flux::FrameView v = sub_.take_blocking(kTakeWaitNs);
-    if (!v) return;
+    if (!v) {
+      return;
+    }
     const void * channel = v.trace_channel();
     const std::uint64_t ticket = v.ticket();
     // The recorder fell behind its depth and the channel overwrote these before the take.
@@ -369,7 +386,9 @@ private:
       reported_lost_ = lost;
     }
     // As rosbag2 does with a message that arrives while paused: taken, not written.
-    if (recorder_.is_paused()) return;
+    if (recorder_.is_paused()) {
+      return;
+    }
     const rclcpp::Time stamp = recorder_.now();
     const std::int64_t sent = on_clock(v.publish_ns(), monotonic_ns(), stamp);
     // A publisher restarted with other slots is a new attach: replay recreates it the same way.
@@ -394,7 +413,9 @@ private:
     f.meta_size = meta_.write(meta_bytes.data());
     f.data = v.data();
     f.data_size = v.size();
-    if (jpeg_) compress(v, f, meta_bytes.data());
+    if (jpeg_) {
+      compress(v, f, meta_bytes.data());
+    }
 
     auto msg = queue_.message(flux_bag::FluxFrameCdr::size(f));
     msg->topic_name = bag_topic_;
@@ -430,7 +451,9 @@ private:
       return;
     }
     const std::size_t n = jpeg_->encode(pixels.data(), width, height, step, space);
-    if (n == 0) return;
+    if (n == 0) {
+      return;
+    }
     const auto * frame = static_cast<const std::uint8_t *>(v.data());
     flux_bag::JpegMeta jm;
     jm.raw = meta_;
@@ -492,7 +515,9 @@ class ShmWatch
 public:
   ShmWatch() : fd_(inotify_init1(IN_NONBLOCK | IN_CLOEXEC))
   {
-    if (fd_ < 0) throw std::system_error(errno, std::generic_category(), "inotify_init1");
+    if (fd_ < 0) {
+      throw std::system_error(errno, std::generic_category(), "inotify_init1");
+    }
     if (inotify_add_watch(fd_, "/dev/shm", IN_CREATE | IN_MOVED_TO | IN_MODIFY | IN_DELETE) < 0) {
       const int e = errno;
       ::close(fd_);
@@ -500,16 +525,18 @@ public:
     }
   }
   ShmWatch(const ShmWatch &) = delete;
-  ShmWatch & operator=(const ShmWatch &) = delete;
+  auto operator=(const ShmWatch &) -> ShmWatch & = delete;
   ShmWatch(ShmWatch &&) = delete;
-  ShmWatch & operator=(ShmWatch &&) = delete;
+  auto operator=(ShmWatch &&) -> ShmWatch & = delete;
   ~ShmWatch() { ::close(fd_); }
 
   // Waits up to `timeout` for a change; reads every queued event, flux or not.
-  bool changed(std::chrono::milliseconds timeout) const
+  [[nodiscard]] auto changed(std::chrono::milliseconds timeout) const -> bool
   {
     pollfd p{fd_, POLLIN, 0};
-    if (::poll(&p, 1, static_cast<int>(timeout.count())) <= 0) return false;
+    if (::poll(&p, 1, static_cast<int>(timeout.count())) <= 0) {
+      return false;
+    }
     alignas(inotify_event) std::array<char, 4096> buf{};
     bool flux = false;
     for (ssize_t n = 0; (n = ::read(fd_, buf.data(), buf.size())) > 0;) {
@@ -559,7 +586,9 @@ void run(Options & opt)
   while (!g_stop && !error) {
     const auto listed = std::chrono::steady_clock::now();
     for (auto & [signpost, channel] : channels) {
-      if (!channel.down_since) channel.down_since = listed;
+      if (!channel.down_since) {
+        channel.down_since = listed;
+      }
     }
     std::map<std::string, std::vector<std::string>> candidates;
     std::map<std::string, std::vector<const flux::Topic *>> live;
@@ -568,11 +597,17 @@ void run(Options & opt)
     const std::vector<flux::Topic> topics = flux::enumerate_topics();
     for (const flux::Topic & t : topics) {
       seen.insert(t.signpost);
-      if (!t.key_exact) continue;
+      if (!t.key_exact) {
+        continue;
+      }
       const flux::ChannelStats stats = flux::read_channel_stats(t.signpost);
-      if (!stats.live) continue;
+      if (!stats.live) {
+        continue;
+      }
       if (const auto out = left_out.find(t.signpost); out != left_out.end()) {
-        if (out->second == stats.epoch) continue;
+        if (out->second == stats.epoch) {
+          continue;
+        }
         left_out.erase(out);
       }
       if (!flux_bridge::is_ros_topic_name(t.key)) {
@@ -599,7 +634,9 @@ void run(Options & opt)
       const auto & down = it->second.down_since;
       const bool gone = down && listed - *down > kKeepDown;
       const std::string why = it->second.recorder->left_out();
-      if (!why.empty()) leave_out(it->second.recorder->key(), it->first, why);
+      if (!why.empty()) {
+        leave_out(it->second.recorder->key(), it->first, why);
+      }
       it = gone || !why.empty() ? channels.erase(it) : std::next(it);
     }
     for (const auto & [key, type] : filter.filter_topics(candidates)) {
@@ -620,7 +657,9 @@ void run(Options & opt)
     while (!g_stop) {
       const std::chrono::duration<double> left =
         period - (std::chrono::steady_clock::now() - listed);
-      if (left <= left.zero()) break;
+      if (left <= left.zero()) {
+        break;
+      }
       const auto wait = std::chrono::ceil<std::chrono::milliseconds>(
         std::min<std::chrono::duration<double>>(left, kStopCheck));
       if (watch.changed(wait)) {
@@ -629,20 +668,26 @@ void run(Options & opt)
       }
     }
     for (const auto & [signpost, channel] : channels) {
-      if (!error) error = channel.recorder->error();
+      if (!error) {
+        error = channel.recorder->error();
+      }
     }
-    if (!error) error = queue->error();
+    if (!error) {
+      error = queue->error();
+    }
   }
 
   channels.clear();
   queue.reset();
   recorder->stop();
-  if (error) std::rethrow_exception(error);
+  if (error) {
+    std::rethrow_exception(error);
+  }
 }
 
 }  // namespace
 
-int main(int argc, char ** argv)
+auto main(int argc, char ** argv) -> int
 {
   // Signals are taken here, not by rclcpp, so the writer is closed before the context is.
   rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);

@@ -29,7 +29,7 @@ public:
   {
   }
 
-  std::string ros_type() const { return type_.ros_type(); }
+  [[nodiscard]] auto ros_type() const -> std::string { return type_.ros_type(); }
 
   void detach() { sub_.reset(); }
 
@@ -37,11 +37,15 @@ public:
   // returns n bytes to write to. The size written, or 0 for no frame or one that does not match
   // its schema.
   template <class Stop, class Out>
-  std::size_t next(std::int64_t timeout_ns, Stop stop, Out out)
+  auto next(std::int64_t timeout_ns, Stop stop, Out out) -> std::size_t
   {
-    if (!sub_) sub_.emplace(signpost_, fingerprint_, QoS(1).max_borrow(1), MemoryPolicy{});
+    if (!sub_) {
+      sub_.emplace(signpost_, fingerprint_, QoS(1).max_borrow(1), MemoryPolicy{});
+    }
     FrameView frame = sub_->take_blocking(timeout_ns, stop);
-    if (!frame) return 0;
+    if (!frame) {
+      return 0;
+    }
     // Sizing and writing must read the same bytes, and a peer can still write a committed slot.
     const auto * data = static_cast<const std::uint8_t *>(frame.data());
     bytes_.assign(data, data + frame.size());
@@ -55,7 +59,8 @@ public:
   }
 
 private:
-  static Schemas::Type find(const Schemas & s, std::uint64_t fingerprint, bool device_backed)
+  static auto find(const Schemas & s, std::uint64_t fingerprint, bool device_backed)
+    -> Schemas::Type
   {
     if (device_backed) {
       throw Error(FLUX_INVALID_ARGUMENT, "flux: a device-backed publisher has no ROS 2 mirror");

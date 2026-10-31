@@ -20,8 +20,9 @@ class Recording : public rclcpp::Node
 protected:
   Recording(const char * name, const rclcpp::NodeOptions & options) : Node(name, options) {}
 
-  rclcpp::TimerBase::SharedPtr every_10ms(
-    const std::string & label, const rclcpp::CallbackGroup::SharedPtr & group = nullptr)
+  auto every_10ms(
+    const std::string & label,
+    const rclcpp::CallbackGroup::SharedPtr & group = nullptr) -> rclcpp::TimerBase::SharedPtr
   {
     const void * key =
       (group ? group : get_node_base_interface()->get_default_callback_group()).get();

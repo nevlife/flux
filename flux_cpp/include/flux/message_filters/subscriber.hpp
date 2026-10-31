@@ -26,7 +26,10 @@ struct StampedFrame
   std::shared_ptr<const FrameView> frame;
   std_msgs::msg::Header header;
 
-  typename Adapter::View view() const { return typename Adapter::View(*frame); }
+  [[nodiscard]] auto view() const -> typename Adapter::View
+  {
+    return typename Adapter::View(*frame);
+  }
 };
 
 // A flux topic as a message_filters input. `Adapter` names the schema: `kFingerprint`, and a
@@ -55,33 +58,39 @@ public:
     const NodeRef & node, const rclcpp::CallbackGroup::SharedPtr & group = nullptr,
     std::int32_t priority = 0)
   {
-    if (member_) throw std::logic_error("flux: the subscriber is already in a callback group");
+    if (member_) {
+      throw std::logic_error("flux: the subscriber is already in a callback group");
+    }
     member_ = detail::join_group(node, *this, sub_.topic_name(), group, priority);
   }
 
-  const Subscription & subscription() const noexcept { return sub_; }
-  std::string getTopic() const { return sub_.topic_name(); }
-  std::uint64_t forwarded() const noexcept { return forwarded_; }
+  [[nodiscard]] auto subscription() const noexcept -> const Subscription & { return sub_; }
+  [[nodiscard]] auto getTopic() const -> std::string { return sub_.topic_name(); }
+  [[nodiscard]] auto forwarded() const noexcept -> std::uint64_t { return forwarded_; }
   // Frames whose header did not read or has a negative stamp, dropped rather than forwarded.
-  std::uint64_t unreadable() const noexcept { return unreadable_; }
+  [[nodiscard]] auto unreadable() const noexcept -> std::uint64_t { return unreadable_; }
 
-  bool attach() override { return sub_.attach(); }
-  bool deliver_one() override
+  auto attach() -> bool override { return sub_.attach(); }
+  auto deliver_one() -> bool override
   {
     FrameView f = sub_.sub_.take_for_executor();
     sub_.report_refusal();
-    if (!f) return false;
+    if (!f) {
+      return false;
+    }
     forward(std::move(f));
     return true;
   }
-  const detail::Channel * channel() const override { return sub_.channel(); }
-  const detail::Watch * watch() const override { return sub_.sub_.watch(); }
-  const void * endpoint() const override { return sub_.endpoint(); }
+  [[nodiscard]] auto channel() const -> const detail::Channel * override { return sub_.channel(); }
+  [[nodiscard]] auto watch() const -> const detail::Watch * override { return sub_.sub_.watch(); }
+  [[nodiscard]] auto endpoint() const -> const void * override { return sub_.endpoint(); }
 
 private:
-  static QoS covering(QoS qos, std::uint32_t queue)
+  static auto covering(QoS qos, std::uint32_t queue) -> QoS
   {
-    if (qos.borrow_limit() <= queue) qos.max_borrow(queue + 1);
+    if (qos.borrow_limit() <= queue) {
+      qos.max_borrow(queue + 1);
+    }
     return qos;
   }
 

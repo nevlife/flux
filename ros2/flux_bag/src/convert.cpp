@@ -45,13 +45,15 @@ struct Options
   std::string out;
 };
 
-Options parse(const std::vector<std::string> & args)
+auto parse(const std::vector<std::string> & args) -> Options
 {
   Options o;
   for (std::size_t i = 1; i < args.size(); ++i) {
     const std::string & a = args[i];
     if (a == "-o" || a == "--output") {
-      if (i + 1 >= args.size()) throw std::invalid_argument(a + " needs a value");
+      if (i + 1 >= args.size()) {
+        throw std::invalid_argument(a + " needs a value");
+      }
       o.out = args[++i];
     } else if (!a.empty() && a[0] == '-') {
       throw std::invalid_argument("unknown option " + a);
@@ -61,8 +63,12 @@ Options parse(const std::vector<std::string> & args)
       throw std::invalid_argument("one bag only");
     }
   }
-  if (o.in.empty()) throw std::invalid_argument("BAG is required");
-  if (o.out.empty()) throw std::invalid_argument("-o OUT is required");
+  if (o.in.empty()) {
+    throw std::invalid_argument("BAG is required");
+  }
+  if (o.out.empty()) {
+    throw std::invalid_argument("-o OUT is required");
+  }
   return o;
 }
 
@@ -107,7 +113,9 @@ public:
     }
     for (const auto & [key, r] : routes_) {
       std::cout << key.first << " -> " << r.topic << ": " << r.converted << " converted";
-      if (r.kept != 0) std::cout << ", " << r.kept << " kept as FluxFrame";
+      if (r.kept != 0) {
+        std::cout << ", " << r.kept << " kept as FluxFrame";
+      }
       std::cout << "\n";
     }
   }
@@ -184,8 +192,9 @@ private:
       }
     }
     if (types_[topic] != kCompressedType) {
-      if (kept_.insert(msg->topic_name).second)
+      if (kept_.insert(msg->topic_name).second) {
         writer_.create_topic(frame_topics_[msg->topic_name]);
+      }
       writer_.write(msg);
       ++r.kept;
       return;
@@ -203,10 +212,13 @@ private:
   }
 
   // Decided by the first frame of a channel and fingerprint.
-  Route & route(const std::string & bag_topic, const std::string & channel, std::uint64_t fp)
+  auto route(const std::string & bag_topic, const std::string & channel, std::uint64_t fp)
+    -> Route &
   {
     const auto key = std::make_pair(channel, fp);
-    if (const auto it = routes_.find(key); it != routes_.end()) return it->second;
+    if (const auto it = routes_.find(key); it != routes_.end()) {
+      return it->second;
+    }
     Route r;
     r.topic = bag_topic;
     if (schemas_.contains(fp)) {
@@ -226,7 +238,9 @@ private:
         r.type = type;
       }
     }
-    if (!r.type && kept_.insert(bag_topic).second) writer_.create_topic(frame_topics_[bag_topic]);
+    if (!r.type && kept_.insert(bag_topic).second) {
+      writer_.create_topic(frame_topics_[bag_topic]);
+    }
     return routes_.emplace(key, std::move(r)).first->second;
   }
 
@@ -247,7 +261,7 @@ private:
 
 }  // namespace
 
-int main(int argc, char ** argv)
+auto main(int argc, char ** argv) -> int
 {
   Options opt;
   try {

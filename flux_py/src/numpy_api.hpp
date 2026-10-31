@@ -25,22 +25,22 @@ namespace nb = nanobind;
 
 // numpy's C API passes its objects as PyObject *; the casts between the views live here.
 // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
-inline PyArrayObject * as_array(nb::handle a)
+inline auto as_array(nb::handle a) -> PyArrayObject *
 {
   return reinterpret_cast<PyArrayObject *>(a.ptr());
 }
-inline PyArray_Descr * as_descr(nb::handle d)
+inline auto as_descr(nb::handle d) -> PyArray_Descr *
 {
   return reinterpret_cast<PyArray_Descr *>(d.ptr());
 }
-inline nb::object own(PyArray_Descr * d)
+inline auto own(PyArray_Descr * d) -> nb::object
 {
   return nb::steal(reinterpret_cast<PyObject *>(d));
 }
 // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast)
 
 // numpy 2 hides the field behind an accessor that numpy 1 (Jazzy) does not have.
-inline std::size_t elsize(PyArray_Descr * d)
+inline auto elsize(PyArray_Descr * d) -> std::size_t
 {
 #if NPY_ABI_VERSION >= 0x02000000
   return static_cast<std::size_t>(PyDataType_ELSIZE(d));
@@ -50,7 +50,7 @@ inline std::size_t elsize(PyArray_Descr * d)
 }
 
 // numpy has no bfloat16: such a frame reads as its uint16 bits.
-inline int npy_type(flux::DType d)
+inline auto npy_type(flux::DType d) -> int
 {
   switch (d) {
     case flux::DType::U8:
@@ -82,16 +82,18 @@ inline int npy_type(flux::DType d)
 
 // A view of `data` that `owner` keeps alive. `descr` is borrowed. Strides are in bytes; null is
 // C-contiguous.
-inline nb::object numpy_view(
+inline auto numpy_view(
   void * data, int ndim, npy_intp * shape, PyArray_Descr * descr, nb::handle owner, bool writable,
-  npy_intp * strides = nullptr)
+  npy_intp * strides = nullptr) -> nb::object
 {
   Py_INCREF(descr);  // NewFromDescr steals it
   const int flags =
     (strides == nullptr ? NPY_ARRAY_C_CONTIGUOUS : 0) | (writable ? NPY_ARRAY_WRITEABLE : 0);
   PyObject * a =
     PyArray_NewFromDescr(&PyArray_Type, descr, ndim, shape, strides, data, flags, nullptr);
-  if (a == nullptr) throw nb::python_error();
+  if (a == nullptr) {
+    throw nb::python_error();
+  }
   Py_INCREF(owner.ptr());
   if (PyArray_SetBaseObject(as_array(a), owner.ptr()) != 0) {
     Py_DECREF(a);
@@ -100,19 +102,22 @@ inline nb::object numpy_view(
   return nb::steal(a);
 }
 
-inline nb::object numpy_view(
-  const void * data, std::size_t n, PyArray_Descr * descr, nb::handle owner, bool writable)
+inline auto numpy_view(
+  const void * data, std::size_t n, PyArray_Descr * descr, nb::handle owner,
+  bool writable) -> nb::object
 {
   npy_intp shape = static_cast<npy_intp>(n);
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): read-only unless `writable`
   return numpy_view(const_cast<void *>(data), 1, &shape, descr, owner, writable);
 }
 
-inline nb::object numpy_scalar(const void * p, PyArray_Descr * descr)
+inline auto numpy_scalar(const void * p, PyArray_Descr * descr) -> nb::object
 {
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): PyArray_Scalar copies out of p
   PyObject * s = PyArray_Scalar(const_cast<void *>(p), descr, nullptr);
-  if (s == nullptr) throw nb::python_error();
+  if (s == nullptr) {
+    throw nb::python_error();
+  }
   return nb::steal(s);
 }
 

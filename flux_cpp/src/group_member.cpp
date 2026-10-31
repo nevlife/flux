@@ -8,7 +8,7 @@
 namespace flux::detail
 {
 
-bool & GroupMember::in_flux_executor() noexcept
+auto GroupMember::in_flux_executor() noexcept -> bool &
 {
   thread_local bool inside = false;
   return inside;
@@ -18,7 +18,9 @@ bool & GroupMember::in_flux_executor() noexcept
 // next rescan.
 void GroupMember::refuse_outside_flux()
 {
-  if (served_ || in_flux_executor() || warned_.exchange(true)) return;
+  if (served_ || in_flux_executor() || warned_.exchange(true)) {
+    return;
+  }
   RCLCPP_ERROR(
     rclcpp::get_logger("flux"),
     "flux: %s is in a callback group that an rclcpp executor serves, so no frame of it is "
@@ -27,9 +29,10 @@ void GroupMember::refuse_outside_flux()
     topic_.c_str());
 }
 
-std::shared_ptr<GroupMember> join_group(
+auto join_group(
   const NodeRef & node, Source & src, const std::string & topic,
-  const rclcpp::CallbackGroup::SharedPtr & group, std::int32_t priority)
+  const rclcpp::CallbackGroup::SharedPtr & group,
+  std::int32_t priority) -> std::shared_ptr<GroupMember>
 {
   auto member = std::make_shared<GroupMember>(src, priority, topic);
   node.waitables()->add_waitable(member, group);

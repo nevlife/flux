@@ -21,7 +21,7 @@ struct Projection
 };
 
 // p, not k: on a rectified stereo pair p carries the calibration that matches the image.
-inline Projection projection_of(const sensor_msgs::msg::CameraInfo & info)
+inline auto projection_of(const sensor_msgs::msg::CameraInfo & info) -> Projection
 {
   const double sx = info.binning_x > 1 ? 1.0 / info.binning_x : 1.0;
   const double sy = info.binning_y > 1 ? 1.0 / info.binning_y : 1.0;

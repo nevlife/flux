@@ -31,7 +31,7 @@ struct JpegMeta
 
   static constexpr std::size_t kMaxSize = RawMeta::kMaxSize + 16;
 
-  std::size_t write(std::uint8_t * out) const
+  auto write(std::uint8_t * out) const -> std::size_t
   {
     const std::size_t n = raw.write(out);
     std::memcpy(out + n, &at, 8);
@@ -39,9 +39,11 @@ struct JpegMeta
     return n + 16;
   }
 
-  bool read(const void * in, std::size_t n)
+  auto read(const void * in, std::size_t n) -> bool
   {
-    if (n < 16 || !raw.read(in, n - 16)) return false;
+    if (n < 16 || !raw.read(in, n - 16)) {
+      return false;
+    }
     const auto * p = static_cast<const std::uint8_t *>(in) + n - 16;
     std::memcpy(&at, p, 8);
     std::memcpy(&len, p + 8, 8);
@@ -51,10 +53,12 @@ struct JpegMeta
 
 // A recorded FluxFrame of codec "raw", whose meta.at and meta.len are 0, or "jpeg". The fields of
 // `f` point into `in`.
-inline bool read_frame(
-  const std::uint8_t * in, std::size_t size, FluxFrameFields & f, JpegMeta & meta)
+inline auto read_frame(
+  const std::uint8_t * in, std::size_t size, FluxFrameFields & f, JpegMeta & meta) -> bool
 {
-  if (!FluxFrameCdr::read(in, size, f)) return false;
+  if (!FluxFrameCdr::read(in, size, f)) {
+    return false;
+  }
   if (f.codec == "raw") {
     meta.at = meta.len = 0;
     return meta.raw.read(f.meta, f.meta_size);
@@ -64,15 +68,21 @@ inline bool read_frame(
 
 // The libjpeg color space of an Image encoding JPEG holds without loss of channels, or
 // JCS_UNKNOWN.
-inline J_COLOR_SPACE jpeg_space(std::string_view encoding)
+inline auto jpeg_space(std::string_view encoding) -> J_COLOR_SPACE
 {
-  if (encoding == "rgb8") return JCS_EXT_RGB;
-  if (encoding == "bgr8") return JCS_EXT_BGR;
-  if (encoding == "mono8") return JCS_GRAYSCALE;
+  if (encoding == "rgb8") {
+    return JCS_EXT_RGB;
+  }
+  if (encoding == "bgr8") {
+    return JCS_EXT_BGR;
+  }
+  if (encoding == "mono8") {
+    return JCS_GRAYSCALE;
+  }
   return JCS_UNKNOWN;
 }
 
-inline int jpeg_channels(J_COLOR_SPACE s)
+inline auto jpeg_channels(J_COLOR_SPACE s) -> int
 {
   return s == JCS_GRAYSCALE ? 1 : 3;
 }
@@ -108,22 +118,24 @@ public:
     c_.client_data = this;
   }
   JpegEncoder(const JpegEncoder &) = delete;
-  JpegEncoder & operator=(const JpegEncoder &) = delete;
+  auto operator=(const JpegEncoder &) -> JpegEncoder & = delete;
   JpegEncoder(JpegEncoder &&) = delete;
-  JpegEncoder & operator=(JpegEncoder &&) = delete;
+  auto operator=(JpegEncoder &&) -> JpegEncoder & = delete;
   ~JpegEncoder() { jpeg_destroy_compress(&c_); }
 
   // Bytes of the JPEG of `height` rows `step` bytes apart, which data() holds until the next call;
   // 0 when libjpeg refuses them.
-  std::size_t encode(
+  auto encode(
     const std::uint8_t * pixels, std::uint32_t width, std::uint32_t height, std::uint32_t step,
-    J_COLOR_SPACE space)
+    J_COLOR_SPACE space) -> std::size_t
   {
     rows_.resize(height);
     for (std::uint32_t y = 0; y < height; ++y) {
       rows_[y] = const_cast<std::uint8_t *>(pixels) + std::size_t{y} * step;  // NOLINT
     }
-    if (out_.size() < kFirstBuffer) out_.resize(kFirstBuffer);
+    if (out_.size() < kFirstBuffer) {
+      out_.resize(kFirstBuffer);
+    }
     if (setjmp(err_.jump)) {
       jpeg_abort_compress(&c_);
       return 0;
@@ -144,13 +156,13 @@ public:
     return out_.size() - dest_.free_in_buffer;
   }
 
-  const std::uint8_t * data() const noexcept { return out_.data(); }
+  [[nodiscard]] auto data() const noexcept -> const std::uint8_t * { return out_.data(); }
 
 private:
   // Grown by doubling and kept: after the first frames a channel's JPEGs fit without a resize.
   static constexpr std::size_t kFirstBuffer = 1 << 20;
 
-  static boolean grow(j_compress_ptr c)
+  static auto grow(j_compress_ptr c) -> boolean
   {
     auto & self = *static_cast<JpegEncoder *>(c->client_data);
     const std::size_t used = self.out_.size();
@@ -170,9 +182,9 @@ private:
 
 // Decodes `jpeg` into `height` rows `step` bytes apart. False when it is not a JPEG of that
 // width, height and color space.
-inline bool decode_jpeg(
+inline auto decode_jpeg(
   const void * jpeg, std::size_t size, std::uint8_t * pixels, std::uint32_t width,
-  std::uint32_t height, std::uint32_t step, J_COLOR_SPACE space)
+  std::uint32_t height, std::uint32_t step, J_COLOR_SPACE space) -> bool
 {
   jpeg_decompress_struct d{};
   detail::JpegError err{};
@@ -207,11 +219,13 @@ inline bool decode_jpeg(
 
 // Puts every byte of a codec "jpeg" frame but its pixels back in place in `out`, which holds
 // m.raw.nbytes(). The JPEG bytes, or an empty view when `f` is shorter than `m` says.
-inline std::basic_string_view<std::uint8_t> restore_fields(
-  const FluxFrameFields & f, const JpegMeta & m, std::uint8_t * out)
+inline auto restore_fields(const FluxFrameFields & f, const JpegMeta & m, std::uint8_t * out)
+  -> std::basic_string_view<std::uint8_t>
 {
   const std::uint64_t rest = m.raw.nbytes() - m.at - m.len;
-  if (f.data_size <= m.at + rest) return {};
+  if (f.data_size <= m.at + rest) {
+    return {};
+  }
   const auto * in = static_cast<const std::uint8_t *>(f.data);
   std::memcpy(out, in, m.at);
   std::memcpy(out + m.at + m.len, in + m.at, rest);
@@ -220,10 +234,12 @@ inline std::basic_string_view<std::uint8_t> restore_fields(
 
 // The frame as it was published, but for the loss JPEG brings to its pixels. False when the
 // fields do not describe the pixel run `m` names or the JPEG does not decode into it.
-inline bool unpack_jpeg(const FluxFrameFields & f, const JpegMeta & m, std::uint8_t * out)
+inline auto unpack_jpeg(const FluxFrameFields & f, const JpegMeta & m, std::uint8_t * out) -> bool
 {
   const auto jpeg = restore_fields(f, m, out);
-  if (jpeg.empty()) return false;
+  if (jpeg.empty()) {
+    return false;
+  }
   const sensor_msgs::flux_msg::Image::View img(out, m.raw.nbytes());
   const J_COLOR_SPACE space = jpeg_space(img.encoding());
   const auto pixels = img.data();

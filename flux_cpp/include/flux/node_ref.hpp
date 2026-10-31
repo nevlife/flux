@@ -28,20 +28,23 @@ public:
   {
   }
 
-  const std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface> & base() const noexcept
+  [[nodiscard]] auto base() const noexcept
+    -> const std::shared_ptr<rclcpp::node_interfaces::NodeBaseInterface> &
   {
     return base_;
   }
-  const std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface> & topics() const noexcept
+  [[nodiscard]] auto topics() const noexcept
+    -> const std::shared_ptr<rclcpp::node_interfaces::NodeTopicsInterface> &
   {
     return topics_;
   }
-  const std::shared_ptr<rclcpp::node_interfaces::NodeLoggingInterface> & logging() const noexcept
+  [[nodiscard]] auto logging() const noexcept
+    -> const std::shared_ptr<rclcpp::node_interfaces::NodeLoggingInterface> &
   {
     return logging_;
   }
-  const std::shared_ptr<rclcpp::node_interfaces::NodeWaitablesInterface> & waitables()
-    const noexcept
+  [[nodiscard]] auto waitables() const noexcept
+    -> const std::shared_ptr<rclcpp::node_interfaces::NodeWaitablesInterface> &
   {
     return waitables_;
   }
