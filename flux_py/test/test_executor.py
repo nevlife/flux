@@ -66,8 +66,14 @@ def hold_the_only_place(pub, fingerprint=0):
 
 
 def parker_threads():
-    tasks = os.listdir("/proc/self/task")
-    return sum(open(f"/proc/self/task/{t}/comm").read().strip() == "flux-parker" for t in tasks)
+    count = 0
+    for t in os.listdir("/proc/self/task"):
+        try:
+            with open(f"/proc/self/task/{t}/comm") as comm:
+                count += comm.read().strip() == "flux-parker"
+        except OSError:  # the thread ended after the listing
+            pass
+    return count
 
 
 # test_executor_parked runs this file again with FLUX_DISABLE_FUTEX_WAITV set: the fallback a
