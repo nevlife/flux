@@ -311,7 +311,8 @@ TEST_F(Doc, Partitioned)
   // [doc:/cpp_partitioned]
 
   publisher.join();
-  EXPECT_NE(testing::internal::GetCapturedStdout().find("camera: 64 bytes"), std::string::npos);
+  const std::string out = testing::internal::GetCapturedStdout();
+  EXPECT_NE(out.find("camera: 64 bytes"), std::string::npos) << out;
 }
 
 // [doc:cpp_component]

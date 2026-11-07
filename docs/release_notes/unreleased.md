@@ -29,6 +29,7 @@
 -->
 
 * `record_flux`가 inotify 감시 한도가 다 찬 호스트에서 시작하지 못했다. inotify를 빼고 채널 목록을 `--poll`초(기본 0.1)마다 읽는다
+* `PartitionedExecutor`의 `on_thread_start` 훅이 정한 스레드 이름이 기본 이름 `flux-g<N>`으로 덮어써질 수 있었다.
 
 ### 리팩터링
 

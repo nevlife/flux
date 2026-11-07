@@ -361,9 +361,11 @@ void PartitionedExecutor::spawn(
   claimed_.emplace(group.get(), group);
 
   Executor * raw = ex.get();
+  // Named on the thread itself, ahead of the hooks: a hook may rename it.
   std::thread t([this, raw, init = std::move(init), any = std::move(any),
-                 weak_node = NodeBase::WeakPtr(node),
+                 name = "flux-g" + std::to_string(spawned_++), weak_node = NodeBase::WeakPtr(node),
                  weak_group = rclcpp::CallbackGroup::WeakPtr(group)] {
+    pthread_setname_np(pthread_self(), name.c_str());
     try {
       if (any) {
         const auto n = weak_node.lock();
@@ -380,8 +382,6 @@ void PartitionedExecutor::spawn(
       fail(std::current_exception());
     }
   });
-  const std::string name = "flux-g" + std::to_string(spawned_++);
-  pthread_setname_np(t.native_handle(), name.c_str());
   children_.push_back({std::move(ex), std::move(t), group, node});
 }
 
