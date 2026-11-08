@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>flux_wrapper</name>
+  <version>0.0.0</version>
+  <description>
+    One publisher and subscription API for a driver that runs with or without flux. Built with
+    ENABLE_FLUX=1 it carries messages over flux when ENABLE_FLUX=1 is also set at run time, and
+    over ROS 2 otherwise. Built without it, it is plain rclcpp and rclpy, and flux is not built.
+  </description>
+  <maintainer email="nevlife000720@gmail.com">nevlife</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>builtin_interfaces</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend condition="$ENABLE_FLUX == 1">flux_cpp</depend>
+  <depend condition="$ENABLE_FLUX == 1">flux_std_adapters</depend>
+
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend condition="$ENABLE_FLUX == 1">flux_py</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

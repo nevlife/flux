@@ -1,0 +1,16 @@
+# Whether this flux_wrapper was built with flux. flux_wrapper::flux_wrapper carries the choice
+# (USE_FLUX_ENABLED), so a package that links it compiles the same path the wrapper was built for.
+set(flux_wrapper_WITH_FLUX @FLUX_WRAPPER_WITH_FLUX@)
+
+if("$ENV{ENABLE_FLUX}" STREQUAL "1")
+  set(_flux_wrapper_env 1)
+else()
+  set(_flux_wrapper_env 0)
+endif()
+if(NOT _flux_wrapper_env EQUAL flux_wrapper_WITH_FLUX)
+  message(WARNING
+    "flux_wrapper was built with ENABLE_FLUX=${flux_wrapper_WITH_FLUX}, but this build has "
+    "ENABLE_FLUX=${_flux_wrapper_env}. The wrapper's choice applies; rebuild flux_wrapper to "
+    "change it.")
+endif()
+unset(_flux_wrapper_env)
