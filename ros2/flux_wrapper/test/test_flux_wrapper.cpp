@@ -167,6 +167,30 @@ TEST_F(WrapperTest, PointCloudFromARosMessage)
   EXPECT_EQ(*got, cloud);
 }
 
+// A message over the default slot size goes out once max_message_size makes room for it.
+TEST_F(WrapperTest, LargerSlotTakesALargerMessage)
+{
+  constexpr std::size_t kBytes = 9u << 20;
+  std::atomic<bool> done{false};
+  flux_wrapper::Subscription<Image> sub(
+    *node_, "large", rclcpp::QoS(1), [&](const flux_wrapper::View<Image> & v) {
+      EXPECT_EQ(v.data().size(), kBytes);
+      done = true;
+    });
+  flux_wrapper::PublisherOptions options;
+  options.max_message_size = 10u << 20;
+  options.slot_count = 2;
+  flux_wrapper::Publisher<Image> pub(*node_, "large", rclcpp::QoS(1), options);
+
+  run_until(done, [&] {
+    auto loan = pub.loan();
+    if (loan && loan.alloc_data(kBytes).size() == kBytes) {
+      pub.publish(std::move(loan));
+    }
+  });
+  EXPECT_TRUE(done);
+}
+
 // A plain ROS subscriber, as rviz2 and ros2 bag are, gets a flux publisher's messages only
 // through the mirror; on the ROS path it gets them directly.
 TEST_F(WrapperTest, RosSubscriberReceives)

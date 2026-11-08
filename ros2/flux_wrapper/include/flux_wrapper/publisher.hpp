@@ -23,6 +23,9 @@ struct PublisherOptions
 {
   // flux only: the largest message in bytes. Zero takes the flux default slot size (8 MiB).
   std::uint32_t max_message_size = 0;
+  // flux only: messages a subscriber may hold at once, plus one to write into. Zero takes the
+  // flux default (16). The topic reserves max_message_size * slot_count of shared memory.
+  std::uint32_t slot_count = 0;
   // flux only: also publish each message as its ROS message on the same topic while a ROS
   // subscriber (rviz2, ros2 bag) wants it.
   bool mirror_to_ros = false;
@@ -44,8 +47,10 @@ public:
     if (use_flux()) {
       const std::uint32_t slot = options.max_message_size != 0 ? options.max_message_size
                                                                : flux::Publisher::kDefaultSlotSize;
-      flux_ =
-        std::make_unique<flux::Publisher>(node, topic, detail::AdapterT<MsgT>::kFingerprint, slot);
+      const std::uint32_t count =
+        options.slot_count != 0 ? options.slot_count : flux::Publisher::kDefaultSlotCount;
+      flux_ = std::make_unique<flux::Publisher>(
+        node, topic, detail::AdapterT<MsgT>::kFingerprint, slot, count);
       if (options.mirror_to_ros) {
         flux_->mirror_to_ros();
       }

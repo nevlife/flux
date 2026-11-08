@@ -98,11 +98,13 @@ class Loan:
 
 
 class Publisher:
-    """One topic over flux or ROS. On the flux path `max_message_size` bounds a message (0: the
-    flux default) and `mirror_to_ros` also publishes each one as its ROS message while a ROS
-    subscriber wants it."""
+    """One topic over flux or ROS. On the flux path `max_message_size` bounds a message and
+    `slot_count` is how many are in flight (0: the flux defaults). `mirror_to_ros` also publishes
+    each one as its ROS message while a ROS subscriber wants it."""
 
-    def __init__(self, node, msg_type, topic, qos, *, max_message_size=0, mirror_to_ros=False):
+    def __init__(
+        self, node, msg_type, topic, qos, *, max_message_size=0, slot_count=0, mirror_to_ros=False
+    ):
         self._type = msg_type
         self._flux = None
         self._ros = None
@@ -115,6 +117,7 @@ class Publisher:
                 topic,
                 fingerprint=self._adapter.FINGERPRINT__,
                 slot_size=max_message_size or _flux.DEFAULT_SLOT_SIZE,
+                slot_count=slot_count or _flux.DEFAULT_SLOT_COUNT,
                 mirror_to_ros=mirror_to_ros,
             )
         else:
