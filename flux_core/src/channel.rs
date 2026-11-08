@@ -1775,6 +1775,26 @@ impl Channel {
     pub fn dropped(&self) -> u64 {
         self.sh.dropped.load(Ordering::Relaxed)
     }
+    /// Subscriber processes on this publisher's channel now: the numbers whose lock another
+    /// description holds, so a dead process is already out. One `F_OFD_GETLK` per number ever
+    /// taken. A subscription in the publisher's own process counts from its first wait or take.
+    /// A heap channel counts 1 once read from; a subscriber's channel counts 0.
+    pub fn subscriber_count(&self) -> u32 {
+        let seg = &self.sh.seg;
+        #[allow(clippy::cast_possible_truncation)]
+        let numbers = seg.readers_in_use(Ordering::Acquire) as u32;
+        if seg.is_heap() {
+            return numbers;
+        }
+        let Some(fd) = seg.publisher_fd() else {
+            return 0;
+        };
+        #[allow(clippy::cast_possible_truncation)]
+        let held = (0..numbers)
+            .filter(|&i| sys::lock_held(fd, reader_lock_byte(i)) == libc::F_WRLCK)
+            .count() as u32;
+        held
+    }
     pub fn cursor(&self) -> u64 {
         self.cursor
     }

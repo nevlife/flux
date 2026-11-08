@@ -58,6 +58,7 @@ flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
 - `publish(data, dtype, shape)`는 배열을 슬롯에 한 번 복사한다. `publish(data, nbytes)`는 `u8[nbytes]`로 보낸다.
 - 같은 채널에 살아 있는 발행자가 있으면 생성자가 `flux::Error`(`FLUX_PUBLISHER_EXISTS`)를 던진다.
 - `dropped()`는 링이 가득 차서 버린 프레임 수, `slot_size()`는 슬롯 크기, `topic_name()`은 풀린 토픽 이름이다.
+- `subscriber_count()`는 지금 구독하는 프로세스 수다. 구독자가 없을 때 프레임을 만드는 일을 건너뛰는 데 쓴다. 지금까지 쓰인 구독자 번호마다 시스템 호출을 한 번 한다. 발행자와 같은 프로세스의 구독은 처음 기다리거나 take할 때부터 센다.
 
 `publish`와 commit은 `flux::Published`를 돌려준다. `flux::faulted(p)`는 값이 `Ok`나 `Backpressure`가 아닐 때 참이다. `Backpressure`는 그 프레임 하나만 버렸다는 뜻이다. 나머지 값은 고칠 것이 있다는 뜻이다. 다만 `InUse`와, fence 상한을 둔 채널의 `FenceFailed`는 다른 호출이나 GPU 작업이 끝나면 저절로 풀린다.
 

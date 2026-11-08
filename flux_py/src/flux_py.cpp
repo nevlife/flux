@@ -768,6 +768,10 @@ public:
   }
 
   [[nodiscard]] auto dropped() const noexcept -> std::uint64_t { return ch_.dropped(); }
+  [[nodiscard]] auto subscriber_count() const noexcept -> std::uint32_t
+  {
+    return ch_.subscriber_count();
+  }
   [[nodiscard]] auto slot_size() const noexcept -> std::uint32_t { return ch_.slot_size(); }
   auto channel() noexcept -> flux::detail::Channel & { return ch_; }
   [[nodiscard]] auto stream() const noexcept -> const flux::gpu::Stream & { return stream_; }
@@ -1478,6 +1482,7 @@ NB_MODULE(_flux, m)
     .def("publish", &Publisher::publish, "array"_a)
     .def("loan", &Publisher::loan, "shape"_a = nb::none(), "dtype"_a = "uint8")
     .def_prop_ro("dropped", &Publisher::dropped)
+    .def_prop_ro("subscriber_count", &Publisher::subscriber_count)
     .def_prop_ro("slot_size", &Publisher::slot_size)
     .def_prop_ro("fence_failed", [](Publisher & p) { return p.channel().fence_failed(); })
     .def_prop_ro("fence_wait", [](Publisher & p) { return p.channel().fence_wait(); })

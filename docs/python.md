@@ -45,7 +45,7 @@ flux.Publisher(node, topic, fingerprint=flux.NO_SCHEMA, slot_size=8 << 20, slot_
 - 받는 dtype은 `uint8`~`uint64`, `int8`~`int64`, `float16`, `float32`, `float64`다. 그 밖의 dtype(`bool`, `complex64` 등)은 `TypeError`를 낸다. 8차원을 넘으면 `Published.TOO_LARGE`를 돌려준다. GPU 배열도 `TypeError`이므로 loan으로 쓴다([gpu.md](gpu.md)).
 - `bfloat16` 프레임은 `loan(shape, "bfloat16")`로 빌려 쓴다. 이때 ml_dtypes가 필요하다. ml_dtypes가 numpy에 그 dtype 이름을 등록하기 때문이다.
 - 같은 채널에 살아 있는 발행자가 있으면 생성자가 `flux.Error`(`status`가 `Status.PUBLISHER_EXISTS`)를 던진다.
-- `dropped`, `slot_size`, `topic_name`, `signpost_name`은 속성이다.
+- `dropped`, `slot_size`, `topic_name`, `signpost_name`, `subscriber_count`는 속성이다. `subscriber_count`의 뜻은 C++과 같다([cpp.md](cpp.md#발행)).
 
 `publish()`의 결과는 `flux.Published`다. `bool(p)`는 `OK`일 때만 참이다. `flux.faulted(p)`는 값이 `OK`나 `BACKPRESSURE`가 아닐 때 참이다. 값의 뜻은 C++과 같다([cpp.md](cpp.md#발행)).
 

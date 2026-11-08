@@ -79,6 +79,11 @@ public:
   }
 
   [[nodiscard]] auto dropped() const noexcept -> std::uint64_t { return ch_.dropped(); }
+  // Live subscribing processes. One system call per subscriber number ever taken.
+  [[nodiscard]] auto subscriber_count() const noexcept -> std::uint32_t
+  {
+    return ch_.subscriber_count();
+  }
   // Commits that could not wait for the stream, each holding its slot; see set_fence_timeout.
   [[nodiscard]] auto fence_failed() const noexcept -> std::uint64_t { return ch_.fence_failed(); }
   [[nodiscard]] auto fence_wait() const noexcept -> gpu::FenceWait { return ch_.fence_wait(); }

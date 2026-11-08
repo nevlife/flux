@@ -76,6 +76,20 @@ TEST_F(WrapperTest, RunSwitchPicksThePath)
   EXPECT_EQ(pub.uses_flux(), expect_flux());
 }
 
+TEST_F(WrapperTest, SubscriptionCountSeesASubscriber)
+{
+  flux_wrapper::Publisher<Image> pub(*node_, "counted", rclcpp::QoS(1));
+  EXPECT_EQ(pub.get_subscription_count(), 0u);
+  flux_wrapper::Subscription<Image> sub(
+    *node_, "counted", rclcpp::QoS(1), [](const flux_wrapper::View<Image> &) {});
+  // The ROS graph learns of a subscriber through discovery, so it may take a moment.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (pub.get_subscription_count() == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_EQ(pub.get_subscription_count(), 1u);
+}
+
 TEST_F(WrapperTest, ImageThroughALoan)
 {
   struct Got

@@ -108,13 +108,13 @@ public:
     return true;
   }
 
-  // flux keeps no subscriber count, so the flux path reports 1: a driver that skips work while
-  // nobody listens keeps publishing.
+  // The flux path counts subscribing processes, and a mirror counts as one while a ROS
+  // subscriber wants it.
   [[nodiscard]] auto get_subscription_count() const -> std::size_t
   {
 #ifdef USE_FLUX_ENABLED
     if (flux_) {
-      return 1;
+      return flux_->subscriber_count();
     }
 #endif
     return ros_->get_subscription_count();

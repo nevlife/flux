@@ -648,6 +648,10 @@ public:
   {
     return ch_ ? flux_channel_dropped(ch_) : 0;
   }
+  [[nodiscard]] auto subscriber_count() const noexcept -> std::uint32_t
+  {
+    return ch_ ? flux_channel_subscriber_count(ch_) : 0;
+  }
   [[nodiscard]] auto attach_generation() const noexcept -> std::uint32_t
   {
     return ch_ ? flux_channel_attach_generation(ch_) : 0;

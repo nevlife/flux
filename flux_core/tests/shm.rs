@@ -1001,3 +1001,64 @@ fn a_replaced_mapping_is_let_go_after_a_reattach() {
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+
+#[test]
+fn subscriber_count_follows_the_subscribers_of_this_process() {
+    let _g = shared();
+    let t = Topic::new("count");
+    let p = publisher(&t, 2);
+    assert_eq!(p.subscriber_count(), 0);
+    let a = subscriber(&t);
+    assert_eq!(p.subscriber_count(), 1);
+    // One process holds one number, however many subscriptions it has.
+    let b = subscriber(&t);
+    assert_eq!(p.subscriber_count(), 1);
+    drop(a);
+    assert_eq!(p.subscriber_count(), 1);
+    drop(b);
+    assert_eq!(p.subscriber_count(), 0);
+}
+
+/// Runs only as the child of `a_killed_subscriber_leaves_the_count`: subscribes, says so, and
+/// waits to be killed.
+#[test]
+fn child_subscribes() {
+    let Ok(name) = std::env::var(CHILD_ENV) else {
+        return;
+    };
+    let _s = Channel::open(&name, NO_SCHEMA, MemoryPolicy::default()).unwrap();
+    println!("subscribed");
+    std::thread::sleep(Duration::from_secs(60));
+}
+
+#[test]
+fn a_killed_subscriber_leaves_the_count() {
+    let _g = alone();
+    let t = Topic::new("count_kill");
+    let p = publisher(&t, 2);
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "child_subscribes",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(CHILD_ENV, &t.0)
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    while !line.contains("subscribed") {
+        line.clear();
+        assert_ne!(
+            out.read_line(&mut line).unwrap(),
+            0,
+            "child exited before subscribing"
+        );
+    }
+    assert_eq!(p.subscriber_count(), 1);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(p.subscriber_count(), 0);
+}

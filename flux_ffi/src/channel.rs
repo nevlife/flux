@@ -828,6 +828,13 @@ pub unsafe extern "C" fn flux_channel_dropped(ch: *const flux_channel) -> u64 {
     unsafe { chan_ref(ch) }.dropped()
 }
 
+/// Live subscriber processes of a publisher's channel; 0 on a subscriber's channel.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_channel_subscriber_count(ch: *const flux_channel) -> u32 {
+    // SAFETY: valid handle.
+    unsafe { chan_ref(ch) }.subscriber_count()
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_channel_cursor(ch: *const flux_channel) -> u64 {
     // SAFETY: valid handle.

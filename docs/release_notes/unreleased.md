@@ -21,6 +21,8 @@
 * `record_flux`가 `-s`, `--storage-preset-profile`을 rosbag2에 넘긴다. `zstd_fast`로 mcap bag을 무손실 압축한다
 * `record_flux --image-codec jpeg`가 `sensor_msgs/Image`(`rgb8`, `bgr8`, `mono8`)의 픽셀을 JPEG로 저장한다. `play_flux`는 디코딩해 원래 채널에 발행하고, `convert_flux`는 `sensor_msgs/CompressedImage`로 바꾼다
 * 발행자가 같은 이름의 ROS 2 토픽도 낼 수 있다(C++ `mirror_to_ros()`, Python `mirror_to_ros=True`). ROS 2 구독자가 있는 동안만 변환한다. `flux_bridge`는 다른 ROS 2 발행자가 있는 토픽을 relay하지 않고, `echo_flux`·`hz_flux`는 mirror만 있어도 동작한다
+* 발행자가 지금 구독하는 프로세스 수를 센다(C++ `subscriber_count()`, Python `subscriber_count`, C `flux_channel_subscriber_count`). 죽은 구독 프로세스는 세지 않는다
+* `ros2/flux_wrapper`: flux가 있든 없든 빌드되는 발행·구독 API. 빌드할 때와 실행할 때 `ENABLE_FLUX=1`이면 flux로, 아니면 ROS 2로 보낸다. `sensor_msgs/Image`와 `PointCloud2`를 다룬다
 
 ### 버그 수정
 

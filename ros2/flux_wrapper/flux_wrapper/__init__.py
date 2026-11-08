@@ -149,8 +149,10 @@ class Publisher:
         return True
 
     def get_subscription_count(self):
-        """flux keeps no subscriber count, so the flux path reports 1."""
-        return 1 if self._flux is not None else self._ros.get_subscription_count()
+        """The flux path counts subscribing processes."""
+        if self._flux is not None:
+            return self._flux.subscriber_count
+        return self._ros.get_subscription_count()
 
     def _report(self, p):
         if _flux.faulted(p) and not self._fault_logged:

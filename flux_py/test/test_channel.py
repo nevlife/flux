@@ -192,6 +192,15 @@ def test_the_publisher_sets_how_many_processes_may_subscribe(node):
     assert e.value.status == flux.Status.INVALID_ARGUMENT
 
 
+def test_subscriber_count_follows_the_subscribing_processes(node):
+    pub = flux.Publisher(node, topic("count"), **SMALL)
+    assert pub.subscriber_count == 0
+    sub = flux.Subscription(node, pub.topic_name)
+    assert pub.subscriber_count == 1
+    del sub
+    assert pub.subscriber_count == 0
+
+
 def test_topics_resolve_against_the_node(node):
     ns = Node("n", namespace=f"/ns{os.getpid()}")
     pub = flux.Publisher(ns, "cam", **SMALL)

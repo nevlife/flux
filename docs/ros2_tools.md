@@ -58,7 +58,7 @@ pub = flux.Publisher(node, "image", fingerprint=Image.FINGERPRINT__, mirror_to_r
 | 프레임 경로 | 발행자 프로세스 안의 스레드가 자기 채널을 읽는다. 슬롯에서 프레임을 복사하고 view를 놓은 뒤, 그 사본에서 메시지의 CDR을 써서 낸다. bridge와 같은 경로다 |
 | 발행 경로 | `publish()`와 commit은 변환을 기다리지 않는다 |
 | ROS 2 구독자가 없을 때 | flux 구독을 놓고 100 ms마다 구독자 수만 본다. 구독자 번호(`max_subscribers`)를 차지하지 않는다 |
-| ROS 2 구독자가 있을 때 | flux 구독자 하나로 붙으므로 구독자 번호 하나를 쓴다 |
+| ROS 2 구독자가 있을 때 | flux 구독자 하나로 붙으므로 구독자 번호 하나를 쓴다. 발행자의 `subscriber_count`에도 1로 들어간다 |
 | DDS QoS | depth 1, best effort, volatile |
 | flux QoS | depth 1, `max_borrow` 1 |
 | 생성 비용 | 켤 때 설치된 `.msg`를 모두 읽는다 |
@@ -66,6 +66,41 @@ pub = flux.Publisher(node, "image", fingerprint=Image.FINGERPRINT__, mirror_to_r
 | Python | 스레드는 `threading.Thread`이고 rclpy 발행자에 `bytes`로 낸다. 발행자 객체가 사라지면 스레드도 끝난다 |
 
 FHD 이미지처럼 큰 메시지를 여러 토픽으로 보내면 DDS의 UDP 수신 버퍼가 넘쳐 best effort 메시지가 버려질 수 있다. bridge도 같다. `netstat -su`의 `receive buffer errors`가 늘면 rmw 설정에서 소켓 버퍼를 늘린다(Cyclone DDS는 `CYCLONEDDS_URI`의 `SocketReceiveBufferSize`, 상한은 `net.core.rmem_max`다).
+
+## flux_wrapper
+
+드라이버가 flux 없이도 빌드되고 돌게 하는 발행·구독 API다. 드라이버의 `package.xml`에는 `flux_wrapper`만 넣는다. `flux_wrapper`가 flux를 `ENABLE_FLUX == 1` 조건으로 의존한다.
+
+| 스위치 | 언제 | 뜻 |
+| --- | --- | --- |
+| 빌드 | `flux_wrapper`를 빌드할 때 `ENABLE_FLUX=1` | flux 경로를 컴파일하고 `USE_FLUX_ENABLED`를 정의한다. flux를 찾았는지로 정하지 않는다. 이 값이 없으면 `colcon build --packages-up-to <드라이버>`가 flux를 빌드하지 않는다 |
+| 실행 | 프로세스의 환경에 `ENABLE_FLUX=1` | 그 프로세스의 발행자와 구독을 모두 flux로 보낸다. flux 구독자는 ROS 경로의 발행자에게서 받지 못하므로 launch 전체에 같은 값을 준다 |
+
+```cpp
+#include <flux_wrapper/flux_wrapper.hpp>
+
+flux_wrapper::Publisher<sensor_msgs::msg::Image> pub(*node, "image", rclcpp::QoS(1));
+auto loan = pub.loan();
+loan.set_header(header);
+loan.set_height(h);
+loan.set_width(w);
+loan.set_encoding("rgb8");
+loan.set_step(w * 3);
+auto data = loan.alloc_data(h * w * 3);  // flux 슬롯이나 ROS 메시지에 바로 쓴다
+pub.publish(std::move(loan));
+
+flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
+  *node, "image", rclcpp::QoS(1), [](const flux_wrapper::View<sensor_msgs::msg::Image> & v) {
+    // v.data()는 flux 경로에서 슬롯을 가리킨다. 콜백 밖에서 쓸 값은 v.to_msg()로 복사한다
+  });
+```
+
+- 타입은 `sensor_msgs/Image`와 `sensor_msgs/PointCloud2`다.
+- `publish(std::unique_ptr<Msg>)`는 이미 만든 ROS 메시지를 보낸다. flux 경로에서는 슬롯으로 한 번 복사한다.
+- `get_subscription_count()`는 ROS 경로에서 rclcpp 값을, flux 경로에서 `subscriber_count()`를 돌려준다.
+- `PublisherOptions`의 `max_message_size`, `slot_count`, `mirror_to_ros`는 flux 경로에만 쓰인다. mirror는 기본으로 꺼져 있다. 켜지 않으면 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
+- 구독은 `SubscriptionOptions`로 callback group을 받는다. flux 경로의 구독은 그 그룹을 돌리는 flux executor가 돌린다. `flux_wrapper::Executor`는 flux로 빌드했으면 `flux::Executor`, 아니면 `rclcpp::executors::SingleThreadedExecutor`다.
+- Python 모듈 `flux_wrapper`도 같은 구조다. `flux`를 import할 수 있고 `ENABLE_FLUX=1`이면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`한다.
 
 ## flux_bag
 

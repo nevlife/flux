@@ -420,6 +420,9 @@ uint64_t flux_channel_lost(const struct flux_channel *ch);
 
 uint64_t flux_channel_dropped(const struct flux_channel *ch);
 
+// Live subscriber processes of a publisher's channel; 0 on a subscriber's channel.
+uint32_t flux_channel_subscriber_count(const struct flux_channel *ch);
+
 uint64_t flux_channel_cursor(const struct flux_channel *ch);
 
 uint32_t flux_channel_attach_generation(const struct flux_channel *ch);

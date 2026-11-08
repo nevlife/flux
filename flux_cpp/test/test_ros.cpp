@@ -347,6 +347,17 @@ TEST_F(Ros, TakeBlockingIsEmptyAtOnceWhileMaxBorrowViewsAreHeld)
   EXPECT_LT(std::chrono::steady_clock::now() - start, 500ms);
 }
 
+TEST_F(Ros, SubscriberCountFollowsTheSubscribingProcesses)
+{
+  flux::Publisher pub(*node_, topic("count"), flux::kNoSchema, kSlot, kSlots);
+  EXPECT_EQ(pub.subscriber_count(), 0U);
+  std::optional<flux::Subscription> a;
+  a.emplace(*node_, topic("count"));
+  EXPECT_EQ(pub.subscriber_count(), 1U);
+  flux::Subscription b(*node_, topic("count"));
+  EXPECT_EQ(pub.subscriber_count(), 1U);
+}
+
 TEST_F(Ros, LostCountsOverTheSubscriptionsLife)
 {
   std::optional<flux::Publisher> pub;
