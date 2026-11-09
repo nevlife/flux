@@ -96,7 +96,7 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 ```
 
 - 타입은 `sensor_msgs/Image`와 `sensor_msgs/PointCloud2`다.
-- `publish(std::unique_ptr<Msg>)`는 이미 만든 ROS 메시지를 보낸다. flux 경로에서는 슬롯으로 한 번 복사한다.
+- `publish(std::unique_ptr<Msg>)`와 `publish(const Msg &)`는 이미 만든 ROS 메시지를 보낸다. flux 경로에서는 슬롯으로 한 번 복사한다. 메시지를 계속 쓰는 쪽은 `const Msg &`를 쓴다. ROS 경로에서 복사본을 만들지 않는다.
 - `get_subscription_count()`는 ROS 경로에서 rclcpp 값을, flux 경로에서 `subscriber_count()`를 돌려준다.
 - `PublisherOptions`의 `max_message_size`, `slot_count`, `mirror_to_ros`는 flux 경로에만 쓰인다. mirror는 기본으로 꺼져 있다. 켜지 않으면 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
 - 구독은 `SubscriptionOptions`로 callback group을 받는다. flux 경로의 구독은 그 그룹을 돌리는 flux executor가 돌린다. `flux_wrapper::Executor`는 flux로 빌드했으면 `flux::Executor`, 아니면 `rclcpp::executors::SingleThreadedExecutor`다.

@@ -179,6 +179,15 @@ TEST_F(WrapperTest, PointCloudFromARosMessage)
 
   ASSERT_TRUE(got);
   EXPECT_EQ(*got, cloud);
+
+  // The same message again, kept by the caller.
+  got.reset();
+  done = false;
+  cloud.header = header(6, "lidar");
+  run_until(done, [&] { EXPECT_TRUE(pub.publish(cloud)); });
+
+  ASSERT_TRUE(got);
+  EXPECT_EQ(*got, cloud);
 }
 
 // A message over the default slot size goes out once max_message_size makes room for it.

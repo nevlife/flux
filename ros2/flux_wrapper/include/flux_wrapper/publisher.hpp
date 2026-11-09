@@ -108,6 +108,23 @@ public:
     return true;
   }
 
+  // For a message the caller keeps. The flux path copies it into a slot once.
+  auto publish(const MsgT & msg) -> bool
+  {
+#ifdef USE_FLUX_ENABLED
+    if (flux_) {
+      auto b = detail::AdapterT<MsgT>::build__(*flux_);
+      if (!b) {
+        return false;
+      }
+      sensor_msgs::flux_msg::msg_to_frame(msg, b);
+      return report(b.commit__());
+    }
+#endif
+    ros_->publish(msg);
+    return true;
+  }
+
   // The flux path counts subscribing processes, and a mirror counts as one while a ROS
   // subscriber wants it.
   [[nodiscard]] auto get_subscription_count() const -> std::size_t
