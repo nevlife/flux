@@ -170,22 +170,25 @@ struct Field
 namespace detail
 {
 
-// Never throws: a Cuda that cannot be had is Host, with the reason logged once.
-inline auto cuda_usable(const rclcpp::Logger & logger, Device requested) -> bool
+// Never throws: a Cuda that cannot be had is Host, with the reason logged for this topic.
+inline auto cuda_usable(const rclcpp::Logger & logger, const std::string & topic, Device requested)
+  -> bool
 {
   if (requested == Device::Host) {
     return false;
   }
 #ifndef FLUX_WRAPPER_CUDA
-  RCLCPP_WARN_ONCE(logger, "Device::Cuda, but flux_wrapper was built without CUDA; using Host");
+  RCLCPP_WARN(
+    logger, "%s: Device::Cuda, but flux_wrapper was built without CUDA; using Host", topic.c_str());
   return false;
 #else
 #ifdef USE_FLUX_ENABLED
   if (use_flux()) {
     const flux::gpu::Platform p = flux::gpu::probe();
     if (p.route == flux::gpu::Route::None) {
-      RCLCPP_WARN_ONCE(
-        logger, "Device::Cuda: no flux GPU route (%s); using Host", p.reason.c_str());
+      RCLCPP_WARN(
+        logger, "%s: Device::Cuda: no flux GPU route (%s); using Host", topic.c_str(),
+        p.reason.c_str());
       return false;
     }
     return true;
@@ -194,8 +197,8 @@ inline auto cuda_usable(const rclcpp::Logger & logger, Device requested) -> bool
   int n = 0;
   const cudaError_t e = cudaGetDeviceCount(&n);
   if (e != cudaSuccess || n == 0) {
-    RCLCPP_WARN_ONCE(
-      logger, "Device::Cuda: no CUDA device (%s); using Host",
+    RCLCPP_WARN(
+      logger, "%s: Device::Cuda: no CUDA device (%s); using Host", topic.c_str(),
       e != cudaSuccess ? cudaGetErrorString(e) : "none found");
     return false;
   }

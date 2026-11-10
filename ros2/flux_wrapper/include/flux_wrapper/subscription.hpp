@@ -49,7 +49,8 @@ public:
     NodeT & node, const std::string & topic, const rclcpp::QoS & qos, Callback callback,
     const SubscriptionOptions & options = {})
   {
-    [[maybe_unused]] const bool cuda = detail::cuda_usable(node.get_logger(), options.device);
+    [[maybe_unused]] const bool cuda =
+      detail::cuda_usable(node.get_logger(), topic, options.device);
 #ifdef USE_FLUX_ENABLED
     if (use_flux()) {
       flux::QoS q(static_cast<std::uint32_t>(qos.depth()));
@@ -90,14 +91,18 @@ public:
       if (staging) {
         ros_ = rclcpp::create_subscription<MsgT>(
           node, topic, qos,
-          [cb = std::move(callback), staging,
-           logger = node.get_logger()](const typename MsgT::ConstSharedPtr & m) {
+          [cb = std::move(callback), staging, logger = node.get_logger(), topic,
+           logged =
+             std::make_shared<std::atomic<bool>>(false)](const typename MsgT::ConstSharedPtr & m) {
             const void * d = staging->upload(m->data.data(), m->data.size());
             if (d == nullptr) {
-              RCLCPP_ERROR_ONCE(
-                logger,
-                "Device::Cuda: a message could not be copied to the device and was skipped; "
-                "later ones are not logged");
+              if (!logged->exchange(true, std::memory_order_relaxed)) {
+                RCLCPP_ERROR(
+                  logger,
+                  "%s: Device::Cuda: a message could not be copied to the device and was "
+                  "skipped; later ones are not logged",
+                  topic.c_str());
+              }
               return;
             }
             cb(View<MsgT>(*m, d, staging->stream()));
@@ -105,8 +110,9 @@ public:
           ros_options);
         return;
       }
-      RCLCPP_WARN_ONCE(
-        node.get_logger(), "Device::Cuda: no CUDA stream could be created; using Host");
+      RCLCPP_WARN(
+        node.get_logger(), "%s: Device::Cuda: no CUDA stream could be created; using Host",
+        topic.c_str());
     }
 #endif
     ros_ = rclcpp::create_subscription<MsgT>(

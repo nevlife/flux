@@ -167,17 +167,9 @@ def _unpack(msg_type, aux):
     return m
 
 
-_warned = set()
-
-
-def _warn_once(logger, text):
-    if text not in _warned:
-        _warned.add(text)
-        logger.warning(text)
-
-
-def _cuda_usable(logger, device):
-    """Never raises for a "cuda" that cannot be had: it is "cpu", with the reason logged once."""
+def _cuda_usable(logger, topic, device):
+    """Never raises for a "cuda" that cannot be had: it is "cpu", with the reason logged for this
+    topic."""
     if device not in ("cpu", "cuda"):
         raise ValueError(f'flux_wrapper: device is "cpu" or "cuda", not {device!r}')
     if device == "cpu":
@@ -185,11 +177,13 @@ def _cuda_usable(logger, device):
     if not use_flux():
         # shortcut: the ROS path needs a device buffer and copies to and from it, which the flux
         # Python module does not give; it stays "cpu" until one does.
-        _warn_once(logger, 'device="cuda" on the ROS path is not supported in Python; using "cpu"')
+        logger.warning(
+            f'{topic}: device="cuda" on the ROS path is not supported in Python; using "cpu"'
+        )
         return False
     p = _flux.probe()
     if p.route == _flux.Route.NONE:
-        _warn_once(logger, f'device="cuda": no flux GPU route ({p.reason}); using "cpu"')
+        logger.warning(f'{topic}: device="cuda": no flux GPU route ({p.reason}); using "cpu"')
         return False
     return True
 
@@ -296,14 +290,14 @@ class Publisher:
         self._logger = node.get_logger()
         self._fault_logged = False
         self._device_logged = False
-        self._cuda = _cuda_usable(self._logger, device)
+        self._cuda = _cuda_usable(self._logger, topic, device)
         if use_flux():
             self._adapter, self._ros_adapter = _adapters()[msg_type]
             fingerprint, aux_size = self._adapter.FINGERPRINT__, 0
             if self._cuda:
                 fingerprint, aux_size, _ = _GPU[msg_type]
                 if mirror_to_ros:
-                    _warn_once(self._logger, 'mirror_to_ros is ignored with device="cuda"')
+                    self._logger.warning(f'{topic}: mirror_to_ros is ignored with device="cuda"')
             self._flux = _flux.Publisher(
                 node,
                 topic,
@@ -499,19 +493,21 @@ class Subscription:
         self._gpu = None
         self._rejects = [0]
         logger = node.get_logger()
-        cuda = _cuda_usable(logger, device)
+        cuda = _cuda_usable(logger, topic, device)
         if use_flux():
             adapter = _adapters()[msg_type][0]
             q = _flux.QoS(depth=_depth(qos))
 
+            host_logged = [False]
+
             def on_host(f):
-                if cuda:
+                if cuda and not host_logged[0]:
                     # shortcut: in host memory until the flux Python module gives a Frame's host
                     # bytes.
-                    _warn_once(
-                        logger,
-                        f'device="cuda": frames of a "cpu" publisher on {topic} arrive in host '
-                        "memory in Python",
+                    host_logged[0] = True
+                    logger.warning(
+                        f'{topic}: device="cuda": frames of a "cpu" publisher arrive in host '
+                        "memory in Python"
                     )
                 callback(View(msg_type, flux_view=adapter.View(f)))
 

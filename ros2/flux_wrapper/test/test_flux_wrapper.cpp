@@ -1,6 +1,7 @@
 #include "flux_wrapper/flux_wrapper.hpp"
 
 #include <gtest/gtest.h>
+#include <rcutils/logging.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -10,9 +11,12 @@
 #include <cuda_runtime_api.h>
 #endif
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdarg>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -932,6 +936,76 @@ auto echo_through_python(
 
 // A C++ GPU frame read and written again by the Python flux_wrapper: each side reads the other's
 // aux layout.
+// Warnings this process logged, while a Logs is alive.
+class Logs
+{
+public:
+  Logs() : previous_(rcutils_logging_get_output_handler())
+  {
+    lines().clear();
+    rcutils_logging_set_output_handler(&Logs::keep);
+  }
+  ~Logs() { rcutils_logging_set_output_handler(previous_); }
+  Logs(const Logs &) = delete;
+  auto operator=(const Logs &) -> Logs & = delete;
+  Logs(Logs &&) = delete;
+  auto operator=(Logs &&) -> Logs & = delete;
+
+  [[nodiscard]] static auto count(std::string_view text) -> int
+  {
+    int n = 0;
+    for (const std::string & l : lines()) {
+      n += static_cast<int>(l.find(text) != std::string::npos);
+    }
+    return n;
+  }
+
+private:
+  static auto lines() -> std::vector<std::string> &
+  {
+    static std::vector<std::string> l;
+    return l;
+  }
+  static void keep(
+    const rcutils_log_location_t *, int severity, const char *, rcutils_time_point_value_t,
+    const char * format, va_list * args)
+  {
+    if (severity < RCUTILS_LOG_SEVERITY_WARN) {
+      return;
+    }
+    std::array<char, 1024> buf{};
+    va_list copy;
+    va_copy(copy, *args);
+    (void)std::vsnprintf(buf.data(), buf.size(), format, copy);
+    va_end(copy);
+    lines().emplace_back(buf.data());
+  }
+
+  rcutils_logging_output_handler_t previous_;
+};
+
+// Each publisher and subscription that cannot have Cuda says so, with its topic.
+TEST_F(WrapperTest, EveryCudaFallbackIsLoggedWithItsTopic)
+{
+#ifdef FLUX_WRAPPER_CUDA
+  if (no_cuda().empty()) {
+    GTEST_SKIP() << "Cuda can be had here: run with CUDA_VISIBLE_DEVICES= or build without CUDA";
+  }
+#endif
+  const Logs logs;
+  flux_wrapper::PublisherOptions options;
+  options.device = flux_wrapper::Device::Cuda;
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.device = flux_wrapper::Device::Cuda;
+  const flux_wrapper::Publisher<Image> first(*node_, "fallback_first", rclcpp::QoS(1), options);
+  const flux_wrapper::Publisher<Image> second(*node_, "fallback_second", rclcpp::QoS(1), options);
+  const flux_wrapper::Subscription<Image> sub(
+    *node_, "fallback_sub", rclcpp::QoS(1), [](const flux_wrapper::View<Image> &) {}, sub_options);
+  EXPECT_EQ(Logs::count("fallback_first"), 1);
+  EXPECT_EQ(Logs::count("fallback_second"), 1);
+  EXPECT_EQ(Logs::count("fallback_sub"), 1);
+}
+
 TEST_F(WrapperTest, GpuFramesGoThroughPython)
 {
   SKIP_WITHOUT_CUDA();

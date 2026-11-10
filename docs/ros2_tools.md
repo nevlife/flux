@@ -102,7 +102,7 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 - 구독은 `SubscriptionOptions`로 callback group을 받는다. flux 경로의 구독은 그 그룹을 돌리는 flux executor가 돌린다. `flux_wrapper::Executor`는 flux로 빌드했으면 `flux::Executor`, 아니면 `rclcpp::executors::SingleThreadedExecutor`다.
 - `PublisherOptions::device = flux_wrapper::Device::Cuda`면 메시지의 `data`를 GPU 메모리째 보낸다. 두 타입 모두 된다. `loan.alloc_buffer(n)`이 데이터 자리를 주고, `on_device()`가 GPU 메모리인지 알려 준다. `copy_from(src, n)`은 원본이 호스트든 장치든 받는다. kernel이 직접 쓸 때는 `device_ptr()`와 `stream()`을 쓰고, publish가 그 stream의 작업이 끝난 뒤 발행한다.
 - flux 경로에서는 타입마다 따로 있는 GPU 채널로 보내고 `data` 밖의 필드를 같은 프레임에 담는다. ROS 경로에서는 wrapper가 GPU 버퍼를 하나 두고, publish할 때 호스트로 복사해 ROS 메시지로 보낸다. GPU 채널의 필드에는 상한이 있다. `Image`는 `encoding` 32바이트, `frame_id` 256바이트까지다. `PointCloud2`는 `frame_id` 256바이트, `fields` 32개, 필드 이름 32바이트까지다. 넘으면 loan이 `false`가 되고 publish가 `false`다.
-- `Cuda`를 쓸 수 없으면(CUDA 없이 빌드했거나, GPU 경로나 장치가 없으면) 경고를 한 번 남기고 `Host`로 간다. `uses_device()`가 실제로 쓰는 쪽을 알려 준다. GPU 채널에서는 `mirror_to_ros`를 무시한다.
+- `Cuda`를 쓸 수 없으면(CUDA 없이 빌드했거나, GPU 경로나 장치가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Host`로 간다. `uses_device()`가 실제로 쓰는 쪽을 알려 준다. GPU 채널에서는 `mirror_to_ros`를 무시한다.
 - 구독은 flux 경로에서 `Cuda` 발행자의 프레임도 받는다. `SubscriptionOptions::device`가 `Host`(기본)면 `data()`가 호스트 메모리다(외장 GPU에서는 take할 때 한 번 복사한다). 헤더가 잘못된 프레임은 건너뛰고 `rejected()`로 센다.
 - 구독의 `device`가 `Cuda`면 발행자가 어느 쪽이든 `data`가 장치 메모리에 있다. `on_device()`, `device_ptr()`, `size()`, `stream()`으로 읽고, 장치 작업은 `stream()`에 올린다. `Host` 발행자의 프레임은 외장 GPU에서 take할 때 장치로 한 번 복사하고, 통합 GPU에서는 복사하지 않는다. ROS 경로에서는 구독마다 장치 버퍼를 하나 두고, 메시지를 받을 때마다 그 버퍼로 복사한다. 콜백들이 이 버퍼를 함께 쓰므로 그 구독을 Reentrant 그룹에 넣지 않는다. 호스트 메모리에도 있는 프레임은 `data()`로도 읽힌다.
 - GPU 기능은 CMake가 CUDAToolkit을 찾을 때 컴파일된다. 찾지 못해도 `Device::Cuda`는 있으므로 코드는 그대로 빌드된다.
@@ -115,7 +115,7 @@ flux Python 모듈에는 호스트 메모리와 장치 메모리 사이의 복�
 | --- | --- |
 | ROS 경로의 `device="cuda"` | `"cpu"`로 간다 |
 | 외장 GPU에서 `device="cuda"` 발행자의 `publish(msg)` | `False`를 돌려주고 오류 로그를 한 번 남긴다. 데이터는 `loan.alloc_buffer()`로 쓴다. 통합 GPU에서는 슬롯이 호스트 메모리이기도 해서 그대로 보낸다 |
-| `device="cuda"` 구독이 `"cpu"` 발행자의 프레임을 받을 때 | 호스트 메모리로 받고(`on_device`가 거짓), 경고를 한 번 남긴다. 필드를 읽으려면 프레임의 호스트 바이트가 필요한데, flux Python 모듈은 장치 구독의 프레임에서 그것을 주지 않는다 |
+| `device="cuda"` 구독이 `"cpu"` 발행자의 프레임을 받을 때 | 호스트 메모리로 받고(`on_device`가 거짓), 그 구독이 경고를 한 번 남긴다. 필드를 읽으려면 프레임의 호스트 바이트가 필요한데, flux Python 모듈은 장치 구독의 프레임에서 그것을 주지 않는다 |
 | 장치 메모리에 있는 프레임의 `data` | `None`이다. 통합 GPU에서도 같다 |
 | 장치 메모리에 있는 프레임의 `to_msg()` | `RuntimeError`다 |
 

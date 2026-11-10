@@ -308,6 +308,31 @@ def test_cuda_field_over_its_cap_fails_the_loan(node):
     assert got["host"] == (False, bytes(want.data), want)
 
 
+class _Warnings:
+    """A logger that keeps what was warned."""
+
+    def __init__(self, logger):
+        self._logger = logger
+        self.lines = []
+
+    def warning(self, text):
+        self.lines.append(text)
+
+    def __getattr__(self, name):
+        return getattr(self._logger, name)
+
+
+@pytest.mark.skipif(NO_CUDA == "", reason="device=cuda is had here")
+def test_every_cuda_fallback_is_logged_with_its_topic(node, monkeypatch):
+    logs = _Warnings(node.get_logger())
+    monkeypatch.setattr(node, "get_logger", lambda: logs)
+    flux_wrapper.Publisher(node, Image, "fallback_first", 1, device="cuda")
+    flux_wrapper.Publisher(node, Image, "fallback_second", 1, device="cuda")
+    flux_wrapper.Subscription(node, Image, "fallback_sub", lambda v: None, 1, device="cuda")
+    for topic in ("fallback_first", "fallback_second", "fallback_sub"):
+        assert sum(topic in line for line in logs.lines) == 1, logs.lines
+
+
 @pytest.mark.skipif(NO_CUDA == "", reason="device=cuda is had here")
 def test_cuda_that_cannot_be_had_is_cpu(node):
     got, done = [], threading.Event()

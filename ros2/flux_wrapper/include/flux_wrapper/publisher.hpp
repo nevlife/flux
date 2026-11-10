@@ -46,7 +46,7 @@ public:
     const PublisherOptions & options = {})
   : logger_(node.get_logger())
   {
-    [[maybe_unused]] const bool cuda = detail::cuda_usable(logger_, options.device);
+    [[maybe_unused]] const bool cuda = detail::cuda_usable(logger_, topic, options.device);
 #ifdef FLUX_WRAPPER_CUDA
     requested_cuda_ = options.device == Device::Cuda;
 #endif
@@ -63,10 +63,11 @@ public:
           static_cast<std::uint32_t>(sizeof(typename detail::Gpu<MsgT>::Aux)));
         device_ = true;
         if (options.mirror_to_ros) {
-          RCLCPP_WARN_ONCE(
+          RCLCPP_WARN(
             logger_,
-            "mirror_to_ros is ignored with Device::Cuda: flux does not "
-            "mirror a GPU channel");
+            "%s: mirror_to_ros is ignored with Device::Cuda: flux does not mirror a GPU "
+            "channel",
+            topic.c_str());
         }
         return;
       }
@@ -89,7 +90,8 @@ public:
       if (staging_) {
         device_ = true;
       } else {
-        RCLCPP_WARN_ONCE(logger_, "Device::Cuda: no CUDA stream could be created; using Host");
+        RCLCPP_WARN(
+          logger_, "%s: Device::Cuda: no CUDA stream could be created; using Host", topic.c_str());
       }
     }
 #endif
