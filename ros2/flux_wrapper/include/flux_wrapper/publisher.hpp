@@ -14,7 +14,6 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <type_traits>
 #include <utility>
 
 namespace flux_wrapper
@@ -47,7 +46,10 @@ public:
     const PublisherOptions & options = {})
   : logger_(node.get_logger())
   {
-    [[maybe_unused]] const bool cuda = resolve_cuda(options.device);
+    [[maybe_unused]] const bool cuda = detail::cuda_usable(logger_, options.device);
+#ifdef FLUX_WRAPPER_CUDA
+    requested_cuda_ = options.device == Device::Cuda;
+#endif
 #ifdef USE_FLUX_ENABLED
     if (use_flux()) {
       const std::uint32_t slot = options.max_message_size != 0 ? options.max_message_size
@@ -56,9 +58,9 @@ public:
         options.slot_count != 0 ? options.slot_count : flux::Publisher::kDefaultSlotCount;
       if (cuda) {
         flux_ = std::make_unique<flux::Publisher>(
-          node, topic, detail::kGpuImageFingerprint, slot, count, flux::Device::Cuda,
+          node, topic, detail::Gpu<MsgT>::kFingerprint, slot, count, flux::Device::Cuda,
           flux::MemoryPolicy{}, flux::Publisher::kDefaultMaxSubscribers,
-          static_cast<std::uint32_t>(sizeof(detail::GpuImageAux)));
+          static_cast<std::uint32_t>(sizeof(typename detail::Gpu<MsgT>::Aux)));
         device_ = true;
         if (options.mirror_to_ros) {
           RCLCPP_WARN_ONCE(
@@ -98,17 +100,13 @@ public:
   auto loan() -> Loan<MsgT>
   {
 #ifdef USE_FLUX_ENABLED
-    if constexpr (kImage) {
-      if (flux_ && device_) {
-        return Loan<MsgT>(flux_->loan());
-      }
+    if (flux_ && device_) {
+      return Loan<MsgT>(flux_->loan());
     }
 #endif
 #ifdef FLUX_WRAPPER_CUDA
-    if constexpr (kImage) {
-      if (staging_) {
-        return Loan<MsgT>(std::make_unique<MsgT>(), staging_.get());
-      }
+    if (staging_) {
+      return Loan<MsgT>(std::make_unique<MsgT>(), staging_.get());
     }
 #endif
 #ifdef USE_FLUX_ENABLED
@@ -118,9 +116,7 @@ public:
     Loan<MsgT> l(std::make_unique<MsgT>());
 #endif
 #ifdef FLUX_WRAPPER_CUDA
-    if constexpr (kImage) {
-      l.query_src_ = requested_cuda_;
-    }
+    l.query_src_ = requested_cuda_;
 #endif
     return l;
   }
@@ -129,10 +125,8 @@ public:
   auto publish(Loan<MsgT> && loan) -> bool
   {
 #ifdef USE_FLUX_ENABLED
-    if constexpr (kImage) {
-      if (loan.gpu_) {
-        return commit_gpu(loan);
-      }
+    if (loan.gpu_) {
+      return commit_gpu(loan);
     }
     if (loan.builder_) {
       return report(loan.builder_->commit__());
@@ -142,11 +136,9 @@ public:
       return false;
     }
 #ifdef FLUX_WRAPPER_CUDA
-    if constexpr (kImage) {
-      if (loan.staged_ && !staging_->download(loan.msg_->data.data(), loan.msg_->data.size())) {
-        device_error("the device to host copy failed");
-        return false;
-      }
+    if (loan.staged_ && !staging_->download(loan.msg_->data.data(), loan.msg_->data.size())) {
+      device_error("the device to host copy failed");
+      return false;
     }
 #endif
     ros_->publish(std::move(loan.msg_));
@@ -157,10 +149,8 @@ public:
   auto publish(std::unique_ptr<MsgT> msg) -> bool
   {
 #ifdef USE_FLUX_ENABLED
-    if constexpr (kImage) {
-      if (flux_ && device_) {
-        return publish_gpu(*msg);
-      }
+    if (flux_ && device_) {
+      return publish_gpu(*msg);
     }
     if (flux_) {
       auto b = detail::AdapterT<MsgT>::build__(*flux_);
@@ -179,10 +169,8 @@ public:
   auto publish(const MsgT & msg) -> bool
   {
 #ifdef USE_FLUX_ENABLED
-    if constexpr (kImage) {
-      if (flux_ && device_) {
-        return publish_gpu(msg);
-      }
+    if (flux_ && device_) {
+      return publish_gpu(msg);
     }
     if (flux_) {
       auto b = detail::AdapterT<MsgT>::build__(*flux_);
@@ -222,46 +210,6 @@ public:
   [[nodiscard]] auto uses_device() const noexcept -> bool { return device_; }
 
 private:
-  static constexpr bool kImage = std::is_same_v<MsgT, sensor_msgs::msg::Image>;
-
-  // Never throws: a Cuda that cannot be had is Host, with the reason logged once.
-  auto resolve_cuda(Device requested) -> bool
-  {
-    if (requested == Device::Host) {
-      return false;
-    }
-    if constexpr (!kImage) {
-      RCLCPP_WARN_ONCE(logger_, "Device::Cuda carries only sensor_msgs/Image; using Host");
-      return false;
-    }
-#ifndef FLUX_WRAPPER_CUDA
-    RCLCPP_WARN_ONCE(logger_, "Device::Cuda, but flux_wrapper was built without CUDA; using Host");
-    return false;
-#else
-    requested_cuda_ = true;
-#ifdef USE_FLUX_ENABLED
-    if (use_flux()) {
-      const flux::gpu::Platform p = flux::gpu::probe();
-      if (p.route == flux::gpu::Route::None) {
-        RCLCPP_WARN_ONCE(
-          logger_, "Device::Cuda: no flux GPU route (%s); using Host", p.reason.c_str());
-        return false;
-      }
-      return true;
-    }
-#endif
-    int n = 0;
-    const cudaError_t e = cudaGetDeviceCount(&n);
-    if (e != cudaSuccess || n == 0) {
-      RCLCPP_WARN_ONCE(
-        logger_, "Device::Cuda: no CUDA device (%s); using Host",
-        e != cudaSuccess ? cudaGetErrorString(e) : "none found");
-      return false;
-    }
-    return true;
-#endif
-  }
-
 #if defined(USE_FLUX_ENABLED) || defined(FLUX_WRAPPER_CUDA)
   void device_error(const char * what)
   {
@@ -282,22 +230,17 @@ private:
     loan.aux_ = nullptr;
     if (loan.bad_) {
       loan.slot_.abort();
-      device_error("encoding or frame_id longer than its cap (32, 256 bytes)");
+      device_error(detail::Gpu<MsgT>::kOverCap);
       return false;
     }
-    loan.slot_.set_aux_len(sizeof(detail::GpuImageAux));
+    loan.slot_.set_aux_len(sizeof(typename detail::Gpu<MsgT>::Aux));
     return report(loan.slot_.commit(loan.len_));
   }
 
   auto publish_gpu(const MsgT & msg) -> bool
   {
     Loan<MsgT> l = loan();
-    l.set_header(msg.header);
-    l.set_height(msg.height);
-    l.set_width(msg.width);
-    l.set_encoding(msg.encoding);
-    l.set_is_bigendian(msg.is_bigendian);
-    l.set_step(msg.step);
+    l.set_from(msg);
     const Buffer b = l.alloc_buffer(msg.data.size());
     if (l.slot_ && !b) {
       return report(flux::Published::TooLarge);

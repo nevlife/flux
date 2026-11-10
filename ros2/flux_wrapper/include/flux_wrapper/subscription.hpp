@@ -15,7 +15,6 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <type_traits>
 #include <utility>
 
 namespace flux_wrapper
@@ -26,16 +25,19 @@ struct SubscriptionOptions
   // Null: the node's default group. On the flux path the subscription is served by the flux
   // executor that runs this group (flux_wrapper::Executor, a flux component container).
   rclcpp::CallbackGroup::SharedPtr callback_group;
-  // Image on the flux path: Cuda keeps the frames of a Device::Cuda publisher on the device
-  // (View::on_device()). With Host, a discrete GPU's frames are copied to host memory at take.
+  // Cuda: every frame's data field is in device memory (View::on_device()), whatever the
+  // publisher's device. Where the GPU cannot read a host publisher's frame in place, flux copies it
+  // to the device at take; on the ROS path each message is copied to one device buffer of the
+  // subscription's, so its callbacks must not overlap (no Reentrant group). With Host, frames of a
+  // Device::Cuda publisher on a discrete GPU are copied to host memory at take.
   Device device = Device::Host;
 };
 
 // One topic over flux or over ROS, chosen once per process by use_flux(). The callback gets a
 // View with the message's fields on both paths. On the flux path the View aliases the slot and
 // is valid only during the call; copy out (to_msg()) what is kept longer. Keep the Subscription
-// alive as long as the executor that serves it, as a member of the node. An Image subscription on
-// the flux path also takes the frames of a publisher with Device::Cuda.
+// alive as long as the executor that serves it, as a member of the node. On the flux path it also
+// takes the frames of a publisher with Device::Cuda.
 template <class MsgT>
 class Subscription
 {
@@ -47,6 +49,7 @@ public:
     NodeT & node, const std::string & topic, const rclcpp::QoS & qos, Callback callback,
     const SubscriptionOptions & options = {})
   {
+    [[maybe_unused]] const bool cuda = detail::cuda_usable(node.get_logger(), options.device);
 #ifdef USE_FLUX_ENABLED
     if (use_flux()) {
       flux::QoS q(static_cast<std::uint32_t>(qos.depth()));
@@ -54,14 +57,23 @@ public:
         q.transient_local(static_cast<std::uint32_t>(qos.depth()));
       }
       using Adapter = detail::AdapterT<MsgT>;
+      const flux::Device device = cuda ? flux::Device::Cuda : flux::Device::Cpu;
       auto cb = std::make_shared<Callback>(std::move(callback));
-      flux_ = std::make_unique<flux::Subscription>(
-        node, topic, Adapter::kFingerprint, q,
-        [cb](const flux::FrameView & f) { (*cb)(View<MsgT>(typename Adapter::View(f))); });
-      flux_->add_to_callback_group(node, options.callback_group);
-      if constexpr (std::is_same_v<MsgT, sensor_msgs::msg::Image>) {
-        open_gpu(node, topic, q, std::move(cb), options);
+      if (cuda) {
+        flux_ = std::make_unique<flux::Subscription>(
+          node, topic, Adapter::kFingerprint, q,
+          [cb](const flux::FrameView & f) {
+            const typename Adapter::View v(f);
+            (*cb)(View<MsgT>(v, detail::device_at(f, v.data().data()), f.stream()));
+          },
+          device);
+      } else {
+        flux_ = std::make_unique<flux::Subscription>(
+          node, topic, Adapter::kFingerprint, q,
+          [cb](const flux::FrameView & f) { (*cb)(View<MsgT>(typename Adapter::View(f))); });
       }
+      flux_->add_to_callback_group(node, options.callback_group);
+      open_gpu(node, topic, q, std::move(cb), options.callback_group, device);
       return;
     }
 #else
@@ -72,6 +84,31 @@ public:
 #endif
     rclcpp::SubscriptionOptions ros_options;
     ros_options.callback_group = options.callback_group;
+#ifdef FLUX_WRAPPER_CUDA
+    if (cuda) {
+      std::shared_ptr<detail::DeviceStaging> staging = detail::DeviceStaging::create();
+      if (staging) {
+        ros_ = rclcpp::create_subscription<MsgT>(
+          node, topic, qos,
+          [cb = std::move(callback), staging,
+           logger = node.get_logger()](const typename MsgT::ConstSharedPtr & m) {
+            const void * d = staging->upload(m->data.data(), m->data.size());
+            if (d == nullptr) {
+              RCLCPP_ERROR_ONCE(
+                logger,
+                "Device::Cuda: a message could not be copied to the device and was skipped; "
+                "later ones are not logged");
+              return;
+            }
+            cb(View<MsgT>(*m, d, staging->stream()));
+          },
+          ros_options);
+        return;
+      }
+      RCLCPP_WARN_ONCE(
+        node.get_logger(), "Device::Cuda: no CUDA stream could be created; using Host");
+    }
+#endif
     ros_ = rclcpp::create_subscription<MsgT>(
       node, topic, qos,
       [cb = std::move(callback)](const typename MsgT::ConstSharedPtr & m) { cb(View<MsgT>(*m)); },
@@ -112,52 +149,26 @@ private:
   template <class NodeT>
   void open_gpu(
     NodeT & node, const std::string & topic, const flux::QoS & q, std::shared_ptr<Callback> cb,
-    const SubscriptionOptions & options)
+    const rclcpp::CallbackGroup::SharedPtr & group, flux::Device device)
   {
     rejects_ = std::make_shared<Rejects>(node.get_logger(), topic);
     auto on_frame = [cb = std::move(cb), r = rejects_](const flux::FrameView & f) {
-      detail::GpuImageFields fields;
-      if (!detail::decode_gpu_image(f.aux(), fields)) {
+      typename detail::Gpu<MsgT>::Fields fields;
+      if (!detail::decode_gpu(f.aux(), fields)) {
         if (r->count.fetch_add(1, std::memory_order_relaxed) == 0) {
           RCLCPP_ERROR(
             r->logger,
-            "%s: skipped a GPU image frame with a bad aux header (%zu bytes); later "
-            "ones are counted in rejected(), not logged",
+            "%s: skipped a GPU frame with a bad aux header (%zu bytes); later ones are counted "
+            "in rejected(), not logged",
             r->topic.c_str(), f.aux().size());
         }
         return;
       }
       (*cb)(View<MsgT>(f, fields));
     };
-    if (on_device(node, options.device)) {
-      gpu_ = std::make_unique<flux::Subscription>(
-        node, topic, detail::kGpuImageFingerprint, q, std::move(on_frame), flux::Device::Cuda);
-    } else {
-      gpu_ = std::make_unique<flux::Subscription>(
-        node, topic, detail::kGpuImageFingerprint, q, std::move(on_frame));
-    }
-    gpu_->add_to_callback_group(node, options.callback_group);
-  }
-
-  // Never throws: a Cuda that cannot be had is Host, with the reason logged once.
-  template <class NodeT>
-  static auto on_device(NodeT & node, Device requested) -> bool
-  {
-    if (requested == Device::Host) {
-      return false;
-    }
-#ifdef FLUX_WRAPPER_CUDA
-    const flux::gpu::Platform p = flux::gpu::probe();
-    if (p.route != flux::gpu::Route::None) {
-      return true;
-    }
-    RCLCPP_WARN_ONCE(
-      node.get_logger(), "Device::Cuda: no flux GPU route (%s); using Host", p.reason.c_str());
-#else
-    RCLCPP_WARN_ONCE(
-      node.get_logger(), "Device::Cuda, but flux_wrapper was built without CUDA; using Host");
-#endif
-    return false;
+    gpu_ = std::make_unique<flux::Subscription>(
+      node, topic, detail::Gpu<MsgT>::kFingerprint, q, std::move(on_frame), device);
+    gpu_->add_to_callback_group(node, group);
   }
 
   std::unique_ptr<flux::Subscription> flux_;

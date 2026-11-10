@@ -61,7 +61,8 @@ if(BUILD_TESTING)
   endif()
   foreach(run ${runs})
     ament_add_gtest_test(test_flux_wrapper TEST_NAME test_flux_wrapper_run${run}
-      ENV ENABLE_FLUX=${run} FLUX_WRAPPER_EXPECT_FLUX=${run} TIMEOUT 60)
+      ENV ENABLE_FLUX=${run} FLUX_WRAPPER_EXPECT_FLUX=${run}
+      FLUX_WRAPPER_PY_TEST=${CMAKE_CURRENT_SOURCE_DIR}/test/test_flux_wrapper.py TIMEOUT 60)
     ament_add_pytest_test(test_flux_wrapper_py_run${run} test/test_flux_wrapper.py
       ENV ENABLE_FLUX=${run} FLUX_WRAPPER_EXPECT_FLUX=${run} TIMEOUT 60)
   endforeach()
