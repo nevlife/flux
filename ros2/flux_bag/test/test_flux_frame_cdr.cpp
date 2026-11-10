@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -169,13 +170,119 @@ TEST(RawMeta, RoundTrip)
   EXPECT_EQ(n, 10u + 24u);
 
   flux_bag::RawMeta out;
-  ASSERT_TRUE(out.read(buf.data(), n));
+  ASSERT_EQ(out.read(buf.data(), n), n);
   EXPECT_EQ(out.slot_size, in.slot_size);
   EXPECT_EQ(out.slot_count, in.slot_count);
   EXPECT_EQ(out.dtype, flux::DType::F32);
   EXPECT_EQ(out.ndim, 3);
   EXPECT_EQ(out.shape[2], 3u);
-  EXPECT_FALSE(out.read(buf.data(), n - 1));
+  // Longer is a tail after it, for AuxTail to judge.
+  EXPECT_EQ(out.read(buf.data(), n + 5), n);
+  EXPECT_EQ(out.read(buf.data(), n - 1), 0u);
   buf[8] = 200;
-  EXPECT_FALSE(out.read(buf.data(), n));
+  EXPECT_EQ(out.read(buf.data(), n), 0u);
+}
+
+namespace
+{
+
+// A RawMeta of one dimension, then a tail of `aux_len` bytes for a channel of `aux_size`.
+auto meta_with_tail(std::uint32_t aux_size, std::uint32_t aux_len) -> std::vector<std::uint8_t>
+{
+  flux_bag::RawMeta raw;
+  raw.slot_size = 4096;
+  raw.slot_count = 2;
+  raw.ndim = 1;
+  raw.shape[0] = 8;
+  std::vector<std::uint8_t> aux(aux_len);
+  for (std::size_t i = 0; i < aux.size(); ++i) {
+    aux[i] = static_cast<std::uint8_t>(i + 1);
+  }
+  flux_bag::AuxTail tail;
+  tail.aux_size = aux_size;
+  tail.aux = aux.data();
+  tail.aux_len = aux_len;
+  std::vector<std::uint8_t> out(raw.size() + tail.size());
+  const std::size_t n = raw.write(out.data());
+  EXPECT_EQ(tail.write(out.data() + n), tail.size());
+  return out;
+}
+
+// The tail after the RawMeta of `meta`, or false.
+auto read_tail(const std::vector<std::uint8_t> & meta, flux_bag::AuxTail & tail) -> bool
+{
+  flux_bag::RawMeta raw;
+  const std::size_t used = raw.read(meta.data(), meta.size());
+  return used != 0 && tail.read(meta.data() + used, meta.size() - used);
+}
+
+void put_u32(std::vector<std::uint8_t> & meta, std::size_t at, std::uint32_t v)
+{
+  std::memcpy(meta.data() + at, &v, 4);
+}
+
+}  // namespace
+
+TEST(AuxTail, RoundTrip)
+{
+  const std::vector<std::uint8_t> meta = meta_with_tail(316, 300);
+  ASSERT_EQ(meta.size(), 18u + 12u + 300u);
+  flux_bag::AuxTail tail;
+  ASSERT_TRUE(read_tail(meta, tail));
+  EXPECT_EQ(tail.aux_size, 316u);
+  ASSERT_EQ(tail.aux_len, 300u);
+  EXPECT_EQ(tail.aux, meta.data() + 30);
+  for (std::size_t i = 0; i < tail.aux_len; ++i) {
+    EXPECT_EQ(tail.aux[i], static_cast<std::uint8_t>(i + 1)) << i;
+  }
+
+  // A frame that wrote no aux on a channel that has some still says the channel's aux_size.
+  ASSERT_TRUE(read_tail(meta_with_tail(FLUX_MAX_AUX_SIZE, 0), tail));
+  EXPECT_EQ(tail.aux_size, std::uint32_t{FLUX_MAX_AUX_SIZE});
+  EXPECT_EQ(tail.aux_len, 0u);
+}
+
+// A meta of exactly the codec's size, as in every bag recorded before the tail, has no aux.
+TEST(AuxTail, NoTailIsNoAux)
+{
+  const std::vector<std::uint8_t> meta = meta_with_tail(0, 0);
+  ASSERT_EQ(meta.size(), 18u);
+  flux_bag::AuxTail tail;
+  tail.aux_size = 9;
+  ASSERT_TRUE(read_tail(meta, tail));
+  EXPECT_EQ(tail.aux_size, 0u);
+  EXPECT_EQ(tail.aux_len, 0u);
+  EXPECT_EQ(tail.size(), 0u);
+}
+
+TEST(AuxTail, RefusesATailOfTheWrongShape)
+{
+  const std::vector<std::uint8_t> good = meta_with_tail(32, 16);
+  flux_bag::AuxTail tail;
+  ASSERT_TRUE(read_tail(good, tail));
+
+  // Cut anywhere inside the tail, or one byte more.
+  for (std::size_t n = 19; n < good.size(); ++n) {
+    EXPECT_FALSE(read_tail({good.begin(), good.begin() + static_cast<std::ptrdiff_t>(n)}, tail))
+      << n;
+  }
+  std::vector<std::uint8_t> longer = good;
+  longer.push_back(0);
+  EXPECT_FALSE(read_tail(longer, tail));
+
+  // Version, aux_size and aux_len at 18, 22 and 26.
+  const auto with = [&](std::size_t at, std::uint32_t v) {
+    std::vector<std::uint8_t> m = good;
+    put_u32(m, at, v);
+    return m;
+  };
+  EXPECT_FALSE(read_tail(with(18, 0), tail));
+  EXPECT_FALSE(read_tail(with(18, 2), tail));
+  EXPECT_FALSE(read_tail(with(22, 0), tail));
+  EXPECT_FALSE(read_tail(with(22, 15), tail));  // aux_len 16 past aux_size
+  EXPECT_FALSE(read_tail(with(26, 15), tail));  // one byte more than aux_len says
+  EXPECT_FALSE(read_tail(with(26, 17), tail));
+  std::vector<std::uint8_t> big = meta_with_tail(FLUX_MAX_AUX_SIZE, 0);
+  put_u32(big, 22, FLUX_MAX_AUX_SIZE + 1);
+  EXPECT_FALSE(read_tail(big, tail));
 }

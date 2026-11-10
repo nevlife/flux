@@ -308,7 +308,8 @@ public:
     flux_topic_(topic.key),
     bag_topic_(topic.key + kBagTopicSuffix),
     fingerprint_(topic.fingerprint),
-    sub_(recorder, topic.key, topic.fingerprint)
+    sub_(recorder, topic.key, topic.fingerprint),
+    meta_bytes_(flux_bag::JpegMeta::kMaxSize + flux_bag::AuxTail::kMaxSize)
   {
     if (jpeg_quality > 0 && fingerprint_ == sensor_msgs::flux_msg::Image::kFingerprint) {
       jpeg_ = std::make_unique<flux_bag::JpegEncoder>(jpeg_quality);
@@ -393,12 +394,12 @@ private:
       generation_ = sub_.attach_generation();
       meta_.slot_size = sub_.channel()->slot_size();
       meta_.slot_count = sub_.channel()->slot_count();
+      aux_size_ = sub_.channel()->aux_size();
     }
     const flux::FrameMeta & m = v.meta();
     meta_.dtype = static_cast<flux::DType>(m.dtype);
     meta_.ndim = m.ndim;
     std::memcpy(meta_.shape.data(), m.shape, sizeof(meta_.shape));
-    std::array<std::uint8_t, flux_bag::JpegMeta::kMaxSize> meta_bytes{};
 
     flux_bag::FluxFrameFields f;
     f.sec = static_cast<std::int32_t>(sent / 1'000'000'000);
@@ -406,12 +407,20 @@ private:
     f.flux_topic = flux_topic_;
     f.fingerprint = fingerprint_;
     f.codec = "raw";
-    f.meta = meta_bytes.data();
-    f.meta_size = meta_.write(meta_bytes.data());
+    f.meta = meta_bytes_.data();
+    f.meta_size = meta_.write(meta_bytes_.data());
     f.data = v.data();
     f.data_size = v.size();
     if (jpeg_) {
-      compress(v, f, meta_bytes.data());
+      compress(v, f, meta_bytes_.data());
+    }
+    if (aux_size_ != 0) {
+      const auto aux = v.aux();
+      flux_bag::AuxTail tail;
+      tail.aux_size = aux_size_;
+      tail.aux = aux.data();
+      tail.aux_len = static_cast<std::uint32_t>(aux.size());
+      f.meta_size += tail.write(meta_bytes_.data() + f.meta_size);
     }
 
     auto msg = queue_.message(flux_bag::FluxFrameCdr::size(f));
@@ -475,6 +484,9 @@ private:
   flux::Subscription sub_;
   std::uint32_t generation_ = 0;
   flux_bag::RawMeta meta_;
+  std::uint32_t aux_size_ = 0;
+  // The codec's meta, then the aux tail of a channel made with an aux_size.
+  std::vector<std::uint8_t> meta_bytes_;
   std::unique_ptr<flux_bag::JpegEncoder> jpeg_;
   std::vector<std::uint8_t> packed_;
   std::uint64_t queued_ = 0;

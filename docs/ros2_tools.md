@@ -147,6 +147,8 @@ uint64 fingerprint       # 채널의 스키마 지문
 string codec             # "raw" 또는 "jpeg"
 uint8[] meta             # raw: slot_size u32, slot_count u32, dtype u8, ndim u8, shape u64[ndim]
                          # jpeg: raw의 meta 뒤에 픽셀 구간의 offset u64, 길이 u64
+                         # aux가 있는 채널: 위 meta 뒤에 version u32(1), aux_size u32,
+                         #   aux_len u32, aux u8[aux_len]
 uint8[] data             # raw: 슬롯에 있던 프레임 바이트 그대로
                          # jpeg: 픽셀 구간을 뺀 프레임 바이트 뒤에 JPEG 바이트
 ```
@@ -162,6 +164,8 @@ uint8[] data             # raw: 슬롯에 있던 프레임 바이트 그대로
 | 저장 형식 | `-s`가 없으면 rosbag2 기본값(mcap)이다. `-s`와 `--storage-preset-profile`은 `ros2 bag record`의 같은 옵션처럼 rosbag2에 넘긴다 |
 | 무손실 압축 | `-s mcap --storage-preset-profile zstd_fast`는 mcap chunk를 zstd로 압축한다. flux 채널과 ROS 토픽에 모두 적용된다. 읽는 쪽(`play_flux`, `convert_flux`, `ros2 bag play`)은 옵션 없이 읽는다 |
 | 이미지 압축 | `--image-codec jpeg`는 `sensor_msgs/Image` 채널의 `rgb8`, `bgr8`, `mono8` 프레임의 픽셀을 JPEG(품질 `--jpeg-quality`, 기본 90)로 저장한다. 손실 압축이다. 픽셀 밖의 바이트(header, encoding, step 등)는 그대로 둔다. 다른 encoding과 다른 타입의 프레임은 raw로 저장한다. 기본은 `raw`다 |
+| aux | 채널을 `aux_size`와 함께 만들었으면 프레임마다 meta 끝에 채널의 `aux_size`와 그 프레임의 aux 바이트를 담는다. aux를 쓰지 않은 프레임도 `aux_size`는 담는다 |
+| 장치 메모리 채널 | `flux_wrapper`의 `Device::Cuda` Image, PointCloud2 채널 같은 장치 메모리 채널도 녹화한다. 녹화기는 CPU 구독자라서 take마다 자기 호스트 버퍼로 한 번 복사하고, 그 바이트를 `data`에 담는다. 헤더는 aux로 함께 담긴다 |
 | 끝날 때 | 채널마다 큐에 넣은 수, 캐시가 차서 버린 수, `lost`를 로그로 남긴다 |
 
 ### 재생
@@ -175,6 +179,8 @@ ros2 bag play_flux BAG [-r RATE]
 - 재생은 발행자를 만든 뒤 200 ms 기다리고 시작한다. 먼저 떠 있던 구독자가 붙을 시간을 주기 위해서다.
 - 프레임의 `slot_size`나 `slot_count`가 바뀌면 발행자를 다시 만든다. dtype x shape가 데이터 크기와 다른 프레임은 건너뛴다.
 - jpeg 프레임은 픽셀을 디코딩해 원래 크기의 프레임으로 발행한다. 픽셀 값은 원본과 다르다. 행 끝의 padding(`step`이 `width` x 채널 수보다 긴 부분)은 0이다.
+- aux를 담은 프레임은 녹화된 `aux_size`로 발행자를 만들고, aux 바이트를 프레임과 함께 commit한다. `aux_size`가 바뀌면 발행자를 다시 만든다.
+- 재생은 장치 메모리 채널도 호스트 메모리 채널로 발행한다. CPU 구독자는 슬롯을 그대로 읽고, GPU 구독자(`flux_wrapper`의 `SubscriptionOptions::device = Cuda` 등)는 외장 GPU에서 take마다 장치로 한 번 복사해 받고, 통합 GPU에서 복사 없이 받는다. aux는 둘 다 그대로 받는다.
 - seek는 ROS 토픽만 옮긴다.
 
 ### 변환
@@ -183,7 +189,13 @@ ros2 bag play_flux BAG [-r RATE]
 ros2 bag convert_flux BAG -o OUT
 ```
 
-bag을 새 bag으로 옮긴다. `FluxFrame`의 fingerprint가 설치된 타입을 가리키면, 그 프레임을 ROS 메시지로 바꿔 채널 이름의 토픽에 넣는다. 녹화 시각은 그대로 둔다. 타입을 못 찾거나 같은 이름의 ROS 토픽이 다른 타입이면 `FluxFrame`으로 남긴다. jpeg 프레임은 `sensor_msgs/msg/CompressedImage`로 바꿔 `채널 이름/compressed`에 넣는다. `format`은 compressed_image_transport와 같은 꼴(`rgb8; jpeg compressed bgr8`)이고, `data`는 녹화한 JPEG 바이트 그대로다. 나머지 토픽은 그대로 복사한다. 변환한 토픽은 flux 없이 읽을 수 있다. 남은 `FluxFrame`을 읽으려면 `flux_msgs`가 있어야 한다. 스키마와 맞지 않는 프레임이 있으면 변환이 exit code 1로 멈춘다.
+bag을 새 bag으로 옮긴다. `FluxFrame`의 fingerprint가 설치된 타입을 가리키면, 그 프레임을 ROS 메시지로 바꿔 채널 이름의 토픽에 넣는다. 녹화 시각은 그대로 둔다. 타입을 못 찾거나 같은 이름의 ROS 토픽이 다른 타입이면 `FluxFrame`으로 남긴다. jpeg 프레임은 `sensor_msgs/msg/CompressedImage`로 바꿔 `채널 이름/compressed`에 넣는다. `format`은 compressed_image_transport와 같은 꼴(`rgb8; jpeg compressed bgr8`)이고, `data`는 녹화한 JPEG 바이트 그대로다. 나머지 토픽은 그대로 복사한다. 변환한 토픽은 flux 없이 읽을 수 있다. 남은 `FluxFrame`을 읽으려면 `flux_msgs`가 있어야 한다. 스키마와 맞지 않는 프레임이 있으면 변환이 exit code 1로 멈춘다. ROS 메시지에는 aux를 담을 자리가 없으므로 aux는 버린다. `FluxFrame`으로 남는 프레임은 aux를 그대로 가진다. `flux_wrapper`의 `Device::Cuda` Image, PointCloud2 채널은 설치된 타입이 아니므로 `FluxFrame`으로 남는다.
+
+### aux를 담은 bag의 호환
+
+- aux tail이 없는 bag(aux 이전에 녹화한 bag, aux가 없는 채널)은 그대로 읽는다. meta가 codec의 meta 크기와 같으면 aux가 없다.
+- aux tail의 version, 길이가 맞지 않는 프레임은 잘못된 meta와 같이 다룬다. 재생은 그 프레임을 건너뛰고, 변환은 exit code 1로 멈춘다.
+- aux를 담은 bag을 aux 이전의 flux_bag으로 읽으면, meta 크기가 맞지 않아 재생은 그 채널의 프레임을 모두 건너뛰고 변환은 exit code 1로 멈춘다.
 
 ## flux_tools(rviz2)
 

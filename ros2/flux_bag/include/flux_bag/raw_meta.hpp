@@ -48,18 +48,81 @@ struct RawMeta
     return size();
   }
 
-  auto read(const void * in, std::size_t n) -> bool
+  // Reads the front of `in`, where an AuxTail may follow. The bytes it took; 0 when they are not
+  // a RawMeta.
+  auto read(const void * in, std::size_t n) -> std::size_t
   {
     const auto * p = static_cast<const std::uint8_t *>(in);
-    if (n < 10 || p[9] > flux::kMaxDims || n != 10 + 8 * static_cast<std::size_t>(p[9])) {
-      return false;
+    if (n < 10 || p[9] > flux::kMaxDims || n < 10 + 8 * static_cast<std::size_t>(p[9])) {
+      return 0;
     }
     std::memcpy(&slot_size, p, 4);
     std::memcpy(&slot_count, p + 4, 4);
     dtype = static_cast<flux::DType>(p[8]);
     ndim = p[9];
     std::memcpy(shape.data(), p + 10, 8 * static_cast<std::size_t>(ndim));
-    return flux::dtype_size(dtype) != 0;
+    return flux::dtype_size(dtype) != 0 ? size() : 0;
+  }
+};
+
+// What FluxFrame.meta carries after the codec's meta for a channel made with an aux_size: the
+// aux_size, so replay recreates the channel with it, and the frame's aux bytes. Little-endian:
+// version u32, aux_size u32, aux_len u32, aux u8[aux_len]. A meta that ends with the codec's meta
+// has no aux, as every bag before this tail.
+struct AuxTail
+{
+  static constexpr std::uint32_t kVersion = 1;
+  static constexpr std::size_t kHeader = 12;
+  static constexpr std::size_t kMaxSize = kHeader + FLUX_MAX_AUX_SIZE;
+
+  // 0: no tail.
+  std::uint32_t aux_size = 0;
+  // Into the bytes read, or the bytes to write.
+  const std::uint8_t * aux = nullptr;
+  std::uint32_t aux_len = 0;
+
+  [[nodiscard]] auto size() const -> std::size_t { return aux_size == 0 ? 0 : kHeader + aux_len; }
+
+  auto write(std::uint8_t * out) const -> std::size_t
+  {
+    if (aux_size == 0) {
+      return 0;
+    }
+    std::memcpy(out, &kVersion, 4);
+    std::memcpy(out + 4, &aux_size, 4);
+    std::memcpy(out + 8, &aux_len, 4);
+    if (aux_len != 0) {
+      std::memcpy(out + kHeader, aux, aux_len);
+    }
+    return size();
+  }
+
+  // `in` is every byte after the codec's meta. False unless they are one tail, exactly.
+  auto read(const void * in, std::size_t n) -> bool
+  {
+    *this = {};
+    if (n == 0) {
+      return true;
+    }
+    if (n < kHeader) {
+      return false;
+    }
+    const auto * p = static_cast<const std::uint8_t *>(in);
+    std::uint32_t version = 0;
+    std::uint32_t capacity = 0;
+    std::uint32_t len = 0;
+    std::memcpy(&version, p, 4);
+    std::memcpy(&capacity, p + 4, 4);
+    std::memcpy(&len, p + 8, 4);
+    if (
+      version != kVersion || capacity == 0 || capacity > FLUX_MAX_AUX_SIZE || len > capacity ||
+      n - kHeader != len) {
+      return false;
+    }
+    aux_size = capacity;
+    aux = p + kHeader;
+    aux_len = len;
+    return true;
   }
 };
 

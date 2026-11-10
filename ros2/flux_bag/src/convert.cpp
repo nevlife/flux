@@ -125,16 +125,15 @@ private:
   {
     const rcutils_uint8_array_t & raw = *msg->serialized_data;
     flux_bag::FluxFrameFields f;
-    flux_bag::RawMeta meta;
-    if (!flux_bag::FluxFrameCdr::read(raw.buffer, raw.buffer_length, f)) {
+    flux_bag::JpegMeta meta;
+    // A ROS message has no place for the aux bytes; a frame kept as a FluxFrame keeps them.
+    flux_bag::AuxTail aux;
+    if (!flux_bag::read_frame(raw.buffer, raw.buffer_length, f, meta, aux)) {
       throw std::runtime_error(msg->topic_name + ": a FluxFrame that does not parse");
     }
     if (f.codec == "jpeg") {
-      jpeg_frame(msg, f);
+      jpeg_frame(msg, f, meta);
       return;
-    }
-    if (f.codec != "raw" || !meta.read(f.meta, f.meta_size)) {
-      throw std::runtime_error(msg->topic_name + ": a FluxFrame that does not parse");
     }
     Route & r = route(msg->topic_name, std::string(f.flux_topic), f.fingerprint);
     if (!r.type) {
@@ -157,12 +156,8 @@ private:
 
   void jpeg_frame(
     const std::shared_ptr<rosbag2_storage::SerializedBagMessage> & msg,
-    const flux_bag::FluxFrameFields & f)
+    const flux_bag::FluxFrameFields & f, const flux_bag::JpegMeta & meta)
   {
-    flux_bag::JpegMeta meta;
-    if (!meta.read(f.meta, f.meta_size)) {
-      throw std::runtime_error(msg->topic_name + ": a jpeg FluxFrame that does not parse");
-    }
     fields_.resize(meta.raw.nbytes());
     const auto jpeg = flux_bag::restore_fields(f, meta, fields_.data());
     const sensor_msgs::flux_msg::Image::View img(fields_.data(), fields_.size());

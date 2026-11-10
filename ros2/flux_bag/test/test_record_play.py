@@ -1,6 +1,8 @@
 """record then play: a flux channel goes into a bag and comes back with its fingerprint, dtype,
 shape and bytes."""
 
+import ctypes
+import ctypes.util
 import gc
 import os
 import re
@@ -117,13 +119,14 @@ def write_bag_channels(path, channels, step_ns=100_000_000):
         writer.create_topic(
             rosbag2_py.TopicMetadata(id=n, name=name, type=FRAME_TYPE, serialization_format="cdr")
         )
-        for i, (slot_size, slot_count, dtype, shape, data) in enumerate(frame_list):
+        # A sixth item is the aux tail after the raw meta.
+        for i, (slot_size, slot_count, dtype, shape, data, *tail) in enumerate(frame_list):
             f = FluxFrame()
             f.flux_topic = topic
             f.fingerprint = FINGERPRINT
             f.codec = "raw"
             meta = struct.pack("<IIBB", slot_size, slot_count, dtype, len(shape))
-            f.meta = meta + b"".join(struct.pack("<Q", d) for d in shape)
+            f.meta = meta + b"".join(struct.pack("<Q", d) for d in shape) + b"".join(tail)
             f.data = data
             writer.write(name, serialize_message(f), 1_000_000_000 + i * step_ns)
     del writer
@@ -527,3 +530,228 @@ def test_a_bag_recorded_with_zstd_reads_back_whole_and_smaller(node, tmp_path):
     ]
     size = sum(os.path.getsize(os.path.join(bag, n)) for n in os.listdir(bag))
     assert size < len(recorded) * (1 << 19) / 10
+
+
+def aux_tail(aux_size, aux, version=1, aux_len=None):
+    """The meta tail of a frame of a channel made with aux_size."""
+    return struct.pack("<III", version, aux_size, len(aux) if aux_len is None else aux_len) + aux
+
+
+def split_meta(meta):
+    """(aux_size, aux) of a raw FluxFrame's meta: (0, b"") without a tail."""
+    meta = bytes(meta)
+    end = 10 + 8 * meta[9]
+    if len(meta) == end:
+        return 0, b""
+    version, aux_size, aux_len = struct.unpack_from("<III", meta, end)
+    assert version == 1 and len(meta) == end + 12 + aux_len
+    return aux_size, meta[end + 12 :]
+
+
+def play_taking(takers, *args):
+    """Runs play on the bag until it exits and no taker gets a frame. A taker takes one frame and
+    says whether it got one. play's output."""
+    play = subprocess.Popen(
+        [program("play"), *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+    )
+    while True:
+        got = [take() for take in takers]
+        if not any(got) and play.poll() is not None:
+            break
+    out = play.stdout.read()
+    assert play.returncode == 0, out
+    return out
+
+
+def taker(sub, into):
+    def take():
+        frame = sub.take_blocking(50_000_000)
+        if frame is None:
+            return False
+        into.append((frame.copy(), bytes(flux.aux(frame))))
+        return True
+
+    return take
+
+
+# The aux bytes of each frame and the channel's aux_size go into the bag and come back.
+def test_aux_bytes_are_recorded_and_played_back(node, tmp_path):
+    k = key("aux")
+    bag = str(tmp_path / "bag")
+    pub = flux.Publisher(
+        node, k, fingerprint=FINGERPRINT, slot_size=4096, slot_count=4, aux_size=32
+    )
+    rec = record(bag, k)
+    time.sleep(0.5)
+    sent = []
+    for i in range(30):
+        aux = bytes([i]) * (i % 33)
+        loan = pub.loan((4,), "u1")
+        loan.array[:] = i
+        loan.aux[: len(aux)] = np.frombuffer(aux, np.uint8)
+        loan.aux_len = len(aux)
+        assert loan.commit() == flux.Published.OK
+        sent.append((bytes([i]) * 4, aux))
+        time.sleep(0.02)
+    stop(rec)
+    del pub
+    gc.collect()
+    recorded = [(bytes(f.data), split_meta(f.meta)) for _, f in frames(bag)]
+    assert len(recorded) > 20
+    assert all(aux_size == 32 for _, (aux_size, _) in recorded)
+    first = len(sent) - len(recorded)
+    assert [(d, aux) for d, (_, aux) in recorded] == sent[first:]
+
+    sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+    got = []
+    out = play_taking([taker(sub, got)], bag)
+    assert "32 aux bytes" in out
+    assert [(a.tobytes(), aux) for a, aux in got] == sent[first:]
+
+
+# A bag recorded before the tail has meta of the codec's size only: its frames carry no aux.
+def test_a_frame_without_a_tail_plays_with_no_aux(node, tmp_path):
+    k = key("notail")
+    bag = str(tmp_path / "bag")
+    write_bag(bag, k, [(4096, 4, 0, [4], bytes(4))] * 3)
+    sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+    got = []
+    out = play_taking([taker(sub, got)], bag)
+    assert "0 aux bytes" in out
+    assert [aux for _, aux in got] == [b""] * 3
+
+
+# A tail of the wrong version or length is refused as bad meta is: play skips the frame, convert
+# stops with exit code 1. A good one is kept as it is by convert when the type is not installed.
+def test_a_frame_with_a_bad_aux_tail_is_refused(node, tmp_path):
+    k = key("badtail")
+    bag, out = str(tmp_path / "bag"), str(tmp_path / "ros")
+    row = (4096, 4, 0, [4], bytes(4))
+    bad = [
+        aux_tail(8, b"xy", version=2),
+        aux_tail(8, b"xy", aux_len=3),
+        aux_tail(8, b"x" * 9),
+        aux_tail(0, b""),
+        aux_tail(8, b"xy")[:11],
+    ]
+    write_bag(
+        bag, k, [(*row, aux_tail(8, b"a"))] + [(*row, t) for t in bad] + [(*row, aux_tail(8, b"b"))]
+    )
+    sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+    got = []
+    play_taking([taker(sub, got)], bag)
+    assert [aux for _, aux in got] == [b"a", b"b"]
+    run = subprocess.run([program("convert"), bag, "-o", out], capture_output=True, text=True)
+    assert run.returncode == 1 and "does not parse" in run.stderr
+
+    good = str(tmp_path / "good")
+    write_bag(good, k, [(*row, aux_tail(8, b"a"))])
+    convert(good, str(tmp_path / "good_ros"))
+    ((_, kept),) = messages(str(tmp_path / "good_ros"))[k + "/flux"][1]
+    assert split_meta(deserialize_message(kept, FluxFrame).meta) == (8, b"a")
+
+
+GPU_IMAGE = 0x780CD7C35A0C29C8  # flux_wrapper's Device::Cuda Image channel
+GPU_IMAGE_AUX = 316
+
+
+def load_cudart():
+    name = ctypes.util.find_library("cudart")
+    try:
+        return ctypes.CDLL(name or "libcudart.so")
+    except OSError:
+        return None
+
+
+CUDART = load_cudart()
+
+
+def gpu_image_aux(i):
+    """flux_wrapper's GpuImageAux of a 64 x 64 mono8 frame."""
+    encoding, frame_id = b"mono8", b"cam%d" % i
+    return struct.pack(
+        "<IiIIIIBBH32s256s",
+        1,
+        100 + i,
+        7,
+        64,
+        64,
+        64,
+        0,
+        len(encoding),
+        len(frame_id),
+        encoding,
+        frame_id,
+    )
+
+
+def cuda_copy(dst, src, n, kind):
+    assert (
+        CUDART.cudaMemcpy(ctypes.c_void_p(dst), ctypes.c_void_p(src), ctypes.c_size_t(n), kind) == 0
+    )
+
+
+# The channel of a flux_wrapper Image publisher with Device::Cuda: the recorder's CPU subscription
+# gets a host copy of each device frame; play publishes into host memory, which a CPU and a CUDA
+# subscription both take, the aux header with each frame.
+@pytest.mark.skipif(
+    CUDART is None or flux.probe().route == flux.Route.NONE, reason="needs CUDA and a GPU route"
+)
+def test_a_gpu_image_channel_is_recorded_and_played_to_cpu_and_cuda(node, tmp_path):
+    k = key("gpu_image")
+    bag = str(tmp_path / "bag")
+    n = 64 * 64
+    pub = flux.Publisher(
+        node,
+        k,
+        fingerprint=GPU_IMAGE,
+        slot_size=1 << 16,
+        slot_count=4,
+        device="cuda",
+        aux_size=GPU_IMAGE_AUX,
+    )
+    # On a discrete GPU the slots are device memory: the recorder reads its own host copy.
+    assert pub.device_backed or flux.probe().integrated
+    rec = record(bag, k)
+    time.sleep(0.5)
+    sent = []
+    for i in range(20):
+        pixels = ((np.arange(n) + i) % 251).astype(np.uint8)
+        aux = gpu_image_aux(i)
+        loan = pub.loan((n,), "u1")
+        cuda_copy(loan.__cuda_array_interface__["data"][0], pixels.ctypes.data, n, 1)
+        assert CUDART.cudaDeviceSynchronize() == 0
+        loan.aux[:] = np.frombuffer(aux, np.uint8)
+        loan.aux_len = len(aux)
+        assert loan.commit() == flux.Published.OK
+        sent.append((pixels.tobytes(), aux))
+        time.sleep(0.02)
+    stop(rec)
+    del pub
+    gc.collect()
+    recorded = [(f.fingerprint, bytes(f.data), split_meta(f.meta)) for _, f in frames(bag)]
+    assert len(recorded) > 10
+    first = len(sent) - len(recorded)
+    assert [(d, aux) for _, d, (_, aux) in recorded] == sent[first:]
+    assert {(fp, aux_size) for fp, _, (aux_size, _) in recorded} == {(GPU_IMAGE, GPU_IMAGE_AUX)}
+
+    cpu = flux.Subscription(node, k, fingerprint=GPU_IMAGE, qos=flux.QoS(depth=16))
+    gpu = flux.Subscription(node, k, fingerprint=GPU_IMAGE, qos=flux.QoS(depth=16), device="cuda")
+    on_cpu, on_gpu = [], []
+
+    def take_gpu():
+        frame = gpu.take_blocking(50_000_000)
+        if frame is None:
+            return False
+        with frame:
+            ptr = frame.__cuda_array_interface__["data"][0]
+            assert ptr != 0
+            out = np.empty(frame.nbytes, np.uint8)
+            assert CUDART.cudaStreamSynchronize(ctypes.c_void_p(frame.stream)) == 0
+            cuda_copy(out.ctypes.data, ptr, out.nbytes, 2)
+            on_gpu.append((out.tobytes(), bytes(flux.aux(frame))))
+        return True
+
+    play_taking([taker(cpu, on_cpu), take_gpu], bag)
+    assert [(a.tobytes(), aux) for a, aux in on_cpu] == sent[first:]
+    assert on_gpu == sent[first:]

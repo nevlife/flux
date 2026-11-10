@@ -25,6 +25,7 @@
 * `ros2/flux_wrapper`: flux가 있든 없든 빌드되는 발행·구독 API. 빌드할 때와 실행할 때 `ENABLE_FLUX=1`이면 flux로, 아니면 ROS 2로 보낸다. `sensor_msgs/Image`와 `PointCloud2`를 다룬다
 * 슬롯마다 프레임과 함께 commit되는 호스트 메모리(aux)를 둘 수 있다. 장치 메모리 채널에서도 호스트 메모리라서, GPU 프레임에 stamp 같은 헤더를 같은 채널로 붙인다
 * `flux_wrapper`가 `sensor_msgs/Image`와 `PointCloud2`를 GPU 메모리째 보내고 받는다(C++ `Device::Cuda`, Python `device="cuda"`). flux가 없으면 호스트로 복사해 ROS 메시지로 보낸다. `Cuda` 구독은 CPU 발행자와 ROS 경로의 메시지도 장치 메모리로 받는다(C++)
+* `record_flux`가 프레임의 aux와 채널의 `aux_size`를 `FluxFrame.meta` 끝에 담고, `play_flux`가 같은 `aux_size`로 발행자를 만들어 aux와 함께 발행한다. `flux_wrapper`의 GPU 이미지 채널도 헤더와 함께 녹화하고 재생한다. aux를 담은 bag은 이전 `flux_bag`이 읽지 못한다
 
 ### 버그 수정
 

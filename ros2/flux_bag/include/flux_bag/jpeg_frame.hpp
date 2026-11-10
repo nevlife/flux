@@ -39,31 +39,38 @@ struct JpegMeta
     return n + 16;
   }
 
-  auto read(const void * in, std::size_t n) -> bool
+  // As RawMeta::read: the bytes taken from the front of `in`, or 0.
+  auto read(const void * in, std::size_t n) -> std::size_t
   {
-    if (n < 16 || !raw.read(in, n - 16)) {
-      return false;
+    const std::size_t r = raw.read(in, n);
+    if (r == 0 || n - r < 16) {
+      return 0;
     }
-    const auto * p = static_cast<const std::uint8_t *>(in) + n - 16;
+    const auto * p = static_cast<const std::uint8_t *>(in) + r;
     std::memcpy(&at, p, 8);
     std::memcpy(&len, p + 8, 8);
-    return at <= raw.nbytes() && len <= raw.nbytes() - at;
+    return at <= raw.nbytes() && len <= raw.nbytes() - at ? r + 16 : 0;
   }
 };
 
-// A recorded FluxFrame of codec "raw", whose meta.at and meta.len are 0, or "jpeg". The fields of
-// `f` point into `in`.
+// A recorded FluxFrame of codec "raw", whose meta.at and meta.len are 0, or "jpeg", and the aux
+// tail of its meta. The fields of `f` and aux.aux point into `in`.
 inline auto read_frame(
-  const std::uint8_t * in, std::size_t size, FluxFrameFields & f, JpegMeta & meta) -> bool
+  const std::uint8_t * in, std::size_t size, FluxFrameFields & f, JpegMeta & meta,
+  AuxTail & aux) -> bool
 {
   if (!FluxFrameCdr::read(in, size, f)) {
     return false;
   }
+  std::size_t used = 0;
   if (f.codec == "raw") {
     meta.at = meta.len = 0;
-    return meta.raw.read(f.meta, f.meta_size);
+    used = meta.raw.read(f.meta, f.meta_size);
+  } else if (f.codec == "jpeg") {
+    used = meta.read(f.meta, f.meta_size);
   }
-  return f.codec == "jpeg" && meta.read(f.meta, f.meta_size);
+  return used != 0 &&
+         aux.read(static_cast<const std::uint8_t *>(f.meta) + used, f.meta_size - used);
 }
 
 // The libjpeg color space of an Image encoding JPEG holds without loss of channels, or

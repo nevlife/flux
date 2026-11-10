@@ -87,10 +87,10 @@ auto parse(const std::vector<std::string> & args) -> Options
 
 auto decode(
   const rosbag2_storage::SerializedBagMessage & msg, flux_bag::FluxFrameFields & f,
-  flux_bag::JpegMeta & meta) -> bool
+  flux_bag::JpegMeta & meta, flux_bag::AuxTail & aux) -> bool
 {
   const rcutils_uint8_array_t & raw = *msg.serialized_data;
-  return flux_bag::read_frame(raw.buffer, raw.buffer_length, f, meta);
+  return flux_bag::read_frame(raw.buffer, raw.buffer_length, f, meta, aux);
 }
 
 // A waiting subscriber looks for its channel once per tick.
@@ -103,8 +103,8 @@ using MessagePtr = std::shared_ptr<rosbag2_storage::SerializedBagMessage>;
 
 // The FluxFrame topics of one bag, published on flux at the bag's own pace. A loader thread reads
 // the frames ahead of a publish thread, which sends each one when its own clock reaches the
-// frame's receive time. A publisher per channel and geometry the frames carry: a channel recorded
-// across a restart with other slots is restarted the same way here.
+// frame's receive time. A publisher per channel and geometry (slots and aux_size) the frames carry:
+// a channel recorded across a restart with other slots is restarted the same way here.
 class FluxPlayer
 {
 public:
@@ -128,8 +128,9 @@ public:
       const auto msg = first.read_next();
       flux_bag::FluxFrameFields f;
       flux_bag::JpegMeta meta;
-      if (decode(*msg, f, meta)) {
-        publisher_for(f, meta.raw);
+      flux_bag::AuxTail aux;
+      if (decode(*msg, f, meta, aux)) {
+        publisher_for(f, meta.raw, aux.aux_size);
       }
     }
     if (!pubs_.empty()) {
@@ -221,6 +222,7 @@ private:
   {
     std::uint32_t slot_size = 0;
     std::uint32_t slot_count = 0;
+    std::uint32_t aux_size = 0;
     std::unique_ptr<flux::Publisher> pub;
     // A publisher it could not get: as rosbag2's player does, the channel is skipped from then on.
     bool ignored = false;
@@ -323,20 +325,24 @@ private:
     }
   }
 
-  auto publisher_for(const flux_bag::FluxFrameFields & f, const flux_bag::RawMeta & meta)
-    -> flux::Publisher *
+  auto publisher_for(
+    const flux_bag::FluxFrameFields & f, const flux_bag::RawMeta & meta,
+    std::uint32_t aux_size) -> flux::Publisher *
   {
     Channel & c = pubs_[Key(f.flux_topic, f.fingerprint)];
     if (c.ignored) {
       return nullptr;
     }
-    if (c.pub && c.slot_size == meta.slot_size && c.slot_count == meta.slot_count) {
+    if (
+      c.pub && c.slot_size == meta.slot_size && c.slot_count == meta.slot_count &&
+      c.aux_size == aux_size) {
       return c.pub.get();
     }
     c.pub.reset();  // one publisher per channel: the old one goes first
     try {
       c.pub = std::make_unique<flux::Publisher>(
-        node_, std::string(f.flux_topic), f.fingerprint, meta.slot_size, meta.slot_count);
+        node_, std::string(f.flux_topic), f.fingerprint, meta.slot_size, meta.slot_count,
+        flux::MemoryPolicy{}, flux::Publisher::kDefaultMaxSubscribers, aux_size);
     } catch (const flux::Error & e) {
       c.ignored = true;
       RCLCPP_ERROR(
@@ -346,9 +352,10 @@ private:
     }
     c.slot_size = meta.slot_size;
     c.slot_count = meta.slot_count;
+    c.aux_size = aux_size;
     RCLCPP_INFO(
-      node_.get_logger(), "flux channel %s: %u slots of %u bytes",
-      std::string(f.flux_topic).c_str(), meta.slot_count, meta.slot_size);
+      node_.get_logger(), "flux channel %s: %u slots of %u bytes, %u aux bytes",
+      std::string(f.flux_topic).c_str(), meta.slot_count, meta.slot_size, aux_size);
     return c.pub.get();
   }
 
@@ -356,7 +363,8 @@ private:
   {
     flux_bag::FluxFrameFields f;
     flux_bag::JpegMeta meta;
-    if (!decode(msg, f, meta)) {
+    flux_bag::AuxTail aux;
+    if (!decode(msg, f, meta, aux)) {
       RCLCPP_ERROR_ONCE(
         node_.get_logger(), "%s: not a raw or jpeg FluxFrame, skipped", msg.topic_name.c_str());
       return;
@@ -368,7 +376,7 @@ private:
         msg.topic_name.c_str());
       return;
     }
-    flux::Publisher * pub = publisher_for(f, meta.raw);
+    flux::Publisher * pub = publisher_for(f, meta.raw, aux.aux_size);
     if (pub == nullptr) {
       return;
     }
@@ -384,6 +392,11 @@ private:
         msg.topic_name.c_str());
       return;
     }
+    // The publisher was made with aux.aux_size, which holds aux_len.
+    if (aux.aux_len != 0) {
+      std::memcpy(w.aux().data(), aux.aux, aux.aux_len);
+    }
+    w.set_aux_len(aux.aux_len);
     if (const flux::Published p = w.commit(); flux::faulted(p)) {
       RCLCPP_ERROR_ONCE(node_.get_logger(), "publish refused: %s", flux::to_string(p));
     }
