@@ -20,6 +20,13 @@ from std_msgs.msg import Int32
 import flux
 from flux_msgs.msg import FluxFrame
 
+# rclpy's MultiThreadedExecutor on Fast DDS keeps the GIL for up to a second at a time, so the
+# flux reader thread here misses frames while the player sends on time.
+pytestmark = pytest.mark.skipif(
+    rclpy.get_rmw_implementation_identifier() == "rmw_fastrtps_cpp",
+    reason="rclpy MultiThreadedExecutor on Fast DDS starves this test's other threads",
+)
+
 FINGERPRINT = 0xBA6
 FRAME_TYPE = "flux_msgs/msg/FluxFrame"
 
