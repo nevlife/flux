@@ -100,6 +100,11 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 - `get_subscription_count()`는 ROS 경로에서 rclcpp 값을, flux 경로에서 `subscriber_count()`를 돌려준다.
 - `PublisherOptions`의 `max_message_size`, `slot_count`, `mirror_to_ros`는 flux 경로에만 쓰인다. mirror는 기본으로 꺼져 있다. 켜지 않으면 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
 - 구독은 `SubscriptionOptions`로 callback group을 받는다. flux 경로의 구독은 그 그룹을 돌리는 flux executor가 돌린다. `flux_wrapper::Executor`는 flux로 빌드했으면 `flux::Executor`, 아니면 `rclcpp::executors::SingleThreadedExecutor`다.
+- `PublisherOptions::device = flux_wrapper::Device::Cuda`면 `sensor_msgs/Image`를 GPU 메모리째 보낸다. `loan.alloc_buffer(n)`이 데이터 자리를 주고, `on_device()`가 GPU 메모리인지 알려 준다. `copy_from(src, n)`은 원본이 호스트든 장치든 받는다. kernel이 직접 쓸 때는 `device_ptr()`와 `stream()`을 쓰고, publish가 그 stream의 작업이 끝난 뒤 발행한다.
+- flux 경로에서는 GPU 채널로 보내고 헤더(stamp, frame_id, 크기, encoding, step)를 같은 프레임에 담는다. ROS 경로에서는 wrapper가 GPU 버퍼를 하나 두고, publish할 때 호스트로 복사해 ROS 메시지로 보낸다. `encoding`은 32바이트, `frame_id`는 256바이트까지이고, 넘으면 publish가 `false`다.
+- `Cuda`를 쓸 수 없으면(CUDA 없이 빌드했거나, GPU 경로나 장치가 없거나, 타입이 `Image`가 아니면) 경고를 한 번 남기고 `Host`로 간다. `uses_device()`가 실제로 쓰는 쪽을 알려 준다. GPU 채널에서는 `mirror_to_ros`를 무시한다.
+- `Image` 구독은 flux 경로에서 `Cuda` 발행자의 프레임도 받는다. `SubscriptionOptions::device`가 `Host`(기본)면 `data()`가 호스트 메모리다(외장 GPU에서는 take할 때 한 번 복사한다). `Cuda`면 프레임이 장치에 남고, `on_device()`, `device_ptr()`, `size()`, `stream()`으로 읽는다. 헤더가 잘못된 프레임은 건너뛰고 `rejected()`로 센다.
+- GPU 기능은 CMake가 CUDAToolkit을 찾을 때 컴파일된다. 찾지 못해도 `Device::Cuda`는 있으므로 코드는 그대로 빌드된다. Python 모듈과 `PointCloud2`에는 아직 없다.
 - Python 모듈 `flux_wrapper`도 같은 구조다. `flux`를 import할 수 있고 `ENABLE_FLUX=1`이면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`한다.
 
 ## flux_bag

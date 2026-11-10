@@ -38,6 +38,16 @@ if(FLUX_WRAPPER_WITH_FLUX)
   set(flux_dependencies flux_cpp flux_std_adapters)
 endif()
 
+# Device::Cuda works only in a build that found the CUDA toolkit; elsewhere it falls back to Host.
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+  set(FLUX_WRAPPER_WITH_CUDA 1)
+  target_link_libraries(flux_wrapper INTERFACE CUDA::cudart)
+  target_compile_definitions(flux_wrapper INTERFACE FLUX_WRAPPER_CUDA)
+else()
+  set(FLUX_WRAPPER_WITH_CUDA 0)
+endif()
+
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)

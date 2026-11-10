@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 namespace flux_wrapper
@@ -27,8 +28,11 @@ struct PublisherOptions
   // flux default (16). The topic reserves max_message_size * slot_count of shared memory.
   std::uint32_t slot_count = 0;
   // flux only: also publish each message as its ROS message on the same topic while a ROS
-  // subscriber (rviz2, ros2 bag) wants it.
+  // subscriber (rviz2, ros2 bag) wants it. Not with Device::Cuda.
   bool mirror_to_ros = false;
+  // Cuda: Loan::alloc_buffer() hands out device memory (see Device). On the flux path a slot of a
+  // discrete GPU is device memory; on the ROS path publish() copies the buffer to the message.
+  Device device = Device::Host;
 };
 
 // One topic over flux or over ROS, chosen once per process by use_flux(). Writing a message is
@@ -43,12 +47,27 @@ public:
     const PublisherOptions & options = {})
   : logger_(node.get_logger())
   {
+    [[maybe_unused]] const bool cuda = resolve_cuda(options.device);
 #ifdef USE_FLUX_ENABLED
     if (use_flux()) {
       const std::uint32_t slot = options.max_message_size != 0 ? options.max_message_size
                                                                : flux::Publisher::kDefaultSlotSize;
       const std::uint32_t count =
         options.slot_count != 0 ? options.slot_count : flux::Publisher::kDefaultSlotCount;
+      if (cuda) {
+        flux_ = std::make_unique<flux::Publisher>(
+          node, topic, detail::kGpuImageFingerprint, slot, count, flux::Device::Cuda,
+          flux::MemoryPolicy{}, flux::Publisher::kDefaultMaxSubscribers,
+          static_cast<std::uint32_t>(sizeof(detail::GpuImageAux)));
+        device_ = true;
+        if (options.mirror_to_ros) {
+          RCLCPP_WARN_ONCE(
+            logger_,
+            "mirror_to_ros is ignored with Device::Cuda: flux does not "
+            "mirror a GPU channel");
+        }
+        return;
+      }
       flux_ = std::make_unique<flux::Publisher>(
         node, topic, detail::AdapterT<MsgT>::kFingerprint, slot, count);
       if (options.mirror_to_ros) {
@@ -62,6 +81,16 @@ public:
       RCLCPP_WARN_ONCE(logger_, "ENABLE_FLUX=1, but flux_wrapper was built without flux: ROS path");
     }
 #endif
+#ifdef FLUX_WRAPPER_CUDA
+    if (cuda) {
+      staging_ = detail::DeviceStaging::create();
+      if (staging_) {
+        device_ = true;
+      } else {
+        RCLCPP_WARN_ONCE(logger_, "Device::Cuda: no CUDA stream could be created; using Host");
+      }
+    }
+#endif
     ros_ = rclcpp::create_publisher<MsgT>(node, topic, qos);
   }
 
@@ -69,17 +98,42 @@ public:
   auto loan() -> Loan<MsgT>
   {
 #ifdef USE_FLUX_ENABLED
-    if (flux_) {
-      return Loan<MsgT>(typename detail::AdapterT<MsgT>::Builder(flux_->loan()));
+    if constexpr (kImage) {
+      if (flux_ && device_) {
+        return Loan<MsgT>(flux_->loan());
+      }
     }
 #endif
-    return Loan<MsgT>(std::make_unique<MsgT>());
+#ifdef FLUX_WRAPPER_CUDA
+    if constexpr (kImage) {
+      if (staging_) {
+        return Loan<MsgT>(std::make_unique<MsgT>(), staging_.get());
+      }
+    }
+#endif
+#ifdef USE_FLUX_ENABLED
+    Loan<MsgT> l = flux_ ? Loan<MsgT>(typename detail::AdapterT<MsgT>::Builder(flux_->loan()))
+                         : Loan<MsgT>(std::make_unique<MsgT>());
+#else
+    Loan<MsgT> l(std::make_unique<MsgT>());
+#endif
+#ifdef FLUX_WRAPPER_CUDA
+    if constexpr (kImage) {
+      l.query_src_ = requested_cuda_;
+    }
+#endif
+    return l;
   }
 
   // False when nothing went out: no free slot, a field that did not fit, or a fault (logged).
   auto publish(Loan<MsgT> && loan) -> bool
   {
 #ifdef USE_FLUX_ENABLED
+    if constexpr (kImage) {
+      if (loan.gpu_) {
+        return commit_gpu(loan);
+      }
+    }
     if (loan.builder_) {
       return report(loan.builder_->commit__());
     }
@@ -87,6 +141,14 @@ public:
     if (!loan.msg_) {
       return false;
     }
+#ifdef FLUX_WRAPPER_CUDA
+    if constexpr (kImage) {
+      if (loan.staged_ && !staging_->download(loan.msg_->data.data(), loan.msg_->data.size())) {
+        device_error("the device to host copy failed");
+        return false;
+      }
+    }
+#endif
     ros_->publish(std::move(loan.msg_));
     return true;
   }
@@ -95,6 +157,11 @@ public:
   auto publish(std::unique_ptr<MsgT> msg) -> bool
   {
 #ifdef USE_FLUX_ENABLED
+    if constexpr (kImage) {
+      if (flux_ && device_) {
+        return publish_gpu(*msg);
+      }
+    }
     if (flux_) {
       auto b = detail::AdapterT<MsgT>::build__(*flux_);
       if (!b) {
@@ -112,6 +179,11 @@ public:
   auto publish(const MsgT & msg) -> bool
   {
 #ifdef USE_FLUX_ENABLED
+    if constexpr (kImage) {
+      if (flux_ && device_) {
+        return publish_gpu(msg);
+      }
+    }
     if (flux_) {
       auto b = detail::AdapterT<MsgT>::build__(*flux_);
       if (!b) {
@@ -146,8 +218,97 @@ public:
 #endif
   }
 
+  // Device::Cuda was asked for and is used.
+  [[nodiscard]] auto uses_device() const noexcept -> bool { return device_; }
+
 private:
+  static constexpr bool kImage = std::is_same_v<MsgT, sensor_msgs::msg::Image>;
+
+  // Never throws: a Cuda that cannot be had is Host, with the reason logged once.
+  auto resolve_cuda(Device requested) -> bool
+  {
+    if (requested == Device::Host) {
+      return false;
+    }
+    if constexpr (!kImage) {
+      RCLCPP_WARN_ONCE(logger_, "Device::Cuda carries only sensor_msgs/Image; using Host");
+      return false;
+    }
+#ifndef FLUX_WRAPPER_CUDA
+    RCLCPP_WARN_ONCE(logger_, "Device::Cuda, but flux_wrapper was built without CUDA; using Host");
+    return false;
+#else
+    requested_cuda_ = true;
 #ifdef USE_FLUX_ENABLED
+    if (use_flux()) {
+      const flux::gpu::Platform p = flux::gpu::probe();
+      if (p.route == flux::gpu::Route::None) {
+        RCLCPP_WARN_ONCE(
+          logger_, "Device::Cuda: no flux GPU route (%s); using Host", p.reason.c_str());
+        return false;
+      }
+      return true;
+    }
+#endif
+    int n = 0;
+    const cudaError_t e = cudaGetDeviceCount(&n);
+    if (e != cudaSuccess || n == 0) {
+      RCLCPP_WARN_ONCE(
+        logger_, "Device::Cuda: no CUDA device (%s); using Host",
+        e != cudaSuccess ? cudaGetErrorString(e) : "none found");
+      return false;
+    }
+    return true;
+#endif
+  }
+
+#if defined(USE_FLUX_ENABLED) || defined(FLUX_WRAPPER_CUDA)
+  void device_error(const char * what)
+  {
+    if (!device_logged_) {
+      device_logged_ = true;
+      RCLCPP_ERROR(logger_, "Device::Cuda publish failed: %s; later failures are not logged", what);
+    }
+  }
+#endif
+
+#ifdef USE_FLUX_ENABLED
+  auto commit_gpu(Loan<MsgT> & loan) -> bool
+  {
+    if (!loan.slot_) {
+      return false;
+    }
+    // The slot is the subscribers' after the commit, and the slot of nobody after an abort.
+    loan.aux_ = nullptr;
+    if (loan.bad_) {
+      loan.slot_.abort();
+      device_error("encoding or frame_id longer than its cap (32, 256 bytes)");
+      return false;
+    }
+    loan.slot_.set_aux_len(sizeof(detail::GpuImageAux));
+    return report(loan.slot_.commit(loan.len_));
+  }
+
+  auto publish_gpu(const MsgT & msg) -> bool
+  {
+    Loan<MsgT> l = loan();
+    l.set_header(msg.header);
+    l.set_height(msg.height);
+    l.set_width(msg.width);
+    l.set_encoding(msg.encoding);
+    l.set_is_bigendian(msg.is_bigendian);
+    l.set_step(msg.step);
+    const Buffer b = l.alloc_buffer(msg.data.size());
+    if (l.slot_ && !b) {
+      return report(flux::Published::TooLarge);
+    }
+    if (b && !b.copy_from(msg.data.data(), msg.data.size())) {
+      device_error("the host to device copy failed");
+      return false;
+    }
+    return commit_gpu(l);
+  }
+
   auto report(flux::Published p) -> bool
   {
     if (flux::faulted(p) && !fault_logged_) {
@@ -162,6 +323,14 @@ private:
   std::unique_ptr<flux::Publisher> flux_;
   bool fault_logged_ = false;
 #endif
+#ifdef FLUX_WRAPPER_CUDA
+  std::unique_ptr<detail::DeviceStaging> staging_;
+  bool requested_cuda_ = false;
+#endif
+#if defined(USE_FLUX_ENABLED) || defined(FLUX_WRAPPER_CUDA)
+  bool device_logged_ = false;
+#endif
+  bool device_ = false;
   rclcpp::Logger logger_;
   typename rclcpp::Publisher<MsgT>::SharedPtr ros_;
 };
