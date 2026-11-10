@@ -174,6 +174,7 @@ mod tests {
             64,
             1,
             DEFAULT_MAX_SUBSCRIBERS,
+            0,
             NO_SCHEMA,
             None,
         )
@@ -203,9 +204,16 @@ mod tests {
     #[test]
     fn a_segment_takes_as_many_subscribers_as_it_was_made_for() {
         for (max, past_default) in [(DEFAULT_MAX_SUBSCRIBERS, false), (64, true)] {
-            let seg =
-                open_publisher_segment(&topic(&format!("max{max}")), 64, 1, max, NO_SCHEMA, None)
-                    .unwrap();
+            let seg = open_publisher_segment(
+                &topic(&format!("max{max}")),
+                64,
+                1,
+                max,
+                0,
+                NO_SCHEMA,
+                None,
+            )
+            .unwrap();
             let pfd = seg.publisher_fd().unwrap();
             let reopen = || LiveFd::open(|| sys::reopen(pfd)).unwrap();
             let live: Vec<LiveFd> = (0..DEFAULT_MAX_SUBSCRIBERS)
@@ -225,7 +233,7 @@ mod tests {
             drop(live);
         }
         for bad in [0, MAX_SUBSCRIBERS + 1] {
-            let r = open_publisher_segment(&topic("maxbad"), 64, 1, bad, NO_SCHEMA, None);
+            let r = open_publisher_segment(&topic("maxbad"), 64, 1, bad, 0, NO_SCHEMA, None);
             assert!(matches!(r, Err(Error::InvalidArgument(_))), "{bad}");
         }
     }
@@ -239,6 +247,7 @@ mod tests {
             64,
             2,
             DEFAULT_MAX_SUBSCRIBERS,
+            0,
             NO_SCHEMA,
             MemoryPolicy::default(),
         )

@@ -13,6 +13,11 @@ impl<T> Stored<T> {
         (self.live != 0).then(|| unsafe { self.value.assume_init_ref() })
     }
 
+    pub(crate) fn get_mut(&mut self) -> Option<&mut T> {
+        // SAFETY: live is set only after value is written.
+        (self.live != 0).then(|| unsafe { self.value.assume_init_mut() })
+    }
+
     pub(crate) fn take(&mut self) -> Option<T> {
         if self.live == 0 {
             return None;

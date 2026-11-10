@@ -2,6 +2,7 @@
 #define FLUX_CHANNEL_HPP
 
 #include "flux.h"
+#include "flux/wire.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -340,6 +341,13 @@ public:
   {
     return flux_view_after(raw(), s.raw());
   }
+  // The frame's aux bytes, in host memory whatever the payload is.
+  [[nodiscard]] auto aux() const noexcept -> wire::Span<const std::uint8_t>
+  {
+    std::size_t n = 0;
+    const std::uint8_t * p = flux_view_aux(raw(), &n);
+    return {p, n};
+  }
   // Requires valid().
   [[nodiscard]] auto meta() const noexcept -> const FrameMeta & { return *flux_view_meta(raw()); }
   [[nodiscard]] auto ticket() const noexcept -> std::uint64_t { return flux_view_ticket(raw()); }
@@ -405,6 +413,15 @@ public:
     flux_loan_data(&l_, &n);
     return n;
   }
+  // The slot's whole aux region, in host memory whatever the payload is. set_aux_len says how many
+  // bytes the frame carries; past the region, the commit is TooLarge.
+  auto aux() noexcept -> wire::Span<std::uint8_t>
+  {
+    std::size_t n = 0;
+    std::uint8_t * p = flux_loan_aux(&l_, &n);
+    return {p, n};
+  }
+  void set_aux_len(std::size_t n) noexcept { flux_loan_set_aux_len(&l_, n); }
 
   auto commit() noexcept -> Published { return static_cast<Published>(flux_loan_commit(&l_)); }
   // Shrinks a one-dimensional loan to nbytes.
@@ -468,18 +485,19 @@ public:
   }
 
   // Error with FLUX_PUBLISHER_EXISTS while another publisher of `name` is live.
-  // A declared `stream` makes a GPU channel for its life.
+  // A declared `stream` makes a GPU channel for its life. Each slot carries `aux_size` host bytes
+  // beside its payload, up to FLUX_MAX_AUX_SIZE.
   static auto create(
     const std::string & name, std::uint32_t slot_size, std::uint32_t slot_count,
     std::uint64_t fingerprint = kNoSchema, MemoryPolicy mem = {},
-    std::uint32_t max_subscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS,
-    const gpu::Stream & stream = {}) -> Channel
+    std::uint32_t max_subscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS, const gpu::Stream & stream = {},
+    std::uint32_t aux_size = 0) -> Channel
   {
     require_abi();
     flux_channel * ch = nullptr;
     detail::check(flux_channel_create(
-      name.c_str(), slot_size, slot_count, max_subscribers, fingerprint, mem, stream.raw(),
-      flux_stamp_offset(fingerprint), &ch));
+      name.c_str(), slot_size, slot_count, max_subscribers, aux_size, fingerprint, mem,
+      stream.raw(), flux_stamp_offset(fingerprint), &ch));
     return Channel(ch);
   }
 
@@ -675,6 +693,10 @@ public:
   [[nodiscard]] auto slot_count() const noexcept -> std::uint32_t
   {
     return ch_ ? flux_channel_slot_count(ch_) : 0;
+  }
+  [[nodiscard]] auto aux_size() const noexcept -> std::uint32_t
+  {
+    return ch_ ? flux_channel_aux_size(ch_) : 0;
   }
   [[nodiscard]] auto payload_readonly() const noexcept -> bool
   {

@@ -782,7 +782,7 @@ mod trace_events {
         let key = format!("/t{}_trace_wake_{parked}", std::process::id());
         let name = signpost_name(&key, NO_SCHEMA).unwrap();
         let mem = MemoryPolicy::default();
-        let mut publisher = Channel::create(&name, 8, 4, 4, NO_SCHEMA, mem).unwrap();
+        let mut publisher = Channel::create(&name, 8, 4, 4, 0, NO_SCHEMA, mem).unwrap();
         let mut ex = Executor::new().unwrap();
         ex.parked = parked;
         ex.add(Sub(Channel::open(&name, NO_SCHEMA, mem).unwrap()), 0)

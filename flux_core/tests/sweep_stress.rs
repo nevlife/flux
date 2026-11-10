@@ -41,6 +41,7 @@ fn publish(signpost: &str, until: Instant) {
             64,
             4,
             DEFAULT_MAX_SUBSCRIBERS,
+            0,
             NO_SCHEMA,
             MemoryPolicy::default(),
         ) {

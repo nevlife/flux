@@ -36,7 +36,8 @@ if flux.faulted(p):
 
 ```python
 flux.Publisher(node, topic, fingerprint=flux.NO_SCHEMA, slot_size=8 << 20, slot_count=16,
-               memory=None, max_subscribers=16, device="cpu", fence_timeout=None)
+               memory=None, max_subscribers=16, device="cpu", fence_timeout=None,
+               mirror_to_ros=False, aux_size=0)
 ```
 
 - 기본값은 모듈 상수 `flux.DEFAULT_SLOT_SIZE`, `flux.DEFAULT_SLOT_COUNT`, `flux.DEFAULT_MAX_SUBSCRIBERS`로도 읽는다. C++과 같은 값이다.
@@ -63,6 +64,7 @@ if loan is not None:
 - `commit(nbytes=None)`은 `flux.Published`를 돌려준다. 1차원 loan은 `nbytes`로 줄여 발행할 수 있다. 실패한 commit도 loan을 끝낸다(`TOO_LARGE`).
 - commit하지 않은 `Loan`이 사라지거나 `abort()`를 부르면 프레임은 발행되지 않는다.
 - `capacity`는 빌린 바이트 수다.
+- 발행자를 `aux_size`와 함께 만들면 `loan.aux`가 슬롯의 aux 영역을 가리키는 쓰기 가능한 `uint8` 배열이고, `loan.aux_len`이 프레임이 쓴 길이다. `loan.array`처럼 commit 뒤에는 읽기 전용이 된다. 받는 쪽은 `flux.aux(frame)`으로 읽는다. take가 돌려준 배열이나 `Frame`을 받아 `aux_len` 바이트의 읽기 전용 배열을 돌려준다.
 
 ## 구독과 executor
 

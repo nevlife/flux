@@ -212,6 +212,9 @@ auto descr_of(flux::DType d) -> nb::object
   return flux_py::own(PyArray_DescrFromType(flux_py::npy_type(d)));
 }
 
+// Names the capsule a host view's array holds its FrameView in, so aux_of can find it.
+constexpr const char * kViewCapsule = "flux.view";
+
 // The core's take already checked that the shape covers exactly the frame's bytes.
 auto view_of(flux::FrameView && v) -> nb::object
 {
@@ -223,7 +226,7 @@ auto view_of(flux::FrameView && v) -> nb::object
   auto held = std::make_unique<flux::FrameView>(std::move(v));
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): numpy's signature; the view is read-only
   void * data = const_cast<void *>(held->data());
-  const nb::capsule owner(held.release(), [](void * p) noexcept {
+  const nb::capsule owner(held.release(), kViewCapsule, [](void * p) noexcept {
     const std::unique_ptr<flux::FrameView> gone(static_cast<flux::FrameView *>(p));
   });
   const nb::object descr = descr_of(static_cast<flux::DType>(m.dtype));
@@ -504,6 +507,17 @@ public:
     return nb::make_tuple(nb::device::cuda::value, device_);
   }
 
+  // Host memory whatever the payload is, so readable outside a `with` block too.
+  [[nodiscard]] auto aux() const -> nb::object
+  {
+    if (!valid()) {
+      throw std::runtime_error("flux: the frame is already released");
+    }
+    const auto a = held_->v.aux();
+    const nb::object descr = descr_of(flux::DType::U8);
+    return flux_py::numpy_view(a.data(), a.size(), flux_py::as_descr(descr), hold(), false);
+  }
+
   [[nodiscard]] auto valid() const noexcept -> bool { return held_ && held_->v.valid(); }
   [[nodiscard]] auto shape() const -> nb::tuple
   {
@@ -578,6 +592,23 @@ auto frame_or_none(flux::FrameView && v, int device, bool deferred) -> nb::objec
   return nb::cast(Frame(std::move(v), device, false, deferred));
 }
 
+// The aux bytes of what a take returned, a host view or a Frame: read-only uint8, holding it.
+auto aux_of(nb::handle taken) -> nb::object
+{
+  if (nb::isinstance<Frame>(taken)) {
+    return nb::inst_ptr<Frame>(taken)->aux();
+  }
+  PyObject * base =
+    PyArray_Check(taken.ptr()) != 0 ? PyArray_BASE(flux_py::as_array(taken)) : nullptr;
+  if (base == nullptr || PyCapsule_IsValid(base, kViewCapsule) == 0) {
+    throw nb::type_error("flux: aux() takes a frame that a subscription's take returned");
+  }
+  const auto * v = static_cast<const flux::FrameView *>(PyCapsule_GetPointer(base, kViewCapsule));
+  const auto a = v->aux();
+  const nb::object descr = descr_of(flux::DType::U8);
+  return flux_py::numpy_view(a.data(), a.size(), flux_py::as_descr(descr), taken, false);
+}
+
 // Writable numpy views of a loaned slot. commit and abort make the arrays `array` handed out
 // read-only; a slice or memoryview taken from one before then can still write to the slot.
 class Loan
@@ -610,6 +641,29 @@ public:
       true);
     issued_.emplace_back(a);
     return a;
+  }
+
+  // The slot's whole aux region, sealed with the arrays at commit.
+  auto aux(nb::handle self) -> nb::object
+  {
+    if (!w_) {
+      throw std::runtime_error("flux: the loan is already committed or aborted");
+    }
+    const auto a = w_.aux();
+    const nb::object descr = descr_of(flux::DType::U8);
+    nb::object o = flux_py::numpy_view(a.data(), a.size(), flux_py::as_descr(descr), self, true);
+    issued_.emplace_back(o);
+    return o;
+  }
+  [[nodiscard]] auto aux_len() const noexcept -> std::size_t { return aux_len_; }
+  // Past the aux region, the commit is TOO_LARGE.
+  void set_aux_len(std::size_t n)
+  {
+    if (!w_) {
+      throw std::runtime_error("flux: the loan is already committed or aborted");
+    }
+    w_.set_aux_len(n);
+    aux_len_ = n;
   }
 
   // A refused commit ends the loan too, as in C++: commit(nbytes) on a loan that is not 1-D, or
@@ -706,6 +760,7 @@ private:
   int device_;
   std::vector<nb::weakref> issued_;
   std::vector<flux::gpu::Stream> writers_;
+  std::size_t aux_len_ = 0;
 };
 
 class Publisher
@@ -714,10 +769,10 @@ public:
   Publisher(
     const std::string & signpost, const std::string & topic, const std::string & label,
     std::uint64_t fingerprint, std::uint32_t slot_size, std::uint32_t slot_count,
-    flux::MemoryPolicy mem, std::uint32_t max_subscribers, bool cuda)
+    flux::MemoryPolicy mem, std::uint32_t max_subscribers, bool cuda, std::uint32_t aux_size)
   : stream_(flux::gpu::stream_for(cuda ? flux::Device::Cuda : flux::Device::Cpu)),
     ch_(flux::detail::Channel::create(
-      signpost, slot_size, slot_count, fingerprint, mem, max_subscribers, stream_)),
+      signpost, slot_size, slot_count, fingerprint, mem, max_subscribers, stream_, aux_size)),
     announced_(signpost, topic, label, true)
   {
     flux_trace_endpoint_init(
@@ -1463,6 +1518,8 @@ NB_MODULE(_flux, m)
     .def_prop_ro("valid", &Loan::valid)
     .def("__bool__", &Loan::valid)
     .def_prop_ro("capacity", &Loan::capacity)
+    .def_prop_ro("aux", [](nb::handle self) { return nb::inst_ptr<Loan>(self)->aux(self); })
+    .def_prop_rw("aux_len", &Loan::aux_len, &Loan::set_aux_len)
     .def_prop_ro("__cuda_array_interface__", &Loan::cai)
     .def(
       "__dlpack__",
@@ -1476,14 +1533,16 @@ NB_MODULE(_flux, m)
     .def(
       nb::init<
         const std::string &, const std::string &, const std::string &, std::uint64_t, std::uint32_t,
-        std::uint32_t, flux::MemoryPolicy, std::uint32_t, bool>(),
+        std::uint32_t, flux::MemoryPolicy, std::uint32_t, bool, std::uint32_t>(),
       "signpost"_a, "topic"_a, "label"_a, "fingerprint"_a, "slot_size"_a, "slot_count"_a,
-      "memory"_a, "max_subscribers"_a = FLUX_DEFAULT_MAX_SUBSCRIBERS, "cuda"_a = false)
+      "memory"_a, "max_subscribers"_a = FLUX_DEFAULT_MAX_SUBSCRIBERS, "cuda"_a = false,
+      "aux_size"_a = 0)
     .def("publish", &Publisher::publish, "array"_a)
     .def("loan", &Publisher::loan, "shape"_a = nb::none(), "dtype"_a = "uint8")
     .def_prop_ro("dropped", &Publisher::dropped)
     .def_prop_ro("subscriber_count", &Publisher::subscriber_count)
     .def_prop_ro("slot_size", &Publisher::slot_size)
+    .def_prop_ro("aux_size", [](Publisher & p) { return p.channel().aux_size(); })
     .def_prop_ro("fence_failed", [](Publisher & p) { return p.channel().fence_failed(); })
     .def_prop_ro("fence_wait", [](Publisher & p) { return p.channel().fence_wait(); })
     .def_prop_ro("device_backed", [](Publisher & p) { return p.channel().device_backed(); })
@@ -1549,6 +1608,7 @@ NB_MODULE(_flux, m)
   m.def("_step_aside", [] { turnstile().step_aside(); });
   m.def("_before_exit", &before_exit);
   m.def("signpost_name", &flux::detail::signpost_name, "key"_a, "fingerprint"_a);
+  m.def("aux", &aux_of, "frame"_a);
   m.def("_register_stamp_offset", &flux_stamp_offset_register, "fingerprint"_a, "offset"_a);
 
   nb::class_<flux::Endpoint>(m, "Endpoint")

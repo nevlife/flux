@@ -111,6 +111,7 @@ if frame is not None:
 | adapter의 `Builder`, GPU 구독자의 `View` | 프레임 배치가 호스트 메모리를 전제하므로 쓰지 못한다. CPU 구독자의 `View`는 자기 복사본을 읽는다 |
 
 - 장치 메모리 채널의 CPU 구독자가 받는 view는 `data()`가 자기 복사본이고, `device_ptr()`은 0이다.
+- 장치 메모리 채널에서도 aux는 호스트 메모리다. 프레임의 stamp나 크기 같은 헤더는 발행자를 `aux_size`와 함께 만들고 aux에 쓴다([concepts.md](concepts.md#발행자와-슬롯)). 받는 쪽은 CPU 구독이든 GPU 구독이든 aux를 복사 없이 읽는다.
 - 복사가 실패한 take는 빈 결과이고 `refused.fence`로 센다. 그 슬롯은 돌려주지 않는다.
 
 - 구독자는 메모리를 할당한 장치를 번호가 아니라 UUID로 찾는다. 그래서 `CUDA_VISIBLE_DEVICES`가 달라도 같은 장치를 찾는다. 구독 stream의 장치가 그 장치와 다르면 `MISMATCH`다.

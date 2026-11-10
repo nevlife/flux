@@ -20,7 +20,7 @@ use crate::discovery::SignpostMap;
 use crate::error::{Error, Result};
 use crate::gpu::DevicePayload;
 use crate::layout::{
-    ControlHeader, DEFAULT_MAX_SUBSCRIBERS, HeaderConfig, INIT_READY, MAX_SLOT_COUNT,
+    ControlHeader, DEFAULT_MAX_SUBSCRIBERS, HeaderConfig, INIT_READY, MAX_AUX_SIZE, MAX_SLOT_COUNT,
     MAX_SUBSCRIBERS, PAYLOAD_ALIGN, SegmentLayout, SlotHeader, StorageKind, layout_config_ok,
 };
 use crate::qos::MemoryPolicy;
@@ -95,8 +95,13 @@ unsafe impl Send for Segment {}
 unsafe impl Sync for Segment {}
 
 impl Segment {
-    pub fn create_heap(slot_size: u32, slot_count: u32, fingerprint: u64) -> Result<Segment> {
-        let layout = checked_layout(slot_size, slot_count, DEFAULT_MAX_SUBSCRIBERS)?;
+    pub fn create_heap(
+        slot_size: u32,
+        slot_count: u32,
+        aux_size: u32,
+        fingerprint: u64,
+    ) -> Result<Segment> {
+        let layout = checked_layout(slot_size, slot_count, DEFAULT_MAX_SUBSCRIBERS, aux_size)?;
         let bytes = layout.total_bytes();
         let alloc_layout = Layout::from_size_align(bytes, PAYLOAD_ALIGN)
             .map_err(|e| Error::InvalidArgument(e.to_string()))?;
@@ -325,6 +330,13 @@ impl Segment {
         self.base.as_ptr().wrapping_add(off)
     }
 
+    /// Start of slot `i`'s aux region, `aux_size` bytes in this mapping whatever the payload is.
+    pub fn aux(&self, i: u32) -> *mut u8 {
+        debug_assert!(i < self.layout.slot_count);
+        let off = self.layout.aux_offset() + i as usize * self.layout.aux_stride();
+        self.base.as_ptr().wrapping_add(off)
+    }
+
     /// The whole mapping, for a fuzz target to overwrite.
     #[cfg(any(test, feature = "fuzz"))]
     pub(crate) fn raw(&self) -> (NonNull<u8>, usize) {
@@ -486,17 +498,19 @@ pub(crate) fn checked_layout(
     slot_size: u32,
     slot_count: u32,
     max_subscribers: u32,
+    aux_size: u32,
 ) -> Result<SegmentLayout> {
-    if !layout_config_ok(slot_size, slot_count, max_subscribers) {
+    if !layout_config_ok(slot_size, slot_count, max_subscribers, aux_size) {
         return Err(Error::InvalidArgument(format!(
-            "slot_size must be >= 1, slot_count in 1..={MAX_SLOT_COUNT} and max_subscribers in \
-             1..={MAX_SUBSCRIBERS}"
+            "slot_size must be >= 1, slot_count in 1..={MAX_SLOT_COUNT}, max_subscribers in \
+             1..={MAX_SUBSCRIBERS} and aux_size at most {MAX_AUX_SIZE}"
         )));
     }
     Ok(SegmentLayout {
         slot_size,
         slot_count,
         max_subscribers,
+        aux_size,
     })
 }
 
@@ -551,7 +565,7 @@ mod tests {
         ignore = "release builds leave the debug checks out"
     )]
     fn the_debug_checks_are_built_into_the_test_profile() {
-        let seg = Segment::create_heap(64, 2, 0).unwrap();
+        let seg = Segment::create_heap(64, 2, 0, 0).unwrap();
         let seg = std::panic::AssertUnwindSafe(&seg);
         let past = |f: fn(&Segment)| std::panic::catch_unwind(|| f(*seg)).is_err();
         assert!(past(|s| {
@@ -559,6 +573,9 @@ mod tests {
         }));
         assert!(past(|s| {
             s.payload(2);
+        }));
+        assert!(past(|s| {
+            s.aux(2);
         }));
         assert!(!past(|s| {
             s.slot(1);

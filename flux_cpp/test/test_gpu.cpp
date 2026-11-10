@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -171,6 +172,37 @@ TEST_F(Gpu, AFrameWrittenOnTheDeviceReachesHostAndDeviceSubscribers)
   v.release();
   EXPECT_EQ(dev.fence_wait().release_waits, 1U);
   EXPECT_EQ(dev.fence_failed(), 0U);
+}
+
+// The aux bytes stay in host memory, whatever the payload is, for both kinds of subscriber.
+TEST_F(Gpu, AuxBytesReachHostAndDeviceSubscribers)
+{
+  const std::string name = unique_name("aux");
+  auto pub = flux::detail::Channel::create(
+    name, 1 << 16, 4, flux::kNoSchema, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
+    flux::gpu::Stream::create(), 64);
+  flux::WriteSlot w = pub.loan();
+  ASSERT_TRUE(w);
+  ASSERT_EQ(w.aux().size(), 64u);
+  std::memset(w.aux().data(), 0x5a, 10);
+  w.set_aux_len(10);
+  ASSERT_EQ(driver()->memset(addr(w.device_ptr()), 0x6b, 4096, w.stream()), 0);
+  ASSERT_EQ(w.commit(4096), flux::Published::Ok);
+
+  flux::QoS q(4);
+  q.transient_local(4);
+  flux::detail::Watch watch(name);
+  for (const bool device : {false, true}) {
+    auto sub = flux::detail::Channel::open(
+      watch, flux::kNoSchema, q, {}, device ? flux::gpu::Stream::create() : flux::gpu::Stream{});
+    flux::FrameView v = sub.take();
+    ASSERT_TRUE(v);
+    const auto aux = v.aux();
+    ASSERT_EQ(aux.size(), 10u);
+    for (const std::uint8_t b : aux) {
+      EXPECT_EQ(b, 0x5a);
+    }
+  }
 }
 
 TEST_F(Gpu, PublisherAndSubscriptionTakeADevice)

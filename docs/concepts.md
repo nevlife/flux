@@ -27,9 +27,11 @@ C++·Python API가 공통으로 따르는 규칙이다. 언어별 사용법은 [
 | `slot_size` | 8 MiB | 슬롯 하나의 바이트 수. 프레임 하나의 상한이다 |
 | `slot_count` | 16 | 링의 슬롯 수. 2 이상이어야 한다 |
 | `max_subscribers` | 16 | 이 채널을 구독할 수 있는 프로세스 수. 최대 4096 |
+| `aux_size` | 0 | 슬롯마다 프레임과 함께 commit되는 호스트 메모리 바이트 수(aux). 최대 32 KiB |
 
 - 발행자는 생성할 때 링 전체(`slot_size` x `slot_count`)를 `/dev/shm`에서 미리 잡는다(`fallocate`). 공간이 모자라면 생성이 실패한다. 그래서 쓰는 도중에 SIGBUS로 죽지 않는다. 기본값이면 채널 하나에 128 MiB다.
 - `max_subscribers`는 구독 수가 아니라 구독 프로세스 수다. 한 프로세스의 구독들은 자리 하나를 같이 쓴다. 자리가 모자라면 그 구독은 `SUBSCRIBERS_FULL`로 거절된다.
+- aux는 payload와 따로 있는 호스트 메모리다. payload가 장치 메모리인 채널에서도 aux는 호스트 메모리라서 CPU 구독자와 GPU 구독자가 모두 읽는다. 프레임에 붙일 작은 값(stamp, 크기 같은 헤더)을 쓴다. 프레임마다 쓴 길이를 함께 담고, `aux_size`를 넘는 길이의 commit은 `TOO_LARGE`다.
 - 프레임은 dtype, shape(8차원까지), 바이트로 이루어진다. dtype은 `u8 i8 u16 i16 u32 i32 u64 i64 f16 f32 f64 bf16`이다. 생성된 adapter가 쓰는 프레임은 `u8` 바이트열이고, 스키마는 fingerprint로 구별한다.
 
 ## 전달

@@ -41,6 +41,7 @@ fn create(signpost: &str) -> Channel {
             SLOT,
             SLOTS,
             DEFAULT_MAX_SUBSCRIBERS,
+            0,
             NO_SCHEMA,
             MemoryPolicy::default(),
         ) {

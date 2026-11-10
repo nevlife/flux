@@ -19,7 +19,7 @@ pub use schema::*;
 pub use status::*;
 
 // Raised on every change to the C ABI; the soname carries it (`build.rs`, `CMakeLists.txt`).
-pub const FLUX_ABI_VERSION: u32 = 3;
+pub const FLUX_ABI_VERSION: u32 = 4;
 
 // A caller compares it with its header's FLUX_ABI_VERSION.
 #[unsafe(no_mangle)]
@@ -38,6 +38,7 @@ pub const FLUX_DEFAULT_MAX_SUBSCRIBERS: u32 = 16;
 pub const FLUX_DEFAULT_SLOT_SIZE: u32 = 8 << 20;
 pub const FLUX_DEFAULT_SLOT_COUNT: u32 = 16;
 pub const FLUX_MAX_SUBSCRIBERS: u32 = 4096;
+pub const FLUX_MAX_AUX_SIZE: u32 = 32 * 1024;
 pub const FLUX_NO_STAMP: i32 = -1;
 
 const _: () = {
@@ -51,5 +52,6 @@ const _: () = {
     assert!(FLUX_DEFAULT_SLOT_SIZE == flux_core::DEFAULT_SLOT_SIZE);
     assert!(FLUX_DEFAULT_SLOT_COUNT == flux_core::DEFAULT_SLOT_COUNT);
     assert!(FLUX_MAX_SUBSCRIBERS == flux_core::MAX_SUBSCRIBERS);
+    assert!(FLUX_MAX_AUX_SIZE == flux_core::MAX_AUX_SIZE);
     assert!(FLUX_NO_STAMP == flux_core::trace::NO_STAMP);
 };

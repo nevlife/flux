@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64};
 
 pub const MAGIC: u32 = 0x464C_5832; // 'FLX2'
 pub const SIGNPOST_MAGIC: u32 = 0x464C_5350; // 'FLSP'
-pub const LAYOUT_VERSION: u32 = 6;
+pub const LAYOUT_VERSION: u32 = 7;
 pub const CACHE_LINE: usize = 64;
 // One page, so a subscriber can drop the payload to read-only while the headers it writes stay
 // writable. Fixed rather than read from the kernel: the layout must match across processes.
@@ -37,6 +37,10 @@ pub const INIT_READY: u32 = 2;
 /// segment itself works with one.
 pub const MIN_SLOT_COUNT: u32 = 2;
 pub const MAX_SLOT_COUNT: u32 = 65_535;
+/// Bytes of host memory each slot carries beside its payload, committed with the frame. Well
+/// below `u16::MAX`: a length too long for `FrameMeta::aux_len` is stored as `u16::MAX`, which then
+/// exceeds every `aux_size` and is refused.
+pub const MAX_AUX_SIZE: u32 = 32 * 1024;
 
 /// `SlotHeader::commit_ticket` values besides a frame's ticket. Tickets start at 1.
 pub const TICKET_EMPTY: u64 = 0;
@@ -128,7 +132,8 @@ impl DType {
 pub struct FrameMeta {
     pub ndim: u8,
     pub dtype: u8,
-    pub reserved0: [u8; 2],
+    /// Bytes of the slot's aux region the frame uses.
+    pub aux_len: u16,
     pub itemsize: u32,
     pub nbytes: u64,
     pub shape: [u64; MAX_DIMS],
@@ -178,7 +183,7 @@ pub struct ControlHeader {
     pub readers_high: AtomicU32,
     /// `CudaIpc`: the allocating device's UUID. Ordinals differ between processes.
     pub device_uuid: [u8; 16],
-    _reserved1: [u8; 4],
+    pub aux_size: u32,
     /// The newest committed ticket, 0 before the first.
     pub latest: AtomicU64,
     /// Futex word, bumped on every publish.
@@ -208,7 +213,7 @@ impl ControlHeader {
             fingerprint,
             readers_high: AtomicU32::new(0),
             device_uuid: [0; 16],
-            _reserved1: [0; 4],
+            aux_size: layout.aux_size,
             latest: AtomicU64::new(0),
             wakeup: AtomicU32::new(0),
             _reserved2: [0; 52],
@@ -238,6 +243,7 @@ pub(crate) struct HeaderConfig {
     pub slot_size: u32,
     pub slot_count: u32,
     pub max_subscribers: u32,
+    pub aux_size: u32,
     pub storage_kind: u8,
     pub fingerprint: u64,
     pub device_uuid: [u8; 16],
@@ -253,6 +259,7 @@ impl HeaderConfig {
             slot_size: peer_field!(ctrl, slot_size),
             slot_count: peer_field!(ctrl, slot_count),
             max_subscribers: peer_field!(ctrl, max_subscribers),
+            aux_size: peer_field!(ctrl, aux_size),
             storage_kind: peer_field!(ctrl, storage_kind),
             fingerprint: peer_field!(ctrl, fingerprint),
             device_uuid: peer_field!(ctrl, device_uuid),
@@ -265,6 +272,7 @@ impl HeaderConfig {
             slot_size: self.slot_size,
             slot_count: self.slot_count,
             max_subscribers: self.max_subscribers,
+            aux_size: self.aux_size,
         }
     }
 
@@ -318,12 +326,18 @@ pub const fn align_up(n: usize, a: usize) -> usize {
 
 /// Bounds every value an offset is derived from. Unbounded, a header written by another process
 /// could make `total_bytes` wrap.
-pub const fn layout_config_ok(slot_size: u32, slot_count: u32, max_subscribers: u32) -> bool {
+pub const fn layout_config_ok(
+    slot_size: u32,
+    slot_count: u32,
+    max_subscribers: u32,
+    aux_size: u32,
+) -> bool {
     slot_size >= 1
         && slot_count >= 1
         && slot_count <= MAX_SLOT_COUNT
         && max_subscribers >= 1
         && max_subscribers <= MAX_SUBSCRIBERS
+        && aux_size <= MAX_AUX_SIZE
 }
 
 /// Offsets are derived, never stored.
@@ -332,6 +346,7 @@ pub struct SegmentLayout {
     pub slot_size: u32,
     pub slot_count: u32,
     pub max_subscribers: u32,
+    pub aux_size: u32,
 }
 
 impl SegmentLayout {
@@ -366,11 +381,21 @@ impl SegmentLayout {
     pub const fn slots_bytes(&self) -> usize {
         self.slot_stride() * self.slot_count as usize
     }
+    /// Below the payload, so a device-backed segment keeps it in shm with the headers.
+    pub const fn aux_stride(&self) -> usize {
+        align_up(self.aux_size as usize, CACHE_LINE)
+    }
+    pub const fn aux_offset(&self) -> usize {
+        self.slots_offset() + self.slots_bytes()
+    }
+    pub const fn aux_bytes(&self) -> usize {
+        self.aux_stride() * self.slot_count as usize
+    }
     pub const fn payload_stride(&self) -> usize {
         align_up(self.slot_size as usize, PAYLOAD_ALIGN)
     }
     pub const fn payload_offset(&self) -> usize {
-        align_up(self.slots_offset() + self.slots_bytes(), PAYLOAD_ALIGN)
+        align_up(self.aux_offset() + self.aux_bytes(), PAYLOAD_ALIGN)
     }
     pub const fn payload_bytes(&self) -> usize {
         self.payload_stride() * self.slot_count as usize
@@ -383,6 +408,9 @@ impl SegmentLayout {
 const _: () = {
     assert!(size_of::<FrameMeta>() == 80);
     assert!(align_of::<FrameMeta>() == 8);
+    assert!(offset_of!(FrameMeta, aux_len) == 2);
+    assert!(offset_of!(FrameMeta, itemsize) == 4);
+    assert!(MAX_AUX_SIZE < u16::MAX as u32);
 
     assert!(size_of::<SlotHeader>() == 128);
     assert!(align_of::<SlotHeader>() == CACHE_LINE);
@@ -400,6 +428,7 @@ const _: () = {
     assert!(offset_of!(ControlHeader, fingerprint) == 32);
     assert!(offset_of!(ControlHeader, readers_high) == 40);
     assert!(offset_of!(ControlHeader, device_uuid) == 44);
+    assert!(offset_of!(ControlHeader, aux_size) == 60);
     assert!(offset_of!(ControlHeader, latest) == 64);
     assert!(offset_of!(ControlHeader, wakeup) == 72);
     assert!(offset_of!(ControlHeader, waiters) == 128);
@@ -419,6 +448,7 @@ const _: () = {
         slot_size: 1,
         slot_count: 1,
         max_subscribers: 1,
+        aux_size: 1,
     };
     assert!(small.payload_offset().is_multiple_of(PAYLOAD_ALIGN));
     assert!(small.payload_stride().is_multiple_of(PAYLOAD_ALIGN));
@@ -429,15 +459,70 @@ const _: () = {
         slot_size: u32::MAX,
         slot_count: MAX_SLOT_COUNT,
         max_subscribers: MAX_SUBSCRIBERS,
+        aux_size: MAX_AUX_SIZE,
     };
     assert!(layout_config_ok(
         widest.slot_size,
         widest.slot_count,
-        widest.max_subscribers
+        widest.max_subscribers,
+        widest.aux_size
     ));
     assert!(widest.total_bytes() < (1 << 50));
     // Every derived region starts on a cache line, so the atomics in it keep their alignment.
     assert!(widest.slots_offset().is_multiple_of(CACHE_LINE));
     assert!(widest.slot_stride().is_multiple_of(CACHE_LINE));
     assert!(widest.index_offset().is_multiple_of(CACHE_LINE));
+    assert!(widest.aux_offset().is_multiple_of(CACHE_LINE));
+    assert!(widest.aux_stride().is_multiple_of(CACHE_LINE));
 };
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_AUX_SIZE, MAX_SLOT_COUNT, MAX_SUBSCRIBERS, PAYLOAD_ALIGN, SegmentLayout, align_up,
+        layout_config_ok,
+    };
+
+    /// Without aux every offset is where layout version 6 put it.
+    #[test]
+    fn a_layout_without_aux_keeps_the_offsets_it_had_before_aux() {
+        for (slot_size, slot_count, max_subscribers) in [
+            (1, 1, 1),
+            (64, 2, 16),
+            (8 << 20, 16, 16),
+            (u32::MAX, MAX_SLOT_COUNT, MAX_SUBSCRIBERS),
+        ] {
+            let l = SegmentLayout {
+                slot_size,
+                slot_count,
+                max_subscribers,
+                aux_size: 0,
+            };
+            let v6 = align_up(l.slots_offset() + l.slots_bytes(), PAYLOAD_ALIGN);
+            assert_eq!(l.aux_bytes(), 0);
+            assert_eq!(l.payload_offset(), v6);
+            assert_eq!(l.total_bytes(), v6 + l.payload_bytes());
+        }
+    }
+
+    #[test]
+    fn aux_regions_sit_between_the_slot_headers_and_the_payload() {
+        let l = SegmentLayout {
+            slot_size: 64,
+            slot_count: 4,
+            max_subscribers: 16,
+            aux_size: 1000,
+        };
+        assert_eq!(l.aux_stride(), 1024);
+        assert_eq!(l.aux_offset(), l.slots_offset() + l.slots_bytes());
+        assert!(l.aux_offset() + l.aux_bytes() <= l.payload_offset());
+        assert!(l.payload_offset().is_multiple_of(PAYLOAD_ALIGN));
+    }
+
+    #[test]
+    fn an_aux_size_past_the_limit_is_refused() {
+        assert!(layout_config_ok(64, 2, 16, MAX_AUX_SIZE));
+        assert!(!layout_config_ok(64, 2, 16, MAX_AUX_SIZE + 1));
+        assert!(!layout_config_ok(64, 2, 16, u32::MAX));
+    }
+}

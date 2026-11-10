@@ -51,7 +51,7 @@ int main(void)
   test_signpost("trace_args", name, sizeof name);
   const flux_memory_policy mem = {false, false};
   flux_channel * p = NULL;
-  CHECK(flux_channel_create(name, 64, 4, 4, 0, mem, NULL, STAMP_AT, &p) == FLUX_OK);
+  CHECK(flux_channel_create(name, 64, 4, 4, 0, 0, mem, NULL, STAMP_AT, &p) == FLUX_OK);
   CHECK(flux_channel_open(name, 0, mem, NULL, STAMP_AT, &sub) == FLUX_OK);
 
   const void * id = NULL;

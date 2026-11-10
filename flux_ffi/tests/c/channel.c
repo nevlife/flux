@@ -77,10 +77,10 @@ static void shm_publisher_and_subscriber(void)
   CHECK(flux_channel_open(name, 0, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_NOT_READY);
   CHECK(
     flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
+      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
   CHECK(
     flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, mem, NULL, FLUX_NO_STAMP, &p2) ==
+      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, mem, NULL, FLUX_NO_STAMP, &p2) ==
     FLUX_PUBLISHER_EXISTS);
   CHECK(flux_channel_open(name, 0, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_OK);
   CHECK(flux_channel_payload_readonly(s));
@@ -100,6 +100,58 @@ static void shm_publisher_and_subscriber(void)
   flux_channel_stats st;
   CHECK(flux_read_channel_stats(name, &st) == FLUX_OK);
   CHECK(st.live && st.publish_seq == 1 && st.slot_size == 32);
+  flux_channel_free(s);
+  flux_channel_free(p);
+  shm_unlink(name);
+}
+
+// The aux bytes a loan sets arrive with its frame; a length past the region is refused.
+static void a_loan_carries_aux_bytes(void)
+{
+  char name[256];
+  test_signpost("aux", name, sizeof name);
+  flux_memory_policy mem = {false, false};
+  flux_channel *p = NULL, *s = NULL;
+  CHECK(
+    flux_channel_create(
+      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, FLUX_MAX_AUX_SIZE + 1, 0, mem, NULL, FLUX_NO_STAMP,
+      &p) == FLUX_INVALID_ARGUMENT);
+  CHECK(
+    flux_channel_create(
+      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 40, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
+  CHECK(flux_channel_open(name, 0, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_OK);
+  CHECK(flux_channel_aux_size(p) == 40 && flux_channel_aux_size(s) == 40);
+
+  flux_loan l = {0};
+  size_t cap = 0;
+  CHECK(flux_loan_aux(&l, &cap) == NULL);
+  CHECK(flux_channel_loan(p, &l));
+  uint8_t * aux = flux_loan_aux(&l, &cap);
+  CHECK(aux != NULL && cap == 40);
+  memcpy(aux, "header", 6);
+  CHECK(flux_loan_aux(&l, &cap) == aux);
+  flux_loan_set_aux_len(&l, 6);
+  memcpy(flux_loan_data(&l, &cap), "px", 2);
+  CHECK(flux_loan_commit_len(&l, 2) == FLUX_PUBLISHED_OK);
+
+  flux_view v = {0};
+  size_t len = 0;
+  CHECK(flux_view_aux(&v, &len) == NULL);
+  CHECK(flux_channel_take(s, &v));
+  const uint8_t * got = flux_view_aux(&v, &len);
+  CHECK(len == 6 && memcmp(got, "header", 6) == 0);
+  CHECK(flux_view_meta(&v)->aux_len == 6);
+  CHECK(memcmp(flux_view_data(&v, &len), "px", 2) == 0 && len == 2);
+  flux_view_release(&v);
+
+  CHECK(flux_channel_loan(p, &l));
+  flux_loan_set_aux_len(&l, 41);
+  CHECK(flux_loan_commit(&l) == FLUX_PUBLISHED_TOO_LARGE);
+  CHECK(flux_channel_publish(p, (const uint8_t *)"q", 1) == FLUX_PUBLISHED_OK);
+  CHECK(flux_channel_take(s, &v));
+  flux_view_aux(&v, &len);
+  CHECK(len == 0);
+  flux_view_release(&v);
   flux_channel_free(s);
   flux_channel_free(p);
   shm_unlink(name);
@@ -137,7 +189,7 @@ static void take_blocking_wakes_on_the_publish(void)
   flux_channel *p = NULL, *s = NULL;
   CHECK(
     flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
+      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
   CHECK(flux_channel_open(name, 0, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_OK);
   enum { kRounds = 9 };
   uint64_t lat[kRounds];
@@ -238,7 +290,7 @@ static void a_watch_sees_the_publisher_come_up(void)
   flux_channel * p = NULL;
   CHECK(
     flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
+      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
   CHECK(flux_watch_wait(w, 0) && flux_watch_epoch(w) != 0);
   CHECK(flux_channel_open_watched(w, 0, q, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_OK);
   CHECK(flux_channel_attach_status(s) == FLUX_OK);
@@ -252,6 +304,7 @@ int main(void)
   heap_views_and_loans();
   failures_say_why();
   shm_publisher_and_subscriber();
+  a_loan_carries_aux_bytes();
   a_second_thread_is_refused();
   take_blocking_wakes_on_the_publish();
   a_failure_during_thread_exit_returns_its_status();

@@ -224,6 +224,7 @@ fn a_sticky_error_wedges_every_gpu_channel_at_once() {
         64,
         4,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         NO_SCHEMA,
         MemoryPolicy::default(),
         stream.clone(),

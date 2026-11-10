@@ -47,6 +47,7 @@ fn publisher(t: &Topic, slots: u32) -> Channel {
         64,
         slots,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         NO_SCHEMA,
         MemoryPolicy::default(),
     )
@@ -104,6 +105,7 @@ fn second_publisher_is_refused() {
         64,
         2,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         NO_SCHEMA,
         MemoryPolicy::default(),
     );
@@ -336,7 +338,7 @@ fn a_refused_re_attach_is_reported_until_the_publisher_restarts() {
     let mut s = subscriber(&t);
     assert!(s.take().is_none());
     drop(p);
-    let one = || Channel::create(&t.0, 64, 2, 1, NO_SCHEMA, MemoryPolicy::default()).unwrap();
+    let one = || Channel::create(&t.0, 64, 2, 1, 0, NO_SCHEMA, MemoryPolicy::default()).unwrap();
     let p = one();
     let other = hold_number(&t, 0);
     let gen0 = s.attach_generation();
@@ -502,6 +504,7 @@ fn child_runs_short_of_fds() {
                     64,
                     2,
                     DEFAULT_MAX_SUBSCRIBERS,
+                    0,
                     NO_SCHEMA,
                     MemoryPolicy::default(),
                 )
@@ -638,6 +641,7 @@ fn squatted_segment_names_do_not_stop_a_publisher() {
         64,
         2,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         NO_SCHEMA,
         MemoryPolicy::default(),
     );
@@ -773,6 +777,7 @@ fn forked_child_does_not_keep_the_publisher_alive() {
         64,
         2,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         NO_SCHEMA,
         MemoryPolicy::default(),
     );
@@ -924,6 +929,7 @@ fn a_signal_while_the_segment_is_reserved_does_not_fail_the_publisher() {
         1 << 20,
         64,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         NO_SCHEMA,
         MemoryPolicy::default(),
     );

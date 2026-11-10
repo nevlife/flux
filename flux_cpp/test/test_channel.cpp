@@ -125,6 +125,39 @@ TEST(Channel, ASubscriberSeesThePublisherAcrossShm)
   EXPECT_EQ(sub.slot_size(), 64u);
 }
 
+TEST(Channel, ALoansAuxBytesArriveWithItsFrame)
+{
+  const std::string name = unique_name("aux");
+  auto pub = flux::detail::Channel::create(
+    name, 64, 2, flux::kNoSchema, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS, {}, 32);
+  auto sub = flux::detail::Channel::open(name);
+  EXPECT_EQ(sub.aux_size(), 32u);
+  flux::WriteSlot w = pub.loan();
+  ASSERT_TRUE(w);
+  ASSERT_EQ(w.aux().size(), 32u);
+  std::memcpy(w.aux().data(), "header", 6);
+  w.set_aux_len(6);
+  std::memcpy(w.data(), "px", 2);
+  ASSERT_EQ(w.commit(2), flux::Published::Ok);
+  flux::FrameView v = sub.take_blocking(1'000'000'000);
+  ASSERT_TRUE(v);
+  EXPECT_EQ(text(v), "px");
+  const auto aux = v.aux();
+  EXPECT_EQ(std::string(aux.begin(), aux.end()), "header");
+  v.release();
+  EXPECT_TRUE(v.aux().empty());
+
+  w = pub.loan();
+  w.set_aux_len(33);
+  EXPECT_EQ(w.commit(), flux::Published::TooLarge);
+  EXPECT_TRUE(w.aux().empty());
+  auto big = [](const std::string & n) {
+    flux::detail::Channel::create(
+      n, 64, 2, flux::kNoSchema, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS, {}, FLUX_MAX_AUX_SIZE + 1);
+  };
+  EXPECT_EQ(status_of(big, unique_name("auxbad")), FLUX_INVALID_ARGUMENT);
+}
+
 TEST(Channel, FailuresCarryTheirStatus)
 {
   const std::string name = unique_name("status");

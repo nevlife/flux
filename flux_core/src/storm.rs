@@ -125,8 +125,16 @@ mod tests {
         let name = signpost_name(&format!("/s{}_storm", std::process::id()), NO_SCHEMA).unwrap();
         let mem = MemoryPolicy::default();
         let before = caught_so_far();
-        let mut publisher =
-            Channel::create(&name, 1 << 20, 64, DEFAULT_MAX_SUBSCRIBERS, NO_SCHEMA, mem).unwrap();
+        let mut publisher = Channel::create(
+            &name,
+            1 << 20,
+            64,
+            DEFAULT_MAX_SUBSCRIBERS,
+            0,
+            NO_SCHEMA,
+            mem,
+        )
+        .unwrap();
         assert!(caught_so_far() > before, "the create saw no signal");
         let sub = Channel::open(&name, NO_SCHEMA, mem).unwrap();
         lasts_its_timeout("Channel::wait", || {

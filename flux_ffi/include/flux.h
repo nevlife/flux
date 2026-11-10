@@ -13,7 +13,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define FLUX_ABI_VERSION 3
+#define FLUX_ABI_VERSION 4
 
 #define FLUX_MAX_DIMS 8
 
@@ -34,6 +34,8 @@
 #define FLUX_DEFAULT_SLOT_COUNT 16
 
 #define FLUX_MAX_SUBSCRIBERS 4096
+
+#define FLUX_MAX_AUX_SIZE (32 * 1024)
 
 #define FLUX_NO_STAMP -1
 
@@ -185,7 +187,7 @@ typedef struct flux_view {
 typedef struct flux_frame_meta {
   uint8_t ndim;
   uint8_t dtype;
-  uint8_t reserved0[2];
+  uint16_t aux_len;
   uint32_t itemsize;
   uint64_t nbytes;
   uint64_t shape[FLUX_MAX_DIMS];
@@ -280,11 +282,12 @@ uint32_t flux_abi_version(void);
 
 flux_status flux_channel_new(uint32_t slot_size, uint32_t slot_count, struct flux_channel **out);
 
-// The publisher of signpost `name`, for up to `max_subscribers` subscribing processes.
+// The publisher of signpost `name` for `max_subscribers` processes, `aux_size` host bytes a slot.
 flux_status flux_channel_create(const char *name,
                                 uint32_t slot_size,
                                 uint32_t slot_count,
                                 uint32_t max_subscribers,
+                                uint32_t aux_size,
                                 uint64_t fingerprint,
                                 struct flux_memory_policy mem,
                                 const struct flux_stream *stream,
@@ -343,6 +346,11 @@ bool flux_channel_loan_typed(struct flux_channel *ch,
 
 uint8_t *flux_loan_data(struct flux_loan *l, size_t *capacity);
 
+uint8_t *flux_loan_aux(struct flux_loan *l, size_t *capacity);
+
+// Bytes of the aux region the frame carries; past its capacity, the commit is `TOO_LARGE`.
+void flux_loan_set_aux_len(struct flux_loan *l, size_t len);
+
 void *flux_loan_stream(const struct flux_loan *l);
 
 // 0 when the channel declared no stream, as for `flux_view_device_ptr`.
@@ -364,6 +372,8 @@ bool flux_channel_take(struct flux_channel *ch, struct flux_view *out);
 bool flux_channel_take_blocking(struct flux_channel *ch, int64_t timeout_ns, struct flux_view *out);
 
 const uint8_t *flux_view_data(const struct flux_view *v, size_t *len);
+
+const uint8_t *flux_view_aux(const struct flux_view *v, size_t *len);
 
 void *flux_view_stream(const struct flux_view *v);
 
@@ -439,6 +449,8 @@ uint32_t flux_channel_wake_seq(const struct flux_channel *ch);
 uint32_t flux_channel_slot_size(const struct flux_channel *ch);
 
 uint32_t flux_channel_slot_count(const struct flux_channel *ch);
+
+uint32_t flux_channel_aux_size(const struct flux_channel *ch);
 
 bool flux_channel_payload_readonly(const struct flux_channel *ch);
 

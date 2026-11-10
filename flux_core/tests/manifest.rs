@@ -107,6 +107,7 @@ fn an_unannounced_channel_lists_its_flattened_key() {
         64,
         2,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         0xABCD,
         MemoryPolicy::default(),
     )
@@ -170,6 +171,7 @@ fn stats_follow_the_publisher() {
         64,
         4,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         0xABCD,
         MemoryPolicy::default(),
     )

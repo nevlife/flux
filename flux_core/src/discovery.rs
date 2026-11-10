@@ -267,10 +267,11 @@ pub fn open_publisher_segment(
     slot_size: u32,
     slot_count: u32,
     max_subscribers: u32,
+    aux_size: u32,
     fingerprint: u64,
     device: Option<i32>,
 ) -> Result<Segment> {
-    let layout = checked_layout(slot_size, slot_count, max_subscribers)?;
+    let layout = checked_layout(slot_size, slot_count, max_subscribers, aux_size)?;
     let device = match device {
         Some(ordinal) => Some((
             ordinal,
@@ -501,8 +502,8 @@ pub(crate) fn map_validate(
     };
     // Bounded before any offset is derived from them. Within these bounds no offset wraps
     // (layout.rs asserts the widest layout).
-    if !layout_config_ok(h.slot_size, h.slot_count, h.max_subscribers) {
-        return reject("slot_size/slot_count/max_subscribers out of range");
+    if !layout_config_ok(h.slot_size, h.slot_count, h.max_subscribers, h.aux_size) {
+        return reject("slot_size/slot_count/max_subscribers/aux_size out of range");
     }
     let layout = h.layout();
     // A device-backed segment keeps only the control plane in shm.
@@ -773,11 +774,12 @@ mod tests {
         let keep = SignpostMap::open(&name).unwrap();
         keep.sp().epoch.store(u32::MAX - 1, Ordering::Release);
         drop(
-            open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, NO_SCHEMA, None).unwrap(),
+            open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None)
+                .unwrap(),
         );
         assert_eq!(keep.epoch(), u32::MAX);
-        let _p =
-            open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, NO_SCHEMA, None).unwrap();
+        let _p = open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None)
+            .unwrap();
         assert_eq!(read_channel_stats(&name).epoch, 1);
     }
 

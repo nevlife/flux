@@ -90,30 +90,32 @@ private:
 Publisher::Publisher(
   const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
   std::uint32_t slot_size, std::uint32_t slot_count, MemoryPolicy mem,
-  std::uint32_t max_subscribers)
-: Publisher(node, topic, fingerprint, slot_size, slot_count, gpu::Stream{}, mem, max_subscribers)
+  std::uint32_t max_subscribers, std::uint32_t aux_size)
+: Publisher(
+    node, topic, fingerprint, slot_size, slot_count, gpu::Stream{}, mem, max_subscribers, aux_size)
 {
 }
 
 Publisher::Publisher(
   const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
   std::uint32_t slot_size, std::uint32_t slot_count, Device device, MemoryPolicy mem,
-  std::uint32_t max_subscribers)
+  std::uint32_t max_subscribers, std::uint32_t aux_size)
 : Publisher(
-    node, topic, fingerprint, slot_size, slot_count, gpu::stream_for(device), mem, max_subscribers)
+    node, topic, fingerprint, slot_size, slot_count, gpu::stream_for(device), mem, max_subscribers,
+    aux_size)
 {
 }
 
 Publisher::Publisher(
   const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
   std::uint32_t slot_size, std::uint32_t slot_count, const gpu::Stream & stream, MemoryPolicy mem,
-  std::uint32_t max_subscribers)
+  std::uint32_t max_subscribers, std::uint32_t aux_size)
 : node_(node),
   fingerprint_(fingerprint),
   topic_(detail::resolve(node, topic)),
   signpost_(detail::signpost_name(topic_, fingerprint)),
   ch_(detail::Channel::create(
-    signpost_, slot_size, slot_count, fingerprint, mem, max_subscribers, stream)),
+    signpost_, slot_size, slot_count, fingerprint, mem, max_subscribers, stream, aux_size)),
   announced_(detail::announce(node, signpost_, topic_, true))
 {
   detail::trace_endpoint(this, node, topic_, signpost_, fingerprint, true);

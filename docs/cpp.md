@@ -50,7 +50,7 @@ if (flux::faulted(p)) {
 ```cpp
 flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
                 slot_size = 8 MiB, slot_count = 16, MemoryPolicy mem = {},
-                max_subscribers = 16);
+                max_subscribers = 16, aux_size = 0);
 ```
 
 - 기본값은 `flux.h`의 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`다. Python과 같은 값이다.
@@ -66,7 +66,7 @@ flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
 | --- | --- |
 | `Ok` | 발행했다 |
 | `Backpressure` | 모든 슬롯을 구독자가 쥐고 있어 이 프레임을 버렸다 |
-| `TooLarge` | 슬롯보다 크거나 8차원을 넘는다. 1차원이 아닌 loan의 `commit(nbytes)`, loan보다 큰 `nbytes`도 이 값이다 |
+| `TooLarge` | 슬롯보다 크거나 8차원을 넘거나, aux 길이가 `aux_size`보다 크다. 1차원이 아닌 loan의 `commit(nbytes)`, loan보다 큰 `nbytes`도 이 값이다 |
 | `NotPublisher` | 발행할 수 없는 채널이다 |
 | `InvalidArgument` | 알 수 없는 dtype이거나 이미 끝난 loan의 commit이다 |
 | `InUse` | 다른 스레드가 같은 발행자를 쓰는 중이다 |
@@ -95,6 +95,7 @@ if (slot) {
 - commit하지 않은 `WriteSlot`이 사라지거나 `abort()`를 부르면 프레임은 발행되지 않는다. 다만 그 슬롯에 있던 이전 프레임은 이미 덮인 뒤다.
 - loan을 쥔 동안 그 슬롯은 링에서 빠진다. 오래 쥐면 `Backpressure`가 늘어난다.
 - `WriteSlot`과 `FrameView`는 이동만 할 수 있고 복사할 수 없다.
+- 발행자를 `aux_size`와 함께 만들면 `slot.aux()`가 슬롯의 aux 영역(`aux_size` 바이트)이고, `slot.set_aux_len(n)`이 프레임이 쓴 길이다. 받는 쪽은 `FrameView::aux()`로 그 길이만큼 읽는다. `aux_size`를 넘는 길이는 commit이 `TooLarge`로 거절한다.
 
 ## 구독과 executor
 

@@ -32,7 +32,8 @@ use crate::gpu::{
     Stream, ledger,
 };
 use crate::layout::{
-    DType, FrameMeta, MAX_DIMS, MIN_SLOT_COUNT, TICKET_CLAIMED, TICKET_EMPTY, reader_lock_byte,
+    DType, FrameMeta, MAX_DIMS, MIN_SLOT_COUNT, SegmentLayout, TICKET_CLAIMED, TICKET_EMPTY,
+    reader_lock_byte,
 };
 use crate::qos::{MemoryPolicy, QoS};
 use crate::reader::{self, ReaderLease};
@@ -822,6 +823,14 @@ impl FrameView {
         &self.meta
     }
 
+    /// The frame's aux bytes, in host memory whatever the payload is.
+    pub fn aux(&self) -> &[u8] {
+        let len = usize::from(self.meta.aux_len);
+        // SAFETY: the borrow keeps the publisher off this slot; take checked aux_len against
+        // aux_size, which is the region's length.
+        unsafe { std::slice::from_raw_parts(self.sh.seg.aux(self.slot), len) }
+    }
+
     pub fn ticket(&self) -> u64 {
         self.ticket
     }
@@ -912,6 +921,24 @@ impl WriteSlot {
         self.sh.seg.layout().slot_size as usize
     }
 
+    /// The slot's whole aux region, `aux_size` bytes; `set_aux_len` says how many the frame uses.
+    pub fn aux_mut(&mut self) -> &mut [u8] {
+        // SAFETY: the claim makes this the only access to the slot's aux region.
+        unsafe { &mut *self.aux_region() }
+    }
+
+    /// `aux_mut` as a raw slice, for a binding that hands it out more than once: no reference
+    /// is made, so a later call leaves an earlier pointer valid.
+    pub fn aux_region(&self) -> *mut [u8] {
+        let len = self.sh.seg.layout().aux_size as usize;
+        std::ptr::slice_from_raw_parts_mut(self.sh.seg.aux(self.slot), len)
+    }
+
+    /// A length past `aux_size` makes the commit return `TooLarge`.
+    pub fn set_aux_len(&mut self, n: usize) {
+        self.meta.aux_len = u16::try_from(n).unwrap_or(u16::MAX);
+    }
+
     /// For memory that outlives the commit, such as an array a binding handed out.
     pub fn mapped(&self) -> Mapped {
         self.sh.seg.mapped()
@@ -941,7 +968,7 @@ impl WriteSlot {
         if self.sh.inherited() {
             return (Published::NotPublisher, trace::LOAN_NOT_PUBLISHER);
         }
-        if !fits(&self.meta, self.sh.seg.layout().slot_size) {
+        if !fits(&self.meta, self.sh.seg.layout()) {
             self.sh.abort(self.slot);
             return (Published::TooLarge, trace::LOAN_TOO_LARGE);
         }
@@ -1015,7 +1042,7 @@ fn fence_failed(failed: i32, wedged: i32) -> (Published, i32) {
 }
 
 /// Also run on every take, against a header any process could have written.
-fn fits(meta: &FrameMeta, slot_size: u32) -> bool {
+fn fits(meta: &FrameMeta, layout: &SegmentLayout) -> bool {
     let Some(dt) = meta.dtype() else {
         return false;
     };
@@ -1026,7 +1053,9 @@ fn fits(meta: &FrameMeta, slot_size: u32) -> bool {
         .shape()
         .iter()
         .try_fold(u64::from(meta.itemsize), |n, &d| n.checked_mul(d));
-    n == Some(meta.nbytes) && meta.nbytes <= u64::from(slot_size)
+    n == Some(meta.nbytes)
+        && meta.nbytes <= u64::from(layout.slot_size)
+        && u32::from(meta.aux_len) <= layout.aux_size
 }
 
 /// itemsize follows from dtype and ndim from the shape, so they cannot contradict each other. An
@@ -1137,7 +1166,7 @@ impl Channel {
     pub fn new(slot_size: u32, slot_count: u32) -> Result<Channel> {
         check_slot_count(slot_count)?;
         Ok(Channel::from_segment(
-            Segment::create_heap(slot_size, slot_count, 0)?,
+            Segment::create_heap(slot_size, slot_count, 0, 0)?,
             MemoryPolicy::default(),
             trace::NO_STAMP,
         ))
@@ -1145,12 +1174,14 @@ impl Channel {
 
     /// `name` is a signpost name (`signpost_name`). Fails with `PublisherExists` if another
     /// publisher is live on it. `max_subscribers` counts subscribing processes, not
-    /// subscriptions; each one adds a counter that every claim and publish reads.
+    /// subscriptions; each one adds a counter that every claim and publish reads. Each slot
+    /// carries `aux_size` bytes of host memory beside its payload, at most `MAX_AUX_SIZE`.
     pub fn create(
         name: &str,
         slot_size: u32,
         slot_count: u32,
         max_subscribers: u32,
+        aux_size: u32,
         fingerprint: u64,
         mem: MemoryPolicy,
     ) -> Result<Channel> {
@@ -1159,6 +1190,7 @@ impl Channel {
             slot_size,
             slot_count,
             max_subscribers,
+            aux_size,
             fingerprint,
             mem,
             Stream::default(),
@@ -1175,6 +1207,7 @@ impl Channel {
         slot_size: u32,
         slot_count: u32,
         max_subscribers: u32,
+        aux_size: u32,
         fingerprint: u64,
         mem: MemoryPolicy,
         stream: Stream,
@@ -1192,6 +1225,7 @@ impl Channel {
             slot_size,
             slot_count,
             max_subscribers,
+            aux_size,
             fingerprint,
             device,
         )?;
@@ -1338,7 +1372,7 @@ impl Channel {
     fn publish_meta(&mut self, data: &[u8], meta: FrameMeta) -> Published {
         let refused = if !self.can_publish() {
             Some((Published::NotPublisher, trace::CLAIM_NOT_PUBLISHER))
-        } else if !fits(&meta, self.slot_size()) || data.len() as u64 != meta.nbytes {
+        } else if !fits(&meta, self.sh.seg.layout()) || data.len() as u64 != meta.nbytes {
             Some((Published::TooLarge, trace::CLAIM_TOO_LARGE))
         } else if !matches!(self.sh.fence(Seam::Commit), Fenced::Done) {
             // The stream is the caller's statement of where frames come from, so its work is
@@ -1495,7 +1529,7 @@ impl Channel {
                 self.lost = self.lost.saturating_add(t - self.cursor - 1);
             }
             self.cursor = t;
-            if !fits(&meta, self.slot_size()) {
+            if !fits(&meta, self.sh.seg.layout()) {
                 counter.fetch_sub(1, Ordering::Release);
                 self.refused.bad_frame += 1;
                 event!(flux_trace_refused(
@@ -1843,6 +1877,9 @@ impl Channel {
     pub fn slot_count(&self) -> u32 {
         self.sh.seg.layout().slot_count
     }
+    pub fn aux_size(&self) -> u32 {
+        self.sh.seg.layout().aux_size
+    }
     pub fn payload_readonly(&self) -> bool {
         self.sh.seg.payload_readonly()
     }
@@ -2028,7 +2065,7 @@ mod race {
     #[test]
     fn a_held_view_is_never_rewritten() {
         let publisher_side = Arc::new(ChannelShared::new(
-            Arc::new(Segment::create_heap(u32::try_from(SLOT).unwrap(), SLOTS, 0).unwrap()),
+            Arc::new(Segment::create_heap(u32::try_from(SLOT).unwrap(), SLOTS, 0, 0).unwrap()),
             crate::trace::NO_STAMP,
         ));
         let subs = [1, 2].map(|n| subscriber(&publisher_side.seg, n));
@@ -2074,7 +2111,7 @@ mod race {
     #[test]
     fn a_claim_and_a_borrow_of_one_slot_exclude_each_other() {
         let publisher_side = Arc::new(ChannelShared::new(
-            Arc::new(Segment::create_heap(u32::try_from(SLOT).unwrap(), 1, 0).unwrap()),
+            Arc::new(Segment::create_heap(u32::try_from(SLOT).unwrap(), 1, 0, 0).unwrap()),
             crate::trace::NO_STAMP,
         ));
         let sh = subscriber(&publisher_side.seg, 1);
@@ -2107,7 +2144,7 @@ mod race {
 
     fn heap() -> Arc<ChannelShared> {
         Arc::new(ChannelShared::new(
-            Arc::new(Segment::create_heap(u32::try_from(SLOT).unwrap(), SLOTS, 0).unwrap()),
+            Arc::new(Segment::create_heap(u32::try_from(SLOT).unwrap(), SLOTS, 0, 0).unwrap()),
             crate::trace::NO_STAMP,
         ))
     }
@@ -2212,8 +2249,12 @@ mod header {
     use crate::segment::Segment;
 
     fn pair() -> (Arc<ChannelShared>, Channel, Channel) {
+        pair_with_aux(0)
+    }
+
+    fn pair_with_aux(aux_size: u32) -> (Arc<ChannelShared>, Channel, Channel) {
         let sh = Arc::new(ChannelShared::new(
-            Arc::new(Segment::create_heap(64, 2, 0).unwrap()),
+            Arc::new(Segment::create_heap(64, 2, aux_size, 0).unwrap()),
             crate::trace::NO_STAMP,
         ));
         let p = Channel::with_shared(Arc::clone(&sh), MemoryPolicy::default());
@@ -2240,6 +2281,7 @@ mod header {
             slot_size: 64,
             slot_count: 2,
             max_subscribers: 1,
+            aux_size: 0,
         };
         // SAFETY: a valid C string and no other arguments.
         let raw = unsafe { libc::memfd_create(c"flux-kind".as_ptr(), libc::MFD_CLOEXEC) };
@@ -2338,7 +2380,7 @@ mod header {
     #[test]
     fn a_take_out_of_retries_counts_contended() {
         let sh = Arc::new(ChannelShared::new(
-            Arc::new(Segment::create_heap(8, 64, 0).unwrap()),
+            Arc::new(Segment::create_heap(8, 64, 0, 0).unwrap()),
             crate::trace::NO_STAMP,
         ));
         let mut p = Channel::with_shared(Arc::clone(&sh), MemoryPolicy::default());
@@ -2368,6 +2410,61 @@ mod header {
     }
 
     #[test]
+    fn a_loans_aux_bytes_arrive_with_its_frame() {
+        let (_sh, mut p, mut s) = pair_with_aux(100);
+        assert_eq!(p.aux_size(), 100);
+        let mut w = p.loan().unwrap();
+        assert_eq!(w.aux_mut().len(), 100);
+        w.aux_mut()[..5].copy_from_slice(b"hdr01");
+        w.set_aux_len(5);
+        w.data_mut()[..3].copy_from_slice(&[9; 3]);
+        assert_eq!(w.commit_len(3), Published::Ok);
+        let v = s.take().unwrap();
+        assert_eq!(
+            (v.data(), v.aux(), v.meta().aux_len),
+            (&[9u8; 3][..], &b"hdr01"[..], 5)
+        );
+        drop(v);
+        // A copying publish and a fresh loan carry none.
+        assert_eq!(p.publish(&[1; 4]), Published::Ok);
+        assert!(s.take().unwrap().aux().is_empty());
+        let w = p.loan().unwrap();
+        assert_eq!(w.commit_len(1), Published::Ok);
+        assert!(s.take().unwrap().aux().is_empty());
+    }
+
+    #[test]
+    fn an_aux_length_past_the_region_is_refused_at_commit() {
+        let (_sh, mut p, mut s) = pair_with_aux(16);
+        for n in [17, usize::from(u16::MAX) + 1, usize::MAX] {
+            let mut w = p.loan().unwrap();
+            w.set_aux_len(n);
+            assert_eq!(w.commit_len(1), Published::TooLarge, "{n}");
+        }
+        let mut w = p.loan().unwrap();
+        w.set_aux_len(16);
+        assert_eq!(w.commit_len(1), Published::Ok);
+        assert_eq!(s.take().unwrap().aux().len(), 16);
+        let (_sh, mut p, _s) = pair_with_aux(0);
+        let mut w = p.loan().unwrap();
+        assert!(w.aux_mut().is_empty());
+        w.set_aux_len(1);
+        assert_eq!(w.commit(), Published::TooLarge);
+    }
+
+    #[test]
+    fn an_aux_length_rewritten_past_the_region_is_refused() {
+        let (sh, mut p, mut s) = pair_with_aux(16);
+        assert_eq!(p.publish(&[0; 8]), Published::Ok);
+        for slot in 0..2 {
+            // SAFETY: as scribble.
+            unsafe { &mut *sh.seg.slot(slot).meta.get() }.aux_len = 17;
+        }
+        assert!(s.take().is_none());
+        assert_eq!(s.refused().bad_frame, 1);
+    }
+
+    #[test]
     fn a_loan_commits_on_another_thread() {
         let (_sh, mut p, mut s) = pair();
         let mut w = p.loan().unwrap();
@@ -2380,7 +2477,7 @@ mod header {
     #[test]
     fn commit_and_take_carry_the_frames_stamp() {
         let sh = Arc::new(ChannelShared::new(
-            Arc::new(Segment::create_heap(64, 2, 0).unwrap()),
+            Arc::new(Segment::create_heap(64, 2, 0, 0).unwrap()),
             4,
         ));
         let mut p = Channel::with_shared(Arc::clone(&sh), MemoryPolicy::default());
@@ -2436,7 +2533,7 @@ mod release_twice {
     use crate::segment::Segment;
 
     fn pair(slots: u32) -> (Channel, Channel) {
-        let seg = Segment::create_heap(8, slots, 0).unwrap();
+        let seg = Segment::create_heap(8, slots, 0, 0).unwrap();
         let sub = ChannelShared::new(Arc::new(seg.alias()), crate::trace::NO_STAMP);
         let _ = sub.lease.set(Arc::new(ReaderLease::unlocked(1)));
         sub.seg.raise_readers(1);

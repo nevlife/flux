@@ -23,6 +23,7 @@
 * 발행자가 같은 이름의 ROS 2 토픽도 낼 수 있다(C++ `mirror_to_ros()`, Python `mirror_to_ros=True`). ROS 2 구독자가 있는 동안만 변환한다. `flux_bridge`는 다른 ROS 2 발행자가 있는 토픽을 relay하지 않고, `echo_flux`·`hz_flux`는 mirror만 있어도 동작한다
 * 발행자가 지금 구독하는 프로세스 수를 센다(C++ `subscriber_count()`, Python `subscriber_count`, C `flux_channel_subscriber_count`). 죽은 구독 프로세스는 세지 않는다
 * `ros2/flux_wrapper`: flux가 있든 없든 빌드되는 발행·구독 API. 빌드할 때와 실행할 때 `ENABLE_FLUX=1`이면 flux로, 아니면 ROS 2로 보낸다. `sensor_msgs/Image`와 `PointCloud2`를 다룬다
+* 슬롯마다 프레임과 함께 commit되는 호스트 메모리(aux)를 둘 수 있다. 장치 메모리 채널에서도 호스트 메모리라서, GPU 프레임에 stamp 같은 헤더를 같은 채널로 붙인다
 
 ### 버그 수정
 
@@ -65,9 +66,23 @@
 * `flux::PartitionedExecutor::remove_node`, `flux::PartitionedExecutor::on_thread_start(ThreadStart)`
 * `flux::ComponentManager`, `flux::run_component_container`
 * `flux::Publisher::mirror_to_ros`, Python `Publisher(mirror_to_ros=...)`
+* aux: C++ `Publisher`의 `aux_size` 인자와 `aux_size()`, `WriteSlot::aux`, `WriteSlot::set_aux_len`, `FrameView::aux`. Python `Publisher(aux_size=...)`, `Loan.aux`, `Loan.aux_len`, `flux.aux`. C `flux_loan_aux`, `flux_loan_set_aux_len`, `flux_view_aux`, `flux_channel_aux_size`, `FLUX_MAX_AUX_SIZE`
 
 ### 호환이 깨지는 변경
 
 <!--
     사용자가 고쳐야 하는 것마다 번호를 붙이고, 고치기 전과 후를 코드로 보인다.
 -->
+
+1. 공유메모리 배치 버전이 6에서 7로, C ABI 버전이 3에서 4로 올랐다. 슬롯에 aux 영역이 생겼기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
+
+2. C `flux_channel_create`에 `max_subscribers` 다음 인자로 `aux_size`가 생겼다. aux가 필요 없으면 0을 준다. `flux_frame_meta.reserved0[2]`는 `uint16_t aux_len`이 되었다.
+
+   ```c
+   // 전
+   flux_channel_create(name, slot_size, slot_count, max_subscribers, fingerprint, mem, stream,
+                       stamp_offset, &ch);
+   // 후
+   flux_channel_create(name, slot_size, slot_count, max_subscribers, 0, fingerprint, mem, stream,
+                       stamp_offset, &ch);
+   ```

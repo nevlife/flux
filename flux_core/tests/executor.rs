@@ -103,6 +103,7 @@ impl Feed {
             64,
             SLOTS,
             DEFAULT_MAX_SUBSCRIBERS,
+            0,
             NO_SCHEMA,
             MemoryPolicy::default(),
         )
@@ -135,6 +136,7 @@ impl Feed {
                 64,
                 SLOTS,
                 DEFAULT_MAX_SUBSCRIBERS,
+                0,
                 NO_SCHEMA,
                 MemoryPolicy::default(),
             )
@@ -536,6 +538,7 @@ fn a_publisher_coming_up_wakes_a_source_waiting_for_it() {
         64,
         SLOTS,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         NO_SCHEMA,
         MemoryPolicy::default(),
     )
@@ -911,6 +914,7 @@ fn a_number_taken_while_bound_leaves_the_gate_balanced() {
         64,
         SLOTS,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         NO_SCHEMA,
         MemoryPolicy::default(),
     )

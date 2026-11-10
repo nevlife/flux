@@ -74,7 +74,7 @@ pub struct flux_fence_wait {
 pub struct flux_frame_meta {
     pub ndim: u8,
     pub dtype: u8,
-    pub reserved0: [u8; 2],
+    pub aux_len: u16,
     pub itemsize: u32,
     pub nbytes: u64,
     pub shape: [u64; crate::FLUX_MAX_DIMS],
@@ -158,6 +158,7 @@ const _: () = {
     assert!(align_of::<LoanCell>() <= align_of::<flux_loan>());
     assert!(size_of::<flux_frame_meta>() == size_of::<FrameMeta>());
     assert!(align_of::<flux_frame_meta>() == align_of::<FrameMeta>());
+    assert!(offset_of!(flux_frame_meta, aux_len) == offset_of!(FrameMeta, aux_len));
     assert!(offset_of!(flux_frame_meta, itemsize) == offset_of!(FrameMeta, itemsize));
     assert!(offset_of!(flux_frame_meta, nbytes) == offset_of!(FrameMeta, nbytes));
     assert!(offset_of!(flux_frame_meta, shape) == offset_of!(FrameMeta, shape));
@@ -293,7 +294,7 @@ pub unsafe extern "C" fn flux_channel_new(
     }))
 }
 
-/// The publisher of signpost `name`, for up to `max_subscribers` subscribing processes.
+/// The publisher of signpost `name` for `max_subscribers` processes, `aux_size` host bytes a slot.
 // `stamp_offset` is where the type's `header.stamp` sits in a frame, for trace events; -1 without
 // one (`FLUX_NO_STAMP`).
 #[unsafe(no_mangle)]
@@ -302,6 +303,7 @@ pub unsafe extern "C" fn flux_channel_create(
     slot_size: u32,
     slot_count: u32,
     max_subscribers: u32,
+    aux_size: u32,
     fingerprint: u64,
     mem: flux_memory_policy,
     stream: *const flux_stream,
@@ -317,6 +319,7 @@ pub unsafe extern "C" fn flux_channel_create(
             slot_size,
             slot_count,
             max_subscribers,
+            aux_size,
             fingerprint,
             mem.into(),
             stream,
@@ -542,6 +545,27 @@ pub unsafe extern "C" fn flux_loan_data(l: *mut flux_loan, capacity: *mut usize)
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_loan_aux(l: *mut flux_loan, capacity: *mut usize) -> *mut u8 {
+    // SAFETY: valid loan storage.
+    let Some(w) = unsafe { loan(l) }.slot.get() else {
+        return std::ptr::null_mut();
+    };
+    let aux = w.aux_region();
+    // SAFETY: capacity is valid for a write.
+    unsafe { capacity.write(aux.len()) };
+    aux.cast::<u8>()
+}
+
+/// Bytes of the aux region the frame carries; past its capacity, the commit is `TOO_LARGE`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_loan_set_aux_len(l: *mut flux_loan, len: usize) {
+    // SAFETY: valid loan storage.
+    if let Some(w) = unsafe { loan(l) }.slot.get_mut() {
+        w.set_aux_len(len);
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_loan_stream(l: *const flux_loan) -> *mut c_void {
     // SAFETY: flux_loan is sized and aligned for LoanCell (asserted above).
     unsafe { &*l.cast::<LoanCell>() }
@@ -629,6 +653,18 @@ pub unsafe extern "C" fn flux_view_data(v: *const flux_view, len: *mut usize) ->
     // SAFETY: len is valid for a write.
     unsafe { len.write(fv.data().len()) };
     fv.data().as_ptr()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_view_aux(v: *const flux_view, len: *mut usize) -> *const u8 {
+    // SAFETY: valid view storage.
+    let Some(fv) = (unsafe { view_ref(v) }).get() else {
+        return std::ptr::null();
+    };
+    let aux = fv.aux();
+    // SAFETY: len is valid for a write.
+    unsafe { len.write(aux.len()) };
+    aux.as_ptr()
 }
 
 #[unsafe(no_mangle)]
@@ -885,6 +921,12 @@ pub unsafe extern "C" fn flux_channel_slot_size(ch: *const flux_channel) -> u32 
 pub unsafe extern "C" fn flux_channel_slot_count(ch: *const flux_channel) -> u32 {
     // SAFETY: valid handle.
     unsafe { chan_ref(ch) }.slot_count()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_channel_aux_size(ch: *const flux_channel) -> u32 {
+    // SAFETY: valid handle.
+    unsafe { chan_ref(ch) }.aux_size()
 }
 
 #[unsafe(no_mangle)]

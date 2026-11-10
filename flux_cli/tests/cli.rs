@@ -37,6 +37,7 @@ fn publisher(key: &str) -> (Channel, Unlink) {
         64,
         4,
         DEFAULT_MAX_SUBSCRIBERS,
+        0,
         FP,
         MemoryPolicy::default(),
     )

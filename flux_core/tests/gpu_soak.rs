@@ -88,6 +88,7 @@ fn create(signpost: &str, stream: &Stream) -> Channel {
             SLOT,
             SLOTS,
             DEFAULT_MAX_SUBSCRIBERS,
+            0,
             NO_SCHEMA,
             MemoryPolicy::default(),
             stream.clone(),

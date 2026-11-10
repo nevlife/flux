@@ -442,6 +442,7 @@ mod channel {
             1 << 16,
             4,
             DEFAULT_MAX_SUBSCRIBERS,
+            0,
             NO_SCHEMA,
             mem,
             stream,
@@ -561,6 +562,51 @@ mod channel {
         assert_eq!((v.device_ptr(), v.stream().declared()), (0, false));
         assert_eq!(v.data().len(), 4096);
         assert!(v.data().iter().all(|&b| b == 0x21));
+    }
+
+    /// The aux bytes stay in the segment's host memory while the payload is on the device.
+    #[test]
+    fn a_device_payloads_aux_reaches_both_kinds_of_subscriber() {
+        let Some((memset, copy)) = gpu() else { return };
+        let Some(_route) = discrete() else { return };
+        let name = topic("dev_aux");
+        let mut p = Channel::create_on(
+            &name,
+            1 << 16,
+            4,
+            DEFAULT_MAX_SUBSCRIBERS,
+            256,
+            NO_SCHEMA,
+            MemoryPolicy::default(),
+            Stream::create().unwrap(),
+            crate::trace::NO_STAMP,
+        )
+        .unwrap();
+        assert!(p.device_backed());
+        let mut cpu = subscriber(&name, Stream::default()).unwrap();
+        let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
+        let header = b"stamp frame_id rgb8 step";
+        let mut w = p.loan().unwrap();
+        assert!(w.data_mut().is_empty());
+        assert_eq!(w.aux_mut().len(), 256);
+        w.aux_mut()[..header.len()].copy_from_slice(header);
+        w.set_aux_len(header.len());
+        fill(memset, w.device_ptr(), 0x33, 4096, &w.stream());
+        assert_eq!(w.commit_len(4096), Published::Ok);
+
+        let v = dev.take().unwrap();
+        assert!(v.data().is_empty());
+        assert_eq!(v.aux(), header);
+        assert!(
+            read_back(copy, v.device_ptr(), 4096)
+                .iter()
+                .all(|&b| b == 0x33)
+        );
+        drop(v);
+
+        let v = cpu.take().unwrap();
+        assert_eq!(v.aux(), header);
+        assert!(v.data().iter().all(|&b| b == 0x33));
     }
 
     #[test]

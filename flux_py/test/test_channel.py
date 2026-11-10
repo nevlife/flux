@@ -99,6 +99,49 @@ def test_a_loan_publishes_only_on_commit_and_seals_its_arrays(node):
     np.testing.assert_array_equal(sub.take(), [1, 2, 3])
 
 
+def test_a_loans_aux_bytes_arrive_with_its_frame(node):
+    pub = flux.Publisher(node, topic("aux"), slot_size=64, slot_count=2, aux_size=32)
+    sub = flux.Subscription(node, topic("aux"), qos=flux.QoS(depth=2))
+    assert pub.aux_size == 32
+    loan = pub.loan((2,), "u1")
+    aux = loan.aux
+    assert aux.shape == (32,) and aux.dtype == np.uint8
+    aux[:6] = np.frombuffer(b"header", np.uint8)
+    loan.aux_len = 6
+    loan.array[:] = [1, 2]
+    assert loan.commit()
+    with pytest.raises(ValueError):
+        aux[0] = 1
+    got = sub.take()
+    np.testing.assert_array_equal(got, [1, 2])
+    head = flux.aux(got)
+    assert bytes(head) == b"header"
+    with pytest.raises(ValueError):
+        head[0] = 1
+    # The aux view holds the frame: two more loans write the other slot, not this one.
+    del got
+    gc.collect()
+    for _ in range(2):
+        loan = pub.loan()
+        loan.aux[:6] = np.frombuffer(b"zzzzzz", np.uint8)
+        loan.aux_len = 6
+        assert loan.commit(nbytes=1)
+    assert bytes(head) == b"header"
+    del head
+    gc.collect()
+
+    loan = pub.loan()
+    loan.aux_len = 33
+    assert loan.commit() == flux.Published.TOO_LARGE
+    sub.take()
+    assert pub.publish(b"x")
+    assert bytes(flux.aux(sub.take())) == b""
+    with pytest.raises(TypeError):
+        flux.aux(np.zeros(2))
+    with pytest.raises(flux.Error):
+        flux.Publisher(node, topic("auxbad"), slot_size=64, slot_count=2, aux_size=1 << 16)
+
+
 def test_a_refused_commit_ends_the_loan_as_in_cpp(node):
     pub = flux.Publisher(node, topic("loanbad"), slot_size=64, slot_count=2)
     for loan, nbytes in ((pub.loan((4,), "f4"), 3), (pub.loan((2, 2), "f4"), 8)):

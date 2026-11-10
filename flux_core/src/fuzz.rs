@@ -20,6 +20,7 @@ use crate::sys;
 
 const SLOT_SIZE: u32 = 256;
 const SLOT_COUNT: u32 = 4;
+const AUX_SIZE: u32 = 48;
 
 fn touch(bytes: &[u8]) -> u8 {
     bytes.iter().fold(0, |acc, b| acc ^ b)
@@ -31,7 +32,7 @@ pub fn frame(data: &[u8]) {
     let Some((&plan, _)) = data.split_first() else {
         return;
     };
-    let Ok(seg) = Segment::create_heap(SLOT_SIZE, SLOT_COUNT, NO_SCHEMA) else {
+    let Ok(seg) = Segment::create_heap(SLOT_SIZE, SLOT_COUNT, AUX_SIZE, NO_SCHEMA) else {
         return;
     };
     let (base, len) = seg.raw();
@@ -46,6 +47,7 @@ pub fn frame(data: &[u8]) {
     ctrl.version = LAYOUT_VERSION;
     ctrl.slot_size = SLOT_SIZE;
     ctrl.slot_count = SLOT_COUNT;
+    ctrl.aux_size = AUX_SIZE;
     ctrl.init_state.store(INIT_READY, Ordering::Release);
 
     let mut ch = Channel::from_segment(seg, MemoryPolicy::default(), crate::trace::NO_STAMP);
@@ -58,6 +60,8 @@ pub fn frame(data: &[u8]) {
         let Some(v) = ch.take() else { continue };
         assert!(v.data().len() <= SLOT_SIZE as usize, "a view past its slot");
         touch(v.data());
+        assert!(v.aux().len() <= AUX_SIZE as usize, "aux past its region");
+        touch(v.aux());
         let _ = (v.meta().shape(), v.meta().dtype(), v.ticket());
         if plan >> (step % 8) & 1 != 0 {
             held.push(v);
@@ -115,6 +119,8 @@ pub fn attach(data: &[u8]) -> bool {
         let payload =
             unsafe { std::slice::from_raw_parts(seg.payload(s), layout.slot_size as usize) };
         touch(payload);
+        // SAFETY: aux(s) starts aux_size mapped bytes, below the payload.
+        touch(unsafe { std::slice::from_raw_parts(seg.aux(s), layout.aux_size as usize) });
     }
     true
 }
@@ -128,8 +134,14 @@ fn declared_bytes(header: &[u8]) -> Option<usize> {
         slot_size: field(12)?,
         slot_count: field(16)?,
         max_subscribers: field(20)?,
+        aux_size: field(60)?,
     };
-    let ok = layout_config_ok(layout.slot_size, layout.slot_count, layout.max_subscribers);
+    let ok = layout_config_ok(
+        layout.slot_size,
+        layout.slot_count,
+        layout.max_subscribers,
+        layout.aux_size,
+    );
     (ok && layout.total_bytes() <= 1 << 24).then(|| layout.total_bytes())
 }
 
@@ -261,6 +273,7 @@ mod corpus {
                 slot_size: u32::try_from(1 + below(&mut seed, 5000)).unwrap(),
                 slot_count: u32::try_from(1 + below(&mut seed, 4)).unwrap(),
                 max_subscribers: u32::try_from(1 + below(&mut seed, 32)).unwrap(),
+                aux_size: u32::try_from(below(&mut seed, 300)).unwrap(),
             };
             let short = segment(&mut seed, layout, None);
             assert!(attach(&short), "a sound header, sized by the mode byte");

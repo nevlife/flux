@@ -164,6 +164,7 @@ impl Publisher {
             SLOT,
             slots,
             DEFAULT_MAX_SUBSCRIBERS,
+            0,
             NO_SCHEMA,
             MemoryPolicy::default(),
         )

@@ -29,6 +29,7 @@ from ._flux import (
     Refused,
     Route,
     Status,
+    aux,
     enumerate_topics,
     faulted,
     gpu_wedged,
@@ -54,6 +55,7 @@ __all__ = [
     "Route",
     "Status",
     "Subscription",
+    "aux",
     "enumerate_topics",
     "faulted",
     "gpu_wedged",
@@ -157,11 +159,14 @@ class Publisher(_flux._Publisher):
         device="cpu",
         fence_timeout=None,
         mirror_to_ros=False,
+        aux_size=0,
     ):
         """fence_timeout, in seconds, bounds each commit's wait for the stream; None waits as long
         as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
         work is done. mirror_to_ros also publishes every frame as its ROS 2 message on the same
-        topic while a ROS 2 subscriber wants it (depth 1, best effort, volatile)."""
+        topic while a ROS 2 subscriber wants it (depth 1, best effort, volatile). aux_size gives
+        each slot that many bytes of host memory beside its payload: a loan writes them through
+        loan.aux and loan.aux_len, and flux.aux(frame) reads them."""
         bound = _timeout_ns(fence_timeout)
         self.topic_name = node.resolve_topic_name(topic)
         self.signpost_name = _flux.signpost_name(self.topic_name, fingerprint)
@@ -176,6 +181,7 @@ class Publisher(_flux._Publisher):
             memory if memory is not None else MemoryPolicy(),
             max_subscribers,
             _cuda(device),
+            aux_size,
         )
         self._set_fence_timeout(bound)
         if mirror_to_ros:
