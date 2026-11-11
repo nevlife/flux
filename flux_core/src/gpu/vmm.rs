@@ -6,6 +6,7 @@
 use std::ffi::{c_int, c_void};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use super::driver::{
@@ -16,11 +17,11 @@ use super::driver::{
 use super::ledger::{self, Held};
 use crate::error::{Error, Result};
 use crate::segment::SegmentId;
-use crate::sys;
+use crate::sys::{self, PiMutex};
 
 const RECV_TIMEOUT_NS: u64 = 1_000_000_000;
 
-const ENDPOINT_PREFIX: &str = "flux.gpu.";
+pub(crate) const ENDPOINT_PREFIX: &str = "flux.gpu.";
 const STALE_BIND: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// In /dev/shm, so whoever sees the segment sees its endpoint: an abstract name would follow the
@@ -30,7 +31,7 @@ pub(crate) fn endpoint(id: SegmentId) -> String {
     format!("/dev/shm/{ENDPOINT_PREFIX}{}.{}", id.dev, id.ino)
 }
 
-fn vmm() -> Result<(&'static Core, &'static Vmm)> {
+pub(crate) fn vmm() -> Result<(&'static Core, &'static Vmm)> {
     let drv = Driver::get();
     let core = drv
         .usable_core()
@@ -42,7 +43,7 @@ fn vmm() -> Result<(&'static Core, &'static Vmm)> {
     Ok((core, vmm))
 }
 
-fn device_handle(core: &Core, ordinal: i32) -> Option<c_int> {
+pub(crate) fn device_handle(core: &Core, ordinal: i32) -> Option<c_int> {
     let mut h = 0;
     // SAFETY: h is a valid out-pointer.
     (unsafe { (core.device_get)(&raw mut h, ordinal) } == SUCCESS).then_some(h)
@@ -224,7 +225,7 @@ impl DeviceAlloc {
         // allocation alive and writable.
         // SAFETY: fcntl on a descriptor this process owns.
         unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
-        let server = FdServer::start(endpoint, fd.as_raw_fd())?;
+        let server = FdServer::start(endpoint, Share::One(fd.as_raw_fd()))?;
         ledger::made(Held::Export(region.addr), region.size);
         ledger::made(Held::Fd(fd.as_raw_fd()), 0);
         Ok(DeviceAlloc {
@@ -406,10 +407,14 @@ const INT_BYTES: u32 = size_of::<c_int>() as u32;
 /// The descriptor rides in the control message; one data byte, since a message with no data
 /// carries no control data either.
 fn send_fd(conn: RawFd, fd: RawFd) -> bool {
-    let mut byte = 0u8;
+    send_fd_with(conn, fd, &[0])
+}
+
+/// `send_fd` with `bytes` as the message's data.
+fn send_fd_with(conn: RawFd, fd: RawFd, bytes: &[u8]) -> bool {
     let mut iov = libc::iovec {
-        iov_base: (&raw mut byte).cast(),
-        iov_len: 1,
+        iov_base: bytes.as_ptr().cast_mut().cast(),
+        iov_len: bytes.len(),
     };
     // SAFETY: a constant computation.
     let space = unsafe { libc::CMSG_SPACE(INT_BYTES) } as usize;
@@ -433,17 +438,23 @@ fn send_fd(conn: RawFd, fd: RawFd) -> bool {
     let data = unsafe { libc::CMSG_DATA(cmsg) };
     // SAFETY: data has room for one int, at any alignment.
     unsafe { data.cast::<c_int>().write_unaligned(fd) };
-    // SAFETY: msg describes buffers that live through the call.
-    unsafe { libc::sendmsg(conn, &raw const msg, libc::MSG_NOSIGNAL) == 1 }
+    // SAFETY: msg describes buffers that live through the call; sendmsg only reads iov_base.
+    let sent = unsafe { libc::sendmsg(conn, &raw const msg, libc::MSG_NOSIGNAL) };
+    usize::try_from(sent).is_ok_and(|n| n == bytes.len())
 }
 
 /// Exactly one descriptor, or why not: none came, or the kernel dropped it, as it does at this
 /// process's open file limit.
 fn recv_fd(conn: RawFd) -> std::result::Result<OwnedFd, &'static str> {
-    let mut byte = 0u8;
+    recv_fd_with(conn, &mut [0])
+}
+
+/// `recv_fd` of a message whose data fills `bytes` exactly.
+fn recv_fd_with(conn: RawFd, bytes: &mut [u8]) -> std::result::Result<OwnedFd, &'static str> {
+    let want = bytes.len();
     let mut iov = libc::iovec {
-        iov_base: (&raw mut byte).cast(),
-        iov_len: 1,
+        iov_base: bytes.as_mut_ptr().cast(),
+        iov_len: want,
     };
     // SAFETY: a constant computation.
     let space = unsafe { libc::CMSG_SPACE(INT_BYTES) } as usize;
@@ -455,7 +466,8 @@ fn recv_fd(conn: RawFd) -> std::result::Result<OwnedFd, &'static str> {
     msg.msg_control = control.as_mut_ptr().cast();
     msg.msg_controllen = space;
     // SAFETY: msg describes buffers that live through the call.
-    if unsafe { libc::recvmsg(conn, &raw mut msg, libc::MSG_CMSG_CLOEXEC) } != 1 {
+    let got = unsafe { libc::recvmsg(conn, &raw mut msg, libc::MSG_CMSG_CLOEXEC) };
+    if usize::try_from(got).ok() != Some(want) {
         return Err("sent no descriptor");
     }
     // Before the descriptor: a kernel that installed none writes no control message at all.
@@ -492,6 +504,14 @@ fn take_fd(msg: &libc::msghdr) -> Option<OwnedFd> {
 /// stopped. Non-blocking, since a stopped publisher's backlog fills and a blocking connect then
 /// never returns.
 fn receive(endpoint: &str) -> Result<OwnedFd> {
+    let sock = connected(endpoint)?;
+    wait_readable(sock.as_raw_fd());
+    recv_fd(sock.as_raw_fd())
+        .map_err(|why| Error::NotReady(format!("device endpoint '{endpoint}' {why}")))
+}
+
+/// A connection to `endpoint` served by this user.
+fn connected(endpoint: &str) -> Result<OwnedFd> {
     let sock = socket(libc::SOCK_NONBLOCK).map_err(|e| Error::io("socket", endpoint, e))?;
     if let Err(e) = connect(sock.as_raw_fd(), endpoint)? {
         return Err(match e.raw_os_error() {
@@ -509,15 +529,17 @@ fn receive(endpoint: &str) -> Result<OwnedFd> {
             "device endpoint '{endpoint}' is served by another user"
         )));
     }
-    wait_readable(sock.as_raw_fd());
-    recv_fd(sock.as_raw_fd())
-        .map_err(|why| Error::NotReady(format!("device endpoint '{endpoint}' {why}")))
+    Ok(sock)
 }
 
 /// Up to `RECV_TIMEOUT_NS`. `SA_RESTART` never restarts `poll`, so after a signal it is called again
 /// for what is left. Any other failure leaves `recv_fd` to find nothing.
 fn wait_readable(sock: RawFd) {
-    let deadline = sys::monotonic_ns() + RECV_TIMEOUT_NS;
+    wait_readable_for(sock, RECV_TIMEOUT_NS);
+}
+
+fn wait_readable_for(sock: RawFd, timeout_ns: u64) {
+    let deadline = sys::monotonic_ns() + timeout_ns;
     loop {
         let left = deadline
             .saturating_sub(sys::monotonic_ns())
@@ -537,7 +559,7 @@ fn wait_readable(sock: RawFd) {
 
 /// Waits on the listening socket and an eventfd together, so stopping is a write rather than a
 /// timeout. A forked child's copy has no thread to join and only closes its descriptors.
-struct FdServer {
+pub(crate) struct FdServer {
     _listen: OwnedFd,
     stop: OwnedFd,
     thread: Option<JoinHandle<()>>,
@@ -546,8 +568,21 @@ struct FdServer {
     ino: u64,
 }
 
+/// What an `FdServer` hands out: one descriptor to every peer, or a growing list of them from the
+/// index each peer asks for (the GPU arena's chunks).
+#[derive(Clone)]
+pub(crate) enum Share {
+    One(RawFd),
+    Chunks(Arc<PiMutex<Vec<OwnedFd>>>),
+}
+
+/// The bytes before a chunk list: how many chunks there are and their size in MiB, little endian.
+const CHUNKS_HEADER: usize = 8;
+/// How long the server waits for a peer's request: a stuck peer holds the one serving thread.
+const REQUEST_WAIT_NS: u64 = 100_000_000;
+
 impl FdServer {
-    fn start(endpoint: &str, share: RawFd) -> Result<FdServer> {
+    pub(crate) fn start(endpoint: &str, share: Share) -> Result<FdServer> {
         let listen = socket(0).map_err(|e| Error::io("socket", endpoint, e))?;
         let ino = bind_listening(listen.as_raw_fd(), endpoint)?;
         // SAFETY: plain syscall.
@@ -562,7 +597,7 @@ impl FdServer {
         let thread = sys::spawn_helper(
             std::thread::Builder::new().name("flux-gpu-fd".into()),
             move || {
-                serve(l, s, share);
+                serve(l, s, &share);
             },
         )
         .map_err(|e| Error::io("spawn", endpoint, e))?;
@@ -577,7 +612,7 @@ impl FdServer {
     }
 }
 
-fn serve(listen: RawFd, stop: RawFd, share: RawFd) {
+fn serve(listen: RawFd, stop: RawFd, share: &Share) {
     loop {
         let mut fds = [
             libc::pollfd {
@@ -617,10 +652,101 @@ fn serve(listen: RawFd, stop: RawFd, share: RawFd) {
         }
         // SAFETY: a new descriptor this thread owns.
         let conn = unsafe { OwnedFd::from_raw_fd(conn) };
-        if peer_is_us(conn.as_raw_fd()) {
-            send_fd(conn.as_raw_fd(), share);
+        if !peer_is_us(conn.as_raw_fd()) {
+            continue;
+        }
+        match share {
+            Share::One(fd) => {
+                send_fd(conn.as_raw_fd(), *fd);
+            }
+            Share::Chunks(list) => send_chunks(conn.as_raw_fd(), list),
         }
     }
+}
+
+/// Reads the index the peer asks from, then sends the header and each chunk from there with its
+/// index. A peer that asks nothing in time gets nothing.
+fn send_chunks(conn: RawFd, list: &PiMutex<Vec<OwnedFd>>) {
+    let mut ask = [0u8; 4];
+    wait_readable_for(conn, REQUEST_WAIT_NS);
+    // SAFETY: ask is 4 writable bytes.
+    let got = unsafe { libc::recv(conn, ask.as_mut_ptr().cast(), 4, libc::MSG_DONTWAIT) };
+    if got != 4 {
+        return;
+    }
+    let first = u32::from_le_bytes(ask) as usize;
+    let list = list.lock();
+    #[allow(clippy::cast_possible_truncation)]
+    let (count, mib) = (list.len() as u32, (super::arena::CHUNK >> 20) as u32);
+    let mut header = [0u8; CHUNKS_HEADER];
+    header[..4].copy_from_slice(&count.to_le_bytes());
+    header[4..].copy_from_slice(&mib.to_le_bytes());
+    // SAFETY: header is CHUNKS_HEADER readable bytes.
+    let sent = unsafe {
+        libc::send(
+            conn,
+            header.as_ptr().cast(),
+            CHUNKS_HEADER,
+            libc::MSG_NOSIGNAL,
+        )
+    };
+    if usize::try_from(sent).ok() != Some(CHUNKS_HEADER) {
+        return;
+    }
+    for (i, fd) in list.iter().enumerate().skip(first) {
+        #[allow(clippy::cast_possible_truncation)]
+        if !send_fd_with(conn, fd.as_raw_fd(), &(i as u32).to_le_bytes()) {
+            return;
+        }
+    }
+}
+
+/// The chunks of the GPU arena `endpoint` serves, from index `first`, in order. `NotReady` as
+/// `receive` is.
+pub(crate) fn fetch_chunks(endpoint: &str, first: u32) -> Result<Vec<OwnedFd>> {
+    let sock = connected(endpoint)?;
+    let conn = sock.as_raw_fd();
+    let ask = first.to_le_bytes();
+    // SAFETY: ask is 4 readable bytes.
+    if unsafe { libc::send(conn, ask.as_ptr().cast(), 4, libc::MSG_NOSIGNAL) } != 4 {
+        return Err(Error::NotReady(format!(
+            "device endpoint '{endpoint}' took no request"
+        )));
+    }
+    let mut header = [0u8; CHUNKS_HEADER];
+    wait_readable(conn);
+    // SAFETY: header is CHUNKS_HEADER writable bytes.
+    let got = unsafe { libc::recv(conn, header.as_mut_ptr().cast(), CHUNKS_HEADER, 0) };
+    if usize::try_from(got).ok() != Some(CHUNKS_HEADER) {
+        return Err(Error::NotReady(format!(
+            "device endpoint '{endpoint}' sent no chunk list"
+        )));
+    }
+    let (count, mib) = (
+        u32::from_le_bytes([header[0], header[1], header[2], header[3]]),
+        u32::from_le_bytes([header[4], header[5], header[6], header[7]]),
+    );
+    if mib as usize != super::arena::CHUNK >> 20 {
+        return Err(Error::Mismatch(format!(
+            "device endpoint '{endpoint}' serves {mib} MiB chunks, this build {} MiB",
+            super::arena::CHUNK >> 20
+        )));
+    }
+    let mut out = Vec::new();
+    for want in first..count {
+        let mut index = [0u8; 4];
+        wait_readable(conn);
+        let fd = recv_fd_with(conn, &mut index)
+            .map_err(|why| Error::NotReady(format!("device endpoint '{endpoint}' {why}")))?;
+        if u32::from_le_bytes(index) != want {
+            return Err(Error::NotReady(format!(
+                "device endpoint '{endpoint}' sent chunk {} for {want}",
+                u32::from_le_bytes(index)
+            )));
+        }
+        out.push(fd);
+    }
+    Ok(out)
 }
 
 impl Drop for FdServer {

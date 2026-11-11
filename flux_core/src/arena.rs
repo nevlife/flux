@@ -58,16 +58,20 @@ pub(crate) fn is_arena_entry(entry: &str) -> bool {
         .is_some_and(|id| id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-/// Segregated free lists over boundary-tagged blocks, kept in the arena itself.
-struct Heap {
+/// Makes `[from, to)` of an allocator's memory usable before the allocator writes there.
+pub(crate) type Grow<'a> = &'a mut dyn FnMut(u64, u64) -> io::Result<()>;
+
+/// Segregated free lists over boundary-tagged blocks. The tags live at `base`: the memory itself
+/// for the host arena, a host shadow of it for memory the CPU cannot write (the GPU arena).
+pub(crate) struct Heap {
     base: NonNull<u8>,
     size: u64,
     heads: [u64; BINS],
     nonempty: u32,
-    /// Bytes from the start whose pages are reserved. Nothing past it is written.
+    /// Bytes from the start made usable. Nothing past it is written.
     committed: u64,
-    /// Where `committed` grows; None for memory that is all there.
-    file: Option<RawFd>,
+    /// How far `committed` moves at a time.
+    step: u64,
 }
 
 // SAFETY: reached only under the arena's lock.
@@ -83,32 +87,36 @@ fn round_up(n: u64, a: u64) -> u64 {
 }
 
 impl Heap {
-    fn new(base: NonNull<u8>, size: u64, file: Option<RawFd>) -> io::Result<Heap> {
+    /// Over `size` bytes at `base`. With `grow`, they are made usable `step` at a time as blocks
+    /// reach them; without, they all are already.
+    pub(crate) fn new(
+        base: NonNull<u8>,
+        size: u64,
+        step: u64,
+        grow: Option<Grow<'_>>,
+    ) -> io::Result<Heap> {
         let size = size / GRAIN * GRAIN;
         let mut h = Heap {
             base,
             size,
             heads: [NIL; BINS],
             nonempty: 0,
-            committed: if file.is_some() { 0 } else { size },
-            file,
+            committed: if grow.is_some() { 0 } else { size },
+            step,
         };
-        h.reach(MIN_BLOCK)?;
+        if let Some(grow) = grow {
+            h.reach(MIN_BLOCK, grow)?;
+        }
         h.make_free(0, h.size, true);
         Ok(h)
     }
 
-    /// Reserves pages up to `end`, under the policy the publishers asked for.
-    fn reach(&mut self, end: u64) -> io::Result<()> {
-        let Some(fd) = self.file.filter(|_| end > self.committed) else {
+    fn reach(&mut self, end: u64, grow: Grow<'_>) -> io::Result<()> {
+        if end <= self.committed {
             return Ok(());
-        };
-        let to = round_up(end, COMMIT_STEP).min(self.size);
-        #[allow(clippy::cast_possible_truncation)]
-        let (from, len) = (self.committed as usize, (to - self.committed) as usize);
-        sys::allocate_range(fd, from, len)?;
-        // SAFETY: from < to <= size, inside the mapping.
-        policy_apply(unsafe { self.base.add(from) }, len, policy())?;
+        }
+        let to = round_up(end, self.step).min(self.size);
+        grow(self.committed, to)?;
         self.committed = to;
         Ok(())
     }
@@ -202,14 +210,14 @@ impl Heap {
     }
 
     /// The payload offset, on an `align` boundary (a power of two). None when no block fits or
-    /// its pages cannot be reserved.
-    fn alloc(&mut self, bytes: u64, align: u64) -> Option<u64> {
+    /// its memory cannot be made usable.
+    pub(crate) fn alloc(&mut self, bytes: u64, align: u64, grow: Grow<'_>) -> Option<u64> {
         let need = round_up(bytes.checked_add(HEADER)?, GRAIN).max(MIN_BLOCK);
         let align = align.max(GRAIN);
         let slack = if align > GRAIN { align + MIN_BLOCK } else { 0 };
         let b = self.find(need.checked_add(slack)?)?;
         // The block, its split-off tail's header and links: every byte this call writes.
-        self.reach((b + slack + need + MIN_BLOCK).min(self.size))
+        self.reach((b + slack + need + MIN_BLOCK).min(self.size), grow)
             .ok()?;
         self.remove(b);
         let mut size = self.block_size(b);
@@ -237,7 +245,7 @@ impl Heap {
         Some(start + HEADER)
     }
 
-    fn free(&mut self, payload: u64) {
+    pub(crate) fn free(&mut self, payload: u64) {
         let mut b = payload - HEADER;
         let h = self.get(b);
         debug_assert!(h & USED != 0, "arena block at {b} freed twice");
@@ -258,9 +266,18 @@ impl Heap {
         self.make_free(b, size, prev_used);
     }
 
-    fn usable(&self, payload: u64) -> u64 {
+    pub(crate) fn usable(&self, payload: u64) -> u64 {
         self.block_size(payload - HEADER) - HEADER
     }
+}
+
+/// Reserves the file's pages for `[from, to)` and applies the publishers' policy to them.
+fn commit_file(fd: RawFd, base: NonNull<u8>, from: u64, to: u64) -> io::Result<()> {
+    #[allow(clippy::cast_possible_truncation)]
+    let (from, len) = (from as usize, (to - from) as usize);
+    sys::allocate_range(fd, from, len)?;
+    // SAFETY: from < to <= the mapping's size.
+    policy_apply(unsafe { base.add(from) }, len, policy())
 }
 
 // The union of what publishers asked for, never undone, as a segment mapping's is.
@@ -383,7 +400,12 @@ impl Arena {
                 return Err(fail(io::Error::last_os_error()));
             }
             let base = sys::map_shared(raw, size).map_err(&fail)?;
-            let heap = match Heap::new(base, size as u64, Some(raw)) {
+            let heap = match Heap::new(
+                base,
+                size as u64,
+                COMMIT_STEP,
+                Some(&mut |from, to| commit_file(raw, base, from, to)),
+            ) {
                 Ok(h) => h,
                 Err(e) => {
                     // SAFETY: mapped above with size; nothing points into it yet.
@@ -411,7 +433,12 @@ impl Arena {
         if !align.is_power_of_two() {
             return None;
         }
-        self.heap.lock().alloc(bytes as u64, align as u64)
+        let (fd, base) = (self.live.raw(), self.base);
+        self.heap
+            .lock()
+            .alloc(bytes as u64, align as u64, &mut |from, to| {
+                commit_file(fd, base, from, to)
+            })
     }
 
     pub fn free(&self, off: u64) {
@@ -460,7 +487,7 @@ extern "C" fn unlink_at_exit() {
     }
 }
 
-fn random() -> u64 {
+pub(crate) fn random() -> u64 {
     let mut b = [0u8; 8];
     // SAFETY: b is a valid buffer of its length.
     let n = unsafe { libc::getrandom(b.as_mut_ptr().cast(), b.len(), 0) };
@@ -645,10 +672,14 @@ pub fn scope_leave() {
 mod tests {
     use super::*;
 
+    fn no_grow(_: u64, _: u64) -> io::Result<()> {
+        unreachable!("all of a test heap is usable")
+    }
+
     fn heap(bytes: usize) -> (Vec<u64>, Heap) {
         let mut mem = vec![0u64; bytes / 8];
         let base = NonNull::new(mem.as_mut_ptr().cast::<u8>()).unwrap();
-        (mem, Heap::new(base, bytes as u64, None).unwrap())
+        (mem, Heap::new(base, bytes as u64, GRAIN, None).unwrap())
     }
 
     #[test]
@@ -657,7 +688,7 @@ mod tests {
         let mut got = Vec::new();
         for (i, n) in [1u64, 17, 100, 4000, 64, 3, 900].iter().enumerate() {
             let align = if i % 2 == 0 { 16 } else { 64 };
-            let p = h.alloc(*n, align).unwrap();
+            let p = h.alloc(*n, align, &mut no_grow).unwrap();
             assert_eq!(p % align, 0);
             assert!(h.usable(p) >= *n);
             got.push((p, *n));
@@ -684,10 +715,10 @@ mod tests {
     #[test]
     fn it_runs_out_and_recovers() {
         let (_mem, mut h) = heap(4096);
-        let a = h.alloc(3000, 16).unwrap();
-        assert!(h.alloc(3000, 16).is_none());
+        let a = h.alloc(3000, 16, &mut no_grow).unwrap();
+        assert!(h.alloc(3000, 16, &mut no_grow).is_none());
         h.free(a);
-        assert!(h.alloc(4000, 16).is_some());
+        assert!(h.alloc(4000, 16, &mut no_grow).is_some());
     }
 
     /// The pages of a block are reserved before it is written; a block whose pages cannot be has
@@ -705,15 +736,17 @@ mod tests {
         // SAFETY: plain syscall on a descriptor we hold.
         assert_eq!(unsafe { libc::ftruncate(fd.as_raw_fd(), len) }, 0);
         let base = sys::map_shared(fd.as_raw_fd(), size).unwrap();
-        let mut h = Heap::new(base, size as u64, Some(fd.as_raw_fd())).unwrap();
+        let raw = fd.as_raw_fd();
+        let mut grow = |from, to| commit_file(raw, base, from, to);
+        let mut h = Heap::new(base, size as u64, COMMIT_STEP, Some(&mut grow)).unwrap();
         assert_eq!(h.committed, COMMIT_STEP);
-        let a = h.alloc(COMMIT_STEP + 1, 16).unwrap();
+        let a = h.alloc(COMMIT_STEP + 1, 16, &mut grow).unwrap();
         assert_eq!(h.committed, 2 * COMMIT_STEP);
         // A descriptor that cannot reserve: every later reservation fails.
-        h.file = Some(-1);
-        assert!(h.alloc(2 * COMMIT_STEP, 16).is_none());
+        let mut broken = |from, to| commit_file(-1, base, from, to);
+        assert!(h.alloc(2 * COMMIT_STEP, 16, &mut broken).is_none());
         assert_eq!(h.committed, 2 * COMMIT_STEP);
-        let b = h.alloc(1000, 16).unwrap();
+        let b = h.alloc(1000, 16, &mut broken).unwrap();
         h.free(a);
         h.free(b);
         assert_eq!(h.nonempty.count_ones(), 1);

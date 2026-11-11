@@ -18,6 +18,8 @@ pub(crate) const ATTR_HOST_REGISTER_SUPPORTED: c_int = 99;
 pub(crate) const ATTR_VMM_SUPPORTED: c_int = 102;
 pub(crate) const ATTR_POSIX_FD_HANDLE_SUPPORTED: c_int = 103;
 pub(crate) const ATTR_READ_ONLY_HOST_REGISTER_SUPPORTED: c_int = 113;
+pub(crate) const ATTR_HOST_NUMA_ID: c_int = 134;
+pub(crate) const ATTR_HOST_NUMA_VMM_SUPPORTED: c_int = 141;
 
 pub(crate) const EVENT_BLOCKING_SYNC: c_uint = 0x1;
 pub(crate) const EVENT_DISABLE_TIMING: c_uint = 0x2;
@@ -31,6 +33,7 @@ pub(crate) const MEM_HOST_REGISTER_READ_ONLY: c_uint = 0x08;
 pub(crate) const MEM_ALLOCATION_TYPE_PINNED: c_int = 0x1;
 pub(crate) const MEM_HANDLE_TYPE_POSIX_FD: c_int = 0x1;
 pub(crate) const MEM_LOCATION_TYPE_DEVICE: c_int = 0x1;
+pub(crate) const MEM_LOCATION_TYPE_HOST_NUMA: c_int = 0x3;
 pub(crate) const MEM_ACCESS_READ: c_int = 0x1;
 pub(crate) const MEM_ACCESS_READ_WRITE: c_int = 0x3;
 pub(crate) const MEM_GRANULARITY_MINIMUM: c_int = 0x0;
@@ -321,6 +324,13 @@ impl Core {
         let mut v = 0;
         // SAFETY: v is a valid out-pointer.
         unsafe { (self.device_attribute)(&raw mut v, attr, device) == SUCCESS && v != 0 }
+    }
+
+    /// The attribute's value; None for a refused query.
+    pub(crate) fn attribute_value(&self, device: c_int, attr: c_int) -> Option<c_int> {
+        let mut v = 0;
+        // SAFETY: v is a valid out-pointer.
+        (unsafe { (self.device_attribute)(&raw mut v, attr, device) } == SUCCESS).then_some(v)
     }
 
     pub(crate) fn current_context(&self) -> Option<Handle> {

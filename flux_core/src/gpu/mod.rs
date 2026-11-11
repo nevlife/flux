@@ -3,6 +3,7 @@
 //! protocol unchanged; what changes is where `device_ptr` counts from, and that commit and release
 //! wait for the stream first.
 
+pub(crate) mod arena;
 mod driver;
 #[cfg(test)]
 mod fake;
