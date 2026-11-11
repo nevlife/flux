@@ -126,6 +126,12 @@ fn view_accessors(block: &Block, r: &Through, out: &mut Vec<String>, prefix: &[&
                      {{ return {recv}span<{t}>({}); }}",
                     at(base, o)
                 ));
+                // Where the GPU reads it, when the publisher wrote it there (alloc_device__).
+                out.push(format!(
+                    "{IND}flux::wire::DeviceSpan<const {t}> {n}__device() const noexcept \
+                     {{ return {recv}device<{t}>({}); }}",
+                    at(base, o)
+                ));
             }
             LeafKind::String => out.push(format!(
                 "{IND}std::string_view {n}() const noexcept {{ return {recv}str({}); }}",
@@ -187,6 +193,26 @@ fn view_accessors(block: &Block, r: &Through, out: &mut Vec<String>, prefix: &[&
     }
 }
 
+/// A column's Builder methods: in the slot or the arena, in the GPU arena, or adopted.
+fn column_builder(p: &Placed, n: &str, at: &str, recv: &str, out: &mut Vec<String>) {
+    let t = cpp_type(p.leaf.dtype.expect("columns have a dtype"));
+    out.push(format!(
+        "{IND}flux::wire::Span<{t}> alloc__{n}(std::size_t n) noexcept \
+         {{ return {recv}alloc<{t}>({at}, n); }}"
+    ));
+    // In the GPU arena, on a publisher that declared a stream: write it on that stream.
+    out.push(format!(
+        "{IND}flux::wire::DeviceSpan<{t}> alloc_device__{n}(std::size_t n) noexcept \
+         {{ return {recv}alloc_device<{t}>({at}, n); }}"
+    ));
+    // A container filled under flux::ArenaScope, without a copy.
+    out.push(format!(
+        "{IND}template <class C> bool adopt__{n}(C && c) \
+         {{ static_assert(std::is_same_v<typename std::decay_t<C>::value_type, {t}>); \
+         return {recv}adopt({at}, std::forward<C>(c)); }}"
+    ));
+}
+
 fn builder_accessors(block: &Block, w: &Through, out: &mut Vec<String>, prefix: &[&Placed]) {
     let Through { base, recv, owner } = w;
     for p in &block.placed {
@@ -209,21 +235,7 @@ fn builder_accessors(block: &Block, w: &Through, out: &mut Vec<String>, prefix: 
                     ));
                 }
             }
-            LeafKind::Column => {
-                let t = cpp_type(p.leaf.dtype.expect("columns have a dtype"));
-                out.push(format!(
-                    "{IND}flux::wire::Span<{t}> alloc__{n}(std::size_t n) noexcept \
-                     {{ return {recv}alloc<{t}>({}, n); }}",
-                    at(base, o)
-                ));
-                // A container filled under flux::ArenaScope, without a copy.
-                out.push(format!(
-                    "{IND}template <class C> bool adopt__{n}(C && c) \
-                     {{ static_assert(std::is_same_v<typename std::decay_t<C>::value_type, {t}>); \
-                     return {recv}adopt({}, std::forward<C>(c)); }}",
-                    at(base, o)
-                ));
-            }
+            LeafKind::Column => column_builder(p, &n, &at(base, o), recv, out),
             LeafKind::String => out.push(format!(
                 "{IND}void set__{n}(std::string_view s) noexcept {{ {recv}put_str({}, s); }}",
                 at(base, o)
@@ -384,11 +396,15 @@ pub fn guard(layout: &Layout, suffix: &str) -> String {
 /// Registered as the header loads, so a channel of the type knows where `header.stamp` sits from the
 /// fingerprint alone.
 fn stamp_registration(layout: &Layout) -> &'static str {
+    // The first line lets a publisher of this type that declares a stream keep host slots, for
+    // alloc_device__; the second lets a channel of it report header.stamp to trace collectors.
     if layout.stamp_offset() < 0 {
-        return "";
+        return "\n  inline static const bool kLayoutRegistered__ =\n    \
+                (flux_layout_register(kFingerprint), true);";
     }
-    "\n  // Lets a channel of this type report header.stamp to trace collectors.\n  inline static const \
-     bool kStampRegistered__ =\n    (flux_stamp_offset_register(kFingerprint, kStampOffset), true);"
+    "\n  inline static const bool kLayoutRegistered__ =\n    \
+     (flux_layout_register(kFingerprint), true);\n  inline static const bool kStampRegistered__ \
+     =\n    (flux_stamp_offset_register(kFingerprint, kStampOffset), true);"
 }
 
 /// A tensor message's View accessor and Builder methods onto theirs, and its struct constant;
@@ -481,7 +497,8 @@ struct {name}
 public:
     View() = default;
     View(const void * data, std::size_t size) noexcept : r_(data, size) {{}}
-    explicit View(const flux::FrameView & f) noexcept : r_(f.data(), f.size(), f.heap()) {{}}
+    explicit View(const flux::FrameView & f) noexcept
+    : r_(f.data(), f.size(), f.heap(), f.gpu_heap()) {{}}
 
     // False once any accessor has been asked for something the frame does not contain.
     bool ok__() const noexcept {{ return !r_.bad(); }}

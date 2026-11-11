@@ -41,6 +41,8 @@
 
 #define FLUX_HEAP_BASE 2147483648
 
+#define FLUX_GPU_HEAP_BASE 3221225472
+
 #define FLUX_DTYPE_U8 0
 
 #define FLUX_DTYPE_I8 1
@@ -162,13 +164,14 @@ typedef struct flux_topic_list flux_topic_list;
 
 typedef struct flux_watch flux_watch;
 
-// A live loan's arena (`flux_loan_heap`): `channel` null for none, `base` null until made.
-// `flux_heap_alloc` gives the frame arena memory, `flux_heap_adopt` the hook's; a claim frees it.
+// A live loan's arena (`flux_loan_heap`): `channel` null for none, `base` null until made, `gpu`
+// with a stream. A claim frees what `flux_heap_alloc`, `_alloc_device` (0: none), `_adopt` gave.
 typedef struct flux_heap {
   uint8_t *base;
   size_t size;
   const void *channel;
   uint32_t slot;
+  bool gpu;
 } flux_heap;
 
 // A claimed slot in caller memory, never copied. Commit it while no call is on its channel.
@@ -180,6 +183,13 @@ typedef struct flux_loan {
 typedef struct flux_view {
   uint64_t opaque[16];
 } flux_view;
+
+// A frame's GPU arena (`flux_view_gpu_heap`): addresses of offset 0 (0 for none) and their reach.
+typedef struct flux_gpu_heap {
+  uint64_t device;
+  const uint8_t *host;
+  size_t size;
+} flux_gpu_heap;
 
 typedef struct flux_memory_policy {
   bool precommit;
@@ -295,6 +305,11 @@ struct flux_heap flux_loan_heap(const struct flux_loan *l);
 
 uint8_t *flux_heap_alloc(const struct flux_heap *h, size_t bytes, size_t align, uint64_t *off);
 
+uint64_t flux_heap_alloc_device(const struct flux_heap *h,
+                                size_t bytes,
+                                size_t align,
+                                uint64_t *off);
+
 bool flux_heap_adopt(const struct flux_heap *h,
                      const uint8_t *p,
                      size_t bytes,
@@ -304,6 +319,8 @@ bool flux_heap_adopt(const struct flux_heap *h,
 
 // The arena the view's frame names, read-only while the view lives; null for none.
 const uint8_t *flux_view_heap(const struct flux_view *v, size_t *size);
+
+bool flux_view_gpu_heap(const struct flux_view *v, struct flux_gpu_heap *out);
 
 // Maps the arena frame bytes name, for a reader without a view, until `flux_arena_release`.
 const void *flux_arena_acquire(const uint8_t *frame,
@@ -502,6 +519,9 @@ bool flux_channel_wait(const struct flux_channel *ch, uint32_t last_seq, int64_t
 void flux_stamp_offset_register(uint64_t fingerprint, int32_t stamp_offset);
 
 int32_t flux_stamp_offset(uint64_t fingerprint);
+
+// A generated type's fingerprint: its publishers that declare a stream keep host slots.
+void flux_layout_register(uint64_t fingerprint);
 
 flux_status flux_signpost_name(const char *key,
                                uint64_t fingerprint,

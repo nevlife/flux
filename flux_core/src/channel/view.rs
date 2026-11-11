@@ -5,11 +5,23 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::arena::{self};
+use crate::gpu::arena::{GpuFrame, Place, import_for};
 use crate::gpu::{Fenced, Seam, Stream, ledger};
 use crate::layout::FrameMeta;
 use crate::trace::event;
 
 use super::ChannelShared;
+
+/// The GPU arena a frame's device fields are in, as this subscriber reaches it: both addresses
+/// are of arena offset 0 and cover `size` bytes.
+#[derive(Clone, Copy, Debug)]
+pub struct GpuHeap {
+    /// 0 unless this subscriber's stream is on the arena's device.
+    pub device: u64,
+    /// Null for an arena in device memory.
+    pub host: *const u8,
+    pub size: usize,
+}
 
 /// A borrowed frame. While it lives, the publisher does not rewrite its slot. The header is the
 /// copy `take` checked: another process can still write the one in shared memory.
@@ -31,6 +43,43 @@ impl FrameView {
             self.sh.arena_map.get_or_init(|| m)
         };
         m.names(data).then(|| m.bytes())
+    }
+
+    /// The GPU arena the frame's trailer names. None for a frame without one, for a CPU
+    /// subscriber of an arena in device memory, and while it cannot be imported.
+    pub fn gpu_heap(&self) -> Option<GpuHeap> {
+        let f = GpuFrame::decode(arena::gpu_trailer(self.data())?)?;
+        let stream = self
+            .sh
+            .gpu
+            .as_ref()
+            .map(|g| &g.stream)
+            .filter(|s| s.declared());
+        if f.place == Place::Device && stream.is_none() {
+            return None;
+        }
+        let m = self
+            .sh
+            .gpu_import
+            .get_or_init(|| {
+                import_for(&f)
+                    .inspect_err(|e| eprintln!("flux: a frame's GPU arena was not imported: {e}"))
+                    .ok()
+            })
+            .as_ref()?;
+        // shortcut: a frame past the chunks imported fetches the rest here, a round trip on the
+        // reader's thread; fetch them as the publisher grows once an executor is seen to stall on
+        // it.
+        if m.id() != f.id || m.reach(f.chunks).is_err() {
+            return None;
+        }
+        Some(GpuHeap {
+            device: stream
+                .filter(|s| s.device() == m.ordinal())
+                .map_or(0, |_| m.device_ptr(0)),
+            host: m.host_base().unwrap_or(std::ptr::null()),
+            size: m.mapped_bytes(),
+        })
     }
 
     /// Empty when the payload is device memory and this subscriber declared a stream; read it

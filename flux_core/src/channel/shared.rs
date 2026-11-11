@@ -8,6 +8,7 @@ use std::sync::{Arc, OnceLock, Weak};
 use crate::arena::{self, ArenaMap};
 use crate::error::{Error, Result};
 use crate::executor::Control;
+use crate::gpu::arena::{GpuArena, gpu_arena};
 use crate::gpu::{
     self, DevicePayload, FenceStats, Fenced, HostRegistration, Late, Route, Seam, Stream, ledger,
 };
@@ -89,6 +90,11 @@ pub struct ChannelShared {
     /// Subscriber side: the publisher's arena, mapped by the first frame that named it. One
     /// publisher process, so one arena, per segment.
     pub(super) arena_map: OnceLock<Arc<ArenaMap>>,
+    /// Publisher side: the GPU arena of the stream's device, made by the first device block.
+    pub(super) gpu_arena: OnceLock<Option<&'static GpuArena>>,
+    /// Subscriber side: the publisher's GPU arena, imported by the first frame that named it;
+    /// None once that failed.
+    pub(super) gpu_import: OnceLock<Option<Arc<gpu::arena::GpuArenaImport>>>,
 }
 
 /// Arena memory a frame owns.
@@ -96,6 +102,8 @@ pub enum Owned {
     Block(u64),
     /// Memory a binding allocated in the arena and keeps alive until `release(ctx)`.
     Adopted(unsafe extern "C" fn(*mut c_void), *mut c_void),
+    /// A block of the GPU arena.
+    Gpu(&'static GpuArena, u64),
 }
 
 // SAFETY: the adopter promises its release may run on whichever thread claims the slot.
@@ -148,7 +156,33 @@ impl ChannelShared {
             owned: PiMutex::new(Vec::new()),
             owned_slots: AtomicU32::new(0),
             arena_map: OnceLock::new(),
+            gpu_arena: OnceLock::new(),
+            gpu_import: OnceLock::new(),
         }
+    }
+
+    /// A publisher's GPU arena: host slots on a channel that declared a stream. None elsewhere,
+    /// and when the arena is off or could not be made.
+    pub(super) fn gpu_arena(&self) -> Option<&'static GpuArena> {
+        *self.gpu_arena.get_or_init(|| {
+            let g = self.gpu.as_ref()?;
+            if !self.seg.host_payload() || !g.stream.declared() {
+                return None;
+            }
+            gpu_arena(g.stream.device())
+                .inspect_err(|e| eprintln!("flux: no GPU arena, so device fields are refused: {e}"))
+                .ok()
+        })
+    }
+
+    /// Whether the frame in `slot` owns host arena memory, and whether it owns GPU arena blocks.
+    pub(super) fn owned_kinds(&self, slot: u32) -> (bool, bool) {
+        let owned = self.owned.lock();
+        let Some(v) = owned.get(slot as usize) else {
+            return (false, false);
+        };
+        let gpu = |o: &Owned| matches!(o, Owned::Gpu(..));
+        (v.iter().any(|o| !gpu(o)), v.iter().any(gpu))
     }
 
     pub(super) fn own(&self, slot: u32, o: Owned) {
@@ -193,6 +227,7 @@ impl ChannelShared {
                 }
                 // SAFETY: the adopter's contract.
                 Owned::Adopted(release, ctx) => unsafe { release(ctx) },
+                Owned::Gpu(a, off) => a.free(off),
             }
         }
         // Back with its capacity, so the slot's next frame records its blocks without allocating.
@@ -204,7 +239,14 @@ impl ChannelShared {
 
     /// Judges the stream against the payload and makes it device-addressable. Every refusal is
     /// permanent: retrying never turns a host payload into a device one.
-    pub(super) fn attach_device(&mut self, stream: &Stream, stats: &Arc<FenceStats>) -> Result<()> {
+    /// A publisher's host payload is the CPU's to write, so a discrete GPU gets no copy of it: its
+    /// device data goes to the GPU arena.
+    pub(super) fn attach_device(
+        &mut self,
+        stream: &Stream,
+        stats: &Arc<FenceStats>,
+        publisher: bool,
+    ) -> Result<()> {
         if !stream.declared() {
             if self.seg.host_payload() {
                 return Ok(());
@@ -230,6 +272,7 @@ impl ChannelShared {
                         .map(DevicePayload::Registered)
                     })?
                     .base(),
+                Route::DeviceHandle | Route::None if publisher => 0,
                 // A discrete GPU reads host memory across `PCIe` at every access, so the frame is
                 // copied once. Registering the mapping keeps that copy off the calling thread.
                 Route::DeviceHandle | Route::None => {
@@ -331,9 +374,10 @@ impl ChannelShared {
         slot as usize * self.seg.layout().payload_stride()
     }
 
+    /// 0 also for a publisher's host slots on a discrete GPU, which the device does not read.
     pub(super) fn device_ptr(&self, slot: u32) -> u64 {
         match &self.gpu {
-            Some(g) if !matches!(g.staged, Staged::Host { .. }) => {
+            Some(g) if g.base != 0 && !matches!(g.staged, Staged::Host { .. }) => {
                 g.base + self.slot_offset(slot) as u64
             }
             _ => 0,

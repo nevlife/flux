@@ -39,7 +39,7 @@ use crate::trace::{self, event};
 pub use loan::{Heap, WriteSlot};
 use loan::{fence_failed, fits, meta_from};
 pub(crate) use shared::{ChannelShared, Owned, Waiter};
-pub use view::FrameView;
+pub use view::{FrameView, GpuHeap};
 
 const MAX_RETRIES: u32 = 64;
 // Bounds one park inside take_blocking: the next take is what notices a publisher restart.
@@ -229,12 +229,14 @@ impl Channel {
             mem,
             Stream::default(),
             trace::NO_STAMP,
+            false,
         )
     }
 
     /// As `create`, with frames produced on `stream`, declared once for the channel's life. On the
-    /// device-handle route the payload is a device allocation. `stamp_offset` is where the type's
-    /// `header.stamp` sits, for trace events (`trace::NO_STAMP` without one).
+    /// device-handle route the payload is a device allocation, unless `host_slots`: then the slots
+    /// stay in host memory and a frame's device fields go to the GPU arena. `stamp_offset` is
+    /// where the type's `header.stamp` sits, for trace events (`trace::NO_STAMP` without one).
     #[allow(clippy::too_many_arguments)]
     pub fn create_on(
         name: &str,
@@ -246,9 +248,10 @@ impl Channel {
         mem: MemoryPolicy,
         stream: Stream,
         stamp_offset: i32,
+        host_slots: bool,
     ) -> Result<Channel> {
         check_slot_count(slot_count)?;
-        let device = if stream.declared() {
+        let device = if stream.declared() && !host_slots {
             let route = gpu::require_route(stream.device())?.route;
             (route == Route::DeviceHandle).then_some(stream.device())
         } else {
@@ -269,7 +272,7 @@ impl Channel {
         }
         let fence = Arc::new(FenceStats::default());
         let mut sh = ChannelShared::new(Arc::new(seg), stamp_offset);
-        sh.attach_device(&stream, &fence)?;
+        sh.attach_device(&stream, &fence, true)?;
         let mut ch = Channel::with_shared(Arc::new(sh).traced(), mem);
         ch.stream = stream;
         ch.fence = fence;
@@ -1062,7 +1065,7 @@ fn attach_subscriber(
 ) -> Result<(Arc<ChannelShared>, u32)> {
     let (seg, lease, epoch) = reader::subscribe(signpost, fingerprint, mem)?;
     let mut sh = ChannelShared::new(seg, stamp_offset);
-    sh.attach_device(stream, fence)?;
+    sh.attach_device(stream, fence, false)?;
     let _ = sh.lease.set(lease);
     Ok((Arc::new(sh).traced(), epoch))
 }

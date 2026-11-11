@@ -447,6 +447,7 @@ mod channel {
             mem,
             stream,
             crate::trace::NO_STAMP,
+            false,
         )
         .unwrap()
     }
@@ -580,6 +581,7 @@ mod channel {
             MemoryPolicy::default(),
             Stream::create().unwrap(),
             crate::trace::NO_STAMP,
+            false,
         )
         .unwrap();
         assert!(p.device_backed());

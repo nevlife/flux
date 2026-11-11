@@ -12,7 +12,8 @@ use std::ffi::{c_int, c_void};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::ptr::NonNull;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 
 use super::driver::{
     ATTR_HOST_NUMA_ID, ATTR_HOST_NUMA_VMM_SUPPORTED, ATTR_INTEGRATED, AllocFlags, AllocHandle,
@@ -27,7 +28,7 @@ use crate::arena::{self as host_arena, Heap};
 use crate::error::{Error, Result};
 use crate::sys::{self, PiMutex};
 
-/// One allocation each, so a 2 GiB arena is 64 descriptors at most. A multiple of the 2 MiB
+/// One allocation each, so a 1 GiB arena is 32 descriptors at most. A multiple of the 2 MiB
 /// granularity the GPUs flux runs on report.
 pub const CHUNK: usize = 32 << 20;
 const NOT_SUPPORTED: i32 = 801;
@@ -94,9 +95,73 @@ struct Target {
     base: DevicePtr,
 }
 
+/// Where a publisher with this `id` serves its chunks.
+fn endpoint_of(id: u64) -> String {
+    format!("/dev/shm/{ENDPOINT_PREFIX}arena-{id:016x}")
+}
+
+/// What a frame's GPU trailer says about the arena its blocks are in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuFrame {
+    pub id: u64,
+    pub uuid: [u8; 16],
+    pub place: Place,
+    pub size: usize,
+    /// Chunks made when the frame was committed: its blocks are inside them.
+    pub chunks: u32,
+}
+
+const DEVICE_TAG: u8 = 1;
+const HOST_NUMA_TAG: u8 = 2;
+
+impl GpuFrame {
+    pub fn encode(&self) -> [u8; host_arena::TRAILER_BYTES] {
+        let mut t = [0u8; host_arena::TRAILER_BYTES];
+        t[..8].copy_from_slice(&self.id.to_le_bytes());
+        t[8..24].copy_from_slice(&self.uuid);
+        let (tag, node) = match self.place {
+            Place::Device => (DEVICE_TAG, 0),
+            Place::HostNuma(n) => (HOST_NUMA_TAG, n),
+        };
+        t[24] = tag;
+        t[28..32].copy_from_slice(&node.to_le_bytes());
+        t[32..40].copy_from_slice(&(self.size as u64).to_le_bytes());
+        t[40..44].copy_from_slice(&self.chunks.to_le_bytes());
+        t
+    }
+
+    /// None for a trailer no publisher of this build writes: another process wrote it.
+    pub fn decode(t: &[u8]) -> Option<GpuFrame> {
+        let t: &[u8; host_arena::TRAILER_BYTES] = t.try_into().ok()?;
+        let u64_at = |i: usize| u64::from_le_bytes(t[i..i + 8].try_into().unwrap_or_default());
+        let u32_at = |i: usize| u32::from_le_bytes(t[i..i + 4].try_into().unwrap_or_default());
+        let node = i32::from_le_bytes(t[28..32].try_into().ok()?);
+        let place = match t[24] {
+            DEVICE_TAG => Place::Device,
+            HOST_NUMA_TAG => Place::HostNuma(node),
+            _ => return None,
+        };
+        let size = usize::try_from(u64_at(32)).ok()?;
+        let chunks = u32_at(40);
+        let fits = size > 0
+            && size <= host_arena::MAX_ARENA_BYTES
+            && size.is_multiple_of(CHUNK)
+            && chunks as usize <= size / CHUNK;
+        fits.then(|| GpuFrame {
+            id: u64_at(0),
+            uuid: t[8..24].try_into().unwrap_or_default(),
+            place,
+            size,
+            chunks,
+        })
+    }
+}
+
 /// The publisher side: this process's arena on one device.
 pub struct GpuArena {
     ordinal: i32,
+    id: u64,
+    uuid: [u8; 16],
     endpoint: String,
     size: usize,
     target: Target,
@@ -245,10 +310,10 @@ impl GpuArena {
                 io::Error::last_os_error(),
             ));
         };
-        let endpoint = format!(
-            "/dev/shm/{ENDPOINT_PREFIX}arena-{:016x}",
-            host_arena::random()
-        );
+        let uuid = vmm::device_uuid(ordinal)
+            .ok_or_else(|| Error::Unsupported("cuDeviceGetUuid failed".into()))?;
+        let id = host_arena::random();
+        let endpoint = endpoint_of(id);
         let chunks = Arc::new(PiMutex::new(Vec::new()));
         let server = FdServer::start(&endpoint, Share::Chunks(Arc::clone(&chunks)))?;
         let target = Target {
@@ -269,6 +334,8 @@ impl GpuArena {
         let heap = heap.map_err(|e| Error::io("the first GPU arena chunk", &endpoint, e))?;
         Ok(GpuArena {
             ordinal,
+            id,
+            uuid,
             endpoint,
             size,
             target,
@@ -331,6 +398,21 @@ impl GpuArena {
     pub fn place(&self) -> Place {
         self.target.place
     }
+
+    pub fn ordinal(&self) -> i32 {
+        self.ordinal
+    }
+
+    /// What a frame committed now says of this arena.
+    pub fn frame(&self) -> GpuFrame {
+        GpuFrame {
+            id: self.id,
+            uuid: self.uuid,
+            place: self.target.place,
+            size: self.size,
+            chunks: self.chunks(),
+        }
+    }
 }
 
 /// Only an arena that is not the process's (a test's) goes. The process's endpoint file outlives
@@ -371,14 +453,57 @@ enum Cpu {
 
 /// A subscriber's read-only import of a publisher's arena.
 pub struct GpuArenaImport {
+    id: u64,
     endpoint: String,
     size: usize,
     place: Place,
+    ordinal: i32,
     device: c_int,
     ctx: usize,
     base: DevicePtr,
     inner: PiMutex<ImportInner>,
+    /// Chunks imported so far, read without the lock by each frame.
+    mapped: AtomicU32,
+    /// The CPU's base for every chunk once the first one picked the way; 0 for none.
+    cpu_base: AtomicUsize,
     born: u32,
+}
+
+/// The imports of this process, shared by every channel whose frames name the same arena.
+static IMPORTS: PiMutex<Vec<Weak<GpuArenaImport>>> = PiMutex::new(Vec::new());
+
+/// This process's import of the arena `f` names, opened on the device with its UUID. Chunks come
+/// with `reach`.
+pub fn import_for(f: &GpuFrame) -> Result<Arc<GpuArenaImport>> {
+    let born = sys::fork_gen();
+    let found = {
+        let mut all = IMPORTS.lock();
+        all.retain(|w| w.strong_count() > 0);
+        all.iter()
+            .filter_map(Weak::upgrade)
+            .find(|m| m.id == f.id && m.born == born)
+    };
+    let m = if let Some(m) = found {
+        m
+    } else {
+        let ordinal = vmm::device_for_uuid(&f.uuid).ok_or_else(|| {
+            Error::Mismatch("no device in this process has the GPU arena's UUID".into())
+        })?;
+        let m = Arc::new(GpuArenaImport::open_id(f.id, f.size, f.place, ordinal)?);
+        let mut all = IMPORTS.lock();
+        // Another thread may have opened it meanwhile; keep the first.
+        if let Some(first) = all
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|o| o.id == f.id && o.born == born)
+        {
+            first
+        } else {
+            all.push(Arc::downgrade(&m));
+            m
+        }
+    };
+    Ok(m)
 }
 
 struct ImportInner {
@@ -394,6 +519,20 @@ unsafe impl Send for GpuArenaImport {}
 impl GpuArenaImport {
     /// Reserves the range; chunks come with `reach`. `size` and `place` are the publisher's.
     pub fn open(endpoint: &str, size: usize, place: Place, ordinal: i32) -> Result<GpuArenaImport> {
+        GpuArenaImport::open_at(0, endpoint.to_owned(), size, place, ordinal)
+    }
+
+    fn open_id(id: u64, size: usize, place: Place, ordinal: i32) -> Result<GpuArenaImport> {
+        GpuArenaImport::open_at(id, endpoint_of(id), size, place, ordinal)
+    }
+
+    fn open_at(
+        id: u64,
+        endpoint: String,
+        size: usize,
+        place: Place,
+        ordinal: i32,
+    ) -> Result<GpuArenaImport> {
         let (core, vmm) = vmm::vmm()?;
         let ctx = core
             .primary_context(ordinal)
@@ -411,9 +550,11 @@ impl GpuArenaImport {
             return Err(Error::Unsupported("cuMemAddressReserve failed".into()));
         }
         Ok(GpuArenaImport {
-            endpoint: endpoint.to_owned(),
+            id,
+            endpoint,
             size,
             place,
+            ordinal,
             device,
             ctx: ctx as usize,
             base,
@@ -421,6 +562,8 @@ impl GpuArenaImport {
                 handles: Vec::new(),
                 cpu: Cpu::None,
             }),
+            mapped: AtomicU32::new(0),
+            cpu_base: AtomicUsize::new(0),
             born: sys::fork_gen(),
         })
     }
@@ -428,6 +571,9 @@ impl GpuArenaImport {
     /// Imports chunks until `chunks` of them are mapped. A round trip to the publisher, so a
     /// frame asks for this only when it reaches past what is mapped.
     pub fn reach(&self, chunks: u32) -> Result<()> {
+        if self.mapped.load(Ordering::Acquire) >= chunks {
+            return Ok(());
+        }
         let mut inner = self.inner.lock();
         #[allow(clippy::cast_possible_truncation)]
         let have = inner.handles.len() as u32;
@@ -448,12 +594,22 @@ impl GpuArenaImport {
             )));
         }
         let (core, vmm) = vmm::vmm()?;
-        core.with_context(self.ctx as *mut c_void, || {
+        let r = core.with_context(self.ctx as *mut c_void, || {
             for fd in &fds {
                 self.import(vmm, &mut inner, fd)?;
             }
             Ok(())
-        })
+        });
+        let cpu = match inner.cpu {
+            Cpu::None => 0,
+            Cpu::Import => usize::try_from(self.base).unwrap_or(0),
+            Cpu::Mapped(p) => p.as_ptr() as usize,
+        };
+        self.cpu_base.store(cpu, Ordering::Relaxed);
+        #[allow(clippy::cast_possible_truncation)]
+        self.mapped
+            .store(inner.handles.len() as u32, Ordering::Release);
+        r
     }
 
     fn import(&self, vmm: &Vmm, inner: &mut ImportInner, fd: &OwnedFd) -> Result<()> {
@@ -567,6 +723,27 @@ impl GpuArenaImport {
         self.base + off
     }
 
+    pub fn ordinal(&self) -> i32 {
+        self.ordinal
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// The bytes imported so far, from offset 0.
+    pub fn mapped_bytes(&self) -> usize {
+        self.mapped.load(Ordering::Acquire) as usize * CHUNK
+    }
+
+    /// The CPU's address of offset 0, for a `HOST_NUMA` arena once a chunk is imported. Each
+    /// later chunk lands at its offset from it.
+    pub fn host_base(&self) -> Option<*const u8> {
+        let any = self.mapped.load(Ordering::Acquire) > 0;
+        let p = self.cpu_base.load(Ordering::Relaxed);
+        (any && p != 0).then_some(p as *const u8)
+    }
+
     /// The CPU's view of `len` bytes at `off`, if this arena has one and they are mapped.
     pub fn host(&self, off: u64, len: usize) -> Option<*const u8> {
         let inner = self.inner.lock();
@@ -615,6 +792,63 @@ impl Drop for GpuArenaImport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(place: Place) -> GpuFrame {
+        GpuFrame {
+            id: 0x0123_4567_89ab_cdef,
+            uuid: [7; 16],
+            place,
+            size: 8 * CHUNK,
+            chunks: 3,
+        }
+    }
+
+    #[test]
+    fn a_gpu_trailer_reads_back_as_written() {
+        for place in [Place::Device, Place::HostNuma(1)] {
+            let f = frame(place);
+            assert_eq!(GpuFrame::decode(&f.encode()), Some(f));
+        }
+    }
+
+    #[test]
+    fn a_gpu_trailer_no_publisher_writes_is_refused() {
+        let mut t = frame(Place::Device).encode();
+        t[24] = 9;
+        assert_eq!(GpuFrame::decode(&t), None, "an unknown place");
+        let bad = [
+            GpuFrame {
+                chunks: 9,
+                ..frame(Place::Device)
+            },
+            GpuFrame {
+                size: CHUNK + 1,
+                ..frame(Place::Device)
+            },
+            GpuFrame {
+                size: host_arena::MAX_ARENA_BYTES + CHUNK,
+                ..frame(Place::Device)
+            },
+        ];
+        for f in bad {
+            assert_eq!(GpuFrame::decode(&f.encode()), None, "{f:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_frame_whose_trailer_says_so_has_a_gpu_trailer() {
+        let mut frame = vec![0u8; 256];
+        let end = frame.len();
+        frame[end - 64..end - 48].copy_from_slice(b"flux-arena-v1\0\0\0");
+        assert!(host_arena::gpu_trailer(&frame).is_none());
+        frame[end - 64..end - 48].copy_from_slice(b"flux-arena-g1\0\0\0");
+        let t = host_arena::gpu_trailer(&frame).expect("a GPU trailer");
+        assert_eq!(t.as_ptr(), frame[end - 128..].as_ptr());
+        assert!(
+            host_arena::gpu_trailer(&frame[end - 100..]).is_none(),
+            "too short for both"
+        );
+    }
 
     #[test]
     fn a_frame_past_the_arena_is_refused() {

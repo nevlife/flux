@@ -47,6 +47,14 @@ constexpr std::size_t kMaxFrameBytes = 0xFFFFFFFFu;  // descriptors are uint32
 constexpr std::size_t kHeapBase = std::size_t{1} << 31;
 // Room the commit needs at the frame's end to name the arena: 64 bytes on an 8-byte boundary.
 constexpr std::size_t kHeapTrailer = 64 + 7;
+// From here up a descriptor offset is kGpuBase + an offset into the publisher's GPU arena, which
+// the frame's trailer names (FLUX_GPU_HEAP_BASE). Each arena has a quarter of the u32 range.
+constexpr std::size_t kGpuBase = std::size_t{3} << 30;
+constexpr std::size_t kArenaSpan = std::size_t{1} << 30;
+// A frame with GPU arena blocks ends in that arena's trailer and then the host one.
+constexpr std::size_t kGpuTrailer = 128 + 7;
+// Device blocks start on this boundary, as cudaMalloc's do.
+constexpr std::size_t kDeviceAlign = 256;
 
 template <class T>
 class Span
@@ -67,6 +75,33 @@ private:
   std::size_t n_ = 0;
 };
 
+// Elements in device memory: an address for the GPU's work, not for the CPU to read.
+template <class T>
+class DeviceSpan
+{
+public:
+  DeviceSpan() = default;
+  DeviceSpan(T * p, std::size_t n) noexcept : p_(p), n_(n) {}
+
+  [[nodiscard]] auto data() const noexcept -> T * { return p_; }
+  [[nodiscard]] auto size() const noexcept -> std::size_t { return n_; }
+  [[nodiscard]] auto empty() const noexcept -> bool { return n_ == 0; }
+
+private:
+  T * p_ = nullptr;
+  std::size_t n_ = 0;
+};
+
+// The GPU arena a received frame's device fields are in (flux::FrameView::gpu_heap()): the device
+// and CPU addresses of its offset 0, each null where this reader has none, and the bytes both
+// cover.
+struct GpuHeap
+{
+  std::uint64_t device = 0;
+  const std::byte * host = nullptr;
+  std::size_t size = 0;
+};
+
 // Where a Writer puts what does not fit its slot. A loan's handle on the arena
 // (flux::WriteSlot::heap()), valid while the loan lives; empty for none. `base` is null until the
 // first alloc makes the arena; the Writer fills it in then.
@@ -84,6 +119,10 @@ struct Heap
   bool (*adopt)(
     const Heap &, const void * p, std::size_t bytes, void (*release)(void *), void * owner,
     std::uint64_t * off) = nullptr;
+  // GPU arena memory on the loan's device, owned as alloc's is: its device address, 0 for none.
+  // Set only on a channel that declared a stream.
+  std::uint64_t (*alloc_device)(
+    const Heap &, std::size_t bytes, std::size_t align, std::uint64_t * off) = nullptr;
 };
 
 namespace detail
@@ -264,12 +303,16 @@ class Reader
 {
 public:
   Reader() = default;
-  // `heap` is the arena the frame's trailer names, if any (flux::FrameView::heap()).
-  Reader(const void * base, std::size_t size, Span<const std::byte> heap = {}) noexcept
+  // `heap` is the arena the frame's trailer names, if any (flux::FrameView::heap()), and `gpu`
+  // its GPU arena (flux::FrameView::gpu_heap()).
+  Reader(
+    const void * base, std::size_t size, Span<const std::byte> heap = {},
+    const GpuHeap & gpu = {}) noexcept
   : base_(static_cast<const std::byte *>(base)),
     size_(size),
     heap_(heap.data()),
     heap_size_(heap.size()),
+    gpu_(gpu),
     bad_(base == nullptr)
   {
   }
@@ -278,8 +321,11 @@ public:
   explicit operator bool() const noexcept { return !bad_; }
   auto size() const noexcept -> std::size_t { return size_; }
   auto base() const noexcept -> const std::byte * { return base_; }
-  // The bytes descriptors can name: the frame's and its arena's.
-  auto budget() const noexcept -> std::size_t { return size_ + heap_size_; }
+  // The bytes descriptors can name on the CPU: the frame's and its arenas'.
+  auto budget() const noexcept -> std::size_t
+  {
+    return size_ + heap_size_ + (gpu_.host != nullptr ? gpu_.size : 0);
+  }
 
   template <class T>
   auto get(std::size_t off) const noexcept -> T
@@ -322,6 +368,25 @@ public:
     const Desc d = desc(off);
     const std::byte * p = region(d.off, d.len, sizeof(T), alignof(T));
     return p != nullptr ? Span<const T>(reinterpret_cast<const T *>(p), d.len) : Span<const T>();
+  }
+
+  // A variable array in the GPU arena, as the device reads it. Empty when it is elsewhere or this
+  // reader has no device address for it; empty and bad() when it runs past what was imported or
+  // is off T's boundary.
+  template <class T>
+  auto device(std::size_t off) const noexcept -> DeviceSpan<const T>
+  {
+    const Desc d = desc(off);
+    if (bad_ || d.off < kGpuBase || gpu_.device == 0) {
+      return {};
+    }
+    const std::size_t at = d.off - kGpuBase;
+    if (at % alignof(T) != 0 || at > gpu_.size || d.len > (gpu_.size - at) / sizeof(T)) {
+      bad_ = true;
+      return {};
+    }
+    // NOLINTNEXTLINE(performance-no-int-to-ptr): a device address, never dereferenced here
+    return {reinterpret_cast<const T *>(gpu_.device + at), d.len};
   }
 
   auto str(std::size_t off) const noexcept -> std::string_view
@@ -387,7 +452,11 @@ private:
   {
     const std::byte * base = base_;
     std::size_t size = size_;
-    if (off >= kHeapBase) {
+    if (off >= kGpuBase) {
+      base = gpu_.host;
+      size = gpu_.size;
+      off -= kGpuBase;
+    } else if (off >= kHeapBase) {
       base = heap_;
       size = heap_size_;
       off -= kHeapBase;
@@ -403,6 +472,7 @@ private:
   std::size_t size_ = 0;
   const std::byte * heap_ = nullptr;
   std::size_t heap_size_ = 0;
+  GpuHeap gpu_;
   mutable bool bad_ = false;
 };
 
@@ -419,8 +489,9 @@ public:
   : base_(static_cast<std::byte *>(base)),
     cap_(capacity),
     used_(scalar_bytes),
+    trailer_(heap.alloc_device != nullptr ? kGpuTrailer : kHeapTrailer),
     // No room for the trailer that names the arena: the slot alone it is.
-    heap_(scalar_bytes + kHeapTrailer <= capacity ? heap : Heap{}),
+    heap_(scalar_bytes + trailer_ <= capacity ? heap : Heap{}),
     bad_(base == nullptr || scalar_bytes > capacity)
   {
     if (!bad_) {
@@ -469,6 +540,35 @@ public:
   {
     void * p = reserve(off, n, sizeof(T), align > alignof(T) ? align : alignof(T), false);
     return p ? Span<T>(static_cast<T *>(p), n) : Span<T>();
+  }
+
+  // n elements in the GPU arena on the loan's device, with the descriptor at `off`. Write them on
+  // the channel's stream: the commit waits for it. Empty, and bad() unless n is 0, without a GPU
+  // arena or room in it.
+  template <class T>
+  auto alloc_device(std::size_t off, std::size_t n) noexcept -> DeviceSpan<T>
+  {
+    static_assert(std::is_trivially_copyable_v<T>);
+    std::byte * dp = at(off, 1, sizeof(Desc));
+    if (dp == nullptr) {
+      return {};
+    }
+    Desc d{0, 0};
+    std::uint64_t p = 0;
+    if (n != 0) {
+      std::uint64_t aoff = 0;
+      if (heap_.alloc_device != nullptr && n <= kArenaSpan / sizeof(T)) {
+        p = heap_.alloc_device(heap_, n * sizeof(T), kDeviceAlign, &aoff);
+      }
+      if (p == 0) {
+        bad_ = true;
+        return {};
+      }
+      d = {static_cast<std::uint32_t>(kGpuBase + aoff), static_cast<std::uint32_t>(n)};
+    }
+    std::memcpy(dp, &d, sizeof(d));
+    // NOLINTNEXTLINE(performance-no-int-to-ptr): a device address, never dereferenced here
+    return {reinterpret_cast<T *>(p), n};
   }
 
   // A C-contiguous tensor of `shape` in a tensor message: its dtype, shape, empty strides and
@@ -604,6 +704,10 @@ private:
   {
     std::byte * base = base_;
     std::size_t size = cap_;
+    if (off >= kGpuBase) {
+      bad_ = true;  // device memory: not the CPU's to write
+      return nullptr;
+    }
     if (off >= kHeapBase) {
       base = heap_.base;
       size = heap_.size;
@@ -628,7 +732,7 @@ private:
       return nullptr;
     }
     const bool heap = heap_.alloc != nullptr;
-    const std::size_t cap = heap && cap_ >= kHeapTrailer ? cap_ - kHeapTrailer : cap_;
+    const std::size_t cap = heap && cap_ >= trailer_ ? cap_ - trailer_ : cap_;
     const std::size_t limit = heap ? kHeapBase : kMaxFrameBytes;
     const std::size_t start = detail::align_up(used_, align);
     std::byte * p = nullptr;
@@ -663,6 +767,7 @@ private:
   std::byte * base_ = nullptr;
   std::size_t cap_ = 0;
   std::size_t used_ = 0;
+  std::size_t trailer_ = kHeapTrailer;
   Heap heap_;
   bool bad_ = false;
 };

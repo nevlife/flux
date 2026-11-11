@@ -93,9 +93,40 @@ if frame is not None:
 | `__dlpack__` | 범위가 끝나고 그 capsule로 만든 tensor가 모두 사라질 때 |
 | `__cuda_array_interface__` | `Frame` 객체가 사라질 때 |
 
+## 생성 메시지의 장치 필드
+
+생성된 adapter 메시지의 숫자 배열 필드는 GPU에서 쓰고 GPU에서 읽는다. 나머지 필드(header, 문자열, 작은 값)는 호스트 슬롯에 그대로 둔다.
+
+```cpp
+using Image = sensor_msgs::flux_msg::Image;
+flux::Publisher pub(*node, "image", Image::kFingerprint, 1U << 16U, 4, flux::Device::Cuda);
+
+flux::WriteSlot slot = pub.loan();
+Image::Builder b(slot);
+b.set__encoding("rgb8");
+const flux::wire::DeviceSpan<std::uint8_t> data = b.alloc_device__data(bytes);
+launch_my_kernel(data.data(), data.size(), slot.stream());
+b.commit__();
+```
+
+```cpp
+const Image::View m(frame);
+const flux::wire::DeviceSpan<const std::uint8_t> data = m.data__device();
+read_on_device(data.data(), data.size(), frame.stream());
+```
+
+- 생성 타입의 fingerprint로 stream을 선언한 발행자는 외장 GPU에서도 슬롯이 호스트 메모리다(`device_backed()`가 false). 그 발행자의 loan은 `device_ptr()`이 0이다.
+- `alloc_device__<필드>(n)`은 그 필드를 발행 프로세스의 GPU arena에 잡는다. 통합 GPU에서는 CPU와 GPU가 함께 읽는 호스트 메모리이고, 외장 GPU에서는 장치 메모리다. 채널 stream에 쓴다. commit이 그 stream을 기다린다.
+- GPU arena는 프로세스에 장치마다 하나이고 32 MiB 단위로 커진다. 크기는 `FLUX_ARENA_BYTES`(기본이자 최대 1 GiB)이고 호스트 arena도 같은 값을 쓴다. 블록은 그 프레임의 슬롯을 다시 쓸 때 푼다.
+- 받는 쪽의 `<필드>__device()`가 장치 주소와 개수를 준다. 구독 stream이 발행자와 같은 장치(UUID)에 있어야 하고, 아니면 빈 값이다.
+- 통합 GPU에서는 CPU 구독자도 그 필드를 보통 접근자로 복사 없이 읽는다. 외장 GPU의 CPU 구독자는 아직 읽지 못한다. 그 필드는 빈 값이고 `ok__()`가 false다.
+- CPU 발행자가 `alloc__`로 쓴 필드는 `__device()`가 빈 값이다.
+- 장치 필드를 쓴 프레임은 슬롯 끝 128바이트에 두 arena의 이름을 담는다. 그래서 stream을 선언한 발행자의 `Builder`는 슬롯의 마지막 135바이트를 가변 필드에 쓰지 않는다.
+- Python에는 아직 없다. 확인한 장비는 RTX 4070 SUPER이고, Jetson에서는 돌려 보지 않았다.
+
 ## 장치 메모리 채널(`DeviceHandle`)
 
-외장 GPU에서 GPU 발행자의 채널은 데이터가 장치 메모리에만 있다. CPU 메모리와 장치 메모리가 떨어져 있으므로, 메모리의 반대편에 있는 쪽은 프레임마다 한 번 복사한다.
+외장 GPU에서 GPU 발행자의 채널은 데이터가 장치 메모리에만 있다. 생성 메시지의 발행자는 예외다(위 절). CPU 메모리와 장치 메모리가 떨어져 있으므로, 메모리의 반대편에 있는 쪽은 프레임마다 한 번 복사한다.
 
 | 발행 → 구독 | 통합 GPU | 외장 GPU |
 | --- | --- | --- |

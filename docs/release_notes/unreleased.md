@@ -27,7 +27,8 @@
 * `flux_wrapper`가 `sensor_msgs/Image`와 `PointCloud2`를 GPU 메모리째 보내고 받는다(C++ `Device::Cuda`, Python `device="cuda"`). flux가 없으면 호스트로 복사해 ROS 메시지로 보낸다. `Cuda` 구독은 CPU 발행자와 ROS 경로의 메시지도 장치 메모리로 받는다(C++)
 * `record_flux`가 프레임의 aux와 채널의 `aux_size`를 `FluxFrame.meta` 끝에 담고, `play_flux`가 같은 `aux_size`로 발행자를 만들어 aux와 함께 발행한다. `flux_wrapper`의 GPU 이미지 채널도 헤더와 함께 녹화하고 재생한다. aux를 담은 bag은 이전 `flux_bag`이 읽지 못한다
 * 구독이 콜백 뒤에도 프레임을 복사 없이 들고 있을 수 있다. C++ `flux::Subscription`의 콜백은 `FrameView`를 move해서 들고 있고, `flux_wrapper`의 콜백은 `std::shared_ptr<const View<Msg>>`를 받아 들고 있는다. 들고 있을 수는 `max_borrow`이고, 슬롯이 그보다 적은 발행자는 거절한다
-* 생성된 adapter의 가변 필드가 슬롯에 들어가지 않으면 발행 프로세스의 공유메모리 arena에 들어간다. `slot_size`를 메시지의 최대 크기에 맞추지 않아도 된다. 크기는 `FLUX_ARENA_BYTES`(기본 2 GiB, 페이지는 쓰는 만큼 잡는다)로 정한다
+* 생성된 adapter의 가변 필드가 슬롯에 들어가지 않으면 발행 프로세스의 공유메모리 arena에 들어간다. `slot_size`를 메시지의 최대 크기에 맞추지 않아도 된다. 크기는 `FLUX_ARENA_BYTES`(기본이자 최대 1 GiB, 페이지는 쓰는 만큼 잡는다)로 정한다
+* 생성된 adapter 메시지의 숫자 배열 필드를 GPU에서 쓰고 GPU에서 읽는다(C++ `alloc_device__<name>`, `<name>__device()`). 나머지 필드는 호스트 슬롯에 남는다. 외장 GPU에서도 그 발행자의 슬롯은 호스트 메모리이고, 필드는 프로세스마다 장치마다 하나인 GPU arena에 둔다
 * 라이브러리가 만든 버퍼를 복사 없이 필드로 넘긴다(`LD_PRELOAD=libflux_heaphook.so`, C++ `flux::ArenaScope`, Python `flux.arena_scope()`, 생성된 `adopt__<name>`)
 
 ### 버그 수정
@@ -76,6 +77,7 @@
 * `flux::Subscription::require_publisher_slots`
 * `flux_wrapper`: `SubscriptionOptions::max_borrow`, `Subscription::HeldCallback`, `View::after`
 * arena: C++ `flux::ArenaScope`, `WriteSlot::heap`, `FrameView::heap`, `wire::Heap`, 생성된 `adopt__<name>`, `View::budget__`. Python `flux.arena_scope`, 생성된 `adopt__<name>`, `flux.wire.Reader.budget`. C `flux_heap`, `flux_loan_heap`, `flux_heap_alloc`, `flux_heap_adopt`, `flux_view_heap`, `flux_arena_acquire`, `flux_arena_release`, `flux_arena_scope_enter`, `flux_arena_scope_leave`, `FLUX_HEAP_BASE`. 라이브러리 `libflux_heaphook.so`
+* GPU arena: C++ `wire::DeviceSpan`, `wire::GpuHeap`, `Writer::alloc_device`, `Reader::device`, `FrameView::gpu_heap`, 생성된 `alloc_device__<name>`와 `<name>__device`. C `flux_heap.gpu`, `flux_heap_alloc_device`, `flux_gpu_heap`, `flux_view_gpu_heap`, `flux_layout_register`, `FLUX_GPU_HEAP_BASE`
 
 ### 호환이 깨지는 변경
 
@@ -111,3 +113,5 @@
    # 후: 슬롯보다 큰 프레임을 전처럼 TooLarge로
    export FLUX_ARENA_BYTES=0
    ```
+
+5. C++에서 생성된 adapter 헤더를 포함한 프로세스가 그 타입의 fingerprint로 `Device::Cuda`(또는 `gpu::Stream`)를 선언해 발행자를 만들면, 외장 GPU에서도 슬롯이 호스트 메모리다. 전에는 장치 메모리 채널이었고, `Builder`는 쓰지 못했지만 원시 loan의 `device_ptr()`은 장치 주소였다. 이제 그 loan의 `device_ptr()`은 0이다. 원시 장치 loan에는 `kNoSchema`나 생성 타입이 아닌 fingerprint를 쓴다. Python 발행자는 바뀌지 않았다.

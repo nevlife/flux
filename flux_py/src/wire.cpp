@@ -277,7 +277,7 @@ auto heap_of(nb::handle h) -> flux::wire::Heap
   // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
   return flux::detail::heap_of(
     {reinterpret_cast<std::uint8_t *>(t[0]), t[1], reinterpret_cast<const void *>(t[2]),
-     static_cast<std::uint32_t>(t[3])});
+     static_cast<std::uint32_t>(t[3]), false});  // Python writes no device fields yet
   // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
 }
 

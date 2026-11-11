@@ -6,8 +6,12 @@
 
 use std::ffi::{CStr, c_void};
 
+use flux_core::arena::GPU_BASE;
 use flux_core::gpu::arena::{CHUNK, GpuArena, GpuArenaImport, Place};
 use flux_core::gpu::{Stream, probe};
+use flux_core::{
+    Channel, DEFAULT_MAX_SUBSCRIBERS, MemoryPolicy, Published, PublisherWatch, QoS, signpost_name,
+};
 
 const CHILD: &str = "FLUX_GPU_ARENA_CHILD";
 
@@ -172,4 +176,85 @@ fn host_numa_chunks_reach_another_processs_cpu_and_gpu() {
         "host_numa_chunks_reach_another_processs_cpu_and_gpu",
         Place::HostNuma(0),
     );
+}
+
+const FINGERPRINT: u64 = 0x5eed;
+
+/// Frames of the channel test: a descriptor-like word, `GPU_BASE` + the run's arena offset, then
+/// the run's length, then its fill byte.
+const RUNS: [(usize, u8); 2] = [(3 << 20, 0x51), (40 << 20, 0x52)];
+
+/// The child's half: a subscriber on a stream of its own reads each frame's run on the device.
+fn subscribe_runs(cu: &Cuda) {
+    let name = std::env::var("FLUX_GPU_ARENA_CHANNEL").unwrap();
+    let watch = PublisherWatch::open(&name).unwrap();
+    let qos = QoS::new(4).unwrap().transient_local(4);
+    let mut ch = Channel::open_watched_on(
+        &watch,
+        FINGERPRINT,
+        qos,
+        MemoryPolicy::default(),
+        Stream::create().unwrap(),
+        -1,
+    )
+    .unwrap();
+    for (len, fill) in RUNS {
+        let v = ch
+            .take()
+            .expect("the publisher kept its frames for late subscribers");
+        let word = |i: usize| u64::from_le_bytes(v.data()[i * 8..i * 8 + 8].try_into().unwrap());
+        assert_eq!(word(1), len as u64);
+        let g = v
+            .gpu_heap()
+            .expect("the trailer names a GPU arena this process imports");
+        assert_ne!(g.device, 0);
+        let off = word(0) - GPU_BASE;
+        assert!(off + len as u64 <= g.size as u64);
+        let mut got = vec![0u8; len];
+        // SAFETY: got holds len bytes; the run is inside what was imported.
+        let rc = unsafe { (cu.copy)(got.as_mut_ptr().cast(), g.device + off, len) };
+        assert_eq!(rc, 0);
+        assert!(got.iter().all(|&b| b == fill), "the run of {len} bytes");
+    }
+}
+
+/// A host-slot channel that declared a stream: each frame's run is in the GPU arena, and the second
+/// reaches chunks the subscriber had not imported for the first.
+#[test]
+fn a_frame_names_its_device_run_to_a_subscriber_in_another_process() {
+    let test = "a_frame_names_its_device_run_to_a_subscriber_in_another_process";
+    let Some(cu) = cuda() else { return };
+    if std::env::var_os(CHILD).is_some() {
+        return subscribe_runs(&cu);
+    }
+    let name = signpost_name(&format!("/g{}_runs", std::process::id()), FINGERPRINT).unwrap();
+    let stream = Stream::create().unwrap();
+    let mut p = Channel::create_on(
+        &name,
+        4096,
+        4,
+        DEFAULT_MAX_SUBSCRIBERS,
+        0,
+        FINGERPRINT,
+        MemoryPolicy::default(),
+        stream.clone(),
+        -1,
+        true,
+    )
+    .unwrap();
+    assert!(!p.device_backed());
+    for (len, fill) in RUNS {
+        let mut w = p.loan().unwrap();
+        let heap = w.heap().unwrap();
+        assert!(heap.gpu);
+        // SAFETY: w is live.
+        let (at, off) = unsafe { heap.alloc_device(len, 256) }.unwrap();
+        // SAFETY: the run is len bytes of device memory this frame owns.
+        assert_eq!(unsafe { (cu.memset)(at, fill, len) }, 0);
+        let d = w.data_mut();
+        d[..8].copy_from_slice(&(GPU_BASE + off).to_le_bytes());
+        d[8..16].copy_from_slice(&(len as u64).to_le_bytes());
+        assert_eq!(w.commit_len(16), Published::Ok);
+    }
+    in_child(test, &[("FLUX_GPU_ARENA_CHANNEL", name.clone())]);
 }

@@ -3,7 +3,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use crate::arena::{self, TRAILER_BYTES};
+use crate::arena::{self, GPU_TRAILER_BYTES, TRAILER_BYTES};
 use crate::gpu::{self, Fenced, Seam, Stream};
 use crate::layout::{DType, FrameMeta, MAX_DIMS, SegmentLayout};
 use crate::segment::Mapped;
@@ -24,13 +24,14 @@ pub struct WriteSlot {
 /// A loan's handle on the process arena: plain data, so a binding copies it with its writer.
 /// Arena memory it hands out belongs to the loan's frame and is freed when its slot is claimed
 /// again. Use it only while the loan lives. `base` is null until the arena is made, by the first
-/// `alloc`.
+/// `alloc`. `gpu` when the channel declared a stream, so `alloc_device` may succeed.
 #[derive(Clone, Copy)]
 pub struct Heap {
     pub(super) sh: *const ChannelShared,
     pub(super) slot: u32,
     pub base: *mut u8,
     pub size: usize,
+    pub gpu: bool,
 }
 
 impl Heap {
@@ -40,13 +41,34 @@ impl Heap {
     }
 
     /// The handle `raw` and the arena fields describe.
-    pub fn from_raw(channel: *const c_void, slot: u32, base: *mut u8, size: usize) -> Heap {
+    pub fn from_raw(
+        channel: *const c_void,
+        slot: u32,
+        base: *mut u8,
+        size: usize,
+        gpu: bool,
+    ) -> Heap {
         Heap {
             sh: channel.cast(),
             slot,
             base,
             size,
+            gpu,
         }
+    }
+
+    /// `bytes` of the GPU arena on the channel stream's device: their device address and arena
+    /// offset. Write them on that stream; the commit waits for it.
+    ///
+    /// # Safety
+    /// The loan this came from is live.
+    pub unsafe fn alloc_device(&self, bytes: usize, align: usize) -> Option<(u64, u64)> {
+        // SAFETY: the live loan holds the channel.
+        let sh = unsafe { &*self.sh };
+        let a = sh.gpu_arena()?;
+        let off = a.alloc(bytes, align)?;
+        sh.own(self.slot, Owned::Gpu(a, off));
+        Some((a.device_ptr(off), off))
     }
 
     /// `bytes` of arena memory and their arena offset.
@@ -143,6 +165,7 @@ impl WriteSlot {
             slot: self.slot,
             base: arena::existing().map_or(std::ptr::null_mut(), arena::Arena::base),
             size: arena::configured()?,
+            gpu: self.sh.gpu.as_ref().is_some_and(|g| g.stream.declared()),
         })
     }
 
@@ -191,21 +214,37 @@ impl WriteSlot {
     pub fn commit_len(mut self, nbytes: usize) -> Published {
         let mut nbytes = nbytes;
         // Claiming the slot freed what its last frame owned, so anything owned now is this one's.
-        if self.sh.owns_any(self.slot)
-            && let Some(a) = arena::existing()
-        {
+        if self.sh.owns_any(self.slot) {
+            let (host, gpu) = self.sh.owned_kinds(self.slot);
+            let host = if host { arena::existing() } else { None };
+            let gpu = if gpu {
+                self.sh.gpu_arena().map(|g| g.frame().encode())
+            } else {
+                None
+            };
             let at = nbytes.next_multiple_of(8);
-            if at + TRAILER_BYTES > self.capacity() {
+            let len = if gpu.is_some() {
+                GPU_TRAILER_BYTES
+            } else {
+                TRAILER_BYTES
+            };
+            if at + len > self.capacity() || (host.is_none() && gpu.is_none()) {
                 self.sh.abort(self.slot);
                 self.end(trace::LOAN_TOO_LARGE);
                 return Published::TooLarge;
             }
-            let t = a.trailer();
-            // SAFETY: at + 64 <= capacity, inside the slot.
+            let host_t = arena::trailer(host, gpu.is_some());
+            // SAFETY: at + len <= capacity, inside the slot.
             let dst = unsafe { self.sh.seg.payload(self.slot).add(at) };
-            // SAFETY: the claim makes this the only access to the slot.
-            unsafe { std::ptr::copy_nonoverlapping(t.as_ptr(), dst, TRAILER_BYTES) };
-            nbytes = at + TRAILER_BYTES;
+            if let Some(g) = &gpu {
+                // SAFETY: the claim makes this the only access to the slot; 64 <= len.
+                unsafe { std::ptr::copy_nonoverlapping(g.as_ptr(), dst, TRAILER_BYTES) };
+            }
+            // SAFETY: the last 64 of the len bytes at dst.
+            let last = unsafe { dst.add(len - TRAILER_BYTES) };
+            // SAFETY: as above.
+            unsafe { std::ptr::copy_nonoverlapping(host_t.as_ptr(), last, TRAILER_BYTES) };
+            nbytes = at + len;
         }
         let m = &mut self.meta;
         let n = nbytes as u64;

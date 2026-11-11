@@ -71,7 +71,9 @@ void relocate(C & to, C & from) noexcept
 
 inline auto raw_heap(const wire::Heap & h) noexcept -> flux_heap
 {
-  return {reinterpret_cast<std::uint8_t *>(h.base), h.size, h.channel, h.slot};  // NOLINT
+  return {
+    reinterpret_cast<std::uint8_t *>(h.base), h.size, h.channel, h.slot,  // NOLINT
+    h.alloc_device != nullptr};
 }
 
 // A loan's flux_heap as the Writer takes it; empty when there is no arena.
@@ -95,6 +97,13 @@ inline auto heap_of(const flux_heap & h) noexcept -> wire::Heap
     const flux_heap r = raw_heap(x);
     return flux_heap_adopt(&r, static_cast<const std::uint8_t *>(p), n, release, owner, off);
   };
+  if (h.gpu) {
+    w.alloc_device =
+      [](const wire::Heap & x, std::size_t n, std::size_t a, std::uint64_t * off) -> std::uint64_t {
+      const flux_heap r = raw_heap(x);
+      return flux_heap_alloc_device(&r, n, a, off);
+    };
+  }
   return w;
 }
 }  // namespace detail
@@ -420,6 +429,16 @@ public:
     std::size_t n = 0;
     const auto * p = flux_view_heap(raw(), &n);
     return {reinterpret_cast<const std::byte *>(p), p != nullptr ? n : 0};  // NOLINT
+  }
+  // The GPU arena the frame's device fields are in; empty for none, and for a CPU reader of one in
+  // device memory.
+  [[nodiscard]] auto gpu_heap() const noexcept -> wire::GpuHeap
+  {
+    flux_gpu_heap g{};
+    if (!flux_view_gpu_heap(raw(), &g)) {
+      return {};
+    }
+    return {g.device, reinterpret_cast<const std::byte *>(g.host), g.size};  // NOLINT
   }
 
   void release() noexcept { flux_view_release(&v_); }

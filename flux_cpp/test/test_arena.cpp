@@ -23,7 +23,7 @@ using Blob = flux_test::flux_msg::Blob;
 constexpr std::uint32_t kSlot = 4096;
 constexpr std::size_t kRun = 1 << 20;
 
-std::string topic(const char * name)
+auto topic(const char * name) -> std::string
 {
   return "/a" + std::to_string(getpid()) + "_" + name;
 }

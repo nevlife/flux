@@ -2,7 +2,8 @@
 //!
 //! A frame names arena bytes by offset, never by pointer, so a subscriber maps the file wherever
 //! it lands and a Python reader reads it as it reads a slot. A descriptor offset at or past
-//! `HEAP_BASE` is `HEAP_BASE` + an arena offset; the frame ends in a trailer naming the file.
+//! `HEAP_BASE` and below `GPU_BASE` is `HEAP_BASE` + an arena offset; the frame ends in a
+//! trailer naming the file. Offsets from `GPU_BASE` up are the GPU arena's (`gpu::arena`).
 //! The publisher frees what a frame owns when it claims that frame's slot again, so the slot's
 //! reader counts guard the arena bytes too.
 //!
@@ -28,10 +29,15 @@ mod heap;
 pub(crate) use heap::Heap;
 
 pub const HEAP_BASE: u64 = 1 << 31;
-/// Descriptors are u32 and the arena has the upper half.
-pub const MAX_ARENA_BYTES: usize = 1 << 31;
+pub const GPU_BASE: u64 = 3 << 30;
+/// Descriptors are u32: the arena has the third quarter of their range, the GPU arena the fourth.
+pub const MAX_ARENA_BYTES: usize = 1 << 30;
 pub const TRAILER_BYTES: usize = 64;
+/// A frame with GPU arena blocks: the GPU arena's trailer, then this one.
+pub const GPU_TRAILER_BYTES: usize = 2 * TRAILER_BYTES;
 const MAGIC: [u8; 16] = *b"flux-arena-v1\0\0\0";
+/// The same trailer, after a GPU arena's.
+const MAGIC_GPU: [u8; 16] = *b"flux-arena-g1\0\0\0";
 const NAME_BYTES: usize = TRAILER_BYTES - MAGIC.len();
 /// The creator holds a read lock on it while it lives; the sweep unlinks a file nobody holds.
 pub(crate) const LOCK_BYTE: i64 = 0;
@@ -252,12 +258,32 @@ impl Arena {
     }
 
     pub fn trailer(&self) -> [u8; TRAILER_BYTES] {
-        let mut t = [0u8; TRAILER_BYTES];
-        t[..MAGIC.len()].copy_from_slice(&MAGIC);
-        let n = self.name.len().min(NAME_BYTES - 1);
-        t[MAGIC.len()..MAGIC.len() + n].copy_from_slice(&self.name.as_bytes()[..n]);
-        t
+        trailer(Some(self), false)
     }
+}
+
+/// The trailer naming `arena`, or no arena (a frame with only GPU blocks); `gpu` when a GPU
+/// arena's trailer comes before it.
+pub fn trailer(arena: Option<&Arena>, gpu: bool) -> [u8; TRAILER_BYTES] {
+    let mut t = [0u8; TRAILER_BYTES];
+    t[..MAGIC.len()].copy_from_slice(if gpu { &MAGIC_GPU } else { &MAGIC });
+    if let Some(a) = arena {
+        let n = a.name.len().min(NAME_BYTES - 1);
+        t[MAGIC.len()..MAGIC.len() + n].copy_from_slice(&a.name.as_bytes()[..n]);
+    }
+    t
+}
+
+fn has_magic(t: &[u8]) -> bool {
+    t.get(..MAGIC.len())
+        .is_some_and(|m| m == MAGIC || m == MAGIC_GPU)
+}
+
+/// The GPU arena's trailer in `frame`, if its own says one comes before it.
+pub fn gpu_trailer(frame: &[u8]) -> Option<&[u8]> {
+    let at = frame.len().checked_sub(GPU_TRAILER_BYTES)?;
+    let t = frame.get(at..)?;
+    (t[TRAILER_BYTES..TRAILER_BYTES + MAGIC_GPU.len()] == MAGIC_GPU).then(|| &t[..TRAILER_BYTES])
 }
 
 /// A clean exit leaves no file. Subscribers keep their mappings; a crash leaves it to the sweep.
@@ -303,7 +329,7 @@ impl ArenaMap {
             .len()
             .checked_sub(TRAILER_BYTES)
             .and_then(|at| frame.get(at..))
-            .is_some_and(|t| t[..MAGIC.len()] == MAGIC && t[MAGIC.len()..] == self.name)
+            .is_some_and(|t| has_magic(t) && t[MAGIC.len()..] == self.name)
     }
 }
 
@@ -320,7 +346,7 @@ static MAPS: PiMutex<Vec<Weak<ArenaMap>>> = PiMutex::new(Vec::new());
 /// The arena name in `frame`'s trailer, if it has one naming an arena of this layout.
 fn trailer_name(frame: &[u8]) -> Option<[u8; NAME_BYTES]> {
     let t = frame.get(frame.len().checked_sub(TRAILER_BYTES)?..)?;
-    if t.get(..MAGIC.len())? != MAGIC {
+    if !has_magic(t) {
         return None;
     }
     let mut key = [0u8; NAME_BYTES];

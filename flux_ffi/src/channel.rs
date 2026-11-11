@@ -324,6 +324,7 @@ pub unsafe extern "C" fn flux_channel_create(
             mem.into(),
             stream,
             stamp_offset,
+            is_generated(fingerprint),
         )
     });
     status(r.map(|ch| {
@@ -979,6 +980,27 @@ pub extern "C" fn flux_stamp_offset(fingerprint: u64) -> i32 {
         .get(&fingerprint)
         .copied()
         .unwrap_or(crate::FLUX_NO_STAMP)
+}
+
+static GENERATED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+/// A generated type's fingerprint: its publishers that declare a stream keep host slots.
+#[unsafe(no_mangle)]
+pub extern "C" fn flux_layout_register(fingerprint: u64) {
+    let mut g = GENERATED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !g.contains(&fingerprint) {
+        g.push(fingerprint);
+    }
+}
+
+fn is_generated(fingerprint: u64) -> bool {
+    fingerprint != flux_core::NO_SCHEMA
+        && GENERATED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&fingerprint)
 }
 
 #[unsafe(no_mangle)]

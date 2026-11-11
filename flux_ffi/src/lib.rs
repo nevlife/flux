@@ -43,6 +43,7 @@ pub const FLUX_MAX_SUBSCRIBERS: u32 = 4096;
 pub const FLUX_MAX_AUX_SIZE: u32 = 32 * 1024;
 pub const FLUX_NO_STAMP: i32 = -1;
 pub const FLUX_HEAP_BASE: u64 = 0x8000_0000;
+pub const FLUX_GPU_HEAP_BASE: u64 = 0xC000_0000;
 
 const _: () = {
     assert!(FLUX_MAX_DIMS == flux_core::MAX_DIMS);
@@ -58,4 +59,5 @@ const _: () = {
     assert!(FLUX_MAX_AUX_SIZE == flux_core::MAX_AUX_SIZE);
     assert!(FLUX_NO_STAMP == flux_core::trace::NO_STAMP);
     assert!(FLUX_HEAP_BASE == flux_core::arena::HEAP_BASE);
+    assert!(FLUX_GPU_HEAP_BASE == flux_core::arena::GPU_BASE);
 };

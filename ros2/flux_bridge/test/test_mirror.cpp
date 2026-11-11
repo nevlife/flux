@@ -159,18 +159,16 @@ TEST_F(Mirror, AnUnwatchedMirrorHoldsNoReader)
   EXPECT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
-TEST_F(Mirror, ADeviceBackedPublisherIsRefused)
+// A generated type's publisher keeps host slots on a GPU too, so it mirrors as a host one does.
+// The device-backed refusal is left for a typed fingerprint whose header this process lacks.
+TEST_F(Mirror, ACudaPublisherOfAGeneratedTypeMirrorsItsHostSlots)
 {
   if (flux::gpu::probe().route == flux::gpu::Route::None) {
     GTEST_SKIP() << "no GPU route";
   }
   flux::Publisher pub(*node_, topic("cuda"), Imu::kFingerprint, kSlot, kSlots, flux::Device::Cuda);
-  try {
-    pub.mirror_to_ros();
-    FAIL() << "a device-backed mirror was accepted";
-  } catch (const flux::Error & e) {
-    EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
-  }
+  EXPECT_FALSE(pub.device_backed());
+  EXPECT_NO_THROW(pub.mirror_to_ros());
 }
 
 }  // namespace

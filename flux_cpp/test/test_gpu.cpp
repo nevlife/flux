@@ -3,6 +3,7 @@
 #include "flux/channel.hpp"
 #include "flux/publisher.hpp"
 #include "flux/subscription.hpp"
+#include "flux_test/flux/blob.hpp"
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -229,6 +230,91 @@ TEST_F(Gpu, PublisherAndSubscriptionTakeADevice)
   EXPECT_FALSE(sub.take());
   EXPECT_EQ(sub.fence_wait().release_waits, 1U);
   EXPECT_EQ(sub.fence_failed(), 0U);
+}
+
+// A generated type's publisher that declares a stream keeps host slots: the device field goes to
+// the GPU arena, and the small ones stay in the slot, for both kinds of subscriber.
+TEST_F(Gpu, ADeviceFieldGoesThroughTheGpuArena)
+{
+  using Blob = flux_test::flux_msg::Blob;
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto node = std::make_shared<rclcpp::Node>("flux_gpu_arena");
+  const std::string topic = "/gpu" + std::to_string(getpid()) + "_arena";
+  flux::Publisher pub(*node, topic, Blob::kFingerprint, 1 << 16, 4, flux::Device::Cuda);
+  EXPECT_FALSE(pub.device_backed());
+  flux::QoS q(4);
+  q.transient_local(4);
+  flux::Subscription gpu(*node, topic, Blob::kFingerprint, q, {}, flux::Device::Cuda);
+  flux::Subscription cpu(*node, topic, Blob::kFingerprint, q);
+  // The second frame reaches past the chunks the subscriber imported for the first.
+  for (const auto & [bytes, fill] :
+       {std::pair<std::size_t, unsigned char>{3 << 20, 0x41}, {40 << 20, 0x42}}) {
+    flux::WriteSlot w = pub.loan();
+    ASSERT_TRUE(w);
+    Blob::Builder b(w);
+    b.set__name("frame");
+    const flux::wire::DeviceSpan<std::uint8_t> d = b.alloc_device__data(bytes);
+    ASSERT_EQ(d.size(), bytes);
+    ASSERT_EQ(driver()->memset(addr(d.data()), fill, bytes, w.stream()), 0);
+    ASSERT_EQ(b.commit__(), flux::Published::Ok);
+
+    flux::FrameView v = gpu.take_blocking(1'000'000'000);
+    ASSERT_TRUE(v);
+    const Blob::View m(v);
+    EXPECT_EQ(m.name(), "frame");
+    const flux::wire::DeviceSpan<const std::uint8_t> got = m.data__device();
+    ASSERT_EQ(got.size(), bytes);
+    EXPECT_TRUE(all(read_back(got.data(), bytes), fill));
+    EXPECT_TRUE(m.ok__());
+    v.release();
+
+    // On a discrete GPU the arena is device memory, which a CPU reader does not see yet.
+    flux::FrameView c = cpu.take_blocking(1'000'000'000);
+    ASSERT_TRUE(c);
+    const Blob::View h(c);
+    EXPECT_EQ(h.name(), "frame");
+    EXPECT_TRUE(h.data__device().empty());
+    if (platform_.integrated) {
+      ASSERT_EQ(h.data().size(), bytes);
+      EXPECT_EQ(h.data()[bytes - 1], fill);
+    } else {
+      EXPECT_TRUE(h.data().empty());
+      EXPECT_FALSE(h.ok__());
+    }
+  }
+  EXPECT_EQ(gpu.fence_failed(), 0U);
+}
+
+// A slot's device block is freed when the slot is claimed again: frames that add up to more than
+// the arena all go out.
+TEST_F(Gpu, DeviceBlocksGoBackWithTheirSlots)
+{
+  using Blob = flux_test::flux_msg::Blob;
+  const std::string name = unique_name("arena_reuse");
+  auto pub = flux::detail::Channel::create(
+    name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
+    flux::gpu::Stream::create());
+  for (int i = 0; i < 40; ++i) {
+    flux::WriteSlot w = pub.loan();
+    ASSERT_TRUE(w);
+    Blob::Builder b(w);
+    ASSERT_EQ(b.alloc_device__data(std::size_t{40} << 20).size(), std::size_t{40} << 20) << i;
+    ASSERT_EQ(b.commit__(), flux::Published::Ok) << i;
+  }
+}
+
+// A raw tensor loan's channel keeps its device payload: the type registered nothing.
+TEST_F(Gpu, AnUnregisteredFingerprintKeepsTheDevicePayload)
+{
+  if (platform_.route != flux::gpu::Route::DeviceHandle) {
+    GTEST_SKIP() << "a host payload is the only one here";
+  }
+  auto pub = flux::detail::Channel::create(
+    unique_name("raw"), 1 << 16, 4, 0x1234, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
+    flux::gpu::Stream::create());
+  EXPECT_TRUE(pub.device_backed());
 }
 
 TEST_F(Gpu, ABoundedFenceWaitsForWorkThatEndsInTime)
