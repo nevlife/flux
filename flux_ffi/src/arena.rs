@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use flux_core::{FrameView, GpuHeap, Heap, WriteSlot};
+use flux_core::{FrameView, GpuBlock, GpuHeap, Heap, WriteSlot};
 
 use crate::channel::{LoanCell, bytes, flux_loan, flux_view, view_ref};
 
@@ -27,13 +27,28 @@ impl flux_heap {
     }
 }
 
-/// A frame's GPU arena (`flux_view_gpu_heap`): addresses of offset 0 (0 for none) and their reach.
+/// A frame's GPU arena (`flux_view_gpu_heap`): addresses of offset 0 (0 for none) and their reach,
+/// or, for a CPU subscriber of device memory, its copies of the frame's `count` blocks.
 #[repr(C)]
 pub struct flux_gpu_heap {
     pub device: u64,
     pub host: *const u8,
     pub size: usize,
+    pub blocks: *const flux_gpu_block,
+    pub count: usize,
 }
+
+#[repr(C)]
+pub struct flux_gpu_block {
+    pub off: u64,
+    pub len: u64,
+    pub host: *const u8,
+}
+
+const _: () = {
+    assert!(size_of::<flux_gpu_block>() == size_of::<GpuBlock>());
+    assert!(std::mem::offset_of!(flux_gpu_block, host) == std::mem::offset_of!(GpuBlock, host));
+};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_loan_heap(l: *const flux_loan) -> flux_heap {
@@ -138,13 +153,27 @@ pub unsafe extern "C" fn flux_view_heap(v: *const flux_view, size: *mut usize) -
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_view_gpu_heap(v: *const flux_view, out: *mut flux_gpu_heap) -> bool {
     // SAFETY: valid view storage.
-    let Some(GpuHeap { device, host, size }) =
-        unsafe { view_ref(v) }.get().and_then(FrameView::gpu_heap)
+    let Some(GpuHeap {
+        device,
+        host,
+        size,
+        blocks,
+        count,
+    }) = unsafe { view_ref(v) }.get().and_then(FrameView::gpu_heap)
     else {
         return false;
     };
+    let blocks = blocks.cast::<flux_gpu_block>();
     // SAFETY: out is valid for a write.
-    unsafe { out.write(flux_gpu_heap { device, host, size }) };
+    unsafe {
+        out.write(flux_gpu_heap {
+            device,
+            host,
+            size,
+            blocks,
+            count,
+        });
+    };
     true
 }
 

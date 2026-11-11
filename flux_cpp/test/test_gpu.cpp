@@ -233,7 +233,8 @@ TEST_F(Gpu, PublisherAndSubscriptionTakeADevice)
 }
 
 // A generated type's publisher that declares a stream keeps host slots: the device field goes to
-// the GPU arena, and the small ones stay in the slot, for both kinds of subscriber.
+// the GPU arena, and the small ones stay in the slot, for both kinds of subscriber. A CPU reader
+// of device memory reads its own copy.
 TEST_F(Gpu, ADeviceFieldGoesThroughTheGpuArena)
 {
   using Blob = flux_test::flux_msg::Blob;
@@ -270,21 +271,63 @@ TEST_F(Gpu, ADeviceFieldGoesThroughTheGpuArena)
     EXPECT_TRUE(m.ok__());
     v.release();
 
-    // On a discrete GPU the arena is device memory, which a CPU reader does not see yet.
     flux::FrameView c = cpu.take_blocking(1'000'000'000);
     ASSERT_TRUE(c);
     const Blob::View h(c);
     EXPECT_EQ(h.name(), "frame");
     EXPECT_TRUE(h.data__device().empty());
-    if (platform_.integrated) {
-      ASSERT_EQ(h.data().size(), bytes);
-      EXPECT_EQ(h.data()[bytes - 1], fill);
-    } else {
-      EXPECT_TRUE(h.data().empty());
-      EXPECT_FALSE(h.ok__());
-    }
+    ASSERT_EQ(h.data().size(), bytes);
+    EXPECT_EQ(h.data()[0], fill);
+    EXPECT_EQ(h.data()[bytes - 1], fill);
+    EXPECT_TRUE(h.ok__());
   }
   EXPECT_EQ(gpu.fence_failed(), 0U);
+}
+
+// Each device field of a frame is a block of its own, nested ones too, and a CPU reader finds
+// every one in its copy.
+TEST_F(Gpu, EveryDeviceBlockOfAFrameReachesACpuReader)
+{
+  using Blob = flux_test::flux_msg::Blob;
+  const std::string name = unique_name("arena_blocks");
+  auto pub = flux::detail::Channel::create(
+    name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
+    flux::gpu::Stream::create());
+  flux::WriteSlot w = pub.loan();
+  ASSERT_TRUE(w);
+  Blob::Builder b(w);
+  const auto data = b.alloc_device__data(5000);
+  ASSERT_EQ(driver()->memset(addr(data.data()), 0x21, 5000, w.stream()), 0);
+  const auto items = b.alloc__items(3);
+  for (std::size_t i = 0; i < items.size(); ++i) {
+    const auto ids = items[i].alloc_device__ids(100 * (i + 1));
+    ASSERT_EQ(ids.size(), 100 * (i + 1));
+    const auto fill = static_cast<unsigned char>(0x30 + i);
+    ASSERT_EQ(driver()->memset(addr(ids.data()), fill, ids.size() * 2, w.stream()), 0);
+  }
+  ASSERT_EQ(b.commit__(), flux::Published::Ok);
+
+  flux::QoS q(4);
+  q.transient_local(4);
+  flux::detail::Watch watch(name);
+  auto cpu = flux::detail::Channel::open(watch, Blob::kFingerprint, q);
+  flux::FrameView v = cpu.take();
+  ASSERT_TRUE(v);
+  const Blob::View m(v);
+  ASSERT_EQ(m.data().size(), 5000u);
+  EXPECT_EQ(m.data()[4999], 0x21);
+  ASSERT_EQ(m.items__size(), 3u);
+  for (std::size_t i = 0; i < 3; ++i) {
+    const auto ids = m.items(i).ids();
+    ASSERT_EQ(ids.size(), 100 * (i + 1));
+    const auto fill = static_cast<std::uint16_t>((0x30 + i) * 0x101);
+    EXPECT_EQ(ids[0], fill);
+    EXPECT_EQ(ids[ids.size() - 1], fill);
+  }
+  EXPECT_TRUE(m.ok__());
+  // A second View of the same frame reads the same copy.
+  const Blob::View again(v);
+  EXPECT_EQ(again.items(2).ids()[299], static_cast<std::uint16_t>(0x32 * 0x101));
 }
 
 // A slot's device block is freed when the slot is claimed again: frames that add up to more than

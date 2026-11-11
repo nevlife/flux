@@ -438,7 +438,13 @@ public:
     if (!flux_view_gpu_heap(raw(), &g)) {
       return {};
     }
-    return {g.device, reinterpret_cast<const std::byte *>(g.host), g.size};  // NOLINT
+    static_assert(sizeof(wire::GpuBlock) == sizeof(flux_gpu_block));
+    static_assert(offsetof(wire::GpuBlock, host) == offsetof(flux_gpu_block, host));
+    // NOLINTBEGIN(*-reinterpret-cast): the same layout, asserted above
+    return {
+      g.device, reinterpret_cast<const std::byte *>(g.host), g.size,
+      reinterpret_cast<const wire::GpuBlock *>(g.blocks), g.count};
+    // NOLINTEND(*-reinterpret-cast)
   }
 
   void release() noexcept { flux_view_release(&v_); }

@@ -184,11 +184,20 @@ typedef struct flux_view {
   uint64_t opaque[16];
 } flux_view;
 
-// A frame's GPU arena (`flux_view_gpu_heap`): addresses of offset 0 (0 for none) and their reach.
+typedef struct flux_gpu_block {
+  uint64_t off;
+  uint64_t len;
+  const uint8_t *host;
+} flux_gpu_block;
+
+// A frame's GPU arena (`flux_view_gpu_heap`): addresses of offset 0 (0 for none) and their reach,
+// or, for a CPU subscriber of device memory, its copies of the frame's `count` blocks.
 typedef struct flux_gpu_heap {
   uint64_t device;
   const uint8_t *host;
   size_t size;
+  const struct flux_gpu_block *blocks;
+  size_t count;
 } flux_gpu_heap;
 
 typedef struct flux_memory_policy {

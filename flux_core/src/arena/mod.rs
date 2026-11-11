@@ -33,8 +33,10 @@ pub const GPU_BASE: u64 = 3 << 30;
 /// Descriptors are u32: the arena has the third quarter of their range, the GPU arena the fourth.
 pub const MAX_ARENA_BYTES: usize = 1 << 30;
 pub const TRAILER_BYTES: usize = 64;
-/// A frame with GPU arena blocks: the GPU arena's trailer, then this one.
+/// A frame with GPU arena blocks: their list, the GPU arena's trailer, then this one.
 pub const GPU_TRAILER_BYTES: usize = 2 * TRAILER_BYTES;
+/// One entry of that list: the block's arena offset and length, each a little-endian u32.
+pub const GPU_BLOCK_BYTES: usize = 8;
 const MAGIC: [u8; 16] = *b"flux-arena-v1\0\0\0";
 /// The same trailer, after a GPU arena's.
 const MAGIC_GPU: [u8; 16] = *b"flux-arena-g1\0\0\0";
@@ -277,6 +279,13 @@ pub fn trailer(arena: Option<&Arena>, gpu: bool) -> [u8; TRAILER_BYTES] {
 fn has_magic(t: &[u8]) -> bool {
     t.get(..MAGIC.len())
         .is_some_and(|m| m == MAGIC || m == MAGIC_GPU)
+}
+
+/// The list of `n` GPU blocks before `frame`'s GPU arena trailer.
+pub fn gpu_blocks(frame: &[u8], n: u32) -> Option<&[u8]> {
+    let list = GPU_BLOCK_BYTES.checked_mul(n as usize)?;
+    let end = frame.len().checked_sub(GPU_TRAILER_BYTES)?;
+    frame.get(end.checked_sub(list)?..end)
 }
 
 /// The GPU arena's trailer in `frame`, if its own says one comes before it.

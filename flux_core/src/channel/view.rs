@@ -21,6 +21,20 @@ pub struct GpuHeap {
     /// Null for an arena in device memory.
     pub host: *const u8,
     pub size: usize,
+    /// For a CPU subscriber of an arena in device memory: this subscriber's copy of each of the
+    /// frame's blocks, `count` of them, valid while the view lives. Null otherwise.
+    pub blocks: *const GpuBlock,
+    pub count: usize,
+}
+
+/// A frame's GPU arena block as a CPU subscriber of device memory reads it: its arena offset and
+/// length, and where its copy is.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GpuBlock {
+    pub off: u64,
+    pub len: u64,
+    pub host: *const u8,
 }
 
 /// A borrowed frame. While it lives, the publisher does not rewrite its slot. The header is the
@@ -45,19 +59,18 @@ impl FrameView {
         m.names(data).then(|| m.bytes())
     }
 
-    /// The GPU arena the frame's trailer names. None for a frame without one, for a CPU
-    /// subscriber of an arena in device memory, and while it cannot be imported.
+    /// The GPU arena the frame's trailer names. None for a frame without one, and while it cannot
+    /// be imported or copied. A CPU subscriber of an arena in device memory copies the frame's
+    /// blocks on its first call, and the view's later calls read the copy.
     pub fn gpu_heap(&self) -> Option<GpuHeap> {
-        let f = GpuFrame::decode(arena::gpu_trailer(self.data())?)?;
+        let data = self.data();
+        let f = GpuFrame::decode(arena::gpu_trailer(data)?)?;
         let stream = self
             .sh
             .gpu
             .as_ref()
             .map(|g| &g.stream)
             .filter(|s| s.declared());
-        if f.place == Place::Device && stream.is_none() {
-            return None;
-        }
         let m = self
             .sh
             .gpu_import
@@ -73,12 +86,18 @@ impl FrameView {
         if m.id() != f.id || m.reach(f.chunks).is_err() {
             return None;
         }
+        if f.place == Place::Device && stream.is_none() {
+            let list = arena::gpu_blocks(data, f.blocks)?;
+            return self.sh.copy_gpu_blocks(self.slot, self.ticket, m, list);
+        }
         Some(GpuHeap {
             device: stream
                 .filter(|s| s.device() == m.ordinal())
                 .map_or(0, |_| m.device_ptr(0)),
             host: m.host_base().unwrap_or(std::ptr::null()),
             size: m.mapped_bytes(),
+            blocks: std::ptr::null(),
+            count: 0,
         })
     }
 

@@ -184,7 +184,8 @@ const FINGERPRINT: u64 = 0x5eed;
 /// the run's length, then its fill byte.
 const RUNS: [(usize, u8); 2] = [(3 << 20, 0x51), (40 << 20, 0x52)];
 
-/// The child's half: a subscriber on a stream of its own reads each frame's run on the device.
+/// The child's half: a subscriber on a stream of its own reads each frame's run on the device, and
+/// a CPU subscriber reads its copy.
 fn subscribe_runs(cu: &Cuda) {
     let name = std::env::var("FLUX_GPU_ARENA_CHANNEL").unwrap();
     let watch = PublisherWatch::open(&name).unwrap();
@@ -198,7 +199,23 @@ fn subscribe_runs(cu: &Cuda) {
         -1,
     )
     .unwrap();
+    let mut cpu = Channel::open_watched(&watch, FINGERPRINT, qos, MemoryPolicy::default()).unwrap();
     for (len, fill) in RUNS {
+        let c = cpu.take().expect("the CPU subscriber's frame");
+        let g = c
+            .gpu_heap()
+            .expect("a CPU subscriber's copy of the frame's blocks");
+        assert_eq!((g.device, g.count), (0, 1));
+        // SAFETY: count blocks at blocks, valid while c lives.
+        let b = unsafe { *g.blocks };
+        let off = u64::from_le_bytes(c.data()[..8].try_into().unwrap()) - GPU_BASE;
+        assert_eq!((b.off, b.len), (off, len as u64));
+        // SAFETY: the copy holds len bytes.
+        let copy = unsafe { std::slice::from_raw_parts(b.host, len) };
+        assert!(
+            copy.iter().all(|&x| x == fill),
+            "the CPU copy of {len} bytes"
+        );
         let v = ch
             .take()
             .expect("the publisher kept its frames for late subscribers");

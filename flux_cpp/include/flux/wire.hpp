@@ -51,8 +51,10 @@ constexpr std::size_t kHeapTrailer = 64 + 7;
 // the frame's trailer names (FLUX_GPU_HEAP_BASE). Each arena has a quarter of the u32 range.
 constexpr std::size_t kGpuBase = std::size_t{3} << 30;
 constexpr std::size_t kArenaSpan = std::size_t{1} << 30;
-// A frame with GPU arena blocks ends in that arena's trailer and then the host one.
+// A frame with GPU arena blocks ends in their list, that arena's trailer and then the host one:
+// 128 bytes on an 8-byte boundary, and kGpuBlockEntry more for each block.
 constexpr std::size_t kGpuTrailer = 128 + 7;
+constexpr std::size_t kGpuBlockEntry = 8;
 // Device blocks start on this boundary, as cudaMalloc's do.
 constexpr std::size_t kDeviceAlign = 256;
 
@@ -92,14 +94,25 @@ private:
   std::size_t n_ = 0;
 };
 
+// A GPU arena block as a CPU reader of device memory has it: its arena offset and length, and
+// the reader's copy.
+struct GpuBlock
+{
+  std::uint64_t off = 0;
+  std::uint64_t len = 0;
+  const std::byte * host = nullptr;
+};
+
 // The GPU arena a received frame's device fields are in (flux::FrameView::gpu_heap()): the device
 // and CPU addresses of its offset 0, each null where this reader has none, and the bytes both
-// cover.
+// cover. A CPU reader of device memory has `count` copied blocks instead.
 struct GpuHeap
 {
   std::uint64_t device = 0;
   const std::byte * host = nullptr;
   std::size_t size = 0;
+  const GpuBlock * blocks = nullptr;
+  std::size_t count = 0;
 };
 
 // Where a Writer puts what does not fit its slot. A loan's handle on the arena
@@ -324,7 +337,11 @@ public:
   // The bytes descriptors can name on the CPU: the frame's and its arenas'.
   auto budget() const noexcept -> std::size_t
   {
-    return size_ + heap_size_ + (gpu_.host != nullptr ? gpu_.size : 0);
+    std::size_t copied = 0;
+    for (std::size_t i = 0; i < gpu_.count; ++i) {
+      copied += static_cast<std::size_t>(gpu_.blocks[i].len);
+    }
+    return size_ + heap_size_ + (gpu_.host != nullptr ? gpu_.size : copied);
   }
 
   template <class T>
@@ -456,6 +473,9 @@ private:
       base = gpu_.host;
       size = gpu_.size;
       off -= kGpuBase;
+      if (base == nullptr && !bad_) {
+        return copied(off, n, esize, align);
+      }
     } else if (off >= kHeapBase) {
       base = heap_;
       size = heap_size_;
@@ -470,6 +490,20 @@ private:
 
   const std::byte * base_ = nullptr;
   std::size_t size_ = 0;
+  // The same in the copy of the GPU arena block that holds all of it.
+  auto copied(std::size_t off, std::size_t n, std::size_t esize, std::size_t align) const noexcept
+    -> const std::byte *
+  {
+    for (std::size_t i = 0; off % align == 0 && i < gpu_.count; ++i) {
+      const GpuBlock & b = gpu_.blocks[i];
+      if (off >= b.off && off - b.off <= b.len && n <= (b.len - (off - b.off)) / esize) {
+        return b.host + (off - b.off);
+      }
+    }
+    bad_ = true;
+    return nullptr;
+  }
+
   const std::byte * heap_ = nullptr;
   std::size_t heap_size_ = 0;
   GpuHeap gpu_;
@@ -556,14 +590,18 @@ public:
     Desc d{0, 0};
     std::uint64_t p = 0;
     if (n != 0) {
+      // The trailer lists the block: its entry must fit past what the slot holds.
       std::uint64_t aoff = 0;
-      if (heap_.alloc_device != nullptr && n <= kArenaSpan / sizeof(T)) {
+      if (
+        heap_.alloc_device != nullptr && n <= kArenaSpan / sizeof(T) &&
+        used_ + trailer_ + kGpuBlockEntry <= cap_) {
         p = heap_.alloc_device(heap_, n * sizeof(T), kDeviceAlign, &aoff);
       }
       if (p == 0) {
         bad_ = true;
         return {};
       }
+      trailer_ += kGpuBlockEntry;
       d = {static_cast<std::uint32_t>(kGpuBase + aoff), static_cast<std::uint32_t>(n)};
     }
     std::memcpy(dp, &d, sizeof(d));

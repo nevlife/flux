@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock, Weak};
 use crate::arena::{self, ArenaMap};
 use crate::error::{Error, Result};
 use crate::executor::Control;
-use crate::gpu::arena::{GpuArena, gpu_arena};
+use crate::gpu::arena::{GpuArena, GpuArenaImport, gpu_arena};
 use crate::gpu::{
     self, DevicePayload, FenceStats, Fenced, HostRegistration, Late, Route, Seam, Stream, ledger,
 };
@@ -18,7 +18,11 @@ use crate::segment::Segment;
 use crate::sys::{self, PiMutex};
 use crate::trace::event;
 
+use super::view::{GpuBlock, GpuHeap};
 use super::{COUNT_CORRUPT, SWEEP_NS};
+
+/// Where each block's copy starts in a subscriber's buffer, as the device's blocks do.
+const COPY_ALIGN: usize = 256;
 
 /// A channel that declared a stream, or a host subscriber of a device payload: the device address
 /// of slot 0's payload and the stream both seams wait for.
@@ -95,15 +99,33 @@ pub struct ChannelShared {
     /// Subscriber side: the publisher's GPU arena, imported by the first frame that named it;
     /// None once that failed.
     pub(super) gpu_import: OnceLock<Option<Arc<gpu::arena::GpuArenaImport>>>,
+    /// A CPU subscriber of a GPU arena in device memory, per slot: its copy of the blocks of the
+    /// frame it read last there.
+    pub(super) gpu_copies: PiMutex<Vec<SlotCopy>>,
+    /// The stream those copies run on, made by the first.
+    pub(super) copy_stream: OnceLock<Option<Stream>>,
 }
+
+/// One slot's copy of a frame's GPU arena blocks. Rewritten only for another frame in the slot,
+/// which cannot come while a view of this one holds the slot.
+#[derive(Default)]
+pub(super) struct SlotCopy {
+    ticket: u64,
+    buf: Option<gpu::HostBuffer>,
+    cap: usize,
+    blocks: Vec<GpuBlock>,
+}
+
+// SAFETY: the block pointers are into `buf`, which the copy owns.
+unsafe impl Send for SlotCopy {}
 
 /// Arena memory a frame owns.
 pub enum Owned {
     Block(u64),
     /// Memory a binding allocated in the arena and keeps alive until `release(ctx)`.
     Adopted(unsafe extern "C" fn(*mut c_void), *mut c_void),
-    /// A block of the GPU arena.
-    Gpu(&'static GpuArena, u64),
+    /// A block of the GPU arena: its offset and length.
+    Gpu(&'static GpuArena, u64, u32),
 }
 
 // SAFETY: the adopter promises its release may run on whichever thread claims the slot.
@@ -158,7 +180,85 @@ impl ChannelShared {
             arena_map: OnceLock::new(),
             gpu_arena: OnceLock::new(),
             gpu_import: OnceLock::new(),
+            gpu_copies: PiMutex::new(Vec::new()),
+            copy_stream: OnceLock::new(),
         }
+    }
+
+    /// The frame `ticket` in `slot` with its GPU blocks (`list`, the trailer's) copied from `m` to
+    /// this subscriber's pinned memory, once per frame. The view's borrow keeps the publisher
+    /// from freeing the blocks meanwhile. None when the list names bytes `m` has not imported,
+    /// or the driver refused.
+    pub(super) fn copy_gpu_blocks(
+        &self,
+        slot: u32,
+        ticket: u64,
+        m: &GpuArenaImport,
+        list: &[u8],
+    ) -> Option<GpuHeap> {
+        if self.inherited() {
+            return None;
+        }
+        let stream = self
+            .copy_stream
+            .get_or_init(|| Stream::on_device(m.ordinal()).ok())
+            .as_ref()?;
+        let mut copies = self.gpu_copies.lock();
+        if copies.is_empty() {
+            copies.resize_with(self.seg.layout().slot_count as usize, SlotCopy::default);
+        }
+        let c = copies.get_mut(slot as usize)?;
+        if c.ticket != ticket {
+            c.ticket = 0;
+            c.blocks.clear();
+            let mut total = 0usize;
+            for &[o0, o1, o2, o3, l0, l1, l2, l3] in
+                list.as_chunks::<{ arena::GPU_BLOCK_BYTES }>().0
+            {
+                let off = u64::from(u32::from_le_bytes([o0, o1, o2, o3]));
+                let len = u64::from(u32::from_le_bytes([l0, l1, l2, l3]));
+                if off + len > m.mapped_bytes() as u64 {
+                    return None;
+                }
+                let at = total.next_multiple_of(COPY_ALIGN);
+                // The copy's offset for now; its address once the buffer is known.
+                c.blocks.push(GpuBlock {
+                    off,
+                    len,
+                    host: at as *const u8,
+                });
+                total = at + usize::try_from(len).ok()?;
+            }
+            if c.cap < total {
+                c.buf = None;
+                c.buf = Some(gpu::HostBuffer::new(total, m.ordinal()).ok()?);
+                c.cap = total;
+            }
+            let base = c
+                .buf
+                .as_ref()
+                .map_or(std::ptr::null_mut(), gpu::HostBuffer::base);
+            for b in &mut c.blocks {
+                // SAFETY: the offset was placed inside total, which the buffer holds.
+                let to = unsafe { base.add(b.host as usize) };
+                b.host = to;
+                #[allow(clippy::cast_possible_truncation)]
+                if !stream.copy_to_host(to, m.device_ptr(b.off), b.len as usize) {
+                    return None;
+                }
+            }
+            if !stream.wait() {
+                return None;
+            }
+            c.ticket = ticket;
+        }
+        Some(GpuHeap {
+            device: 0,
+            host: std::ptr::null(),
+            size: m.mapped_bytes(),
+            blocks: c.blocks.as_ptr(),
+            count: c.blocks.len(),
+        })
     }
 
     /// A publisher's GPU arena: host slots on a channel that declared a stream. None elsewhere,
@@ -175,14 +275,41 @@ impl ChannelShared {
         })
     }
 
-    /// Whether the frame in `slot` owns host arena memory, and whether it owns GPU arena blocks.
-    pub(super) fn owned_kinds(&self, slot: u32) -> (bool, bool) {
+    /// Whether the frame in `slot` owns host arena memory, and how many GPU arena blocks.
+    pub(super) fn owned_kinds(&self, slot: u32) -> (bool, u32) {
         let owned = self.owned.lock();
         let Some(v) = owned.get(slot as usize) else {
-            return (false, false);
+            return (false, 0);
         };
-        let gpu = |o: &Owned| matches!(o, Owned::Gpu(..));
-        (v.iter().any(|o| !gpu(o)), v.iter().any(gpu))
+        let gpu = |o: &&Owned| matches!(o, Owned::Gpu(..));
+        #[allow(clippy::cast_possible_truncation)]
+        let blocks = v.iter().filter(gpu).count() as u32;
+        (v.iter().any(|o| !gpu(&o)), blocks)
+    }
+
+    /// Writes the GPU arena blocks of the frame in `slot` at `dst` as the trailer's list.
+    ///
+    /// # Safety
+    /// `dst` holds `GPU_BLOCK_BYTES` bytes for each block `owned_kinds` counted, and the claim
+    /// makes this the only access to them.
+    pub(super) unsafe fn write_gpu_blocks(&self, slot: u32, dst: *mut u8) {
+        let owned = self.owned.lock();
+        let Some(v) = owned.get(slot as usize) else {
+            return;
+        };
+        let mut at = dst;
+        for o in v {
+            if let Owned::Gpu(_, off, len) = *o {
+                let mut e = [0u8; arena::GPU_BLOCK_BYTES];
+                #[allow(clippy::cast_possible_truncation)]
+                e[..4].copy_from_slice(&(off as u32).to_le_bytes());
+                e[4..].copy_from_slice(&len.to_le_bytes());
+                // SAFETY: the caller's contract covers this entry.
+                unsafe { std::ptr::copy_nonoverlapping(e.as_ptr(), at, e.len()) };
+                // SAFETY: still inside the list, or one past its end.
+                at = unsafe { at.add(e.len()) };
+            }
+        }
     }
 
     pub(super) fn own(&self, slot: u32, o: Owned) {
@@ -227,7 +354,7 @@ impl ChannelShared {
                 }
                 // SAFETY: the adopter's contract.
                 Owned::Adopted(release, ctx) => unsafe { release(ctx) },
-                Owned::Gpu(a, off) => a.free(off),
+                Owned::Gpu(a, off, _) => a.free(off),
             }
         }
         // Back with its capacity, so the slot's next frame records its blocks without allocating.

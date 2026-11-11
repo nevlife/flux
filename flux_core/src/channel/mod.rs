@@ -39,7 +39,7 @@ use crate::trace::{self, event};
 pub use loan::{Heap, WriteSlot};
 use loan::{fence_failed, fits, meta_from};
 pub(crate) use shared::{ChannelShared, Owned, Waiter};
-pub use view::{FrameView, GpuHeap};
+pub use view::{FrameView, GpuBlock, GpuHeap};
 
 const MAX_RETRIES: u32 = 64;
 // Bounds one park inside take_blocking: the next take is what notices a publisher restart.
