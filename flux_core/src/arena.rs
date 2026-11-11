@@ -47,13 +47,14 @@ const NIL: u64 = u64::MAX;
 const BINS: usize = 32;
 
 /// `flux.v<layout>.arena-<16 hex>`: a key cannot hold '-', so no channel name is one.
-fn prefix() -> String {
-    format!("flux.v{LAYOUT_VERSION}.arena-")
+fn prefix() -> &'static str {
+    static PREFIX: OnceLock<String> = OnceLock::new();
+    PREFIX.get_or_init(|| format!("flux.v{LAYOUT_VERSION}.arena-"))
 }
 
 pub(crate) fn is_arena_entry(entry: &str) -> bool {
     entry
-        .strip_prefix(&prefix())
+        .strip_prefix(prefix())
         .is_some_and(|id| id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
@@ -391,7 +392,9 @@ impl Arena {
                 }
             };
             // SAFETY: registers a plain function.
-            unsafe { libc::atexit(unlink_at_exit) };
+            let registered = unsafe { libc::atexit(unlink_at_exit) } == 0;
+            // It fails only for want of memory, and then the sweep unlinks the file after exit.
+            let _ = registered;
             return Ok(Arena {
                 name,
                 base,

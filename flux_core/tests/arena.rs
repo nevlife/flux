@@ -191,3 +191,56 @@ fn arena_pages_follow_the_publishers_memory_policy() {
         },
     );
 }
+
+#[test]
+fn an_arena_of_0_bytes_is_off() {
+    in_child("an_arena_of_0_bytes_is_off", 0, || {
+        let (mut p, _s) = channel("off", 2);
+        let w = p.loan().unwrap();
+        assert!(w.heap().is_none());
+        assert_eq!(arena_mappings("r--s") + arena_mappings("rw-s"), 0);
+    });
+}
+
+#[test]
+fn a_later_publishers_memory_policy_reaches_the_pages_already_reserved() {
+    fn locked_kib() -> u64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let line = status.lines().find(|l| l.starts_with("VmLck:")).unwrap();
+        line.split_whitespace().nth(1).unwrap().parse().unwrap()
+    }
+    in_child(
+        "a_later_publishers_memory_policy_reaches_the_pages_already_reserved",
+        64 << 20,
+        || {
+            let mut lim = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: plain syscall into a valid struct.
+            let rc = unsafe { libc::getrlimit(libc::RLIMIT_MEMLOCK, &raw mut lim) };
+            assert_eq!(rc, 0);
+            if lim.rlim_cur < 64 << 20 {
+                eprintln!("skipped: RLIMIT_MEMLOCK {} is below 64 MiB", lim.rlim_cur);
+                return;
+            }
+            let (mut p, _s) = channel("unlocked", 2);
+            publish(&mut p, 1, 8 << 20);
+            let before = locked_kib();
+            let name =
+                signpost_name(&format!("/a{}_later", std::process::id()), NO_SCHEMA).unwrap();
+            let lock = MemoryPolicy {
+                precommit: false,
+                lock: true,
+            };
+            let _q = Channel::create(&name, 4096, 2, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, lock)
+                .unwrap();
+            assert!(
+                locked_kib() >= before + (8 << 10),
+                "{} -> {}",
+                before,
+                locked_kib()
+            );
+        },
+    );
+}

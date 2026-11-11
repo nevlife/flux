@@ -580,6 +580,8 @@ public:
     using V = std::remove_cv_t<std::remove_reference_t<C>>;
     using T = typename V::value_type;
     static_assert(std::is_trivially_copyable_v<T>);
+    // shortcut: one small holder a frame, which the slot owns until it is claimed again; pool
+    // them in the publisher when adopt runs on a path that must not allocate.
     auto * keep = new V(std::forward<C>(c));  // NOLINT(cppcoreguidelines-owning-memory)
     const auto release = [](void * k) {
       delete static_cast<V *>(k);  // NOLINT(cppcoreguidelines-owning-memory)

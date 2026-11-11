@@ -390,7 +390,7 @@ private:
       return;
     }
     // shortcut: the frame holds only offsets into its publisher's arena, which a bag cannot
-    // replay; record the arena blocks with it to keep such frames.
+    // replay; record the arena blocks with it, when frames past their slot need recording.
     if (!v.heap().empty()) {
       if (arena_left_++ == 0) {
         RCLCPP_WARN(

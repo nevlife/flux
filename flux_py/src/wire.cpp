@@ -756,8 +756,8 @@ auto flux_py::read_tensor(const flux::wire::Reader & w, const TensorAt & at)
   -> flux_py::TensorFields
 {
   if (w.desc(at[6]).off >= flux::wire::kHeapBase && w.budget() == w.size()) {
-    // shortcut: a device frame reads its fields through the host mapping alone; give the arena a
-    // device address (iGPU registration or a VMM arena) to lift this.
+    // shortcut: a device frame reads its fields through the host mapping alone; lift this when
+    // the GPU arena gives arena bytes a device address.
     throw WireError(
       "flux: tensor at " + std::to_string(at[6]) +
       " has its data in the publisher's arena, which this frame has no device address for");

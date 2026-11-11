@@ -272,13 +272,13 @@ impl ChannelShared {
         if self.owned_slots.load(Ordering::Relaxed) == 0 {
             return;
         }
-        let list = match self.owned.lock().get_mut(slot as usize) {
+        let mut list = match self.owned.lock().get_mut(slot as usize) {
             Some(v) if !v.is_empty() => std::mem::take(v),
             _ => return,
         };
         self.owned_slots.fetch_sub(1, Ordering::Relaxed);
         let a = arena::existing();
-        for o in list {
+        for o in list.drain(..) {
             match o {
                 Owned::Block(off) => {
                     if let Some(a) = a {
@@ -288,6 +288,11 @@ impl ChannelShared {
                 // SAFETY: the adopter's contract.
                 Owned::Adopted(release, ctx) => unsafe { release(ctx) },
             }
+        }
+        // Back with its capacity, so the slot's next frame records its blocks without allocating.
+        // Nothing owns this slot meanwhile: its claim is this call's.
+        if let Some(v) = self.owned.lock().get_mut(slot as usize) {
+            *v = list;
         }
     }
 
@@ -845,7 +850,8 @@ impl Drop for ChannelShared {
         // A frame left in a slot can still be taken after the publisher is gone, so its arena
         // memory goes only with a claim, which a borrow refuses.
         // shortcut: a slot still borrowed now keeps its blocks until this process ends (at most
-        // the subscribers' max_borrow); free them once its last reader leaves if that matters.
+        // the subscribers' max_borrow); free them once its last reader leaves, when a process that
+        // makes and drops publishers in a loop runs out of arena.
         if self.owned_slots.load(Ordering::Relaxed) != 0 && !self.inherited() {
             for s in 0..self.seg.layout().slot_count {
                 if self.owns_any(s) && self.try_claim(s) {
