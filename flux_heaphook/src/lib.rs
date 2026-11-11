@@ -5,6 +5,11 @@
 //! flux hands over its allocator with `flux_heaphook_attach` when it makes the arena. Until then,
 //! and outside a scope, everything goes to glibc. Arena memory is freed into the arena on any
 //! thread. Nothing here allocates.
+
+#![allow(
+    clippy::disallowed_types,
+    reason = "the hook's addresses and counters, Relaxed only"
+)]
 #![allow(clippy::missing_safety_doc)]
 
 use std::cell::Cell;
@@ -52,7 +57,7 @@ pub unsafe extern "C" fn flux_heaphook_attach(
     SIZE.store(size, Ordering::Relaxed);
     FREE.store(free as usize, Ordering::Relaxed);
     USABLE.store(usable as usize, Ordering::Relaxed);
-    ALLOC.store(alloc as usize, Ordering::Release);
+    ALLOC.store(alloc as usize, Ordering::Release); // order: hook_alloc
     // SAFETY: registers a plain function.
     unsafe { libc::pthread_atfork(None, None, Some(child)) };
 }
@@ -74,7 +79,7 @@ fn in_arena(p: *const c_void) -> bool {
 
 /// The arena allocator, when this thread is in a scope and flux attached one.
 fn scoped() -> Option<AllocFn> {
-    let f = ALLOC.load(Ordering::Acquire);
+    let f = ALLOC.load(Ordering::Acquire); // order: hook_alloc
     if f == 0 || FORKED.load(Ordering::Relaxed) || DEPTH.with(Cell::get) == 0 {
         return None;
     }

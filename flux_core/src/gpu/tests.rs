@@ -1,6 +1,8 @@
 //! On the host GPU. Each test returns early where the host has no CUDA device. The GPU writes and
 //! reads with `cuMemsetD8Async` and `cuMemcpyDtoH`, which need no compiled kernel.
 
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 use std::ffi::{c_int, c_void};
 use std::os::fd::AsRawFd;
 use std::ptr::NonNull;

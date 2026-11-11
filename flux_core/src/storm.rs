@@ -2,6 +2,8 @@
 //! profiler's timer sends them. A blocking call that gives up on EINTR fails or ends early here.
 //! The interval timer is process-wide, so each test runs alone in a child of the test binary.
 
+#![allow(clippy::disallowed_types, reason = "a counter, Relaxed only")]
+
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;

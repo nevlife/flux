@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_types, reason = "the caller's run flag")]
+
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
 

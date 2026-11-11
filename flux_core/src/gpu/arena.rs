@@ -8,6 +8,11 @@
 //! memory. The publisher's arena lives for the process, as the host arena does, so it is not in
 //! the debug ledger; a subscriber's imports are.
 
+#![allow(
+    clippy::disallowed_types,
+    reason = "the imported chunk count; orderings tagged `order:`"
+)]
+
 use std::ffi::{c_int, c_void};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -571,6 +576,7 @@ impl GpuArenaImport {
     /// Imports chunks until `chunks` of them are mapped. A round trip to the publisher, so a
     /// frame asks for this only when it reaches past what is mapped.
     pub fn reach(&self, chunks: u32) -> Result<()> {
+        // order: arena_mapped
         if self.mapped.load(Ordering::Acquire) >= chunks {
             return Ok(());
         }
@@ -608,7 +614,7 @@ impl GpuArenaImport {
         self.cpu_base.store(cpu, Ordering::Relaxed);
         #[allow(clippy::cast_possible_truncation)]
         self.mapped
-            .store(inner.handles.len() as u32, Ordering::Release);
+            .store(inner.handles.len() as u32, Ordering::Release); // order: arena_mapped
         r
     }
 
@@ -733,13 +739,13 @@ impl GpuArenaImport {
 
     /// The bytes imported so far, from offset 0.
     pub fn mapped_bytes(&self) -> usize {
-        self.mapped.load(Ordering::Acquire) as usize * CHUNK
+        self.mapped.load(Ordering::Acquire) as usize * CHUNK // order: arena_mapped
     }
 
     /// The CPU's address of offset 0, for a `HOST_NUMA` arena once a chunk is imported. Each
     /// later chunk lands at its offset from it.
     pub fn host_base(&self) -> Option<*const u8> {
-        let any = self.mapped.load(Ordering::Acquire) > 0;
+        let any = self.mapped.load(Ordering::Acquire) > 0; // order: arena_mapped
         let p = self.cpu_base.load(Ordering::Relaxed);
         (any && p != 0).then_some(p as *const u8)
     }

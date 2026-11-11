@@ -1,3 +1,8 @@
+#![allow(
+    clippy::disallowed_types,
+    reason = "the per-handle call guard; orderings tagged `order:`"
+)]
+
 use std::cell::UnsafeCell;
 use std::collections::BTreeMap;
 use std::ffi::{c_char, c_void};
@@ -184,7 +189,7 @@ impl DerefMut for Held<'_> {
 
 impl Drop for Held<'_> {
     fn drop(&mut self) {
-        self.busy.store(false, Ordering::Release);
+        self.busy.store(false, Ordering::Release); // order: ffi_busy
     }
 }
 
@@ -192,6 +197,7 @@ impl Drop for Held<'_> {
 unsafe fn hold<'a>(p: *mut flux_channel) -> Option<Held<'a>> {
     // SAFETY: the caller passes a live handle.
     let h = unsafe { &*p };
+    // order: ffi_busy
     if h.busy.swap(true, Ordering::Acquire) {
         return None;
     }

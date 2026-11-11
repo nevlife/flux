@@ -2,7 +2,6 @@
 
 use std::ffi::c_void;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use crate::arena::{self, BLOCK_BYTES, GPU_TRAILER_BYTES, TRAILER_BYTES};
 use crate::gpu::{self, Fenced, Seam, Stream};
@@ -218,7 +217,7 @@ impl WriteSlot {
     pub fn commit_len(mut self, nbytes: usize) -> Published {
         let mut nbytes = nbytes;
         // Claiming the slot freed what its last frame owned, so anything owned now is this one's.
-        if self.sh.owned_slots.load(Ordering::Relaxed) != 0 {
+        if self.sh.may_own() {
             let Some(n) = self.write_trailer(nbytes) else {
                 self.sh.abort(self.slot);
                 self.end(trace::LOAN_TOO_LARGE);

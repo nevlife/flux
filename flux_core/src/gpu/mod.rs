@@ -3,6 +3,11 @@
 //! protocol unchanged; what changes is where `device_ptr` counts from, and that commit and release
 //! wait for the stream first.
 
+#![allow(
+    clippy::disallowed_types,
+    reason = "the late GPU work marks and their waiter; orderings tagged `order:`"
+)]
+
 #[doc(hidden)]
 pub mod arena;
 mod driver;
@@ -462,6 +467,7 @@ impl Late {
     /// Asked by a thread that is awake anyway, so the device may have finished just before the
     /// waiter woke: one query, never a loop.
     pub(crate) fn done(&self) -> bool {
+        // order: mark_state
         match self.0.state.load(Ordering::Acquire) {
             DONE => true,
             FAILED => false,
@@ -470,14 +476,14 @@ impl Late {
     }
 
     pub(crate) fn failed(&self) -> bool {
-        self.0.state.load(Ordering::Acquire) == FAILED
+        self.0.state.load(Ordering::Acquire) == FAILED // order: mark_state
     }
 
     /// For work whose channel is gone: `x` is let go on the reaper once the work is done, or kept
     /// for good if it failed, as a failed fence keeps its slot. Never touches shared memory.
     pub(crate) fn hand_off(&self, x: Box<dyn Send>) {
         let mut slot = self.0.orphan.lock().unwrap_or_else(PoisonError::into_inner);
-        let state = self.0.state.load(Ordering::Acquire);
+        let state = self.0.state.load(Ordering::Acquire); // order: mark_state
         if state == PENDING {
             *slot = Some(x);
             return;
@@ -527,7 +533,7 @@ impl Waiter {
             // SAFETY: an event the mark holds while this runs.
             let done = ok(unsafe { (core.event_synchronize)(mark.event as *mut c_void) });
             let state = if done { DONE } else { FAILED };
-            mark.state.store(state, Ordering::Release);
+            mark.state.store(state, Ordering::Release); // order: mark_state
             sys::futex_wake_private(&mark.state);
             let orphan = mark
                 .orphan
@@ -549,6 +555,7 @@ impl Waiter {
             if let Some(m) = q.pop_front() {
                 return Some(m);
             }
+            // order: waiter_stop
             if self.stop.load(Ordering::Acquire) {
                 return None;
             }
@@ -566,7 +573,7 @@ impl Waiter {
 
     fn stop(&self) {
         let _q = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
-        self.stop.store(true, Ordering::Release);
+        self.stop.store(true, Ordering::Release); // order: waiter_stop
         self.ready.notify_one();
     }
 }
@@ -641,6 +648,7 @@ impl Stream {
         };
         let deadline = sys::monotonic_ns().saturating_add(timeout_ns);
         loop {
+            // order: mark_state
             match late.0.state.load(Ordering::Acquire) {
                 DONE => return Fenced::Done,
                 FAILED => return Fenced::Failed,

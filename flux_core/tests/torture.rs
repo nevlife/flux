@@ -9,6 +9,8 @@
 //! `FLUX_TORTURE_SECS` (default 2) sets the length, `FLUX_TORTURE_STUTTER_MS` (500) and
 //! `FLUX_TORTURE_SHUFFLE_MS` (1000) the two periods.
 
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

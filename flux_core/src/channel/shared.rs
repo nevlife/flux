@@ -1,6 +1,11 @@
 //! The state one end of a channel shares with its views and loans: the segment, the claim and
 //! borrow protocol, the GPU fences, and the arena memory frames own.
 
+#![allow(
+    clippy::disallowed_types,
+    reason = "the slot, reader and wake words; orderings tagged `order:`"
+)]
+
 use std::ffi::{CString, c_void};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
@@ -411,8 +416,14 @@ impl ChannelShared {
         }
     }
 
-    pub(super) fn owns_any(&self, slot: u32) -> bool {
+    /// Whether any slot owns arena memory: false lets a channel that never used the arena skip
+    /// the lock.
+    pub(super) fn may_own(&self) -> bool {
         self.owned_slots.load(Ordering::Relaxed) != 0
+    }
+
+    pub(super) fn owns_any(&self, slot: u32) -> bool {
+        self.may_own()
             && self
                 .owned
                 .lock()
@@ -422,7 +433,7 @@ impl ChannelShared {
 
     /// Outside the lock: a release may run a binding's code, which may publish.
     pub(super) fn free_owned(&self, slot: u32) {
-        if self.owned_slots.load(Ordering::Relaxed) == 0 {
+        if !self.may_own() {
             return;
         }
         let mut list = match self.owned.lock().get_mut(slot as usize) {
@@ -692,7 +703,7 @@ impl ChannelShared {
             return;
         }
         l.push(d);
-        self.late_count.fetch_add(1, Ordering::Release);
+        self.late_count.fetch_add(1, Ordering::Release); // order: late_count
     }
 
     /// The channel is going: what it already reaped is given back here, on its thread; the rest
@@ -713,6 +724,7 @@ impl ChannelShared {
     /// Gives back what deferred work held once it is done: a borrow, or a claim that was never
     /// published. Work that failed keeps its slot for the process's life, as a failed fence does.
     pub(super) fn reap_late(&self) {
+        // order: late_count
         if self.late_count.load(Ordering::Acquire) == 0 {
             return;
         }
@@ -732,7 +744,7 @@ impl ChannelShared {
                     ledger::kept(self.trace_handle(), d.slot);
                 }
                 if !d.leaked && d.seam == Seam::Release {
-                    self.leases_leaked.fetch_add(1, Ordering::Release);
+                    self.leases_leaked.fetch_add(1, Ordering::Release); // order: leases_leaked
                 }
                 if let Some(g) = &self.gpu {
                     g.stats.count_failed();
@@ -743,7 +755,7 @@ impl ChannelShared {
             match d.seam {
                 Seam::Release => {
                     if d.leaked {
-                        self.leases_leaked.fetch_sub(1, Ordering::Release);
+                        self.leases_leaked.fetch_sub(1, Ordering::Release); // order: leases_leaked
                     }
                     ledger::fenced(self.trace_handle(), d.slot);
                     self.end_borrow(d.slot, d.ticket);
@@ -751,7 +763,7 @@ impl ChannelShared {
                 Seam::Commit => self.abort(d.slot),
             }
         }
-        self.late_count.fetch_sub(n, Ordering::Release);
+        self.late_count.fetch_sub(n, Ordering::Release); // order: late_count
     }
 
     pub(super) fn trace_handle(&self) -> *const c_void {
@@ -822,19 +834,22 @@ impl ChannelShared {
     pub(super) fn try_claim(&self, s: u32) -> bool {
         let sl = self.seg.slot(s);
         let old = sl.commit_ticket.load(Ordering::Relaxed);
+        // order: readers
         if old == TICKET_CLAIMED || !self.readers_free(s, Ordering::Acquire) {
             return false;
         }
         if sl
             .commit_ticket
+            // order: ticket
             .compare_exchange(old, TICKET_CLAIMED, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
         {
             return false;
         }
+        // order: readers
         if !self.readers_free(s, Ordering::SeqCst) {
             // Borrowed under us before a byte was written: the frame is still whole.
-            sl.commit_ticket.store(old, Ordering::Release);
+            sl.commit_ticket.store(old, Ordering::Release); // order: ticket
             return false;
         }
         true
@@ -850,9 +865,10 @@ impl ChannelShared {
         let slots = self.seg.layout().slot_count;
         let mut reclaimed = false;
         #[allow(clippy::cast_possible_truncation)]
-        let numbers = self.seg.readers_in_use(Ordering::Acquire) as u32;
+        let numbers = self.seg.readers_in_use(Ordering::Acquire) as u32; // order: readers_high
         for i in 0..numbers {
-            let held = self.seg.waiter(i).load(Ordering::Acquire) != 0
+            let held = self.seg.waiter(i).load(Ordering::Acquire) != 0 // order: waiters
+                // order: readers
                 || (0..slots).any(|s| self.seg.reader(s, i).load(Ordering::Acquire) != 0);
             if !held || !sys::lock_write(fd, reader_lock_byte(i)) {
                 continue;
@@ -872,19 +888,19 @@ impl ChannelShared {
         let now = sys::monotonic_ns();
         sl.publish_ns.store(now, Ordering::Relaxed);
         self.seg.index_entry(ticket).store(s, Ordering::Relaxed);
-        sl.commit_ticket.store(ticket, Ordering::Release);
+        sl.commit_ticket.store(ticket, Ordering::Release); // order: ticket
 
         let ctrl = self.seg.ctrl();
-        ctrl.latest.store(ticket, Ordering::Release);
+        ctrl.latest.store(ticket, Ordering::Release); // order: latest
         // Dekkers with wait(): bump, then read waiters; wait announces, then reads the word.
-        ctrl.wakeup.fetch_add(1, Ordering::SeqCst);
-        let woke = ctrl.waiters.load(Ordering::SeqCst) > 0
+        ctrl.wakeup.fetch_add(1, Ordering::SeqCst); // order: wakeup
+        let woke = ctrl.waiters.load(Ordering::SeqCst) > 0 // order: waiters
             || self
                 .seg
                 .waiters()
                 .iter()
-                .take(self.seg.readers_in_use(Ordering::SeqCst))
-                .any(|w| w.load(Ordering::SeqCst) > 0);
+                .take(self.seg.readers_in_use(Ordering::SeqCst)) // order: readers_high
+                .any(|w| w.load(Ordering::SeqCst) > 0); // order: waiters
         if woke {
             sys::futex_wake(&ctrl.wakeup);
             // A subscriber killed while parked never takes its count back, and then every
@@ -912,7 +928,7 @@ impl ChannelShared {
         self.seg
             .slot(s)
             .commit_ticket
-            .store(TICKET_EMPTY, Ordering::SeqCst);
+            .store(TICKET_EMPTY, Ordering::SeqCst); // order: ticket
     }
 
     /// A release the borrow protocol cannot have made, a view's storage copied and released twice
@@ -930,7 +946,7 @@ impl ChannelShared {
             return;
         }
         let counter = self.reader(slot);
-        let prev = counter.fetch_sub(1, Ordering::Release);
+        let prev = counter.fetch_sub(1, Ordering::Release); // order: readers
         if prev.wrapping_sub(1) >= COUNT_CORRUPT {
             // Undone. A count found at 0 is left at 1 instead: the slot stays held until the
             // segment goes, a leak rather than a rewrite under a view that still reads it.
@@ -946,9 +962,9 @@ impl ChannelShared {
             ledger::returned(self.trace_handle(), slot);
         }
         // Dekkers with arm_release: drop, then read the flag; arm sets it, then reads the count.
-        self.outstanding.fetch_sub(1, Ordering::SeqCst);
-        if self.release_armed.load(Ordering::SeqCst)
-            && self.release_armed.swap(false, Ordering::SeqCst)
+        self.outstanding.fetch_sub(1, Ordering::SeqCst); // order: outstanding
+        if self.release_armed.load(Ordering::SeqCst) // order: outstanding
+            && self.release_armed.swap(false, Ordering::SeqCst) // order: outstanding
             && let Some(ctl) = self.release_waker.lock().upgrade()
         {
             ctl.poke();
@@ -970,11 +986,11 @@ impl ChannelShared {
 
     pub(super) fn arm_release(&self, ctl: &Arc<Control>) {
         *self.release_waker.lock() = Arc::downgrade(ctl);
-        self.release_armed.store(true, Ordering::SeqCst);
+        self.release_armed.store(true, Ordering::SeqCst); // order: outstanding
     }
 
     pub fn wake_seq(&self) -> u32 {
-        self.seg.ctrl().wakeup.load(Ordering::Acquire)
+        self.seg.ctrl().wakeup.load(Ordering::Acquire) // order: wakeup
     }
 
     pub fn wake_word(&self) -> &AtomicU32 {
@@ -986,14 +1002,14 @@ impl ChannelShared {
     pub(crate) fn add_waiter(&self) -> Waiter {
         let number = self.lease.get().map(|l| l.index);
         if !self.inherited() {
-            self.waiter_count(number).fetch_add(1, Ordering::SeqCst);
+            self.waiter_count(number).fetch_add(1, Ordering::SeqCst); // order: waiters
         }
         Waiter(number)
     }
 
     pub(crate) fn remove_waiter(&self, w: Waiter) {
         if !self.inherited() {
-            self.waiter_count(w.0).fetch_sub(1, Ordering::SeqCst);
+            self.waiter_count(w.0).fetch_sub(1, Ordering::SeqCst); // order: waiters
         }
     }
 
@@ -1006,6 +1022,7 @@ impl ChannelShared {
         let w = self.add_waiter();
         let word = &self.seg.ctrl().wakeup;
         let woken =
+            // order: wakeup
             word.load(Ordering::SeqCst) != last_seq || sys::futex_wait(word, last_seq, timeout_ns);
         self.remove_waiter(w);
         woken
@@ -1022,7 +1039,7 @@ impl Drop for ChannelShared {
         // shortcut: a slot still borrowed now keeps its blocks until this process ends (at most
         // the subscribers' max_borrow); free them once its last reader leaves, when a process that
         // makes and drops publishers in a loop runs out of arena.
-        if self.owned_slots.load(Ordering::Relaxed) != 0 && !self.inherited() {
+        if self.may_own() && !self.inherited() {
             for s in 0..self.seg.layout().slot_count {
                 if self.owns_any(s) && self.try_claim(s) {
                     self.abort(s);

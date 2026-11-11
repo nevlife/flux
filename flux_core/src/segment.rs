@@ -1,5 +1,10 @@
 //! Backing memory of one channel, heap or POSIX shm. Mechanics only; naming, creation and
 //! unlinking policy is in `discovery`.
+
+#![allow(
+    clippy::disallowed_types,
+    reason = "the segment header words; orderings tagged `order:`"
+)]
 #![cfg_attr(
     not(test),
     deny(
@@ -245,7 +250,7 @@ impl Segment {
     pub fn raise_readers(&self, index: u32) {
         self.ctrl()
             .readers_high
-            .fetch_max(index + 1, Ordering::SeqCst);
+            .fetch_max(index + 1, Ordering::SeqCst); // order: readers_high
     }
 
     /// Number `index`'s count of waits, `index` below `max_subscribers` as in `reader`.
@@ -275,9 +280,9 @@ impl Segment {
     /// share of the parked count. The caller holds that number's lock.
     pub fn clear_reader(&self, index: u32) {
         for s in 0..self.layout.slot_count {
-            self.reader(s, index).store(0, Ordering::Release);
+            self.reader(s, index).store(0, Ordering::Release); // order: readers
         }
-        self.waiter(index).store(0, Ordering::Release);
+        self.waiter(index).store(0, Ordering::Release); // order: waiters
     }
 
     /// The slot the commit of `ticket` wrote, as the publisher recorded it: a hint any process can
@@ -549,7 +554,7 @@ pub(crate) unsafe fn init_header(
     // SAFETY: just written.
     let ctrl = unsafe { ctrl.as_ref() };
     ctrl.init_state
-        .store(INIT_READY, std::sync::atomic::Ordering::Release);
+        .store(INIT_READY, std::sync::atomic::Ordering::Release); // order: seg_init
     header
 }
 

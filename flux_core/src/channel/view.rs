@@ -1,5 +1,10 @@
 //! A borrowed frame.
 
+#![allow(
+    clippy::disallowed_types,
+    reason = "the slot, reader and wake words; orderings tagged `order:`"
+)]
+
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -198,7 +203,7 @@ impl FrameView {
 #[cfg(any(test, feature = "fuzz"))]
 impl FrameView {
     pub(crate) fn lag(&self) -> u64 {
-        let latest = self.sh.seg.ctrl().latest.load(Ordering::Acquire);
+        let latest = self.sh.seg.ctrl().latest.load(Ordering::Acquire); // order: latest
         latest.wrapping_sub(self.ticket)
     }
 }
@@ -230,11 +235,11 @@ impl Drop for FrameView {
             }
             Fenced::Failed => {
                 ledger::kept(self.sh.trace_handle(), self.slot);
-                self.sh.leases_leaked.fetch_add(1, Ordering::Release);
+                self.sh.leases_leaked.fetch_add(1, Ordering::Release); // order: leases_leaked
                 std::mem::forget(Arc::clone(&self.sh));
             }
             Fenced::Late(late) => {
-                self.sh.leases_leaked.fetch_add(1, Ordering::Release);
+                self.sh.leases_leaked.fetch_add(1, Ordering::Release); // order: leases_leaked
                 self.sh
                     .defer(late, self.slot, self.ticket, Seam::Release, true);
             }

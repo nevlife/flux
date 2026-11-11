@@ -2,6 +2,11 @@
 //! `#[repr(C)]`, fixed width and free of bitfields. The words the publisher writes and the ones
 //! parked subscribers write sit on separate cache lines. The asserts at the bottom pin sizes and
 //! offsets.
+
+#![allow(
+    clippy::disallowed_types,
+    reason = "the shared-memory layout declares its words"
+)]
 #![cfg_attr(
     not(test),
     deny(

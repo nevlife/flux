@@ -11,6 +11,11 @@
 //! sized at once but its pages are reserved as the blocks reach them. Allocation takes no heap
 //! memory of its own, so a malloc hook (`flux_heaphook`) can route a thread's allocations here.
 
+#![allow(
+    clippy::disallowed_types,
+    reason = "the memory policy bits, Relaxed only"
+)]
+
 use std::ffi::{CStr, c_void};
 use std::io;
 use std::os::fd::{AsRawFd, RawFd};

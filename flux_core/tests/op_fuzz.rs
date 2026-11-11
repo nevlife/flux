@@ -9,6 +9,8 @@
 //! `fixed_sequences_match_the_model` replays every saved one. `FLUX_OPFUZZ_SECS` (default 2) sets
 //! the length and `FLUX_OPFUZZ_SEED` the first seed.
 
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 mod common;
 
 use std::collections::BTreeMap;

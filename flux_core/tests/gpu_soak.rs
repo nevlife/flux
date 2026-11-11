@@ -8,6 +8,8 @@
 //! `FLUX_GPU_SOAK_SECS` (default 2) sets the length. Set, it also checks that the device memory no
 //! live process accounts for is back to the start, which graphics clients move a little.
 
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 mod common;
 
 use std::ffi::{CStr, c_void};

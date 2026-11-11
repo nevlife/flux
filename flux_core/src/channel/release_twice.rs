@@ -1,5 +1,7 @@
 //! A view's storage copied and both copies released, as a C caller can do with `flux_view`.
 
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

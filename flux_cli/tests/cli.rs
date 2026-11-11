@@ -1,6 +1,8 @@
 //! The `flux` binary against real channels. Every channel here has a key unique to this run, and
 //! the checks look for it by name, since the host may list other channels too.
 
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};

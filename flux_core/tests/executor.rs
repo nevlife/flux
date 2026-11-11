@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};

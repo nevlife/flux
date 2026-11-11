@@ -4,6 +4,11 @@
 //! and a subscriber (own counter +1, then read the ticket): both pairs are `SeqCst`, so at least
 //! one side sees the other. The commit stores the ticket with `Release`, and the subscriber's load
 //! after its +1 acquires it.
+
+#![allow(
+    clippy::disallowed_types,
+    reason = "the slot, reader and wake words; orderings tagged `order:`"
+)]
 #![cfg_attr(
     not(test),
     deny(
@@ -539,7 +544,7 @@ impl Channel {
         let mut attempt = 0;
         while attempt < MAX_RETRIES {
             attempt += 1;
-            let latest = self.sh.seg.ctrl().latest.load(Ordering::Acquire);
+            let latest = self.sh.seg.ctrl().latest.load(Ordering::Acquire); // order: latest
             if latest == 0 {
                 break;
             }
@@ -559,9 +564,10 @@ impl Channel {
 
             let sl = self.sh.seg.slot(s);
             let counter = self.sh.reader(s);
-            counter.fetch_add(1, Ordering::SeqCst);
+            counter.fetch_add(1, Ordering::SeqCst); // order: readers
+            // order: ticket
             if sl.commit_ticket.load(Ordering::SeqCst) != t {
-                counter.fetch_sub(1, Ordering::Release);
+                counter.fetch_sub(1, Ordering::Release); // order: readers
                 continue;
             }
             // SAFETY: borrowed with the ticket unchanged, so the publisher is off this slot.
@@ -571,7 +577,7 @@ impl Channel {
             }
             self.cursor = t;
             if !fits(&meta, self.sh.seg.layout()) {
-                counter.fetch_sub(1, Ordering::Release);
+                counter.fetch_sub(1, Ordering::Release); // order: readers
                 self.refused.bad_frame += 1;
                 event!(flux_trace_refused(
                     self.sh.trace_handle(),
@@ -586,7 +592,7 @@ impl Channel {
             if !self.sh.stage(s, meta.nbytes as usize) {
                 // The copy may still read the slot: the borrow stays, as a failed fence's does.
                 ledger::kept(self.sh.trace_handle(), s);
-                self.sh.leases_leaked.fetch_add(1, Ordering::Release);
+                self.sh.leases_leaked.fetch_add(1, Ordering::Release); // order: leases_leaked
                 std::mem::forget(Arc::clone(&self.sh));
                 self.refused.fence += 1;
                 event!(flux_trace_refused(
@@ -619,7 +625,7 @@ impl Channel {
                 trace::REFUSED_CONTENDED
             ));
         }
-        self.sh.outstanding.fetch_sub(1, Ordering::Release);
+        self.sh.outstanding.fetch_sub(1, Ordering::Release); // order: outstanding
         self.stalled_polls += 1;
         None
     }
@@ -704,9 +710,11 @@ impl Channel {
             };
             let _ = self.sh.lease.set(l);
         }
+        // order: outstanding
         if self.sh.outstanding.fetch_add(1, Ordering::AcqRel) >= self.qos.borrow_limit() {
-            self.sh.outstanding.fetch_sub(1, Ordering::Release);
+            self.sh.outstanding.fetch_sub(1, Ordering::Release); // order: outstanding
             // Leaked borrows are never given back, so no release the caller makes can help.
+            // order: leases_leaked
             if self.sh.leases_leaked.load(Ordering::Acquire) >= self.qos.borrow_limit() {
                 self.refused.fence += 1;
                 event!(flux_trace_refused(
@@ -727,7 +735,7 @@ impl Channel {
 
     /// On joining the stream, so volatile means from where this consumer joined.
     fn position_cursor(&mut self) {
-        let newest = self.sh.seg.ctrl().latest.load(Ordering::Acquire);
+        let newest = self.sh.seg.ctrl().latest.load(Ordering::Acquire); // order: latest
         self.cursor = newest.saturating_sub(u64::from(self.qos.durability().replay));
     }
 
@@ -806,14 +814,14 @@ impl Channel {
 
     /// Advisory: a lapped or refused frame makes the next take empty.
     pub fn ready(&self) -> bool {
-        self.sh.seg.ctrl().latest.load(Ordering::Acquire) > self.cursor
+        self.sh.seg.ctrl().latest.load(Ordering::Acquire) > self.cursor // order: latest
     }
 
     /// A take refused for this cannot be unblocked by a publish. Deferred releases whose work is
     /// done are given back first.
     pub fn can_borrow(&self) -> bool {
         self.sh.reap_late();
-        self.sh.outstanding.load(Ordering::SeqCst) < self.qos.borrow_limit()
+        self.sh.outstanding.load(Ordering::SeqCst) < self.qos.borrow_limit() // order: outstanding
     }
 
     /// For an executor about to wait while this channel is at `max_borrow`: the view release that
@@ -857,7 +865,7 @@ impl Channel {
     pub fn subscriber_count(&self) -> u32 {
         let seg = &self.sh.seg;
         #[allow(clippy::cast_possible_truncation)]
-        let numbers = seg.readers_in_use(Ordering::Acquire) as u32;
+        let numbers = seg.readers_in_use(Ordering::Acquire) as u32; // order: readers_high
         if seg.is_heap() {
             return numbers;
         }

@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};

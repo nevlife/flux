@@ -2,6 +2,12 @@
 //! word, then a pass that serves ready sources by priority, one frame per visit. Without
 //! `futex_waitv` a thread per source sleeps on its word and rings the control word.
 
+#![allow(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    reason = "the executor control and aim words; orderings tagged `order:`"
+)]
+
 use std::cmp::Reverse;
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -72,13 +78,13 @@ impl Control {
     }
 
     pub(crate) fn poke(&self) {
-        self.bell.fetch_add(1, Ordering::SeqCst);
+        self.bell.fetch_add(1, Ordering::SeqCst); // order: bell
         sys::futex_wake_private(&self.bell);
     }
 
     pub(crate) fn drain(&self) {
         self.heard
-            .store(self.bell.load(Ordering::Acquire), Ordering::Relaxed);
+            .store(self.bell.load(Ordering::Acquire), Ordering::Relaxed); // order: bell
     }
 
     fn waitv(&self) -> sys::Waitv {
@@ -108,11 +114,11 @@ impl Control {
     }
 
     pub(crate) fn take_interrupt(&self) -> bool {
-        self.interrupted.swap(false, Ordering::AcqRel)
+        self.interrupted.swap(false, Ordering::AcqRel) // order: interrupted
     }
 
     pub(crate) fn set_spinning(&self, on: bool) {
-        self.spinning.store(on, Ordering::Release);
+        self.spinning.store(on, Ordering::Release); // order: spinning
     }
 
     /// On leaving a loop, so the next one neither starts stopped nor wakes on this one's interrupt.
@@ -135,14 +141,14 @@ impl ExecutorHandle {
     /// Held if no loop is running yet, so a stop racing the start of `spin` is not lost.
     pub fn stop(&self) {
         self.0.stop.store(true, Ordering::Relaxed);
-        self.0.interrupted.store(true, Ordering::Release);
+        self.0.interrupted.store(true, Ordering::Release); // order: interrupted
         self.0.poke();
     }
 
     /// Ends the current wait without ending the loop: `spin` runs `on_pass` and goes on. One
     /// interrupt ends at most one wait.
     pub fn interrupt(&self) {
-        self.0.interrupted.store(true, Ordering::Release);
+        self.0.interrupted.store(true, Ordering::Release); // order: interrupted
         self.0.poke();
     }
 
@@ -152,7 +158,7 @@ impl ExecutorHandle {
     }
 
     pub fn is_spinning(&self) -> bool {
-        self.0.spinning.load(Ordering::Acquire)
+        self.0.spinning.load(Ordering::Acquire) // order: spinning
     }
 
     pub(crate) fn control(&self) -> &Control {
@@ -199,19 +205,19 @@ impl Aim {
     fn post(&self, word: *const AtomicU32, seen: u32) -> u32 {
         let g = self.generation.load(Ordering::Relaxed);
         self.generation.store(g.wrapping_add(1), Ordering::Relaxed);
-        fence(Ordering::Release);
+        fence(Ordering::Release); // order: aim
         self.word.store(word.cast_mut(), Ordering::Relaxed);
         self.seen.store(seen, Ordering::Relaxed);
-        self.generation.store(g.wrapping_add(2), Ordering::Release);
+        self.generation.store(g.wrapping_add(2), Ordering::Release); // order: aim
         g.wrapping_add(2)
     }
 
     fn read(&self) -> (u32, *const AtomicU32, u32) {
         loop {
-            let g = self.generation.load(Ordering::Acquire);
+            let g = self.generation.load(Ordering::Acquire); // order: aim
             let word = self.word.load(Ordering::Relaxed);
             let seen = self.seen.load(Ordering::Relaxed);
-            fence(Ordering::Acquire);
+            fence(Ordering::Acquire); // order: aim
             if g & 1 == 0 && self.generation.load(Ordering::Relaxed) == g {
                 return (g, word, seen);
             }
@@ -221,10 +227,12 @@ impl Aim {
 
     fn park(&self, entry: u32, ctl: &Control) {
         let (mut generation, mut word, mut seen) = self.read();
+        // order: aim_stop
         while !self.stop.load(Ordering::Acquire) {
+            // order: aim
             if self.generation.load(Ordering::Acquire) != generation {
                 (generation, word, seen) = self.read();
-                self.taken.store(generation, Ordering::Release);
+                self.taken.store(generation, Ordering::Release); // order: aim_taken
             }
             // SAFETY: the executor keeps the word's owner until `taken` reaches the post after it.
             match unsafe { word.as_ref() } {
@@ -233,7 +241,7 @@ impl Aim {
                 }
                 Some(w) => {
                     sys::futex_wait(w, seen, PARK_NS);
-                    let now = w.load(Ordering::Acquire);
+                    let now = w.load(Ordering::Acquire); // order: wakeup
                     if now != seen {
                         seen = now;
                         ctl.ring(entry);
@@ -299,7 +307,7 @@ impl Parker {
     }
 
     fn reclaim(&mut self) {
-        let taken = self.aim.taken.load(Ordering::Acquire);
+        let taken = self.aim.taken.load(Ordering::Acquire); // order: aim_taken
         while let Some(i) = self
             .retired
             .iter()
@@ -316,7 +324,7 @@ impl Parker {
 
 impl Drop for Parker {
     fn drop(&mut self) {
-        self.aim.stop.store(true, Ordering::Release);
+        self.aim.stop.store(true, Ordering::Release); // order: aim_stop
         self.retarget(None);
         // A forked child has no copy of the thread to join.
         if let Some(t) = self.thread.take()
@@ -487,7 +495,7 @@ impl<'a> Executor<'a> {
         self.more
             || self.a_source_moved()
             || self.entries.iter().any(|e| match &e.bound {
-                Some(b) => b.sh.wake_word().load(Ordering::Acquire) != e.seq,
+                Some(b) => b.sh.wake_word().load(Ordering::Acquire) != e.seq, // order: wakeup
                 None => unattached_watch(e).is_some_and(|w| w.epoch() != w.armed()),
             })
     }
@@ -508,7 +516,7 @@ impl<'a> Executor<'a> {
 
     /// For a loop built on `wait_for_work` and `dispatch`, which never reads the interrupt flag.
     pub fn clear_interrupt(&self) {
-        self.ctl.interrupted.store(false, Ordering::Release);
+        self.ctl.interrupted.store(false, Ordering::Release); // order: interrupted
     }
 
     pub fn dispatch(&mut self) -> Result<usize> {

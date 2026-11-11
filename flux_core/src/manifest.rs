@@ -1,5 +1,11 @@
 //! Which channels exist and who announced them. Visibility only: nothing on the data path reads
 //! the roster, so a lost or torn entry costs a row in a listing and nothing else.
+
+#![allow(
+    clippy::disallowed_types,
+    clippy::disallowed_methods,
+    reason = "the roster and key words; orderings tagged `order:`"
+)]
 #![cfg_attr(
     not(test),
     deny(
@@ -137,6 +143,7 @@ fn write_key(rec: &KeyRecord, key: &str) {
     }
     if rec
         .state
+        // order: key_state
         .compare_exchange(KEY_NONE, KEY_WRITING, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
@@ -145,10 +152,11 @@ fn write_key(rec: &KeyRecord, key: &str) {
     store_bytes(&rec.bytes, key.as_bytes());
     rec.len
         .store(u32::try_from(key.len()).unwrap_or(0), Ordering::Relaxed);
-    rec.state.store(KEY_READY, Ordering::Release);
+    rec.state.store(KEY_READY, Ordering::Release); // order: key_state
 }
 
 pub(crate) fn read_key(rec: &KeyRecord) -> Option<String> {
+    // order: key_state
     if rec.state.load(Ordering::Acquire) != KEY_READY {
         return None;
     }
@@ -173,13 +181,13 @@ fn write_entry(e: &RosterEntry, pid: u32, flags: u32, label: &str) {
     let label = cut(label);
     let start = e.seq.load(Ordering::Relaxed) | 1;
     e.seq.store(start, Ordering::Relaxed);
-    fence(Ordering::Release);
+    fence(Ordering::Release); // order: roster
     e.pid.store(pid, Ordering::Relaxed);
     e.flags.store(flags, Ordering::Relaxed);
     store_bytes(&e.label, label.as_bytes());
     e.label_len
         .store(u32::try_from(label.len()).unwrap_or(0), Ordering::Relaxed);
-    e.seq.store(start.wrapping_add(1), Ordering::Release);
+    e.seq.store(start.wrapping_add(1), Ordering::Release); // order: roster
 }
 
 /// The whole label is copied on every try and its length is trusted only once the copy is known
@@ -187,7 +195,7 @@ fn write_entry(e: &RosterEntry, pid: u32, flags: u32, label: &str) {
 pub(crate) fn read_entry(e: &RosterEntry) -> std::result::Result<Option<Endpoint>, Busy> {
     let mut label = [0u8; MAX_LABEL_LEN];
     for _ in 0..READ_RETRIES {
-        let s1 = e.seq.load(Ordering::Acquire);
+        let s1 = e.seq.load(Ordering::Acquire); // order: roster
         if s1 & 1 != 0 {
             std::hint::spin_loop();
             continue;
@@ -198,7 +206,7 @@ pub(crate) fn read_entry(e: &RosterEntry) -> std::result::Result<Option<Endpoint
         for (d, s) in label.iter_mut().zip(&e.label) {
             *d = s.load(Ordering::Relaxed);
         }
-        fence(Ordering::Acquire);
+        fence(Ordering::Acquire); // order: roster
         if e.seq.load(Ordering::Relaxed) != s1 {
             continue;
         }
@@ -304,7 +312,7 @@ pub fn read_channel_stats(signpost: &str) -> ChannelStats {
     // SAFETY: as above.
     let h = unsafe { HeaderConfig::read(ctrl) };
     if held
-        && ctrl.init_state.load(Ordering::Acquire) == INIT_READY
+        && ctrl.init_state.load(Ordering::Acquire) == INIT_READY // order: seg_init
         && h.magic == MAGIC
         && h.version == LAYOUT_VERSION
     {

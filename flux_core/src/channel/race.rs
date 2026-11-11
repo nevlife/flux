@@ -3,6 +3,8 @@
 //! data race on the payload or the meta; a broken wake Dekker leaves a waiter asleep forever, which
 //! Miri reports as a deadlock.
 
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

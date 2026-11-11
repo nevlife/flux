@@ -1,6 +1,11 @@
 //! Rendezvous through `/dev/shm`. A fixed-name signpost carries the epoch of the current segment,
 //! and the segment is `<signpost>.e<epoch>`. One publisher per signpost. Every process that has a
 //! signpost open holds a read lock on it; the last one out unlinks it.
+
+#![allow(
+    clippy::disallowed_types,
+    reason = "the signpost words; orderings tagged `order:`"
+)]
 #![cfg_attr(
     not(test),
     deny(
@@ -164,17 +169,20 @@ impl SignpostMap {
             name: name.to_owned(),
         };
         let sp = map.sp();
+        // order: sp_init
         if sp.init_state.load(Ordering::Acquire) != INIT_READY {
             if sys::lock_write(raw, SIGNPOST_BOOTSTRAP_BYTE) {
+                // order: sp_init
                 if sp.init_state.load(Ordering::Acquire) != INIT_READY {
                     sp.magic.store(SIGNPOST_MAGIC, Ordering::Relaxed);
                     sp.version.store(LAYOUT_VERSION, Ordering::Relaxed);
                     sp.epoch.store(0, Ordering::Relaxed);
-                    sp.init_state.store(INIT_READY, Ordering::Release);
+                    sp.init_state.store(INIT_READY, Ordering::Release); // order: sp_init
                 }
                 sys::unlock(raw, SIGNPOST_BOOTSTRAP_BYTE);
             } else {
                 for _ in 0..BOOTSTRAP_SPINS {
+                    // order: sp_init
                     if sp.init_state.load(Ordering::Acquire) == INIT_READY {
                         break;
                     }
@@ -182,6 +190,7 @@ impl SignpostMap {
                 }
             }
         }
+        // order: sp_init
         if sp.init_state.load(Ordering::Acquire) != INIT_READY {
             return Err(Error::NotReady(format!(
                 "signpost '{name}' never became ready"
@@ -215,7 +224,7 @@ impl SignpostMap {
     }
 
     pub(crate) fn epoch(&self) -> u32 {
-        self.sp().epoch.load(Ordering::Acquire)
+        self.sp().epoch.load(Ordering::Acquire) // order: sp_epoch
     }
 
     /// Woken by every publisher that stores a new epoch.
@@ -344,7 +353,7 @@ pub fn open_publisher_segment(
             )?;
             seg.device_payload(|| Ok(gpu::DevicePayload::Exported(alloc)))?;
         }
-        map.sp().epoch.store(epoch, Ordering::Release);
+        map.sp().epoch.store(epoch, Ordering::Release); // order: sp_epoch
         // For subscriptions waiting for a publisher. Rare enough to need no gate.
         sys::futex_wake(&map.sp().epoch);
         seg.signpost = Some(map);
@@ -481,7 +490,7 @@ pub(crate) fn map_validate(
     debug_assert!((base.as_ptr() as usize).is_multiple_of(CACHE_LINE));
     let ctrl = base.cast::<ControlHeader>();
     // SAFETY: at least a header's worth of mapped bytes.
-    let init = unsafe { ctrl.as_ref() }.init_state.load(Ordering::Acquire);
+    let init = unsafe { ctrl.as_ref() }.init_state.load(Ordering::Acquire); // order: seg_init
     if init != INIT_READY {
         return reject("segment not initialized");
     }
@@ -562,7 +571,7 @@ impl SignpostView {
         let base = sys::map_readonly(fd.as_raw_fd(), SIGNPOST_BYTES).ok()?;
         let view = SignpostView { base: Some(base) };
         let sp = view.sp()?;
-        (sp.init_state.load(Ordering::Acquire) == INIT_READY
+        (sp.init_state.load(Ordering::Acquire) == INIT_READY // order: sp_init
             && sp.magic.load(Ordering::Relaxed) == SIGNPOST_MAGIC)
             .then_some((view, fd))
     }
@@ -578,7 +587,7 @@ impl SignpostView {
     }
 
     pub fn epoch(&self) -> Option<u32> {
-        self.sp().map(|sp| sp.epoch.load(Ordering::Acquire))
+        self.sp().map(|sp| sp.epoch.load(Ordering::Acquire)) // order: sp_epoch
     }
 }
 
@@ -775,7 +784,7 @@ mod tests {
     fn the_epoch_wraps_past_zero() {
         let name = signpost_name(&format!("/d{}_wrap", std::process::id()), NO_SCHEMA).unwrap();
         let keep = SignpostMap::open(&name).unwrap();
-        keep.sp().epoch.store(u32::MAX - 1, Ordering::Release);
+        keep.sp().epoch.store(u32::MAX - 1, Ordering::Release); // order: sp_epoch
         drop(
             open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None)
                 .unwrap(),

@@ -2,6 +2,8 @@
 //! driver (`gpu::fake`), where each test decides when the work on a stream finishes or fails. They
 //! need no GPU: each runs in a child process whose driver is the stand-in.
 
+#![allow(clippy::disallowed_types, reason = "a test")]
+
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

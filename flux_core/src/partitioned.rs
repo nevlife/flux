@@ -2,6 +2,8 @@
 //! given as `run` and `stop`. The calling thread runs no callbacks: it waits, and fans out stop
 //! and interrupt.
 
+#![allow(clippy::disallowed_types, reason = "run flags, Relaxed only")]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 

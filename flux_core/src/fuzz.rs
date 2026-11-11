@@ -1,5 +1,7 @@
 //! Fuzz targets, run by cargo-fuzz (`fuzz/`) and over a fixed corpus by `cargo test`. Another
 //! process writes every byte read here, so the oracle is: no panic, no access outside the mapping.
+
+#![allow(clippy::disallowed_types, reason = "a test")]
 #![allow(clippy::missing_panics_doc)]
 
 use std::fs::File;
