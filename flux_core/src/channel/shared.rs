@@ -144,7 +144,7 @@ pub enum Owned {
 
 impl Owned {
     /// The block's trailer entry: its descriptor offset and length.
-    fn entry(&self) -> [u8; arena::BLOCK_BYTES] {
+    pub(super) fn entry(&self) -> [u8; arena::BLOCK_BYTES] {
         let (base, off, len) = match *self {
             Owned::Block(off, len) | Owned::Adopted(_, _, off, len) => (arena::HEAP_BASE, off, len),
             Owned::Gpu(_, off, len) => (arena::GPU_BASE, off, len),
@@ -396,39 +396,6 @@ impl ChannelShared {
                 .inspect_err(|e| eprintln!("flux: no GPU arena, so device fields are refused: {e}"))
                 .ok()
         })
-    }
-
-    /// Whether the frame in `slot` owns host arena memory and GPU arena memory, and how many
-    /// blocks in all.
-    pub(super) fn owned_kinds(&self, slot: u32) -> (bool, bool, u32) {
-        let owned = self.owned.lock();
-        let Some(v) = owned.get(slot as usize) else {
-            return (false, false, 0);
-        };
-        let gpu = |o: &&Owned| matches!(o, Owned::Gpu(..));
-        #[allow(clippy::cast_possible_truncation)]
-        let n = v.len() as u32;
-        (v.iter().any(|o| !gpu(&o)), v.iter().any(|o| gpu(&o)), n)
-    }
-
-    /// Writes the blocks of the frame in `slot` at `dst` as the trailer's list.
-    ///
-    /// # Safety
-    /// `dst` holds `BLOCK_BYTES` bytes for each block `owned_kinds` counted, and the claim makes
-    /// this the only access to them.
-    pub(super) unsafe fn write_blocks(&self, slot: u32, dst: *mut u8) {
-        let owned = self.owned.lock();
-        let Some(v) = owned.get(slot as usize) else {
-            return;
-        };
-        let mut at = dst;
-        for o in v {
-            let e = o.entry();
-            // SAFETY: the caller's contract covers this entry.
-            unsafe { std::ptr::copy_nonoverlapping(e.as_ptr(), at, e.len()) };
-            // SAFETY: still inside the list, or one past its end.
-            at = unsafe { at.add(e.len()) };
-        }
     }
 
     pub(super) fn own(&self, slot: u32, o: Owned) {
