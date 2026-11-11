@@ -8,10 +8,6 @@
 //! memory. The publisher's arena lives for the process, as the host arena does, so it is not in
 //! the debug ledger; a subscriber's imports are.
 
-// shortcut: nothing outside the tests uses this until channels place frames' fields here; drop
-// this allow when they do.
-#![allow(dead_code)]
-
 use std::ffi::{c_int, c_void};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -24,20 +20,21 @@ use super::driver::{
     MEM_GRANULARITY_MINIMUM, MEM_HANDLE_TYPE_POSIX_FD, MEM_LOCATION_TYPE_DEVICE,
     MEM_LOCATION_TYPE_HOST_NUMA, MemAccessDesc, MemAllocationProp, MemLocation, SUCCESS, Vmm,
 };
+use super::fd::{self, ENDPOINT_PREFIX, FdServer, Share};
 use super::ledger::{self, Held};
-use super::vmm::{self, ENDPOINT_PREFIX, FdServer, Share};
+use super::vmm;
 use crate::arena::{self as host_arena, Heap};
 use crate::error::{Error, Result};
 use crate::sys::{self, PiMutex};
 
 /// One allocation each, so a 2 GiB arena is 64 descriptors at most. A multiple of the 2 MiB
 /// granularity the GPUs flux runs on report.
-pub(crate) const CHUNK: usize = 32 << 20;
+pub const CHUNK: usize = 32 << 20;
 const NOT_SUPPORTED: i32 = 801;
 
 /// Where the chunks are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Place {
+pub enum Place {
     Device,
     /// Host memory of this NUMA node, which the CPU reads without a copy.
     HostNuma(c_int),
@@ -98,7 +95,7 @@ struct Target {
 }
 
 /// The publisher side: this process's arena on one device.
-pub(crate) struct GpuArena {
+pub struct GpuArena {
     ordinal: i32,
     endpoint: String,
     size: usize,
@@ -126,7 +123,7 @@ static ARENAS: PiMutex<Vec<&'static GpuArena>> = PiMutex::new(Vec::new());
 
 /// This process's arena on `ordinal`, made on first use. Its size is the host arena's
 /// (`FLUX_ARENA_BYTES`).
-pub(crate) fn gpu_arena(ordinal: i32) -> Result<&'static GpuArena> {
+pub fn gpu_arena(ordinal: i32) -> Result<&'static GpuArena> {
     let size = host_arena::configured()
         .ok_or_else(|| Error::Unsupported("the arena is off (FLUX_ARENA_BYTES=0)".into()))?;
     let mut all = ARENAS.lock();
@@ -198,8 +195,9 @@ fn grow(
 }
 
 impl GpuArena {
-    /// `place` overrides the device's choice, for a test of the other.
-    fn create(ordinal: i32, size: usize, place: Option<Place>) -> Result<GpuArena> {
+    /// One that is not the process's, which goes when dropped; `place` overrides the device's
+    /// choice. For tests: frames use `gpu_arena`.
+    pub fn create(ordinal: i32, size: usize, place: Option<Place>) -> Result<GpuArena> {
         let (core, vmm) = vmm::vmm()?;
         let ctx = core
             .primary_context(ordinal)
@@ -284,7 +282,7 @@ impl GpuArena {
 
     /// The offset of `bytes`, on an `align` boundary; None when the arena is full or a chunk could
     /// not be made.
-    pub(crate) fn alloc(&self, bytes: usize, align: usize) -> Option<u64> {
+    pub fn alloc(&self, bytes: usize, align: usize) -> Option<u64> {
         if !align.is_power_of_two() || self.born != sys::fork_gen() {
             return None;
         }
@@ -300,37 +298,37 @@ impl GpuArena {
         })
     }
 
-    pub(crate) fn free(&self, off: u64) {
+    pub fn free(&self, off: u64) {
         self.inner.lock().heap.free(off);
     }
 
-    pub(crate) fn device_ptr(&self, off: u64) -> DevicePtr {
+    pub fn device_ptr(&self, off: u64) -> u64 {
         self.target.base + off
     }
 
     /// Where the CPU reaches `off`: only a `HOST_NUMA` arena's bytes have such an address.
-    pub(crate) fn host_ptr(&self, off: u64) -> Option<*mut u8> {
+    pub fn host_ptr(&self, off: u64) -> Option<*mut u8> {
         #[allow(clippy::cast_possible_truncation)]
         matches!(self.target.place, Place::HostNuma(_))
             .then(|| (self.target.base + off) as usize as *mut u8)
     }
 
     /// Chunks made so far; a frame names how many its blocks reach.
-    pub(crate) fn chunks(&self) -> u32 {
+    pub fn chunks(&self) -> u32 {
         #[allow(clippy::cast_possible_truncation)]
         let n = self.chunks.lock().len() as u32;
         n
     }
 
-    pub(crate) fn endpoint(&self) -> &str {
+    pub fn endpoint(&self) -> &str {
         &self.endpoint
     }
 
-    pub(crate) fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.size
     }
 
-    pub(crate) fn place(&self) -> Place {
+    pub fn place(&self) -> Place {
         self.target.place
     }
 }
@@ -372,7 +370,7 @@ enum Cpu {
 }
 
 /// A subscriber's read-only import of a publisher's arena.
-pub(crate) struct GpuArenaImport {
+pub struct GpuArenaImport {
     endpoint: String,
     size: usize,
     place: Place,
@@ -395,12 +393,7 @@ unsafe impl Send for GpuArenaImport {}
 
 impl GpuArenaImport {
     /// Reserves the range; chunks come with `reach`. `size` and `place` are the publisher's.
-    pub(crate) fn open(
-        endpoint: &str,
-        size: usize,
-        place: Place,
-        ordinal: i32,
-    ) -> Result<GpuArenaImport> {
+    pub fn open(endpoint: &str, size: usize, place: Place, ordinal: i32) -> Result<GpuArenaImport> {
         let (core, vmm) = vmm::vmm()?;
         let ctx = core
             .primary_context(ordinal)
@@ -434,7 +427,7 @@ impl GpuArenaImport {
 
     /// Imports chunks until `chunks` of them are mapped. A round trip to the publisher, so a
     /// frame asks for this only when it reaches past what is mapped.
-    pub(crate) fn reach(&self, chunks: u32) -> Result<()> {
+    pub fn reach(&self, chunks: u32) -> Result<()> {
         let mut inner = self.inner.lock();
         #[allow(clippy::cast_possible_truncation)]
         let have = inner.handles.len() as u32;
@@ -447,7 +440,7 @@ impl GpuArenaImport {
                 self.endpoint, self.size
             )));
         }
-        let fds = vmm::fetch_chunks(&self.endpoint, have)?;
+        let fds = fd::fetch_chunks(&self.endpoint, have)?;
         if fds.len() < (chunks - have) as usize {
             return Err(Error::NotReady(format!(
                 "the GPU arena '{}' has fewer chunks than a frame reaches",
@@ -570,12 +563,12 @@ impl GpuArenaImport {
         Ok(())
     }
 
-    pub(crate) fn device_ptr(&self, off: u64) -> DevicePtr {
+    pub fn device_ptr(&self, off: u64) -> u64 {
         self.base + off
     }
 
     /// The CPU's view of `len` bytes at `off`, if this arena has one and they are mapped.
-    pub(crate) fn host(&self, off: u64, len: usize) -> Option<*const u8> {
+    pub fn host(&self, off: u64, len: usize) -> Option<*const u8> {
         let inner = self.inner.lock();
         let mapped = (inner.handles.len() * CHUNK) as u64;
         if off.checked_add(len as u64)? > mapped {
@@ -622,156 +615,13 @@ impl Drop for GpuArenaImport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::driver::Driver;
-
-    type Memset = unsafe extern "C" fn(DevicePtr, u8, usize) -> i32;
-    type CopyDtoH = unsafe extern "C" fn(*mut c_void, DevicePtr, usize) -> i32;
-
-    /// A real driver with VMM and POSIX fd handles; the stand-in has neither.
-    fn driver() -> Option<(Memset, CopyDtoH)> {
-        let (core, _) = vmm::vmm().ok()?;
-        let dev = vmm::device_handle(core, 0)?;
-        if !core.attribute(dev, super::super::driver::ATTR_VMM_SUPPORTED) {
-            return None;
-        }
-        // The test's own copies and fills run on this thread.
-        core.ensure_context(0)?;
-        let drv = Driver::get();
-        // SAFETY: cuMemsetD8_v2's C signature.
-        let memset = unsafe { drv.extra(c"cuMemsetD8_v2")? };
-        // SAFETY: cuMemcpyDtoH_v2's C signature.
-        let copy = unsafe { drv.extra(c"cuMemcpyDtoH_v2")? };
-        Some((memset, copy))
-    }
-
-    /// Runs `body` in a child of this test binary, with `vars`; panics with its output on failure.
-    fn in_child(test: &str, vars: &[(&str, String)]) {
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([test, "--exact", "--nocapture"])
-            .env("FLUX_GPU_ARENA_CHILD", "1")
-            .envs(vars.iter().map(|(k, v)| (*k, v.as_str())))
-            .output()
-            .unwrap();
-        let log = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            out.status.success() && log.contains("1 passed"),
-            "{log}{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    fn var(name: &str) -> u64 {
-        std::env::var(name).unwrap().parse().unwrap()
-    }
-
-    /// The child's half: imports what the parent named and checks each run's byte, on the device
-    /// and, for a `HOST_NUMA` arena, from the CPU.
-    fn check_runs(place: Place) {
-        let (_, copy) = driver().unwrap();
-        let endpoint = std::env::var("FLUX_GPU_ARENA_ENDPOINT").unwrap();
-        #[allow(clippy::cast_possible_truncation)]
-        let size = var("FLUX_GPU_ARENA_SIZE") as usize;
-        let m = GpuArenaImport::open(&endpoint, size, place, 0).unwrap();
-        // A frame first reaches one chunk, then all: the second fetch asks from the first's end.
-        m.reach(1).unwrap();
-        #[allow(clippy::cast_possible_truncation)]
-        m.reach(var("FLUX_GPU_ARENA_CHUNKS") as u32).unwrap();
-        for (i, run) in std::env::var("FLUX_GPU_ARENA_RUNS")
-            .unwrap()
-            .split(',')
-            .enumerate()
-        {
-            let (off, len) = run.split_once(':').unwrap();
-            let (off, len): (u64, usize) = (off.parse().unwrap(), len.parse().unwrap());
-            let mut got = vec![0u8; len];
-            // SAFETY: got holds len bytes; off..off+len is imported.
-            let rc = unsafe { copy(got.as_mut_ptr().cast(), m.device_ptr(off), len) };
-            assert_eq!(rc, SUCCESS);
-            #[allow(clippy::cast_possible_truncation)]
-            let want = 0x30 + i as u8;
-            assert!(got.iter().all(|&b| b == want), "run {i} on the device");
-            if matches!(place, Place::HostNuma(_)) {
-                let p = m.host(off, len).expect("a HOST_NUMA arena has a CPU view");
-                // SAFETY: host() checked the range is mapped.
-                let cpu = unsafe { std::slice::from_raw_parts(p, len) };
-                assert!(cpu.iter().all(|&b| b == want), "run {i} from the CPU");
-            }
-        }
-    }
-
-    /// The parent's half: three runs, one across two chunk boundaries, then a child reads them.
-    fn publish_runs(test: &str, place: Place) {
-        let Some((memset, _)) = driver() else {
-            eprintln!("skipped: no driver with VMM");
-            return;
-        };
-        let a = GpuArena::create(0, 256 << 20, Some(place)).unwrap();
-        let mut runs = Vec::new();
-        for (i, len) in [4096usize, 2 * CHUNK + 1000, 1 << 20]
-            .into_iter()
-            .enumerate()
-        {
-            let off = a.alloc(len, 64).unwrap();
-            #[allow(clippy::cast_possible_truncation)]
-            let fill = 0x30 + i as u8;
-            if let Some(p) = a.host_ptr(off) {
-                // SAFETY: a HOST_NUMA block of len bytes this process may write.
-                unsafe { std::ptr::write_bytes(p, fill, len) };
-            } else {
-                // SAFETY: off..off+len is device memory this arena holds.
-                assert_eq!(unsafe { memset(a.device_ptr(off), fill, len) }, SUCCESS);
-            }
-            runs.push(format!("{off}:{len}"));
-        }
-        assert!(a.chunks() >= 3);
-        in_child(
-            test,
-            &[
-                ("FLUX_GPU_ARENA_ENDPOINT", a.endpoint().to_owned()),
-                ("FLUX_GPU_ARENA_SIZE", a.size().to_string()),
-                ("FLUX_GPU_ARENA_CHUNKS", a.chunks().to_string()),
-                ("FLUX_GPU_ARENA_RUNS", runs.join(",")),
-            ],
-        );
-    }
-
-    #[test]
-    fn device_chunks_reach_another_process_as_they_grow() {
-        if std::env::var_os("FLUX_GPU_ARENA_CHILD").is_some() {
-            return check_runs(Place::Device);
-        }
-        publish_runs(
-            "gpu::arena::tests::device_chunks_reach_another_process_as_they_grow",
-            Place::Device,
-        );
-    }
-
-    /// x86 drivers support `HOST_NUMA` too, so this path runs here as well as on an integrated
-    /// GPU, where the child takes the descriptor-mapping branch instead.
-    #[test]
-    fn host_numa_chunks_reach_another_processs_cpu_and_gpu() {
-        if std::env::var_os("FLUX_GPU_ARENA_CHILD").is_some() {
-            return check_runs(Place::HostNuma(0));
-        }
-        let Some((core, _)) = vmm::vmm().ok() else {
-            return;
-        };
-        let Some(dev) = vmm::device_handle(core, 0) else {
-            return;
-        };
-        if !core.attribute(dev, ATTR_HOST_NUMA_VMM_SUPPORTED) {
-            eprintln!("skipped: no HOST_NUMA VMM");
-            return;
-        }
-        publish_runs(
-            "gpu::arena::tests::host_numa_chunks_reach_another_processs_cpu_and_gpu",
-            Place::HostNuma(0),
-        );
-    }
 
     #[test]
     fn a_frame_past_the_arena_is_refused() {
-        let Some(_) = driver() else { return };
+        let Ok((core, _)) = vmm::vmm() else { return };
+        if vmm::device_handle(core, 0).is_none() {
+            return;
+        }
         let m = GpuArenaImport::open("/dev/shm/flux.gpu.arena-none", 64 << 20, Place::Device, 0)
             .unwrap();
         assert!(matches!(m.reach(3), Err(Error::Mismatch(_))));

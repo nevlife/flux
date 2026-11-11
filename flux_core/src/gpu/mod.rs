@@ -3,10 +3,12 @@
 //! protocol unchanged; what changes is where `device_ptr` counts from, and that commit and release
 //! wait for the stream first.
 
-pub(crate) mod arena;
+#[doc(hidden)]
+pub mod arena;
 mod driver;
 #[cfg(test)]
 mod fake;
+mod fd;
 pub(crate) mod ledger;
 #[cfg(test)]
 mod tests;
@@ -25,9 +27,9 @@ use driver::{
     MEM_HOST_REGISTER_DEVICEMAP, MEM_HOST_REGISTER_PORTABLE, MEM_HOST_REGISTER_READ_ONLY,
     NOT_READY, SUCCESS,
 };
+pub(crate) use fd::remove_dead_endpoint;
 pub(crate) use vmm::{
     DeviceAlloc, DeviceBuffer, DeviceImport, device_for_uuid, device_uuid, endpoint,
-    remove_dead_endpoint,
 };
 
 use crate::error::{Error, Result};

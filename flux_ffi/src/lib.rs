@@ -3,6 +3,7 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::missing_safety_doc)]
 
+mod arena;
 mod channel;
 mod executor;
 mod gpu;
@@ -11,6 +12,7 @@ mod schema;
 mod status;
 mod store;
 
+pub use arena::*;
 pub use channel::*;
 pub use executor::*;
 pub use gpu::*;
