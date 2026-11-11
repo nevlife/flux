@@ -104,9 +104,14 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 - flux 경로에서는 타입마다 따로 있는 GPU 채널로 보내고 `data` 밖의 필드를 같은 프레임에 담는다. ROS 경로에서는 wrapper가 GPU 버퍼를 하나 두고, publish할 때 호스트로 복사해 ROS 메시지로 보낸다. GPU 채널의 필드에는 상한이 있다. `Image`는 `encoding` 32바이트, `frame_id` 256바이트까지다. `PointCloud2`는 `frame_id` 256바이트, `fields` 32개, 필드 이름 32바이트까지다. 넘으면 loan이 `false`가 되고 publish가 `false`다.
 - `Cuda`를 쓸 수 없으면(CUDA 없이 빌드했거나, GPU 경로나 장치가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Host`로 간다. `uses_device()`가 실제로 쓰는 쪽을 알려 준다. GPU 채널에서는 `mirror_to_ros`를 무시한다.
 - 구독은 flux 경로에서 `Cuda` 발행자의 프레임도 받는다. `SubscriptionOptions::device`가 `Host`(기본)면 `data()`가 호스트 메모리다(외장 GPU에서는 take할 때 한 번 복사한다). 헤더가 잘못된 프레임은 건너뛰고 `rejected()`로 센다.
-- 구독의 `device`가 `Cuda`면 발행자가 어느 쪽이든 `data`가 장치 메모리에 있다. `on_device()`, `device_ptr()`, `size()`, `stream()`으로 읽고, 장치 작업은 `stream()`에 올린다. `Host` 발행자의 프레임은 외장 GPU에서 take할 때 장치로 한 번 복사하고, 통합 GPU에서는 복사하지 않는다. ROS 경로에서는 구독마다 장치 버퍼를 하나 두고, 메시지를 받을 때마다 그 버퍼로 복사한다. 콜백들이 이 버퍼를 함께 쓰므로 그 구독을 Reentrant 그룹에 넣지 않는다. 호스트 메모리에도 있는 프레임은 `data()`로도 읽힌다.
+- 구독의 `device`가 `Cuda`면 발행자가 어느 쪽이든 `data`가 장치 메모리에 있다. `on_device()`, `device_ptr()`, `size()`, `stream()`으로 읽고, 장치 작업은 `stream()`에 올린다. `Host` 발행자의 프레임은 외장 GPU에서 take할 때 장치로 한 번 복사하고, 통합 GPU에서는 복사하지 않는다. ROS 경로에서는 구독마다 장치 버퍼를 `max_borrow`개 두고, 메시지를 받을 때마다 빈 버퍼로 복사한다. 버퍼마다 stream이 따로 있다. 호스트 메모리에도 있는 프레임은 `data()`로도 읽힌다.
+- 콜백이 `std::shared_ptr<const View<Msg>>`를 받으면(`HeldCallback`) 콜백 뒤에도 View를 들고 있을 수 있다. 포인터가 살아 있는 동안 View가 읽는 메시지가 남고, flux 경로에서는 슬롯도 남는다. 마지막 포인터가 사라질 때 돌아간다. 어느 스레드에서 놓아도 된다.
+- `SubscriptionOptions::max_borrow`(기본 1)는 한 구독의 View가 동시에 살아 있을 수 있는 수다. 콜백 안의 것과 들고 있는 것을 합한다. 0이면 생성자가 `std::invalid_argument`를 던진다.
+- flux 경로에서는 `max_borrow`개를 들고 있는 동안 다음 프레임이 발행자의 링에서 기다린다. 슬롯이 `max_borrow`개 이하인 발행자는 거절한다. 생성자에서 붙을 때는 `flux::Error`를 던지고, executor 아래에서는 로그를 한 번 남기고 발행자가 재시작할 때까지 그 구독을 뺀다. 들고 있는 슬롯에는 발행자가 쓰지 못하므로, 발행자의 `slot_count`가 같은 토픽의 모든 구독이 동시에 쥐는 수보다 하나 이상 커야 프레임이 버려지지 않는다.
+- ROS 경로에서 `max_borrow`는 `Cuda` 구독의 장치 버퍼 수만 정한다. 버퍼가 모두 쥐여 있으면 그 메시지를 건너뛰고 오류 로그를 한 번 남긴다. Reentrant 그룹에서 콜백이 `max_borrow`개보다 많이 겹칠 때도 같다. 호스트 구독에는 제한이 없다.
+- 장치 프레임을 `stream()`이 아닌 stream에서 읽으면, 놓기 전에 `View::after(s)`를 부른다. `stream()`이 `s`에 지금까지 올린 작업 뒤에 오게 해서, 슬롯이나 장치 버퍼가 그 작업이 끝난 뒤 돌아간다. 부르지 않으면 그 작업이 끝나기 전에 발행자가 슬롯에 새 프레임을 쓸 수 있다.
 - GPU 기능은 CMake가 CUDAToolkit을 찾을 때 컴파일된다. 찾지 못해도 `Device::Cuda`는 있으므로 코드는 그대로 빌드된다.
-- Python 모듈 `flux_wrapper`도 같은 구조다. `flux`를 import할 수 있고 `ENABLE_FLUX=1`이면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`한다.
+- Python 모듈 `flux_wrapper`도 같은 구조다. 다만 `max_borrow`와 `HeldCallback`은 없다. `flux`를 import할 수 있고 `ENABLE_FLUX=1`이면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`한다.
 - Python의 `Publisher`와 `Subscription`은 `device="cpu"|"cuda"`를 받는다. GPU 채널과 그 필드 배치가 C++와 같아서, C++ 발행자의 프레임을 Python 구독이 받고 그 반대도 된다. `loan.alloc_buffer(n)`은 `uint8[n]`의 `flux.Loan`을 주고, 그 loan은 `__dlpack__`이나 `__cuda_array_interface__`로 장치에서 쓴다. `device="cuda"` 발행자의 loan은 `alloc_buffer()`나 `alloc_data()`를 부를 때 슬롯을 잡는다. 빈 슬롯이 없으면 그 결과가 `None`이고, 그 전까지 loan은 참이다. 받은 `View`는 `on_device`가 참이고 `device_data`(`flux.Frame`)로 읽는다. `"cuda"`를 쓸 수 없으면 경고를 한 번 남기고 `"cpu"`로 간다(`uses_device`).
 
 flux Python 모듈에는 호스트 메모리와 장치 메모리 사이의 복사가 없다. 그래서 Python에서는 아래가 C++와 다르다.

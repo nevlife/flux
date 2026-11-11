@@ -655,8 +655,9 @@ protected:
   friend class flux_wrapper::Publisher<MsgT>;
 };
 
-// A flux View aliases the slot: valid only during the callback it was passed to. The data field
-// is in host memory (data()), in device memory (on_device()), or in both.
+// A flux View aliases the slot: valid only during the callback it was passed to, or with a
+// HeldCallback while its pointer lives. The data field is in host memory (data()), in device
+// memory (on_device()), or in both.
 template <class MsgT>
 class ViewBase
 {
@@ -731,6 +732,24 @@ public:
   [[nodiscard]] auto stream() const noexcept -> cudaStream_t
   {
     return on_device() ? static_cast<cudaStream_t>(stream_) : nullptr;
+  }
+  // Orders stream() after the work queued on s so far, on the device: the slot or device buffer
+  // then goes back only after that work too. For a frame read on another stream than stream().
+  // True when not on_device().
+  [[nodiscard]] auto after(cudaStream_t s) const noexcept -> bool
+  {
+    if (!on_device()) {
+      return true;
+    }
+    cudaEvent_t e = nullptr;
+    if (cudaEventCreateWithFlags(&e, cudaEventDisableTiming) != cudaSuccess) {
+      return false;
+    }
+    // The wait takes the event as recorded now, so destroying it at once is safe.
+    const bool ok =
+      cudaEventRecord(e, s) == cudaSuccess && cudaStreamWaitEvent(stream(), e, 0) == cudaSuccess;
+    (void)cudaEventDestroy(e);
+    return ok;
   }
 #endif
 

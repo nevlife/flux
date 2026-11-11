@@ -71,12 +71,12 @@ auto Subscription::attach() -> bool
 
 auto Subscription::deliver_one() -> bool
 {
-  const FrameView v = sub_.take_for_executor();
+  FrameView v = sub_.take_for_executor();
   report_refusal();
   if (!v) {
     return false;
   }
-  cb_(v);
+  cb_(std::move(v));
   return true;
 }
 

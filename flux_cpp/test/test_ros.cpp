@@ -140,6 +140,61 @@ TEST_F(Ros, AFrameReachesTheCallback)
   EXPECT_TRUE(eventually([&] { return got == 1; }));
 }
 
+// Seven frames after the kept one go through a ring of four around its slot.
+TEST_F(Ros, AFrameMovedOutOfTheCallbackKeepsItsSlot)
+{
+  flux::Publisher pub(*node_, topic("kept"), flux::kNoSchema, kSlot, kSlots);
+  std::optional<flux::FrameView> kept;
+  int seen = 0;
+  flux::Subscription sub(
+    *node_, topic("kept"), flux::kNoSchema, flux::QoS(8).max_borrow(2), [&](flux::FrameView && v) {
+      ++seen;
+      if (!kept) {
+        kept = std::move(v);
+      }
+    });
+  for (const char c : std::string("abcdefgh")) {
+    ASSERT_EQ(pub.publish(&c, 1), flux::Published::Ok);
+    ASSERT_TRUE(sub.deliver_one());
+  }
+  EXPECT_EQ(seen, 8);
+  ASSERT_TRUE(kept);
+  EXPECT_EQ(text(*kept), "a");
+}
+
+TEST_F(Ros, NoFrameIsDeliveredWhileMaxBorrowFramesAreKept)
+{
+  flux::Publisher pub(*node_, topic("full"), flux::kNoSchema, kSlot, kSlots);
+  std::vector<flux::FrameView> kept;
+  flux::Subscription sub(
+    *node_, topic("full"), flux::kNoSchema, flux::QoS(8).max_borrow(2),
+    [&](flux::FrameView && v) { kept.push_back(std::move(v)); });
+  for (const char c : std::string("abc")) {
+    ASSERT_EQ(pub.publish(&c, 1), flux::Published::Ok);
+  }
+  ASSERT_TRUE(sub.deliver_one());
+  ASSERT_TRUE(sub.deliver_one());
+  EXPECT_FALSE(sub.deliver_one());
+  EXPECT_EQ(kept.size(), 2U);
+  kept.erase(kept.begin());
+  ASSERT_TRUE(sub.deliver_one());
+  ASSERT_EQ(kept.size(), 2U);
+  EXPECT_EQ(text(kept.back()), "c");
+}
+
+TEST_F(Ros, APublisherWithFewerSlotsThanRequiredIsRefused)
+{
+  flux::Publisher pub(*node_, topic("few"), flux::kNoSchema, kSlot, kSlots);
+  flux::Subscription sub(*node_, topic("few"));
+  sub.require_publisher_slots(kSlots);
+  try {
+    sub.require_publisher_slots(kSlots + 1);
+    FAIL() << "attached to " << kSlots << " slots where " << kSlots + 1 << " are required";
+  } catch (const flux::Error & e) {
+    EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
+  }
+}
+
 TEST_F(Ros, ASubscriptionInAGroupIsServedWithItsNode)
 {
   flux::Publisher pub(*node_, topic("member"), flux::kNoSchema, kSlot, kSlots);

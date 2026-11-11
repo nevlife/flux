@@ -26,6 +26,7 @@
 * 슬롯마다 프레임과 함께 commit되는 호스트 메모리(aux)를 둘 수 있다. 장치 메모리 채널에서도 호스트 메모리라서, GPU 프레임에 stamp 같은 헤더를 같은 채널로 붙인다
 * `flux_wrapper`가 `sensor_msgs/Image`와 `PointCloud2`를 GPU 메모리째 보내고 받는다(C++ `Device::Cuda`, Python `device="cuda"`). flux가 없으면 호스트로 복사해 ROS 메시지로 보낸다. `Cuda` 구독은 CPU 발행자와 ROS 경로의 메시지도 장치 메모리로 받는다(C++)
 * `record_flux`가 프레임의 aux와 채널의 `aux_size`를 `FluxFrame.meta` 끝에 담고, `play_flux`가 같은 `aux_size`로 발행자를 만들어 aux와 함께 발행한다. `flux_wrapper`의 GPU 이미지 채널도 헤더와 함께 녹화하고 재생한다. aux를 담은 bag은 이전 `flux_bag`이 읽지 못한다
+* 구독이 콜백 뒤에도 프레임을 복사 없이 들고 있을 수 있다. C++ `flux::Subscription`의 콜백은 `FrameView`를 move해서 들고 있고, `flux_wrapper`의 콜백은 `std::shared_ptr<const View<Msg>>`를 받아 들고 있는다. 들고 있을 수는 `max_borrow`이고, 슬롯이 그보다 적은 발행자는 거절한다
 
 ### 버그 수정
 
@@ -70,6 +71,8 @@
 * `flux::Publisher::mirror_to_ros`, Python `Publisher(mirror_to_ros=...)`
 * aux: C++ `Publisher`의 `aux_size` 인자와 `aux_size()`, `WriteSlot::aux`, `WriteSlot::set_aux_len`, `FrameView::aux`. Python `Publisher(aux_size=...)`, `Loan.aux`, `Loan.aux_len`, `flux.aux`. C `flux_loan_aux`, `flux_loan_set_aux_len`, `flux_view_aux`, `flux_channel_aux_size`, `FLUX_MAX_AUX_SIZE`
 * `flux_wrapper`: `Device`, `PublisherOptions::device`, `SubscriptionOptions::device`, `Buffer`, `Loan<Image>`와 `Loan<PointCloud2>`의 `alloc_buffer`, `View<Image>`와 `View<PointCloud2>`의 `on_device`·`device_ptr`·`size`·`stream`, `Publisher::uses_device`, `Subscription::rejected`. Python `Publisher(device=...)`, `Publisher.uses_device`, `Subscription(device=...)`, `Subscription.rejected`, `Loan.alloc_buffer`, `View.on_device`, `View.device_data`
+* `flux::Subscription::require_publisher_slots`
+* `flux_wrapper`: `SubscriptionOptions::max_borrow`, `Subscription::HeldCallback`, `View::after`
 
 ### 호환이 깨지는 변경
 
@@ -78,7 +81,6 @@
 -->
 
 1. 공유메모리 배치 버전이 6에서 7로, C ABI 버전이 3에서 4로 올랐다. 슬롯에 aux 영역이 생겼기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
-
 2. C `flux_channel_create`에 `max_subscribers` 다음 인자로 `aux_size`가 생겼다. aux가 필요 없으면 0을 준다. `flux_frame_meta.reserved0[2]`는 `uint16_t aux_len`이 되었다.
 
    ```c
@@ -88,4 +90,13 @@
    // 후
    flux_channel_create(name, slot_size, slot_count, max_subscribers, 0, fingerprint, mem, stream,
                        stamp_offset, &ch);
+   ```
+
+3. C++ `flux::Subscription::Callback`이 `std::function<void(FrameView &&)>`가 되었다. `const flux::FrameView &`로 받는 콜백은 그대로 된다. const 없는 `flux::FrameView &`로 받는 콜백은 고친다. `libflux_cpp`에 링크한 바이너리는 다시 빌드한다.
+
+   ```cpp
+   // 전
+   flux::Subscription sub(*node, "image", flux::kNoSchema, flux::QoS{}, [](flux::FrameView & f) {});
+   // 후
+   flux::Subscription sub(*node, "image", flux::kNoSchema, flux::QoS{}, [](flux::FrameView && f) {});
    ```

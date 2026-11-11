@@ -31,15 +31,15 @@ namespace detail
 class GroupMember;
 }
 
-// A view passed to the callback holds its slot only for that call: copy out what is kept longer.
-// One thread at a time: a second thread's call throws std::logic_error. A topic takes as many
-// subscribing processes as its publisher allows (16 unless set); the subscriptions of one process
-// share one place. Under an executor, a subscription refused when it attaches is logged once and
-// left out until its publisher restarts; the other sources keep running.
+// A frame moved out of the callback holds its slot until released, on any thread (QoS max_borrow
+// at once). One thread at a time: a second thread's call throws std::logic_error. A topic takes as
+// many subscribing processes as its publisher allows (16 unless set); the subscriptions of one
+// process share one place. Under an executor, a subscription refused when it attaches is logged
+// once and left out until its publisher restarts; the other sources keep running.
 class Subscription : public detail::Source
 {
 public:
-  using Callback = std::function<void(const FrameView &)>;
+  using Callback = std::function<void(FrameView &&)>;
 
   // Throws on a QoS the channel would refuse, before anything is announced.
   Subscription(
@@ -85,6 +85,8 @@ public:
   // Bounds each release fence (zero: none); this and the release mode are kept across a re-attach.
   void set_fence_timeout(std::chrono::nanoseconds t) noexcept { sub_.set_fence_timeout(t); }
   void set_release_mode(gpu::ReleaseMode m) noexcept { sub_.set_release_mode(m); }
+  // Refuses a publisher of fewer than n slots, as a message_filters input does. Before serving.
+  void require_publisher_slots(std::uint32_t n) { sub_.require_slots(n); }
 
   auto attach() -> bool override;
   auto deliver_one() -> bool override;

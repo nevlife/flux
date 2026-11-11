@@ -426,6 +426,72 @@ TEST_F(WrapperTest, RosSubscriberReceives)
   EXPECT_TRUE(done);
 }
 
+// Kept Views still read their own frame after the ring went round many times past them.
+TEST_F(WrapperTest, HeldViewsOutliveTheirCallback)
+{
+  std::vector<std::shared_ptr<const flux_wrapper::View<Image>>> kept;
+  std::vector<Image> seen;
+  int after = 0;
+  std::atomic<bool> done{false};
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.max_borrow = 3;
+  flux_wrapper::Subscription<Image> sub(
+    *node_, "held", rclcpp::QoS(4),
+    [&](std::shared_ptr<const flux_wrapper::View<Image>> v) {
+      if (kept.size() < 2) {
+        seen.push_back(capture(*v));
+        kept.push_back(std::move(v));
+      } else if (++after == 12) {
+        done = true;
+      }
+    },
+    sub_options);
+  flux_wrapper::PublisherOptions options;
+  options.slot_count = 4;
+  flux_wrapper::Publisher<Image> pub(*node_, "held", rclcpp::QoS(4), options);
+
+  std::int32_t sec = 0;
+  run_until(done, [&] {
+    ++sec;
+    EXPECT_TRUE(
+      pub.publish(image(sec, std::vector<std::uint8_t>(6, static_cast<std::uint8_t>(sec)))));
+  });
+  ASSERT_TRUE(done);
+  ASSERT_EQ(kept.size(), 2u);
+  for (std::size_t i = 0; i < kept.size(); ++i) {
+    EXPECT_EQ(capture(*kept[i]), seen[i]);
+  }
+}
+
+TEST_F(WrapperTest, APublisherWithNoMoreSlotsThanMaxBorrowIsRefused)
+{
+  const auto ignore = [](const flux_wrapper::View<Image> &) {};
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.max_borrow = 0;
+  EXPECT_THROW(
+    flux_wrapper::Subscription<Image>(*node_, "few_slots", rclcpp::QoS(4), ignore, sub_options),
+    std::invalid_argument);
+#ifdef USE_FLUX_ENABLED
+  if (!expect_flux()) {
+    GTEST_SKIP() << "slots are a flux publisher's";
+  }
+  flux_wrapper::PublisherOptions options;
+  options.slot_count = 4;
+  flux_wrapper::Publisher<Image> pub(*node_, "few_slots", rclcpp::QoS(4), options);
+  sub_options.max_borrow = 4;
+  try {
+    flux_wrapper::Subscription<Image> sub(*node_, "few_slots", rclcpp::QoS(4), ignore, sub_options);
+    FAIL() << "attached to 4 slots for max_borrow 4";
+  } catch (const flux::Error & e) {
+    EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
+  }
+  sub_options.max_borrow = 3;
+  const flux_wrapper::Subscription<Image> sub(
+    *node_, "few_slots", rclcpp::QoS(4), ignore, sub_options);
+  EXPECT_TRUE(sub.uses_flux());
+#endif
+}
+
 // Written through a device buffer from host and from device memory, read by a host subscription:
 // over flux a GPU channel, over ROS the publisher's device buffer copied into the message.
 TEST_F(WrapperTest, CudaImageFromHostAndDeviceSources)
@@ -722,6 +788,106 @@ TEST_F(WrapperTest, CudaSubscriptionGetsAHostPointCloudOnTheDevice)
   EXPECT_TRUE(got->stream);
   EXPECT_EQ(got->device_bytes, want.data);
   EXPECT_EQ(got->msg, want);
+#endif
+}
+
+// Held Views keep their device bytes: over flux their slots, over ROS their device buffers. Read
+// on another stream, after() holds them back until that read is done.
+TEST_F(WrapperTest, CudaHeldViewsKeepTheirDeviceBytes)
+{
+  SKIP_WITHOUT_CUDA();
+#ifdef FLUX_WRAPPER_CUDA
+  std::vector<std::shared_ptr<const flux_wrapper::View<Image>>> kept;
+  std::vector<std::vector<std::uint8_t>> seen;
+  int after = 0;
+  std::atomic<bool> done{false};
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.device = flux_wrapper::Device::Cuda;
+  sub_options.max_borrow = 3;
+  flux_wrapper::Subscription<Image> sub(
+    *node_, "cuda_held", rclcpp::QoS(4),
+    [&](std::shared_ptr<const flux_wrapper::View<Image>> v) {
+      if (kept.size() < 2) {
+        seen.push_back(read_device(*v).device_bytes);
+        kept.push_back(std::move(v));
+      } else if (++after == 12) {
+        done = true;
+      }
+    },
+    sub_options);
+  flux_wrapper::PublisherOptions options;
+  options.slot_count = 4;
+  flux_wrapper::Publisher<Image> pub(*node_, "cuda_held", rclcpp::QoS(4), options);
+
+  std::int32_t sec = 0;
+  run_until(done, [&] {
+    ++sec;
+    EXPECT_TRUE(
+      pub.publish(image(sec, std::vector<std::uint8_t>(6, static_cast<std::uint8_t>(sec)))));
+  });
+  ASSERT_TRUE(done);
+  ASSERT_EQ(kept.size(), 2u);
+
+  cudaStream_t own = nullptr;
+  ASSERT_EQ(cudaStreamCreateWithFlags(&own, cudaStreamNonBlocking), cudaSuccess);
+  std::vector<std::vector<std::uint8_t>> read(kept.size());
+  for (std::size_t i = 0; i < kept.size(); ++i) {
+    ASSERT_TRUE(kept[i]->on_device());
+    read[i].resize(kept[i]->size());
+    EXPECT_EQ(
+      cudaMemcpyAsync(
+        read[i].data(), kept[i]->device_ptr(), read[i].size(), cudaMemcpyDeviceToHost, own),
+      cudaSuccess);
+    EXPECT_TRUE(kept[i]->after(own));
+  }
+  kept.clear();
+  EXPECT_EQ(cudaStreamSynchronize(own), cudaSuccess);
+  EXPECT_EQ(cudaStreamDestroy(own), cudaSuccess);
+  EXPECT_EQ(read, seen);
+#endif
+}
+
+// Over ROS a message has nowhere to wait: with its one device buffer held, the next are skipped.
+TEST_F(WrapperTest, CudaRosPathSkipsMessagesWhileItsBuffersAreHeld)
+{
+  SKIP_WITHOUT_CUDA();
+  if (expect_flux()) {
+    GTEST_SKIP() << "over flux a frame past max_borrow waits in the ring";
+  }
+#ifdef FLUX_WRAPPER_CUDA
+  std::shared_ptr<const flux_wrapper::View<Image>> kept;
+  std::atomic<int> calls{0};
+  std::atomic<int> sent{0};
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.device = flux_wrapper::Device::Cuda;
+  flux_wrapper::Subscription<Image> sub(
+    *node_, "cuda_skip", rclcpp::QoS(4),
+    [&](std::shared_ptr<const flux_wrapper::View<Image>> v) {
+      ++calls;
+      kept = std::move(v);
+    },
+    sub_options);
+  auto counter = node_->create_subscription<Image>(
+    "cuda_skip", rclcpp::QoS(4), [&](const Image::ConstSharedPtr &) { ++sent; });
+  flux_wrapper::Publisher<Image> pub(*node_, "cuda_skip", rclcpp::QoS(4));
+  const Image want = image(5, {1, 2, 3, 4, 5, 6});
+
+  std::atomic<bool> done{false};
+  run_until(done, [&] {
+    EXPECT_TRUE(pub.publish(want));
+    done = calls > 0 && sent >= 10;
+  });
+  EXPECT_EQ(calls, 1);
+  ASSERT_TRUE(kept);
+  EXPECT_EQ(kept->to_msg(), want);
+
+  kept.reset();
+  done = false;
+  run_until(done, [&] {
+    EXPECT_TRUE(pub.publish(want));
+    done = calls > 1;
+  });
+  EXPECT_GT(calls, 1);
 #endif
 }
 

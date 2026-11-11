@@ -118,7 +118,9 @@ flux::Subscription(node, topic, fingerprint = flux::kNoSchema, const QoS & qos =
                    Callback cb = {}, MemoryPolicy mem = {});
 ```
 
-- 콜백이 받는 `FrameView`는 그 호출 동안만 유효하다. 더 오래 둘 값은 복사한다.
+- 콜백(`Callback`)은 `std::function<void(FrameView &&)>`다. `const flux::FrameView &`로 받는 콜백이면 슬롯은 호출이 끝날 때 돌아간다. 프레임을 move해서 들고 있으면 그 `FrameView`가 해제될 때 돌아간다. 해제는 어느 스레드에서 해도 된다.
+- 한 구독이 동시에 들고 있을 수 있는 프레임은 QoS `max_borrow`개다. 그만큼 들고 있는 동안 executor는 그 구독의 콜백을 부르지 않고, 다음 프레임은 발행자의 링에서 기다린다. depth보다 뒤처진 프레임은 `lost()`로 센다.
+- 들고 있는 슬롯에는 발행자가 쓰지 못한다. 빈 슬롯이 없으면 발행자는 그 프레임을 버린다. `require_publisher_slots(n)`은 슬롯이 `n`개보다 적은 발행자를 거절한다. 지금 붙어 있으면 `flux::Error`(`FLUX_INVALID_ARGUMENT`)를 던지고, executor 아래에서 붙을 때는 로그를 한 번 남기고 발행자가 재시작할 때까지 그 구독을 뺀다. executor에 넣기 전에 부른다. 발행자가 쓸 칸까지 두려면 `n`을 `max_borrow + 1`로 준다. 같은 토픽의 다른 구독이 쥐는 슬롯은 이 검사에 들지 않는다.
 - QoS에 거절되는 값이 있으면 생성자가 예외를 던진다([qos.md](qos.md)).
 
 `FrameView`의 멤버는 다음과 같다.
