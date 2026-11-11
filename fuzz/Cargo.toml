@@ -39,3 +39,10 @@ path = "fuzz_targets/cdr.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "trailer"
+path = "fuzz_targets/trailer.rs"
+test = false
+doc = false
+bench = false

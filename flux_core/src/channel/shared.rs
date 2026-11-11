@@ -338,15 +338,7 @@ impl ChannelShared {
             c.ticket = 0;
             c.blocks.clear();
             let mut total = 0usize;
-            for &[o0, o1, o2, o3, l0, l1, l2, l3] in list.as_chunks::<{ arena::BLOCK_BYTES }>().0 {
-                let off = u64::from(u32::from_le_bytes([o0, o1, o2, o3]));
-                let len = u64::from(u32::from_le_bytes([l0, l1, l2, l3]));
-                if !(src.from..src.to).contains(&off) {
-                    continue;
-                }
-                if off - src.from + len > src.size as u64 {
-                    return None;
-                }
+            for (off, len) in arena::entries_in(list, src.from, src.to, src.size)? {
                 c.blocks.push(GpuBlock {
                     off,
                     len,

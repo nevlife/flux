@@ -9,8 +9,10 @@ use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::Ordering;
 
+use crate::arena::{self, GPU_BASE, HEAP_BASE};
 use crate::channel::{Channel, FrameView};
 use crate::discovery::{SignpostView, map_validate, segment_name};
+use crate::gpu::arena::{CHUNK, GpuFrame};
 use crate::layout::{
     ControlHeader, INIT_READY, LAYOUT_VERSION, MAGIC, NO_SCHEMA, SIGNPOST_BYTES, SegmentLayout,
     SignpostPage, layout_config_ok,
@@ -67,6 +69,44 @@ pub fn frame(data: &[u8]) {
         let _ = (v.meta().shape(), v.meta().dtype(), v.ticket());
         if plan >> (step % 8) & 1 != 0 {
             held.push(v);
+        }
+    }
+}
+
+/// Whatever a publisher leaves at a frame's end, the block list read from it is inside the frame
+/// or the arena mapping, a GPU trailer that decodes names a sound arena, and every entry kept is
+/// inside its arena. The first two bytes split the rest into the frame and a stand-in arena.
+pub fn trailer(data: &[u8]) {
+    let Some((&[a, b], rest)) = data.split_first_chunk::<2>() else {
+        return;
+    };
+    let (frame, heap) = rest.split_at(usize::from(u16::from_le_bytes([a, b])).min(rest.len()));
+    let mut gpu_size = heap.len();
+    if let Some(f) = arena::gpu_trailer(frame).and_then(GpuFrame::decode) {
+        assert!(f.size.is_multiple_of(CHUNK) && f.size <= arena::MAX_ARENA_BYTES);
+        assert!(f.chunks as usize <= f.size / CHUNK, "chunks past the arena");
+        gpu_size = f.size;
+    }
+    let Some(list) = arena::blocks(frame, Some(heap)) else {
+        return;
+    };
+    let inside = |r: &[u8]| {
+        r.as_ptr_range().start <= list.as_ptr() && list.as_ptr_range().end <= r.as_ptr_range().end
+    };
+    assert!(
+        inside(frame) || inside(heap),
+        "a list outside the frame and the arena"
+    );
+    touch(list);
+    for (from, to, size) in [
+        (HEAP_BASE, GPU_BASE, heap.len()),
+        (GPU_BASE, 1 << 32, gpu_size),
+    ] {
+        for (off, len) in arena::entries_in(list, from, to, size)
+            .into_iter()
+            .flatten()
+        {
+            assert!((from..to).contains(&off) && off - from + len <= size as u64);
         }
     }
 }
@@ -194,7 +234,9 @@ pub fn lag(view: &FrameView) -> u64 {
 
 #[cfg(test)]
 mod corpus {
-    use super::{attach, frame, roster};
+    use super::{attach, frame, roster, trailer};
+    use crate::arena::{self, GPU_BASE, HEAP_BASE};
+    use crate::gpu::arena::{CHUNK, GpuFrame, Place};
     use crate::layout::{ControlHeader, SegmentLayout, StorageKind};
 
     // Deterministic, so a failure names one seed.
@@ -242,6 +284,58 @@ mod corpus {
     #[test]
     fn roster_corpus() {
         run(roster, crate::layout::SIGNPOST_BYTES + 64, 512);
+    }
+
+    /// Sound trailers, with the list in the frame and in the arena, and a GPU trailer or none;
+    /// then their bits flipped. Random blobs almost never carry the magic.
+    #[test]
+    fn trailer_corpus() {
+        run(trailer, 600, 512);
+        let mut seed = 0x51F1_5EED_0BAD_CAFE;
+        for round in 0..2048u32 {
+            let gpu = round % 2 == 0;
+            let n = u32::try_from(below(&mut seed, 6)).unwrap();
+            let in_arena = round % 4 >= 2;
+            let tail = if gpu { 128 } else { 64 };
+            let body = 8 * below(&mut seed, 8);
+            let list_len = 8 * n as usize;
+            let frame_len = body + if in_arena { 0 } else { list_len } + tail;
+            let heap_len = 64 + below(&mut seed, 512);
+            let mut buf = vec![0u8; 2 + frame_len + heap_len];
+            buf[..2].copy_from_slice(&u16::try_from(frame_len).unwrap().to_le_bytes());
+            let list_at = if in_arena {
+                HEAP_BASE + 16
+            } else {
+                body as u64
+            };
+            let entry_at = if in_arena {
+                2 + frame_len + 16
+            } else {
+                2 + body
+            };
+            for i in 0..list_len / 8 {
+                let off = if i % 2 == 0 { HEAP_BASE } else { GPU_BASE } + 8 * i as u64;
+                let e = &mut buf[entry_at + 8 * i..entry_at + 8 * i + 8];
+                e[..4].copy_from_slice(&u32::try_from(off).unwrap().to_le_bytes());
+                e[4..].copy_from_slice(&8u32.to_le_bytes());
+            }
+            let end = 2 + frame_len;
+            if gpu {
+                let f = GpuFrame {
+                    id: next(&mut seed),
+                    uuid: [3; 16],
+                    place: Place::Device,
+                    size: CHUNK,
+                    chunks: 1,
+                };
+                buf[end - 128..end - 64].copy_from_slice(&f.encode());
+            }
+            let t = arena::trailer(None, gpu, u32::try_from(list_at).unwrap(), n);
+            buf[end - 64..end].copy_from_slice(&t);
+            trailer(&buf);
+            let span = buf.len();
+            flips(&mut seed, &mut buf, span, trailer);
+        }
     }
 
     fn attach_any(data: &[u8]) {

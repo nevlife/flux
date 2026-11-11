@@ -314,6 +314,29 @@ pub fn blocks<'a>(frame: &'a [u8], heap: Option<&'a [u8]>) -> Option<&'a [u8]> {
     heap?.get(at..at.checked_add(len)?)
 }
 
+/// The entries of a block `list` whose descriptor offsets are in `from..to`, as (descriptor
+/// offset, length); None when one of them runs past `size` bytes from `from`.
+pub fn entries_in(
+    list: &[u8],
+    from: u64,
+    to: u64,
+    size: usize,
+) -> Option<impl Iterator<Item = (u64, u64)> + '_> {
+    let u32_at = |b: [u8; 4]| u64::from(u32::from_le_bytes(b));
+    let mine = list
+        .as_chunks::<BLOCK_BYTES>()
+        .0
+        .iter()
+        .map(move |&[o0, o1, o2, o3, l0, l1, l2, l3]| {
+            (u32_at([o0, o1, o2, o3]), u32_at([l0, l1, l2, l3]))
+        })
+        .filter(move |&(off, _)| (from..to).contains(&off));
+    let fits = mine
+        .clone()
+        .all(|(off, len)| off - from + len <= size as u64);
+    fits.then_some(mine)
+}
+
 /// The GPU arena's trailer in `frame`, if its own says one comes before it.
 pub fn gpu_trailer(frame: &[u8]) -> Option<&[u8]> {
     let at = frame.len().checked_sub(GPU_TRAILER_BYTES)?;
