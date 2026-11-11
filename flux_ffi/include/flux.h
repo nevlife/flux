@@ -188,14 +188,17 @@ typedef struct flux_gpu_block {
   uint64_t off;
   uint64_t len;
   const uint8_t *host;
+  uint64_t device;
 } flux_gpu_block;
 
-// A frame's GPU arena (`flux_view_gpu_heap`): addresses of offset 0 (0 for none) and their reach,
-// or, for a CPU subscriber of device memory, its copies of the frame's `count` blocks.
+// A frame's fields across `PCIe` (`flux_view_gpu_heap`): the GPU arena's offset 0 (0 for none)
+// and reach, the frame's device address with a stream, and the subscriber's copies of the
+// `count` blocks on the other side (host for a CPU subscriber, device for a discrete GPU one).
 typedef struct flux_gpu_heap {
   uint64_t device;
   const uint8_t *host;
   size_t size;
+  uint64_t frame;
   const struct flux_gpu_block *blocks;
   size_t count;
 } flux_gpu_heap;

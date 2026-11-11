@@ -430,8 +430,8 @@ public:
     const auto * p = flux_view_heap(raw(), &n);
     return {reinterpret_cast<const std::byte *>(p), p != nullptr ? n : 0};  // NOLINT
   }
-  // The GPU arena the frame's device fields are in; empty for none, and for a CPU reader of one in
-  // device memory.
+  // How the frame's fields are reached across PCIe, for a wire::Reader; empty for a CPU reader of
+  // a frame without GPU arena blocks. The first call copies what sits on the other side.
   [[nodiscard]] auto gpu_heap() const noexcept -> wire::GpuHeap
   {
     flux_gpu_heap g{};
@@ -440,10 +440,10 @@ public:
     }
     static_assert(sizeof(wire::GpuBlock) == sizeof(flux_gpu_block));
     static_assert(offsetof(wire::GpuBlock, host) == offsetof(flux_gpu_block, host));
+    static_assert(offsetof(wire::GpuBlock, device) == offsetof(flux_gpu_block, device));
     // NOLINTBEGIN(*-reinterpret-cast): the same layout, asserted above
-    return {
-      g.device, reinterpret_cast<const std::byte *>(g.host), g.size,
-      reinterpret_cast<const wire::GpuBlock *>(g.blocks), g.count};
+    return {g.device, reinterpret_cast<const std::byte *>(g.host),        g.size,
+            g.frame,  reinterpret_cast<const wire::GpuBlock *>(g.blocks), g.count};
     // NOLINTEND(*-reinterpret-cast)
   }
 

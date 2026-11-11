@@ -3,7 +3,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use crate::arena::{self, GPU_BLOCK_BYTES, GPU_TRAILER_BYTES, TRAILER_BYTES};
+use crate::arena::{self, BLOCK_BYTES, GPU_TRAILER_BYTES, TRAILER_BYTES};
 use crate::gpu::{self, Fenced, Seam, Stream};
 use crate::layout::{DType, FrameMeta, MAX_DIMS, SegmentLayout};
 use crate::segment::Mapped;
@@ -77,10 +77,11 @@ impl Heap {
     /// # Safety
     /// The loan this came from is live.
     pub unsafe fn alloc(&self, bytes: usize, align: usize) -> Option<(*mut u8, u64)> {
+        let len = u32::try_from(bytes).ok()?;
         let a = arena::arena()?;
         let off = a.alloc(bytes, align)?;
         // SAFETY: the live loan holds the channel.
-        unsafe { &*self.sh }.own(self.slot, Owned::Block(off));
+        unsafe { &*self.sh }.own(self.slot, Owned::Block(off, len));
         Some((a.ptr(off), off))
     }
 
@@ -97,9 +98,10 @@ impl Heap {
         release: unsafe extern "C" fn(*mut c_void),
         ctx: *mut c_void,
     ) -> Option<u64> {
+        let len = u32::try_from(bytes).ok()?;
         let off = arena::existing()?.offset_of(p, bytes)?;
         // SAFETY: the live loan holds the channel.
-        unsafe { &*self.sh }.own(self.slot, Owned::Adopted(release, ctx));
+        unsafe { &*self.sh }.own(self.slot, Owned::Adopted(release, ctx, off, len));
         Some(off)
     }
 }
@@ -241,47 +243,64 @@ impl WriteSlot {
 }
 
 impl WriteSlot {
-    /// Writes the trailers past the frame's `nbytes`: for GPU blocks their list and the GPU
-    /// arena's, then the host one. The frame's new length; None when they do not fit, or name no
-    /// arena.
+    /// Writes past the frame's `nbytes` the list of its blocks, the GPU arena's trailer when it
+    /// has GPU blocks, then the host one. A list the slot has no room for goes to the arena, as a
+    /// block of the frame. The frame's new length; None when they do not fit, or name no arena.
     fn write_trailer(&self, nbytes: usize) -> Option<usize> {
-        let (host, blocks) = self.sh.owned_kinds(self.slot);
-        let host = if host { arena::existing() } else { None };
-        let gpu = if blocks > 0 {
-            Some(self.sh.gpu_arena()?.frame(blocks))
+        let (host, gpu, blocks) = self.sh.owned_kinds(self.slot);
+        let gpu = if gpu {
+            Some(self.sh.gpu_arena()?.frame())
+        } else {
+            None
+        };
+        let tail = if gpu.is_some() {
+            GPU_TRAILER_BYTES
+        } else {
+            TRAILER_BYTES
+        };
+        let list = BLOCK_BYTES * blocks as usize;
+        let at = nbytes.next_multiple_of(8);
+        if at + tail > self.capacity() {
+            return None;
+        }
+        // SAFETY: at + tail <= capacity, inside the slot.
+        let dst = unsafe { self.sh.seg.payload(self.slot).add(at) };
+        let (list_at, end) = if at + list + tail <= self.capacity() {
+            // SAFETY: the list's bytes start the list + tail bytes at dst; the claim makes them
+            // ours.
+            unsafe { self.sh.write_blocks(self.slot, dst) };
+            (at as u64, at + list)
+        } else {
+            let a = arena::arena()?;
+            let off = a.alloc(list, 8)?;
+            // SAFETY: list bytes of the arena, this frame's from here.
+            unsafe { self.sh.write_blocks(self.slot, a.ptr(off)) };
+            #[allow(clippy::cast_possible_truncation)]
+            self.sh.own(self.slot, Owned::Block(off, list as u32));
+            (arena::HEAP_BASE + off, at)
+        };
+        let host = if host || list_at >= arena::HEAP_BASE {
+            arena::existing()
         } else {
             None
         };
         if host.is_none() && gpu.is_none() {
             return None;
         }
-        let list = GPU_BLOCK_BYTES * blocks as usize;
-        let len = if gpu.is_some() {
-            list + GPU_TRAILER_BYTES
-        } else {
-            TRAILER_BYTES
-        };
-        let at = nbytes.next_multiple_of(8);
-        if at + len > self.capacity() {
-            return None;
-        }
-        // SAFETY: at + len <= capacity, inside the slot.
-        let dst = unsafe { self.sh.seg.payload(self.slot).add(at) };
+        // SAFETY: end + tail <= capacity, inside the slot.
+        let dst = unsafe { self.sh.seg.payload(self.slot).add(end) };
         if let Some(g) = gpu {
-            // SAFETY: the list's bytes start the len bytes at dst; the claim makes them ours.
-            unsafe { self.sh.write_gpu_blocks(self.slot, dst) };
             let t = g.encode();
-            // SAFETY: the 64 bytes after the list, inside the len bytes at dst.
-            let at_gpu = unsafe { dst.add(list) };
-            // SAFETY: as above.
-            unsafe { std::ptr::copy_nonoverlapping(t.as_ptr(), at_gpu, TRAILER_BYTES) };
+            // SAFETY: the first 64 of the tail bytes at dst.
+            unsafe { std::ptr::copy_nonoverlapping(t.as_ptr(), dst, TRAILER_BYTES) };
         }
-        let host_t = arena::trailer(host, gpu.is_some());
-        // SAFETY: the last 64 of the len bytes at dst.
-        let last = unsafe { dst.add(len - TRAILER_BYTES) };
+        #[allow(clippy::cast_possible_truncation)]
+        let host_t = arena::trailer(host, gpu.is_some(), list_at as u32, blocks);
+        // SAFETY: the last 64 of the tail bytes at dst.
+        let last = unsafe { dst.add(tail - TRAILER_BYTES) };
         // SAFETY: as above.
         unsafe { std::ptr::copy_nonoverlapping(host_t.as_ptr(), last, TRAILER_BYTES) };
-        Some(at + len)
+        Some(end + tail)
     }
 }
 

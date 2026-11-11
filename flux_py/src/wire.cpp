@@ -15,6 +15,7 @@
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
 #include <cstddef>
@@ -24,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -153,6 +155,10 @@ public:
     arena_ = flux_arena_acquire(
       reinterpret_cast<const std::uint8_t *>(buf_.data()), buf_.size(), &base, &n);  // NOLINT
     heap_ = {reinterpret_cast<const std::byte *>(base), arena_ != nullptr ? n : 0};  // NOLINT
+    // A take result reaches across PCIe too: its device fields, or a GPU reader's copies.
+    if (const flux::FrameView * v = flux_py::frame_of(buf, &device_)) {
+      gpu_ = v->gpu_heap();
+    }
   }
   ~Reader() { flux_arena_release(arena_); }
   Reader(const Reader &) = delete;
@@ -163,8 +169,9 @@ public:
   [[nodiscard]] auto size() const noexcept -> std::size_t { return buf_.size(); }
   [[nodiscard]] auto reader() const noexcept -> flux::wire::Reader
   {
-    return {buf_.data(), buf_.size(), heap_};
+    return {buf_.data(), buf_.size(), heap_, gpu_};
   }
+  [[nodiscard]] auto device() const noexcept -> int { return device_; }
 
   static void check(const flux::wire::Reader & r, const char * what, std::size_t off)
   {
@@ -179,6 +186,8 @@ private:
   // The arena the frame's trailer names, mapped while this reader and its views live.
   const void * arena_ = nullptr;
   flux::wire::Span<const std::byte> heap_;
+  flux::wire::GpuHeap gpu_;
+  int device_ = -1;
 };
 
 auto reader_block(nb::handle self, std::size_t off, nb::handle dtype, std::size_t n) -> nb::object
@@ -268,16 +277,20 @@ auto reader_elems(const Reader & r, std::size_t off, std::size_t stride, std::si
   return {w.desc(off).off, n};
 }
 
-auto heap_of(nb::handle h) -> flux::wire::Heap
+// A loan's `_heap`: the arena, and the device of a GPU arena (-1 for none).
+auto heap_of(nb::handle h, int * device) -> flux::wire::Heap
 {
+  *device = -1;
   if (h.is_none()) {
     return {};
   }
-  const auto t = nb::cast<std::array<std::uintptr_t, 4>>(h);
+  const auto t =
+    nb::cast<std::tuple<std::uintptr_t, std::size_t, std::uintptr_t, std::uint32_t, int>>(h);
+  *device = std::get<4>(t);
   // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
   return flux::detail::heap_of(
-    {reinterpret_cast<std::uint8_t *>(t[0]), t[1], reinterpret_cast<const void *>(t[2]),
-     static_cast<std::uint32_t>(t[3]), false});  // Python writes no device fields yet
+    {reinterpret_cast<std::uint8_t *>(std::get<0>(t)), std::get<1>(t),
+     reinterpret_cast<const void *>(std::get<2>(t)), std::get<3>(t), *device >= 0});
   // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
 }
 
@@ -286,7 +299,7 @@ class Writer
 public:
   // `heap` is a loan's `_heap`, or None.
   Writer(nb::handle buf, std::size_t scalar_bytes, nb::handle heap)
-  : buf_(buf, true), w_(buf_.data(), buf_.size(), scalar_bytes, heap_of(heap))
+  : buf_(buf, true), w_(buf_.data(), buf_.size(), scalar_bytes, heap_of(heap, &device_))
   {
     if (w_.bad()) {
       throw WireError(
@@ -298,6 +311,7 @@ public:
   [[nodiscard]] auto bad() const noexcept -> bool { return w_.bad() || poisoned_; }
   void poison() noexcept { poisoned_ = true; }
   [[nodiscard]] auto size() const noexcept -> std::size_t { return w_.size(); }
+  [[nodiscard]] auto device() const noexcept -> int { return device_; }
   auto w() noexcept -> flux::wire::Writer & { return w_; }
 
   // A write that does not fit has latched bad() in wire.hpp before this raises.
@@ -311,6 +325,7 @@ public:
 
 private:
   Buffer buf_;
+  int device_ = -1;
   flux::wire::Writer w_;
   bool poisoned_ = false;
 };
@@ -750,18 +765,59 @@ auto scratch_tensor(nb::handle dtype, nb::handle shape) -> nb::object
   return handed_out(Tensor(buf, {p, t, std::move(dims), {}}, true));
 }
 
+auto addr_of(const void * p) -> std::uintptr_t
+{
+  return reinterpret_cast<std::uintptr_t>(p);  // NOLINT(*-reinterpret-cast)
+}
+
+auto device_array(nb::handle owner, const void * p, std::size_t n, nb::handle dtype, int device)
+  -> nb::object
+{
+  const flux_py::TensorFields f{nullptr, dl_named(dtype), {static_cast<std::int64_t>(n)}, {}};
+  return flux_py::tensor_dlpack(f, addr_of(p), owner, nb::device::cuda::value, device);
+}
+
+// A numeric array where the device reads it, as a DLPack tensor holding the reader; None where
+// this reader has no device address for it.
+auto reader_device(nb::handle self, std::size_t off, nb::handle dtype) -> nb::object
+{
+  const Reader & r = *nb::inst_ptr<Reader>(self);
+  const DType t = dtype_of(dtype);
+  const flux::wire::Reader w = r.reader();
+  const auto [p, n] = by_size(t.size, [&](auto e) {
+    const auto s = w.device<decltype(e)>(off);
+    return std::pair<const void *, std::size_t>(s.data(), s.size());
+  });
+  Reader::check(w, "device array", off);
+  return p == nullptr ? nb::none() : device_array(self, p, n, dtype, r.device());
+}
+
+// n elements in the GPU arena on the loan's device, as a DLPack tensor to write on the loan's
+// stream; the commit waits for it.
+auto writer_alloc_device(nb::handle self, std::size_t off, nb::handle count, nb::handle dtype)
+  -> nb::object
+{
+  Writer & w = *nb::inst_ptr<Writer>(self);
+  return poisoning(w, [&] {
+    const std::size_t n = count_of(count);
+    const DType t = dtype_of(dtype);
+    const void * p = by_size(t.size, [&](auto e) -> const void * {
+      return w.w().alloc_device<decltype(e)>(off, n).data();
+    });
+    if (w.bad()) {
+      throw WireError(
+        "flux: device array at " + std::to_string(off) +
+        " found no room in the GPU arena, or the publisher declared no device");
+    }
+    return device_array(self, p, n, dtype, w.device());
+  });
+}
+
 }  // namespace
 
 auto flux_py::read_tensor(const flux::wire::Reader & w, const TensorAt & at)
   -> flux_py::TensorFields
 {
-  if (w.desc(at[6]).off >= flux::wire::kHeapBase && w.budget() == w.size()) {
-    // shortcut: a device frame reads its fields through the host mapping alone; lift this when
-    // the GPU arena gives arena bytes a device address.
-    throw WireError(
-      "flux: tensor at " + std::to_string(at[6]) +
-      " has its data in the publisher's arena, which this frame has no device address for");
-  }
   const flux::wire::DlType t{
     w.get<std::uint8_t>(at[0]), w.get<std::uint8_t>(at[1]), w.get<std::uint16_t>(at[2])};
   const auto shape = w.span<std::int64_t>(at[3]);
@@ -828,6 +884,7 @@ void bind_wire(nb::module_ & m)
       },
       "off"_a, "i"_a, "stride"_a, "align"_a)
     .def("elems", &reader_elems, "off"_a, "stride"_a, "align"_a)
+    .def("device", &reader_device, "off"_a, "dtype"_a)
     .def("tensor", &reader_tensor, "at"_a, "array"_a = true);
 
   nb::class_<Tensor>(m, "Tensor")
@@ -850,6 +907,7 @@ void bind_wire(nb::module_ & m)
     .def("put", &writer_put, "off"_a, "dtype"_a, "value"_a.none())
     .def("block_view", &writer_block, "off"_a, "dtype"_a, "count"_a)
     .def("alloc", &writer_alloc, "off"_a, "n"_a.none(), "dtype"_a)
+    .def("alloc_device", &writer_alloc_device, "off"_a, "n"_a.none(), "dtype"_a)
     .def("adopt", &writer_adopt, "off"_a, "array"_a, "dtype"_a)
     .def("tensor", &writer_tensor, "at"_a, "dtype"_a, "shape"_a.none())
     .def("put_str", &writer_put_str, "off"_a, "s"_a.none())

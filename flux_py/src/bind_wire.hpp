@@ -13,8 +13,16 @@
 // flux.wire's Reader, Writer and WireError, for generated Python adapters.
 void bind_wire(nanobind::module_ & m);
 
+namespace flux
+{
+class FrameView;
+}
+
 namespace flux_py
 {
+
+// The view a take result's array holds and its stream's device (-1 for none); null for others.
+auto frame_of(nanobind::handle buf, int * device) -> const flux::FrameView *;
 
 using TensorAt = std::array<std::size_t, 7>;
 

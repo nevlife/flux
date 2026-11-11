@@ -94,6 +94,7 @@ geometry_msgs/Pose pose
 
 - 중첩된 메시지는 이름을 `_`로 이어 펼친다. `pose.position.x`는 `pose_position_x`다. 최상위의 `std_msgs/Header`와 `builtin_interfaces/Time` 필드는 `__`로 잇는다(`header__sec`, `stamp__sec`, Python `stamp__stamp`). 더 깊은 곳에서는 다른 메시지처럼 펼친다.
 - 가변 배열은 `alloc__<name>(n)`으로 슬롯 안에, 슬롯에 들어가지 않으면 arena에 자리를 잡는다([concepts.md](concepts.md#arena)). 이 함수는 잡은 자리를 돌려주고, 거기에 바로 쓰면 복사가 없다. 호출 순서는 상관없다. 고정 길이 배열은 자리가 이미 정해져 있으므로 `alloc__` 없이 바로 쓴다.
+- 숫자 가변 배열은 `alloc_device__<name>(n)`으로 GPU에 쓰고 `<name>__device`(C++는 `<name>__device()`)로 GPU에서 읽을 수도 있다([gpu.md](gpu.md#생성-메시지의-장치-필드)).
 - 슬롯과 arena 모두 자리가 모자라면(arena를 껐거나 찼다) C++ `alloc__`은 빈 `Span`을 준다. 그때부터 `Builder`는 `false`이고, `commit__()`은 발행하지 않고 `TooLarge`를 돌려준다.
 - Python 접근자와 `frame_to_msg()`는 문자열을 첫 NUL에서 끊는다. rclpy도 같다. C++ `View` 접근자는 쓰인 바이트를 그대로 준다.
 - C++ 이름이 C++ 키워드와 겹치면 끝에 `_`를 붙인다. Python은 Python 키워드만 피한다. 메시지 이름 `View`, `Builder`는 쓸 수 없다.
@@ -171,4 +172,4 @@ uint8[] data
 - 모든 원소가 `data` 안에 있어야 하고 첫 원소가 원소 크기에 맞게 정렬돼 있어야 한다. 어기면 Python은 `WireError`, C++은 빈 결과와 `ok__() == false`다.
 - 받는 dtype은 정수·부호 없는 정수 8~64비트, float 16·32·64, complex 64·128, bool 8, bfloat16, float8 계열이다.
 - `Builder`는 `data`를 64바이트 경계에 둔다.
-- GPU 구독(`device="cuda"`)의 `Frame`을 View에 넘기면 `__dlpack__`이 장치 tensor를 낸다([gpu.md](gpu.md)).
+- GPU 구독(`device="cuda"`)의 `Frame`을 View에 넘기면 `__dlpack__`이 장치 tensor를 낸다. data가 arena에 있어도 외장 GPU에서는 같다([gpu.md](gpu.md)).

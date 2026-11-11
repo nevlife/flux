@@ -16,7 +16,7 @@ from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 
 from . import _flux
-from ._flux import _register_stamp_offset  # noqa: F401  the generated modules call it
+from ._flux import _register_layout, _register_stamp_offset  # noqa: F401  generated code calls
 from ._flux import (
     NO_SCHEMA,
     Error,

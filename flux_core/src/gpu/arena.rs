@@ -109,8 +109,6 @@ pub struct GpuFrame {
     pub size: usize,
     /// Chunks made when the frame was committed: its blocks are inside them.
     pub chunks: u32,
-    /// Entries of the block list before the trailer (`arena::gpu_blocks`).
-    pub blocks: u32,
 }
 
 const DEVICE_TAG: u8 = 1;
@@ -129,7 +127,6 @@ impl GpuFrame {
         t[28..32].copy_from_slice(&node.to_le_bytes());
         t[32..40].copy_from_slice(&(self.size as u64).to_le_bytes());
         t[40..44].copy_from_slice(&self.chunks.to_le_bytes());
-        t[44..48].copy_from_slice(&self.blocks.to_le_bytes());
         t
     }
 
@@ -146,7 +143,6 @@ impl GpuFrame {
         };
         let size = usize::try_from(u64_at(32)).ok()?;
         let chunks = u32_at(40);
-        let blocks = u32_at(44);
         let fits = size > 0
             && size <= host_arena::MAX_ARENA_BYTES
             && size.is_multiple_of(CHUNK)
@@ -157,7 +153,6 @@ impl GpuFrame {
             place,
             size,
             chunks,
-            blocks,
         })
     }
 }
@@ -408,15 +403,14 @@ impl GpuArena {
         self.ordinal
     }
 
-    /// What a frame with `blocks` of this arena, committed now, says of it.
-    pub fn frame(&self, blocks: u32) -> GpuFrame {
+    /// What a frame with blocks of this arena, committed now, says of it.
+    pub fn frame(&self) -> GpuFrame {
         GpuFrame {
             id: self.id,
             uuid: self.uuid,
             place: self.target.place,
             size: self.size,
             chunks: self.chunks(),
-            blocks,
         }
     }
 }
@@ -806,7 +800,6 @@ mod tests {
             place,
             size: 8 * CHUNK,
             chunks: 3,
-            blocks: 2,
         }
     }
 
@@ -846,21 +839,56 @@ mod tests {
     fn only_a_frame_whose_trailer_says_so_has_a_gpu_trailer() {
         let mut frame = vec![0u8; 256];
         let end = frame.len();
-        frame[end - 64..end - 48].copy_from_slice(b"flux-arena-v1\0\0\0");
+        frame[end - 64..end].copy_from_slice(&host_arena::trailer(None, false, 0, 0));
         assert!(host_arena::gpu_trailer(&frame).is_none());
-        frame[end - 64..end - 48].copy_from_slice(b"flux-arena-g1\0\0\0");
+        frame[end - 64..end].copy_from_slice(&host_arena::trailer(None, true, 0, 0));
         let t = host_arena::gpu_trailer(&frame).expect("a GPU trailer");
-        let list = host_arena::gpu_blocks(&frame, 16).expect("16 entries fit before it");
-        assert_eq!(list.as_ptr(), frame[end - 128 - 128..].as_ptr());
-        assert!(
-            host_arena::gpu_blocks(&frame, 17).is_none(),
-            "an entry past the frame"
-        );
-        assert!(host_arena::gpu_blocks(&frame, u32::MAX).is_none());
         assert_eq!(t.as_ptr(), frame[end - 128..].as_ptr());
         assert!(
             host_arena::gpu_trailer(&frame[end - 100..]).is_none(),
             "too short for both"
+        );
+    }
+
+    /// A list in the frame ends before its trailers; one in the arena is read from its mapping.
+    #[test]
+    fn a_block_list_is_where_the_trailer_says() {
+        let mut frame = vec![0u8; 256];
+        let end = frame.len();
+        let heap = vec![0u8; 4096];
+        let put = |frame: &mut Vec<u8>, gpu, at: u64, n| {
+            let t = host_arena::trailer(None, gpu, u32::try_from(at).unwrap(), n);
+            frame[end - 64..end].copy_from_slice(&t);
+        };
+        for (gpu, behind) in [(true, 128), (false, 64)] {
+            let fits = u32::try_from((end - behind) / host_arena::BLOCK_BYTES).unwrap();
+            put(&mut frame, gpu, 0, fits);
+            let l = host_arena::blocks(&frame, None).expect("a list up to the trailers");
+            assert_eq!((l.as_ptr(), l.len()), (frame.as_ptr(), end - behind));
+            put(&mut frame, gpu, 8, fits);
+            assert!(
+                host_arena::blocks(&frame, None).is_none(),
+                "into the trailer"
+            );
+            put(&mut frame, gpu, 0, u32::MAX);
+            assert!(host_arena::blocks(&frame, None).is_none());
+        }
+        let at = host_arena::HEAP_BASE + 64;
+        put(&mut frame, false, at, 2);
+        assert!(
+            host_arena::blocks(&frame, None).is_none(),
+            "an arena not mapped"
+        );
+        let l = host_arena::blocks(&frame, Some(&heap)).expect("in the arena");
+        assert_eq!((l.as_ptr(), l.len()), (heap[64..].as_ptr(), 16));
+        put(&mut frame, false, at + 4096 - 8, 2);
+        assert!(host_arena::blocks(&frame, Some(&heap)).is_none(), "past it");
+        put(&mut frame, false, host_arena::GPU_BASE, 1);
+        assert!(host_arena::blocks(&frame, Some(&heap)).is_none());
+        frame[end - 64] = b'x';
+        assert!(
+            host_arena::blocks(&frame, Some(&heap)).is_none(),
+            "no trailer"
         );
     }
 

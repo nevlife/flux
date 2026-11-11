@@ -214,6 +214,8 @@ auto descr_of(flux::DType d) -> nb::object
 
 // Names the capsule a host view's array holds its FrameView in, so aux_of can find it.
 constexpr const char * kViewCapsule = "flux.view";
+// And the one a Frame's arrays hold its FrameHold in, so a wire Reader can find the view.
+constexpr const char * kFrameCapsule = "flux.frame";
 
 // The core's take already checked that the shape covers exactly the frame's bytes.
 auto view_of(flux::FrameView && v) -> nb::object
@@ -390,12 +392,17 @@ struct FrameHold
   // The channel defers releases: the consumer streams are ordered before the channel's on the
   // device instead, and the view's own release returns at once.
   bool deferred;
+  // The channel stream's device.
+  int device;
 
   FrameHold(const FrameHold &) = delete;
   auto operator=(const FrameHold &) -> FrameHold & = delete;
   FrameHold(FrameHold &&) = delete;
   auto operator=(FrameHold &&) -> FrameHold & = delete;
-  FrameHold(flux::FrameView && view, bool defer) : v(std::move(view)), deferred(defer) {}
+  FrameHold(flux::FrameView && view, bool defer, int dev)
+  : v(std::move(view)), deferred(defer), device(dev)
+  {
+  }
   ~FrameHold()
   {
     if (deferred && ordered()) {
@@ -434,7 +441,7 @@ public:
   Frame(flux::FrameView && v, int device, bool scoped, bool deferred)
   : meta_(v.meta()),
     stream_(addr_of(v.stream())),
-    held_(std::make_shared<FrameHold>(std::move(v), deferred)),
+    held_(std::make_shared<FrameHold>(std::move(v), deferred, device)),
     device_(device),
     scoped_(scoped)
   {
@@ -490,15 +497,21 @@ public:
   }
 
   // A tensor message's data on the device: its fields are read through the host mapping, and the
-  // device address is the frame's plus the same offset.
+  // device address is where the frame's data field is on the device.
   auto tensor_dlpack(const flux_py::TensorAt & at, const nb::kwargs & kw) -> nb::object
   {
     const flux::FrameView & v = host_view();
-    const DeviceArray a = array();
-    const flux_py::TensorFields f = flux_py::read_tensor({v.data(), v.size()}, at);
+    const flux::wire::Reader r(v.data(), v.size(), v.heap(), v.gpu_heap());
+    const flux_py::TensorFields f = flux_py::read_tensor(r, at);
+    const auto host = r.span<std::uint8_t>(at[6]);
+    const auto dev = r.device<std::uint8_t>(at[6]);
+    if (dev.data() == nullptr) {
+      throw std::runtime_error(
+        "flux: this subscriber has no device address for the tensor's data (an integrated GPU "
+        "reads a field in the publisher's arena on the host only)");
+    }
     remember_stream(held_->streams, kw);
-    const auto offset = f.data - static_cast<const std::uint8_t *>(v.data());
-    const auto addr = static_cast<std::uintptr_t>(a.ptr + static_cast<std::uint64_t>(offset));
+    const auto addr = addr_of(dev.data() + (f.data - host.data()));
     return flux_py::tensor_dlpack(f, addr, hold(), nb::device::cuda::value, device_);
   }
 
@@ -537,7 +550,7 @@ public:
 private:
   [[nodiscard]] auto hold() const -> nb::capsule
   {
-    return nb::capsule(new std::shared_ptr<FrameHold>(held_), [](void * p) noexcept {
+    return nb::capsule(new std::shared_ptr<FrameHold>(held_), kFrameCapsule, [](void * p) noexcept {
       auto * hold = static_cast<std::shared_ptr<FrameHold> *>(p);
       // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
       without_gil([hold] { delete hold; });
@@ -608,6 +621,27 @@ auto aux_of(nb::handle taken) -> nb::object
   const nb::object descr = descr_of(flux::DType::U8);
   return flux_py::numpy_view(a.data(), a.size(), flux_py::as_descr(descr), taken, false);
 }
+
+}  // namespace
+
+auto flux_py::frame_of(nb::handle buf, int * device) -> const flux::FrameView *
+{
+  PyObject * base = PyArray_Check(buf.ptr()) != 0 ? PyArray_BASE(flux_py::as_array(buf)) : nullptr;
+  if (base != nullptr && PyCapsule_IsValid(base, kViewCapsule) != 0) {
+    *device = -1;
+    return static_cast<const flux::FrameView *>(PyCapsule_GetPointer(base, kViewCapsule));
+  }
+  if (base != nullptr && PyCapsule_IsValid(base, kFrameCapsule) != 0) {
+    const auto * h =
+      static_cast<const std::shared_ptr<FrameHold> *>(PyCapsule_GetPointer(base, kFrameCapsule));
+    *device = (*h)->device;
+    return &(*h)->v;
+  }
+  return nullptr;
+}
+
+namespace
+{
 
 // Writable numpy views of a loaned slot. commit and abort make the arrays `array` handed out
 // read-only; a slice or memoryview taken from one before then can still write to the slot.
@@ -702,8 +736,9 @@ public:
       return nb::none();
     }
     return nb::make_tuple(
-      reinterpret_cast<std::uintptr_t>(h.base), h.size,      // NOLINT(*-reinterpret-cast)
-      reinterpret_cast<std::uintptr_t>(h.channel), h.slot);  // NOLINT(*-reinterpret-cast)
+      reinterpret_cast<std::uintptr_t>(h.base), h.size,     // NOLINT(*-reinterpret-cast)
+      reinterpret_cast<std::uintptr_t>(h.channel), h.slot,  // NOLINT(*-reinterpret-cast)
+      h.alloc_device != nullptr ? device_ : -1);
   }
 
   auto cai() -> nb::dict { return cuda_array_interface(device_array()); }
@@ -1623,6 +1658,7 @@ NB_MODULE(_flux, m)
   m.def("signpost_name", &flux::detail::signpost_name, "key"_a, "fingerprint"_a);
   m.def("aux", &aux_of, "frame"_a);
   m.def("_register_stamp_offset", &flux_stamp_offset_register, "fingerprint"_a, "offset"_a);
+  m.def("_register_layout", &flux_layout_register, "fingerprint"_a);
 
   nb::class_<flux::Endpoint>(m, "Endpoint")
     .def_ro("pid", &flux::Endpoint::pid)

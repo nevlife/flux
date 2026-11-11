@@ -6,9 +6,9 @@
 
 use std::ffi::{CStr, c_void};
 
-use flux_core::arena::GPU_BASE;
+use flux_core::arena::{BLOCK_BYTES, GPU_BASE, HEAP_BASE, TRAILER_BYTES};
 use flux_core::gpu::arena::{CHUNK, GpuArena, GpuArenaImport, Place};
-use flux_core::gpu::{Stream, probe};
+use flux_core::gpu::{Route, Stream, probe};
 use flux_core::{
     Channel, DEFAULT_MAX_SUBSCRIBERS, MemoryPolicy, Published, PublisherWatch, QoS, signpost_name,
 };
@@ -208,7 +208,7 @@ fn subscribe_runs(cu: &Cuda) {
         assert_eq!((g.device, g.count), (0, 1));
         // SAFETY: count blocks at blocks, valid while c lives.
         let b = unsafe { *g.blocks };
-        let off = u64::from_le_bytes(c.data()[..8].try_into().unwrap()) - GPU_BASE;
+        let off = u64::from_le_bytes(c.data()[..8].try_into().unwrap());
         assert_eq!((b.off, b.len), (off, len as u64));
         // SAFETY: the copy holds len bytes.
         let copy = unsafe { std::slice::from_raw_parts(b.host, len) };
@@ -274,4 +274,78 @@ fn a_frame_names_its_device_run_to_a_subscriber_in_another_process() {
         assert_eq!(w.commit_len(16), Published::Ok);
     }
     in_child(test, &[("FLUX_GPU_ARENA_CHANNEL", name.clone())]);
+}
+
+/// The other way: a CPU publisher's frame, one field in its slot and one run in the host arena,
+/// read on the device by a subscriber on a stream. The slot comes with the take's copy of the
+/// frame; the run is copied by the view's first `gpu_heap`. The second frame fills its slot, so
+/// its block list goes to the arena.
+#[test]
+fn a_gpu_subscriber_reads_a_cpu_frames_arena_run_on_the_device() {
+    let Some(cu) = cuda() else { return };
+    if probe(0).route != Route::DeviceHandle {
+        eprintln!("skipped: an integrated GPU reads the slot in place");
+        return;
+    }
+    let name = signpost_name(&format!("/g{}_host", std::process::id()), FINGERPRINT).unwrap();
+    let mut publisher = Channel::create(
+        &name,
+        4096,
+        4,
+        DEFAULT_MAX_SUBSCRIBERS,
+        0,
+        FINGERPRINT,
+        MemoryPolicy::default(),
+    )
+    .unwrap();
+    let stream = Stream::create().unwrap();
+    let mut sub = Channel::open_on(
+        &name,
+        FINGERPRINT,
+        MemoryPolicy::default(),
+        stream.clone(),
+        -1,
+    )
+    .unwrap();
+    let len = 3 << 20;
+    for (fill, used) in [(0x61u8, 16), (0x62, 4096 - TRAILER_BYTES)] {
+        let mut w = publisher.loan().unwrap();
+        let heap = w.heap().unwrap();
+        // SAFETY: w is live.
+        let (at, off) = unsafe { heap.alloc(len, 64) }.unwrap();
+        // SAFETY: alloc handed out len writable bytes.
+        unsafe { std::ptr::write_bytes(at, fill, len) };
+        let data = w.data_mut();
+        data[..8].copy_from_slice(&(HEAP_BASE + off).to_le_bytes());
+        data[8..16].fill(fill);
+        assert_eq!(w.commit_len(used), Published::Ok);
+
+        let v = sub.take().unwrap();
+        let list = if used == 16 { BLOCK_BYTES } else { 0 };
+        assert_eq!(v.data().len(), used + list + TRAILER_BYTES);
+        let g = v.gpu_heap().expect("a GPU subscriber's view of the frame");
+        assert_eq!(g.frame, v.device_ptr());
+        assert_eq!(g.count, 1, "the run, copied");
+        // SAFETY: count blocks at blocks, valid while v lives.
+        let b = unsafe { *g.blocks };
+        assert_eq!((b.off, b.len), (HEAP_BASE + off, len as u64));
+        assert!(v.stream().wait());
+        let mut got = vec![0u8; len];
+        // SAFETY: got holds len bytes; the copy holds the run.
+        let rc = unsafe { (cu.copy)(got.as_mut_ptr().cast(), b.device, len) };
+        assert_eq!(rc, 0);
+        assert!(got.iter().all(|&x| x == fill), "the run on the device");
+        // SAFETY: as above, for the slot field's 8 bytes in the frame's device copy.
+        let rc = unsafe { (cu.copy)(got.as_mut_ptr().cast(), g.frame + 8, 8) };
+        assert_eq!(rc, 0);
+        assert!(
+            got[..8].iter().all(|&x| x == fill),
+            "the slot field on the device"
+        );
+        let again = v.gpu_heap().unwrap();
+        assert_eq!(
+            again.blocks, g.blocks,
+            "the second call reads the same copy"
+        );
+    }
 }

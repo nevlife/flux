@@ -35,7 +35,8 @@ class ElemArray:
 class NullWriter:
     """The writer of a Builder whose loan found no free slot, as the C++ Writer with no buffer:
     bad from the start, and every write goes nowhere. alloc hands back a scratch array of the
-    size asked for, so filling it the usual way does not fail."""
+    size asked for, so filling it the usual way does not fail; alloc_device has no device memory
+    to hand back and returns None."""
 
     __slots__ = ()
     bad = True
@@ -52,6 +53,9 @@ class NullWriter:
 
     def alloc(self, off, n, dtype):
         return np.empty(n, dtype=dtype)
+
+    def alloc_device(self, off, n, dtype):
+        return None
 
     def put_str(self, off, s):
         pass

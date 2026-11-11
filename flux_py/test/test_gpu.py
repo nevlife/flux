@@ -378,6 +378,83 @@ def test_a_tensor_message_the_frame_cannot_hold_raises_on_the_device_too(node, t
             torch.from_dlpack(tensor_msg.View(f))
 
 
+@pytest.fixture(scope="module")
+def blob(tmp_path_factory):
+    from test_arena import MSG_DIR
+    from test_emit import GEN
+
+    out = tmp_path_factory.mktemp("blob")
+    cmd = [GEN, "--pkg", "flux_test", "--out-py", str(out)]
+    for m in ("Item", "Blob"):
+        cmd += ["--msg", os.path.join(MSG_DIR, f"{m}.msg")]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    sys.path.insert(0, str(out))
+    import flux_test_flux.blob as m
+
+    yield m
+    sys.path.remove(str(out))
+
+
+def test_a_device_field_goes_through_the_gpu_arena(node, blob):
+    t, fp = topic("arena"), blob.FINGERPRINT__
+    pub = flux.Publisher(node, t, fingerprint=fp, device="cuda", **SMALL)
+    qos = flux.QoS(depth=4)
+    dev = flux.Subscription(node, t, fingerprint=fp, qos=qos, device="cuda")
+    cpu = flux.Subscription(node, t, fingerprint=fp, qos=qos)
+    n = 3 << 20
+    loan = pub.loan(dtype="uint8")
+    b = blob.Builder(loan.array, loan)
+    b.name = "frame"
+    with torch.cuda.stream(torch.cuda.ExternalStream(loan.stream)):
+        torch.from_dlpack(b.alloc_device__data(n)).fill_(0x41)
+    items = b.alloc__items(2)
+    with torch.cuda.stream(torch.cuda.ExternalStream(loan.stream)):
+        torch.from_dlpack(items[1].alloc_device__ids(300)).fill_(7)
+    assert b.commit__() == flux.Published.OK
+
+    with dev.take() as f, torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
+        v = blob.View(f)
+        assert v.name == "frame"
+        got = torch.from_dlpack(v.data__device)
+        assert got.shape == (n,) and bool((got == 0x41).all())
+        assert torch.from_dlpack(v.items[1].ids__device).cpu().numpy().tolist() == [7] * 300
+    # A CPU subscriber reads its own copy of the device blocks.
+    h = blob.View(cpu.take())
+    assert h.data__device is None and len(h.data) == n
+    assert h.data[0] == 0x41 and h.data[-1] == 0x41
+    np.testing.assert_array_equal(h.items[1].ids, np.full(300, 7, np.uint16))
+
+
+def test_a_builder_without_a_device_refuses_a_device_field(node, blob):
+    pub = flux.Publisher(node, topic("arena_cpu"), fingerprint=blob.FINGERPRINT__, **SMALL)
+    b = blob.build__(pub)
+    with pytest.raises(WireError, match="declared no device"):
+        b.alloc_device__data(16)
+    assert not b and b.commit__() == flux.Published.TOO_LARGE
+
+
+def test_every_cpu_field_of_a_frame_reaches_a_gpu_reader(node, blob):
+    if flux.probe().route != flux.Route.DEVICE_HANDLE:
+        pytest.skip("an integrated GPU has no device address for the arena yet")
+    t, fp = topic("cpu_fields"), blob.FINGERPRINT__
+    pub = flux.Publisher(node, t, fingerprint=fp, **SMALL)
+    dev = flux.Subscription(node, t, fingerprint=fp, qos=flux.QoS(depth=4), device="cuda")
+    b = blob.build__(pub)
+    b.alloc__data(3 << 20)[:] = 0x5A
+    items = b.alloc__items(3)
+    for i, n in enumerate((10, 100_000, 20)):
+        items[i].alloc__ids(n)[:] = 0x100 + i
+    assert b.commit__() == flux.Published.OK
+
+    with dev.take() as f, torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
+        v = blob.View(f)
+        d = torch.from_dlpack(v.data__device)
+        assert d.shape == (3 << 20,) and bool((d == 0x5A).all())
+        for i, n in enumerate((10, 100_000, 20)):
+            ids = torch.from_dlpack(v.items[i].ids__device).cpu().numpy()
+            np.testing.assert_array_equal(ids, np.full(n, 0x100 + i, np.uint16))
+
+
 def test_a_device_array_is_refused_by_publish(node):
     pub = flux.Publisher(node, topic("refuse"), device="cuda", **SMALL)
     with pytest.raises(TypeError, match="loan"):

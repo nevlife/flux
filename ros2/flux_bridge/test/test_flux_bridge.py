@@ -316,17 +316,18 @@ def test_an_untyped_publisher_has_no_mirror(node):
         flux.Publisher(node, topic("mirror_raw"), mirror_to_ros=True, **SMALL)
 
 
+# A generated type registers itself, so its CUDA publisher keeps host slots, which a mirror reads.
 @pytest.mark.skipif(flux.probe().route == flux.Route.NONE, reason="needs a GPU route")
-def test_a_device_backed_publisher_has_no_mirror(node):
-    with pytest.raises(flux.Error):
-        flux.Publisher(
-            node,
-            topic("mirror_cuda"),
-            fingerprint=imu.FINGERPRINT__,
-            device="cuda",
-            mirror_to_ros=True,
-            **SMALL,
-        )
+def test_a_cuda_publisher_of_a_generated_type_mirrors_its_host_slots(node):
+    pub = flux.Publisher(
+        node,
+        topic("mirror_cuda"),
+        fingerprint=imu.FINGERPRINT__,
+        device="cuda",
+        mirror_to_ros=True,
+        **SMALL,
+    )
+    assert not pub.device_backed
 
 
 def test_a_mirror_serves_ros_subscribers_that_come_and_go(node):

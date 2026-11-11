@@ -12,8 +12,9 @@ use crate::trace::event;
 
 use super::ChannelShared;
 
-/// The GPU arena a frame's device fields are in, as this subscriber reaches it: both addresses
-/// are of arena offset 0 and cover `size` bytes.
+/// How this subscriber reaches the fields of a frame on the side of `PCIe` its slot is not. The
+/// GPU arena: `device` and `host` are addresses of its offset 0 and cover `size` bytes. `frame`
+/// is the device address of the frame's own bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct GpuHeap {
     /// 0 unless this subscriber's stream is on the arena's device.
@@ -21,20 +22,37 @@ pub struct GpuHeap {
     /// Null for an arena in device memory.
     pub host: *const u8,
     pub size: usize,
-    /// For a CPU subscriber of an arena in device memory: this subscriber's copy of each of the
-    /// frame's blocks, `count` of them, valid while the view lives. Null otherwise.
+    /// 0 unless this subscriber declared a stream.
+    pub frame: u64,
+    /// This subscriber's copy of each of the frame's blocks on the other side, `count` of them,
+    /// valid while the view lives: a CPU subscriber's of device memory, a discrete GPU
+    /// subscriber's of the host arena. Null otherwise.
     pub blocks: *const GpuBlock,
     pub count: usize,
 }
 
-/// A frame's GPU arena block as a CPU subscriber of device memory reads it: its arena offset and
-/// length, and where its copy is.
+impl Default for GpuHeap {
+    fn default() -> GpuHeap {
+        GpuHeap {
+            device: 0,
+            host: std::ptr::null(),
+            size: 0,
+            frame: 0,
+            blocks: std::ptr::null(),
+            count: 0,
+        }
+    }
+}
+
+/// A block of a frame and this subscriber's copy of it: its descriptor offset, its length, and
+/// the copy's address, in host memory or (for a GPU subscriber) device memory.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct GpuBlock {
     pub off: u64,
     pub len: u64,
     pub host: *const u8,
+    pub device: u64,
 }
 
 /// A borrowed frame. While it lives, the publisher does not rewrite its slot. The header is the
@@ -59,46 +77,63 @@ impl FrameView {
         m.names(data).then(|| m.bytes())
     }
 
-    /// The GPU arena the frame's trailer names. None for a frame without one, and while it cannot
-    /// be imported or copied. A CPU subscriber of an arena in device memory copies the frame's
-    /// blocks on its first call, and the view's later calls read the copy.
+    /// How this subscriber reaches the frame's fields across `PCIe`. None for a CPU subscriber
+    /// of a frame without GPU blocks, and while they cannot be imported or copied. Blocks on the
+    /// other side are copied by the first call, and the view's later calls read the copy.
     pub fn gpu_heap(&self) -> Option<GpuHeap> {
         let data = self.data();
-        let f = GpuFrame::decode(arena::gpu_trailer(data)?)?;
         let stream = self
             .sh
             .gpu
             .as_ref()
             .map(|g| &g.stream)
             .filter(|s| s.declared());
-        let m = self
-            .sh
-            .gpu_import
-            .get_or_init(|| {
-                import_for(&f)
-                    .inspect_err(|e| eprintln!("flux: a frame's GPU arena was not imported: {e}"))
-                    .ok()
-            })
-            .as_ref()?;
-        // shortcut: a frame past the chunks imported fetches the rest here, a round trip on the
-        // reader's thread; fetch them as the publisher grows once an executor is seen to stall on
-        // it.
-        if m.id() != f.id || m.reach(f.chunks).is_err() {
+        let mut h = GpuHeap::default();
+        if let Some(t) = arena::gpu_trailer(data) {
+            let f = GpuFrame::decode(t)?;
+            let m = self
+                .sh
+                .gpu_import
+                .get_or_init(|| {
+                    import_for(&f)
+                        .inspect_err(|e| {
+                            eprintln!("flux: a frame's GPU arena was not imported: {e}");
+                        })
+                        .ok()
+                })
+                .as_ref()?;
+            // shortcut: a frame past the chunks imported fetches the rest here, a round trip on
+            // the reader's thread; fetch them as the publisher grows once an executor is seen to
+            // stall on it.
+            if m.id() != f.id || m.reach(f.chunks).is_err() {
+                return None;
+            }
+            if f.place == Place::Device && stream.is_none() {
+                let list = arena::blocks(data, self.heap())?;
+                return self.sh.copy_gpu_blocks(self.slot, self.ticket, m, list);
+            }
+            h.device = stream
+                .filter(|s| s.device() == m.ordinal())
+                .map_or(0, |_| m.device_ptr(0));
+            h.host = m.host_base().unwrap_or(std::ptr::null());
+            h.size = m.mapped_bytes();
+        } else if stream.is_none() {
             return None;
         }
-        if f.place == Place::Device && stream.is_none() {
-            let list = arena::gpu_blocks(data, f.blocks)?;
-            return self.sh.copy_gpu_blocks(self.slot, self.ticket, m, list);
+        if stream.is_some() {
+            h.frame = self.device_ptr();
+            // shortcut: an integrated GPU subscriber has no device address for host arena
+            // fields; register the arena mapping once it is tried on such a board.
+            if let Some(heap) = self.heap().filter(|_| self.sh.stages_to_device()) {
+                let list = arena::blocks(data, Some(heap))?;
+                let c = self
+                    .sh
+                    .copy_host_blocks(self.slot, self.ticket, heap, list)?;
+                h.blocks = c.blocks;
+                h.count = c.count;
+            }
         }
-        Some(GpuHeap {
-            device: stream
-                .filter(|s| s.device() == m.ordinal())
-                .map_or(0, |_| m.device_ptr(0)),
-            host: m.host_base().unwrap_or(std::ptr::null()),
-            size: m.mapped_bytes(),
-            blocks: std::ptr::null(),
-            count: 0,
-        })
+        Some(h)
     }
 
     /// Empty when the payload is device memory and this subscriber declared a stream; read it

@@ -120,9 +120,30 @@ read_on_device(data.data(), data.size(), frame.stream());
 - GPU arena는 프로세스에 장치마다 하나이고 32 MiB 단위로 커진다. 크기는 `FLUX_ARENA_BYTES`(기본이자 최대 1 GiB)이고 호스트 arena도 같은 값을 쓴다. 블록은 그 프레임의 슬롯을 다시 쓸 때 푼다.
 - 받는 쪽의 `<필드>__device()`가 장치 주소와 개수를 준다. 구독 stream이 발행자와 같은 장치(UUID)에 있어야 하고, 아니면 빈 값이다.
 - CPU 구독자도 그 필드를 보통 접근자로 읽는다. 통합 GPU에서는 복사가 없다. 외장 GPU에서는 그 프레임으로 처음 `View`를 만들 때 프레임의 장치 필드만 자기 호스트 버퍼로 복사하고 끝을 기다린다. 같은 프레임의 다음 `View`는 그 복사본을 읽는다.
-- CPU 발행자가 `alloc__`로 쓴 필드는 `__device()`가 빈 값이다.
-- 장치 필드를 쓴 프레임은 슬롯 끝에 두 arena의 이름(128바이트)과 장치 필드마다 8바이트를 담는다. 그래서 stream을 선언한 발행자의 `Builder`는 슬롯의 마지막 135바이트와 장치 필드마다 8바이트를 가변 필드에 쓰지 않는다.
-- Python에는 아직 없다. 확인한 장비는 RTX 4070 SUPER이고, Jetson에서는 돌려 보지 않았다.
+- 반대로 CPU 발행자가 `alloc__`로 쓴 필드도 GPU 구독자가 `__device()`로 읽는다. 외장 GPU에서 슬롯 안의 필드는 take가 만든 프레임 복사본에 있고, 슬롯을 넘어 arena에 간 필드는 그 프레임으로 처음 `View`를 만들 때 자기 장치 버퍼로 복사한다. 그 복사는 구독 stream에 걸리고 기다리지 않는다. 통합 GPU에서는 슬롯 안의 필드만 장치 주소가 있고, arena에 간 필드는 아직 빈 값이다.
+- arena에 필드를 둔 프레임은 슬롯 끝에 arena의 이름과 그 프레임의 블록 목록(블록마다 8바이트)을 담는다. 장치 필드가 있으면 이름은 128바이트다. 목록이 슬롯에 들어가지 않으면 arena에 둔다. 그래서 `Builder`는 슬롯의 마지막 71바이트(stream을 선언한 발행자는 135바이트)를 가변 필드에 쓰지 않는다.
+- 확인한 장비는 RTX 4070 SUPER이고, Jetson에서는 돌려 보지 않았다.
+
+Python에서는 같은 필드가 DLPack 객체로 오간다. 장치 필드는 loan의 stream에 쓴다.
+
+```python
+loan = pub.loan(dtype="uint8")
+b = image.Builder(loan.array, loan)
+b.encoding = "rgb8"
+with torch.cuda.stream(torch.cuda.ExternalStream(loan.stream)):
+    torch.from_dlpack(b.alloc_device__data(nbytes)).copy_(pixels)
+b.commit__()
+```
+
+```python
+with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stream)):
+    data = torch.from_dlpack(image.View(frame).data__device)
+```
+
+- 생성 모듈은 import할 때 fingerprint를 등록하므로, `device="cuda"` 발행자도 C++처럼 슬롯이 호스트 메모리다.
+- `<필드>__device`는 장치 주소가 없으면 None이다. 생성된 `View`는 `device="cuda"` 구독의 `Frame`도 받고, 그 `with` 블록 안에서만 만든다.
+- 장치를 선언하지 않은 발행자의 `alloc_device__<필드>`는 `WireError`이고, 그 `Builder`의 `commit__()`은 `TOO_LARGE`다.
+- tensor 메시지의 `__dlpack__`도 data가 arena에 있을 때 외장 GPU에서 위의 복사본을 준다. 통합 GPU에서는 `RuntimeError`다.
 
 ## 장치 메모리 채널(`DeviceHandle`)
 

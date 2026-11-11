@@ -348,6 +348,60 @@ TEST_F(Gpu, DeviceBlocksGoBackWithTheirSlots)
   }
 }
 
+// The other way: a CPU publisher's fields, in its slot and in its arena, reach a GPU reader on
+// the device. A discrete GPU reads its copies, which the take and the View made.
+TEST_F(Gpu, EveryCpuFieldOfAFrameReachesAGpuReader)
+{
+  using Blob = flux_test::flux_msg::Blob;
+  if (platform_.route != flux::gpu::Route::DeviceHandle) {
+    GTEST_SKIP() << "an integrated GPU has no device address for the arena yet";
+  }
+  const std::string name = unique_name("cpu_fields");
+  auto pub = flux::detail::Channel::create(
+    name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS);
+  flux::WriteSlot w = pub.loan();
+  ASSERT_TRUE(w);
+  Blob::Builder b(w);
+  const auto data = b.alloc__data(std::size_t{3} << 20);
+  ASSERT_EQ(data.size(), std::size_t{3} << 20);
+  std::memset(data.data(), 0x5a, data.size());
+  const std::array<std::size_t, 3> lens{10, 100'000, 20};
+  const auto items = b.alloc__items(lens.size());
+  for (std::size_t i = 0; i < lens.size(); ++i) {
+    const auto ids = items[i].alloc__ids(lens.at(i));
+    ASSERT_EQ(ids.size(), lens.at(i));
+    for (auto & x : ids) {
+      x = static_cast<std::uint16_t>(0x100 + i);
+    }
+  }
+  ASSERT_EQ(b.commit__(), flux::Published::Ok);
+
+  flux::QoS q(4);
+  q.transient_local(4);
+  flux::detail::Watch watch(name);
+  const flux::gpu::Stream stream = flux::gpu::Stream::create();
+  auto gpu = flux::detail::Channel::open(watch, Blob::kFingerprint, q, {}, stream);
+  flux::FrameView v = gpu.take();
+  ASSERT_TRUE(v);
+  const Blob::View m(v);
+  const auto d = m.data__device();
+  ASSERT_EQ(d.size(), data.size());
+  ASSERT_TRUE(stream.wait());
+  EXPECT_TRUE(all(read_back(d.data(), d.size()), 0x5a));
+  ASSERT_EQ(m.items__size(), lens.size());
+  for (std::size_t i = 0; i < lens.size(); ++i) {
+    const auto ids = m.items(i).ids__device();
+    ASSERT_EQ(ids.size(), lens.at(i)) << i;
+    const std::vector<unsigned char> got = read_back(ids.data(), ids.size() * 2);
+    std::vector<std::uint16_t> back(ids.size());
+    std::memcpy(back.data(), got.data(), got.size());
+    for (const std::uint16_t x : back) {
+      ASSERT_EQ(x, 0x100 + i) << i;
+    }
+  }
+  EXPECT_TRUE(m.ok__());
+}
+
 // A raw tensor loan's channel keeps its device payload: the type registered nothing.
 TEST_F(Gpu, AnUnregisteredFingerprintKeepsTheDevicePayload)
 {

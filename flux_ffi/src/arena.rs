@@ -27,13 +27,15 @@ impl flux_heap {
     }
 }
 
-/// A frame's GPU arena (`flux_view_gpu_heap`): addresses of offset 0 (0 for none) and their reach,
-/// or, for a CPU subscriber of device memory, its copies of the frame's `count` blocks.
+/// A frame's fields across `PCIe` (`flux_view_gpu_heap`): the GPU arena's offset 0 (0 for none)
+/// and reach, the frame's device address with a stream, and the subscriber's copies of the
+/// `count` blocks on the other side (host for a CPU subscriber, device for a discrete GPU one).
 #[repr(C)]
 pub struct flux_gpu_heap {
     pub device: u64,
     pub host: *const u8,
     pub size: usize,
+    pub frame: u64,
     pub blocks: *const flux_gpu_block,
     pub count: usize,
 }
@@ -43,11 +45,13 @@ pub struct flux_gpu_block {
     pub off: u64,
     pub len: u64,
     pub host: *const u8,
+    pub device: u64,
 }
 
 const _: () = {
     assert!(size_of::<flux_gpu_block>() == size_of::<GpuBlock>());
     assert!(std::mem::offset_of!(flux_gpu_block, host) == std::mem::offset_of!(GpuBlock, host));
+    assert!(std::mem::offset_of!(flux_gpu_block, device) == std::mem::offset_of!(GpuBlock, device));
 };
 
 #[unsafe(no_mangle)]
@@ -157,6 +161,7 @@ pub unsafe extern "C" fn flux_view_gpu_heap(v: *const flux_view, out: *mut flux_
         device,
         host,
         size,
+        frame,
         blocks,
         count,
     }) = unsafe { view_ref(v) }.get().and_then(FrameView::gpu_heap)
@@ -170,6 +175,7 @@ pub unsafe extern "C" fn flux_view_gpu_heap(v: *const flux_view, out: *mut flux_
             device,
             host,
             size,
+            frame,
             blocks,
             count,
         });

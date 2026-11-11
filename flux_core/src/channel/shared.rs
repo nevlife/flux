@@ -24,6 +24,14 @@ use super::{COUNT_CORRUPT, SWEEP_NS};
 /// Where each block's copy starts in a subscriber's buffer, as the device's blocks do.
 const COPY_ALIGN: usize = 256;
 
+/// The descriptor range a copy reads, and how many bytes from its start the source holds.
+#[derive(Clone, Copy)]
+struct Source {
+    from: u64,
+    to: u64,
+    size: usize,
+}
+
 /// A channel that declared a stream, or a host subscriber of a device payload: the device address
 /// of slot 0's payload and the stream both seams wait for.
 pub(super) struct GpuState {
@@ -99,33 +107,54 @@ pub struct ChannelShared {
     /// Subscriber side: the publisher's GPU arena, imported by the first frame that named it;
     /// None once that failed.
     pub(super) gpu_import: OnceLock<Option<Arc<gpu::arena::GpuArenaImport>>>,
-    /// A CPU subscriber of a GPU arena in device memory, per slot: its copy of the blocks of the
-    /// frame it read last there.
-    pub(super) gpu_copies: PiMutex<Vec<SlotCopy>>,
-    /// The stream those copies run on, made by the first.
+    /// Per slot, a subscriber's copy of the blocks of the frame it read last there that sit on
+    /// the other side of `PCIe`: a CPU subscriber's of GPU arena blocks in device memory, a
+    /// discrete GPU subscriber's of host arena blocks.
+    pub(super) copies: PiMutex<Vec<SlotCopy>>,
+    /// The stream a CPU subscriber's copies run on, made by the first.
     pub(super) copy_stream: OnceLock<Option<Stream>>,
 }
 
-/// One slot's copy of a frame's GPU arena blocks. Rewritten only for another frame in the slot,
-/// which cannot come while a view of this one holds the slot.
+/// One slot's copy of a frame's blocks. Rewritten only for another frame in the slot, which
+/// cannot come while a view of this one holds the slot.
 #[derive(Default)]
 pub(super) struct SlotCopy {
     ticket: u64,
-    buf: Option<gpu::HostBuffer>,
+    buf: Option<CopyBuf>,
     cap: usize,
     blocks: Vec<GpuBlock>,
+}
+
+enum CopyBuf {
+    Host(gpu::HostBuffer),
+    Device(gpu::DeviceBuffer),
 }
 
 // SAFETY: the block pointers are into `buf`, which the copy owns.
 unsafe impl Send for SlotCopy {}
 
-/// Arena memory a frame owns.
+/// Arena memory a frame owns. Each host block has its arena offset and length.
 pub enum Owned {
-    Block(u64),
+    Block(u64, u32),
     /// Memory a binding allocated in the arena and keeps alive until `release(ctx)`.
-    Adopted(unsafe extern "C" fn(*mut c_void), *mut c_void),
+    Adopted(unsafe extern "C" fn(*mut c_void), *mut c_void, u64, u32),
     /// A block of the GPU arena: its offset and length.
     Gpu(&'static GpuArena, u64, u32),
+}
+
+impl Owned {
+    /// The block's trailer entry: its descriptor offset and length.
+    fn entry(&self) -> [u8; arena::BLOCK_BYTES] {
+        let (base, off, len) = match *self {
+            Owned::Block(off, len) | Owned::Adopted(_, _, off, len) => (arena::HEAP_BASE, off, len),
+            Owned::Gpu(_, off, len) => (arena::GPU_BASE, off, len),
+        };
+        let mut e = [0u8; arena::BLOCK_BYTES];
+        #[allow(clippy::cast_possible_truncation)]
+        e[..4].copy_from_slice(&((base + off) as u32).to_le_bytes());
+        e[4..].copy_from_slice(&len.to_le_bytes());
+        e
+    }
 }
 
 // SAFETY: the adopter promises its release may run on whichever thread claims the slot.
@@ -180,15 +209,15 @@ impl ChannelShared {
             arena_map: OnceLock::new(),
             gpu_arena: OnceLock::new(),
             gpu_import: OnceLock::new(),
-            gpu_copies: PiMutex::new(Vec::new()),
+            copies: PiMutex::new(Vec::new()),
             copy_stream: OnceLock::new(),
         }
     }
 
-    /// The frame `ticket` in `slot` with its GPU blocks (`list`, the trailer's) copied from `m` to
-    /// this subscriber's pinned memory, once per frame. The view's borrow keeps the publisher
-    /// from freeing the blocks meanwhile. None when the list names bytes `m` has not imported,
-    /// or the driver refused.
+    /// The frame `ticket` in `slot` with its GPU blocks (from `list`, the trailer's) copied from
+    /// `m` to this subscriber's pinned memory, once per frame. The view's borrow keeps the
+    /// publisher from freeing the blocks meanwhile. None when the list names bytes `m` has not
+    /// imported, or the driver refused.
     pub(super) fn copy_gpu_blocks(
         &self,
         slot: u32,
@@ -203,7 +232,99 @@ impl ChannelShared {
             .copy_stream
             .get_or_init(|| Stream::on_device(m.ordinal()).ok())
             .as_ref()?;
-        let mut copies = self.gpu_copies.lock();
+        let src = Source {
+            from: arena::GPU_BASE,
+            to: 1 << 32,
+            size: m.mapped_bytes(),
+        };
+        let blocks = self.copy_blocks(
+            slot,
+            ticket,
+            list,
+            src,
+            |bytes| {
+                gpu::HostBuffer::new(bytes, m.ordinal())
+                    .ok()
+                    .map(CopyBuf::Host)
+            },
+            |b| {
+                #[allow(clippy::cast_possible_truncation)]
+                stream.copy_to_host(
+                    b.host.cast_mut(),
+                    m.device_ptr(b.off - arena::GPU_BASE),
+                    b.len as usize,
+                )
+            },
+            || stream.wait(),
+        )?;
+        Some(GpuHeap {
+            size: m.mapped_bytes(),
+            ..blocks
+        })
+    }
+
+    /// A discrete GPU subscriber of host slots, which reads its own device copy of each frame.
+    pub(super) fn stages_to_device(&self) -> bool {
+        self.gpu
+            .as_ref()
+            .is_some_and(|g| matches!(g.staged, Staged::Device(_)))
+    }
+
+    /// The frame `ticket` in `slot` with its host arena blocks (from `list`) copied from the
+    /// mapping `heap` to this discrete GPU subscriber's device memory, once per frame. The copies
+    /// are queued on the channel's stream, which the subscriber's work follows. None without such
+    /// a stream, when the list names bytes outside `heap`, or the driver refused.
+    pub(super) fn copy_host_blocks(
+        &self,
+        slot: u32,
+        ticket: u64,
+        heap: &[u8],
+        list: &[u8],
+    ) -> Option<GpuHeap> {
+        let g = self.gpu.as_ref().filter(|_| self.stages_to_device())?;
+        if self.inherited() {
+            return None;
+        }
+        let src = Source {
+            from: arena::HEAP_BASE,
+            to: arena::GPU_BASE,
+            size: heap.len(),
+        };
+        self.copy_blocks(
+            slot,
+            ticket,
+            list,
+            src,
+            |bytes| {
+                gpu::DeviceBuffer::new(bytes, g.stream.device())
+                    .ok()
+                    .map(CopyBuf::Device)
+            },
+            |b| {
+                #[allow(clippy::cast_possible_truncation)]
+                let (at, len) = ((b.off - arena::HEAP_BASE) as usize, b.len as usize);
+                // SAFETY: copy_blocks checked the block against the mapping's length.
+                let from = unsafe { heap.as_ptr().add(at) };
+                g.stream.copy_to_device(b.device, from, len)
+            },
+            || true,
+        )
+    }
+
+    /// The blocks of `list` inside `src` copied by `copy` into `make`'s buffer, unless `ticket`'s
+    /// already are; `done` then waits for them where the caller needs that.
+    #[allow(clippy::too_many_arguments)]
+    fn copy_blocks(
+        &self,
+        slot: u32,
+        ticket: u64,
+        list: &[u8],
+        src: Source,
+        make: impl FnOnce(usize) -> Option<CopyBuf>,
+        copy: impl Fn(&GpuBlock) -> bool,
+        done: impl FnOnce() -> bool,
+    ) -> Option<GpuHeap> {
+        let mut copies = self.copies.lock();
         if copies.is_empty() {
             copies.resize_with(self.seg.layout().slot_count as usize, SlotCopy::default);
         }
@@ -212,52 +333,54 @@ impl ChannelShared {
             c.ticket = 0;
             c.blocks.clear();
             let mut total = 0usize;
-            for &[o0, o1, o2, o3, l0, l1, l2, l3] in
-                list.as_chunks::<{ arena::GPU_BLOCK_BYTES }>().0
-            {
+            for &[o0, o1, o2, o3, l0, l1, l2, l3] in list.as_chunks::<{ arena::BLOCK_BYTES }>().0 {
                 let off = u64::from(u32::from_le_bytes([o0, o1, o2, o3]));
                 let len = u64::from(u32::from_le_bytes([l0, l1, l2, l3]));
-                if off + len > m.mapped_bytes() as u64 {
+                if !(src.from..src.to).contains(&off) {
+                    continue;
+                }
+                if off - src.from + len > src.size as u64 {
                     return None;
                 }
-                let at = total.next_multiple_of(COPY_ALIGN);
-                // The copy's offset for now; its address once the buffer is known.
                 c.blocks.push(GpuBlock {
                     off,
                     len,
-                    host: at as *const u8,
+                    host: std::ptr::null(),
+                    device: 0,
                 });
-                total = at + usize::try_from(len).ok()?;
+                total = total.next_multiple_of(COPY_ALIGN) + usize::try_from(len).ok()?;
             }
             if c.cap < total {
                 c.buf = None;
-                c.buf = Some(gpu::HostBuffer::new(total, m.ordinal()).ok()?);
+                c.buf = Some(make(total)?);
                 c.cap = total;
             }
-            let base = c
-                .buf
-                .as_ref()
-                .map_or(std::ptr::null_mut(), gpu::HostBuffer::base);
+            let mut place = 0usize;
             for b in &mut c.blocks {
-                // SAFETY: the offset was placed inside total, which the buffer holds.
-                let to = unsafe { base.add(b.host as usize) };
-                b.host = to;
+                place = place.next_multiple_of(COPY_ALIGN);
+                match &c.buf {
+                    // SAFETY: the place is inside total, which the buffer holds.
+                    Some(CopyBuf::Host(h)) => b.host = unsafe { h.base().add(place) },
+                    Some(CopyBuf::Device(d)) => b.device = d.base() + place as u64,
+                    None => {}
+                }
                 #[allow(clippy::cast_possible_truncation)]
-                if !stream.copy_to_host(to, m.device_ptr(b.off), b.len as usize) {
+                {
+                    place += b.len as usize;
+                }
+                if !copy(b) {
                     return None;
                 }
             }
-            if !stream.wait() {
+            if !done() {
                 return None;
             }
             c.ticket = ticket;
         }
         Some(GpuHeap {
-            device: 0,
-            host: std::ptr::null(),
-            size: m.mapped_bytes(),
             blocks: c.blocks.as_ptr(),
             count: c.blocks.len(),
+            ..GpuHeap::default()
         })
     }
 
@@ -275,40 +398,36 @@ impl ChannelShared {
         })
     }
 
-    /// Whether the frame in `slot` owns host arena memory, and how many GPU arena blocks.
-    pub(super) fn owned_kinds(&self, slot: u32) -> (bool, u32) {
+    /// Whether the frame in `slot` owns host arena memory and GPU arena memory, and how many
+    /// blocks in all.
+    pub(super) fn owned_kinds(&self, slot: u32) -> (bool, bool, u32) {
         let owned = self.owned.lock();
         let Some(v) = owned.get(slot as usize) else {
-            return (false, 0);
+            return (false, false, 0);
         };
         let gpu = |o: &&Owned| matches!(o, Owned::Gpu(..));
         #[allow(clippy::cast_possible_truncation)]
-        let blocks = v.iter().filter(gpu).count() as u32;
-        (v.iter().any(|o| !gpu(&o)), blocks)
+        let n = v.len() as u32;
+        (v.iter().any(|o| !gpu(&o)), v.iter().any(|o| gpu(&o)), n)
     }
 
-    /// Writes the GPU arena blocks of the frame in `slot` at `dst` as the trailer's list.
+    /// Writes the blocks of the frame in `slot` at `dst` as the trailer's list.
     ///
     /// # Safety
-    /// `dst` holds `GPU_BLOCK_BYTES` bytes for each block `owned_kinds` counted, and the claim
-    /// makes this the only access to them.
-    pub(super) unsafe fn write_gpu_blocks(&self, slot: u32, dst: *mut u8) {
+    /// `dst` holds `BLOCK_BYTES` bytes for each block `owned_kinds` counted, and the claim makes
+    /// this the only access to them.
+    pub(super) unsafe fn write_blocks(&self, slot: u32, dst: *mut u8) {
         let owned = self.owned.lock();
         let Some(v) = owned.get(slot as usize) else {
             return;
         };
         let mut at = dst;
         for o in v {
-            if let Owned::Gpu(_, off, len) = *o {
-                let mut e = [0u8; arena::GPU_BLOCK_BYTES];
-                #[allow(clippy::cast_possible_truncation)]
-                e[..4].copy_from_slice(&(off as u32).to_le_bytes());
-                e[4..].copy_from_slice(&len.to_le_bytes());
-                // SAFETY: the caller's contract covers this entry.
-                unsafe { std::ptr::copy_nonoverlapping(e.as_ptr(), at, e.len()) };
-                // SAFETY: still inside the list, or one past its end.
-                at = unsafe { at.add(e.len()) };
-            }
+            let e = o.entry();
+            // SAFETY: the caller's contract covers this entry.
+            unsafe { std::ptr::copy_nonoverlapping(e.as_ptr(), at, e.len()) };
+            // SAFETY: still inside the list, or one past its end.
+            at = unsafe { at.add(e.len()) };
         }
     }
 
@@ -347,13 +466,13 @@ impl ChannelShared {
         let a = arena::existing();
         for o in list.drain(..) {
             match o {
-                Owned::Block(off) => {
+                Owned::Block(off, _) => {
                     if let Some(a) = a {
                         a.free(off);
                     }
                 }
                 // SAFETY: the adopter's contract.
-                Owned::Adopted(release, ctx) => unsafe { release(ctx) },
+                Owned::Adopted(release, ctx, ..) => unsafe { release(ctx) },
                 Owned::Gpu(a, off, _) => a.free(off),
             }
         }

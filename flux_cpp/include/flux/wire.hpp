@@ -45,16 +45,15 @@ constexpr std::size_t kMaxFrameBytes = 0xFFFFFFFFu;  // descriptors are uint32
 // A descriptor offset at or past this is kHeapBase + an offset into the publisher's arena, a shm
 // file the frame's trailer names (FLUX_HEAP_BASE). Frames stay pointer-free.
 constexpr std::size_t kHeapBase = std::size_t{1} << 31;
-// Room the commit needs at the frame's end to name the arena: 64 bytes on an 8-byte boundary.
+// Room the commit needs at the frame's end to name the arena: 64 bytes on an 8-byte boundary. The
+// list of the frame's arena blocks goes there too while the slot has room, else to the arena.
 constexpr std::size_t kHeapTrailer = 64 + 7;
 // From here up a descriptor offset is kGpuBase + an offset into the publisher's GPU arena, which
 // the frame's trailer names (FLUX_GPU_HEAP_BASE). Each arena has a quarter of the u32 range.
 constexpr std::size_t kGpuBase = std::size_t{3} << 30;
 constexpr std::size_t kArenaSpan = std::size_t{1} << 30;
-// A frame with GPU arena blocks ends in their list, that arena's trailer and then the host one:
-// 128 bytes on an 8-byte boundary, and kGpuBlockEntry more for each block.
+// A frame with GPU arena blocks has that arena's trailer too: 128 bytes on an 8-byte boundary.
 constexpr std::size_t kGpuTrailer = 128 + 7;
-constexpr std::size_t kGpuBlockEntry = 8;
 // Device blocks start on this boundary, as cudaMalloc's do.
 constexpr std::size_t kDeviceAlign = 256;
 
@@ -94,23 +93,26 @@ private:
   std::size_t n_ = 0;
 };
 
-// A GPU arena block as a CPU reader of device memory has it: its arena offset and length, and
-// the reader's copy.
+// A block of a frame on the other side of PCIe from this reader: its descriptor offset and
+// length, and the reader's copy, in host memory or (for a GPU reader) device memory.
 struct GpuBlock
 {
   std::uint64_t off = 0;
   std::uint64_t len = 0;
   const std::byte * host = nullptr;
+  std::uint64_t device = 0;
 };
 
-// The GPU arena a received frame's device fields are in (flux::FrameView::gpu_heap()): the device
-// and CPU addresses of its offset 0, each null where this reader has none, and the bytes both
-// cover. A CPU reader of device memory has `count` copied blocks instead.
+// How a received frame's fields are reached across PCIe (flux::FrameView::gpu_heap()). The GPU
+// arena: the device and CPU addresses of its offset 0, each null where this reader has none, and
+// the bytes both cover. `frame`: the frame's own device address, for a reader with a stream. And
+// `count` copied blocks: a CPU reader's of device memory, a discrete GPU reader's of the arena.
 struct GpuHeap
 {
   std::uint64_t device = 0;
   const std::byte * host = nullptr;
   std::size_t size = 0;
+  std::uint64_t frame = 0;
   const GpuBlock * blocks = nullptr;
   std::size_t count = 0;
 };
@@ -339,7 +341,7 @@ public:
   {
     std::size_t copied = 0;
     for (std::size_t i = 0; i < gpu_.count; ++i) {
-      copied += static_cast<std::size_t>(gpu_.blocks[i].len);
+      copied += gpu_.blocks[i].host != nullptr ? static_cast<std::size_t>(gpu_.blocks[i].len) : 0;
     }
     return size_ + heap_size_ + (gpu_.host != nullptr ? gpu_.size : copied);
   }
@@ -387,23 +389,38 @@ public:
     return p != nullptr ? Span<const T>(reinterpret_cast<const T *>(p), d.len) : Span<const T>();
   }
 
-  // A variable array in the GPU arena, as the device reads it. Empty when it is elsewhere or this
-  // reader has no device address for it; empty and bad() when it runs past what was imported or
-  // is off T's boundary.
+  // A variable array as the device reads it, wherever the frame put it. Empty when this reader
+  // has no device address for it; empty and bad() when it runs past what the reader has or is
+  // off T's boundary.
   template <class T>
   auto device(std::size_t off) const noexcept -> DeviceSpan<const T>
   {
     const Desc d = desc(off);
-    if (bad_ || d.off < kGpuBase || gpu_.device == 0) {
+    std::uint64_t base = gpu_.frame;
+    std::size_t at = d.off;
+    std::size_t size = size_;
+    if (d.off >= kGpuBase) {
+      base = gpu_.device;
+      at -= kGpuBase;
+      size = gpu_.size;
+    } else if (d.off >= kHeapBase && base != 0 && gpu_.count != 0) {
+      const GpuBlock * b = copy_of(d.off, d.len, sizeof(T));
+      base = b != nullptr ? b->device : 0;
+      at = b != nullptr ? d.off - b->off : 0;
+      size = b != nullptr ? static_cast<std::size_t>(b->len) : 0;
+      bad_ = bad_ || base == 0;
+    } else if (d.off >= kHeapBase) {
+      base = 0;  // shortcut: an integrated GPU reader has no device address for the arena yet
+    }
+    if (bad_ || base == 0) {
       return {};
     }
-    const std::size_t at = d.off - kGpuBase;
-    if (at % alignof(T) != 0 || at > gpu_.size || d.len > (gpu_.size - at) / sizeof(T)) {
+    if (at % alignof(T) != 0 || at > size || d.len > (size - at) / sizeof(T)) {
       bad_ = true;
       return {};
     }
     // NOLINTNEXTLINE(performance-no-int-to-ptr): a device address, never dereferenced here
-    return {reinterpret_cast<const T *>(gpu_.device + at), d.len};
+    return {reinterpret_cast<const T *>(base + at), d.len};
   }
 
   auto str(std::size_t off) const noexcept -> std::string_view
@@ -469,13 +486,15 @@ private:
   {
     const std::byte * base = base_;
     std::size_t size = size_;
-    if (off >= kGpuBase) {
+    if (off >= kGpuBase && gpu_.host == nullptr) {
+      const GpuBlock * b = bad_ ? nullptr : copy_of(off, n, esize);
+      base = b != nullptr ? b->host : nullptr;
+      size = b != nullptr ? static_cast<std::size_t>(b->len) : 0;
+      off = b != nullptr ? off - b->off : 0;
+    } else if (off >= kGpuBase) {
       base = gpu_.host;
       size = gpu_.size;
       off -= kGpuBase;
-      if (base == nullptr && !bad_) {
-        return copied(off, n, esize, align);
-      }
     } else if (off >= kHeapBase) {
       base = heap_;
       size = heap_size_;
@@ -488,22 +507,21 @@ private:
     return base + off;
   }
 
-  const std::byte * base_ = nullptr;
-  std::size_t size_ = 0;
-  // The same in the copy of the GPU arena block that holds all of it.
-  auto copied(std::size_t off, std::size_t n, std::size_t esize, std::size_t align) const noexcept
-    -> const std::byte *
+  // The copied block that holds all n elements of esize at descriptor offset `off`; null for none.
+  // Copies start on a 256-byte boundary, so an offset into one is aligned as the address is.
+  auto copy_of(std::size_t off, std::size_t n, std::size_t esize) const noexcept -> const GpuBlock *
   {
-    for (std::size_t i = 0; off % align == 0 && i < gpu_.count; ++i) {
+    for (std::size_t i = 0; i < gpu_.count; ++i) {
       const GpuBlock & b = gpu_.blocks[i];
       if (off >= b.off && off - b.off <= b.len && n <= (b.len - (off - b.off)) / esize) {
-        return b.host + (off - b.off);
+        return &b;
       }
     }
-    bad_ = true;
     return nullptr;
   }
 
+  const std::byte * base_ = nullptr;
+  std::size_t size_ = 0;
   const std::byte * heap_ = nullptr;
   std::size_t heap_size_ = 0;
   GpuHeap gpu_;
@@ -590,18 +608,14 @@ public:
     Desc d{0, 0};
     std::uint64_t p = 0;
     if (n != 0) {
-      // The trailer lists the block: its entry must fit past what the slot holds.
       std::uint64_t aoff = 0;
-      if (
-        heap_.alloc_device != nullptr && n <= kArenaSpan / sizeof(T) &&
-        used_ + trailer_ + kGpuBlockEntry <= cap_) {
+      if (heap_.alloc_device != nullptr && n <= kArenaSpan / sizeof(T)) {
         p = heap_.alloc_device(heap_, n * sizeof(T), kDeviceAlign, &aoff);
       }
       if (p == 0) {
         bad_ = true;
         return {};
       }
-      trailer_ += kGpuBlockEntry;
       d = {static_cast<std::uint32_t>(kGpuBase + aoff), static_cast<std::uint32_t>(n)};
     }
     std::memcpy(dp, &d, sizeof(d));
@@ -779,7 +793,7 @@ private:
       p = base_ + start;
       where = start;
       used_ = start + n * esize;
-    } else if (heap_.alloc != nullptr && n <= 0xFFFFFFFFu && n <= heap_.size / esize) {
+    } else if (heap && n <= 0xFFFFFFFFu && n <= heap_.size / esize) {
       std::uint64_t aoff = 0;
       p = static_cast<std::byte *>(heap_.alloc(heap_, n * esize, align, &aoff));
       where = kHeapBase + static_cast<std::size_t>(aoff);

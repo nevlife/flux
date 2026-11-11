@@ -32,15 +32,18 @@ pub const HEAP_BASE: u64 = 1 << 31;
 pub const GPU_BASE: u64 = 3 << 30;
 /// Descriptors are u32: the arena has the third quarter of their range, the GPU arena the fourth.
 pub const MAX_ARENA_BYTES: usize = 1 << 30;
+/// A frame with arena blocks ends in the GPU arena's trailer when it has GPU blocks, then this
+/// one: its magic, the arena's name, and the list of the blocks, by descriptor offset and length.
+/// The list is in the frame before the trailers when it fits the slot, else in the arena.
 pub const TRAILER_BYTES: usize = 64;
-/// A frame with GPU arena blocks: their list, the GPU arena's trailer, then this one.
 pub const GPU_TRAILER_BYTES: usize = 2 * TRAILER_BYTES;
-/// One entry of that list: the block's arena offset and length, each a little-endian u32.
-pub const GPU_BLOCK_BYTES: usize = 8;
-const MAGIC: [u8; 16] = *b"flux-arena-v1\0\0\0";
+/// One entry of the list: the block's descriptor offset and length, each a little-endian u32.
+pub const BLOCK_BYTES: usize = 8;
+const MAGIC: [u8; 16] = *b"flux-arena-v2\0\0\0";
 /// The same trailer, after a GPU arena's.
-const MAGIC_GPU: [u8; 16] = *b"flux-arena-g1\0\0\0";
-const NAME_BYTES: usize = TRAILER_BYTES - MAGIC.len();
+const MAGIC_GPU: [u8; 16] = *b"flux-arena-g2\0\0\0";
+const NAME_BYTES: usize = 40;
+const LIST_AT: usize = TRAILER_BYTES - 8;
 /// The creator holds a read lock on it while it lives; the sweep unlinks a file nobody holds.
 pub(crate) const LOCK_BYTE: i64 = 0;
 /// Pages are reserved this far at a time, ahead of the highest block, so a full `/dev/shm` fails
@@ -258,21 +261,19 @@ impl Arena {
     pub fn name(&self) -> &str {
         &self.name
     }
-
-    pub fn trailer(&self) -> [u8; TRAILER_BYTES] {
-        trailer(Some(self), false)
-    }
 }
 
-/// The trailer naming `arena`, or no arena (a frame with only GPU blocks); `gpu` when a GPU
-/// arena's trailer comes before it.
-pub fn trailer(arena: Option<&Arena>, gpu: bool) -> [u8; TRAILER_BYTES] {
+/// The trailer naming `arena`, or no arena (a frame with only GPU blocks), and the list of
+/// `blocks` at descriptor offset `list`; `gpu` when a GPU arena's trailer comes before it.
+pub fn trailer(arena: Option<&Arena>, gpu: bool, list: u32, blocks: u32) -> [u8; TRAILER_BYTES] {
     let mut t = [0u8; TRAILER_BYTES];
     t[..MAGIC.len()].copy_from_slice(if gpu { &MAGIC_GPU } else { &MAGIC });
     if let Some(a) = arena {
         let n = a.name.len().min(NAME_BYTES - 1);
         t[MAGIC.len()..MAGIC.len() + n].copy_from_slice(&a.name.as_bytes()[..n]);
     }
+    t[LIST_AT..LIST_AT + 4].copy_from_slice(&list.to_le_bytes());
+    t[LIST_AT + 4..].copy_from_slice(&blocks.to_le_bytes());
     t
 }
 
@@ -281,11 +282,31 @@ fn has_magic(t: &[u8]) -> bool {
         .is_some_and(|m| m == MAGIC || m == MAGIC_GPU)
 }
 
-/// The list of `n` GPU blocks before `frame`'s GPU arena trailer.
-pub fn gpu_blocks(frame: &[u8], n: u32) -> Option<&[u8]> {
-    let list = GPU_BLOCK_BYTES.checked_mul(n as usize)?;
-    let end = frame.len().checked_sub(GPU_TRAILER_BYTES)?;
-    frame.get(end.checked_sub(list)?..end)
+/// The list of the blocks `frame` owns, in either arena, as its trailer gives it: in the frame
+/// before its trailers, or in `heap`, the arena the trailer names.
+pub fn blocks<'a>(frame: &'a [u8], heap: Option<&'a [u8]>) -> Option<&'a [u8]> {
+    let t = frame.get(frame.len().checked_sub(TRAILER_BYTES)?..)?;
+    if !has_magic(t) {
+        return None;
+    }
+    let u32_at = |i: usize| u32::from_le_bytes(t[i..i + 4].try_into().unwrap_or_default());
+    let at = u64::from(u32_at(LIST_AT));
+    let len = BLOCK_BYTES.checked_mul(u32_at(LIST_AT + 4) as usize)?;
+    if at < HEAP_BASE {
+        let behind = if t[..MAGIC.len()] == MAGIC_GPU {
+            GPU_TRAILER_BYTES
+        } else {
+            TRAILER_BYTES
+        };
+        let at = usize::try_from(at).ok()?;
+        let end = at.checked_add(len)?;
+        return (end <= frame.len().checked_sub(behind)?).then(|| &frame[at..end]);
+    }
+    let at = usize::try_from(at - HEAP_BASE).ok()?;
+    if at >= MAX_ARENA_BYTES {
+        return None;
+    }
+    heap?.get(at..at.checked_add(len)?)
 }
 
 /// The GPU arena's trailer in `frame`, if its own says one comes before it.
@@ -338,7 +359,7 @@ impl ArenaMap {
             .len()
             .checked_sub(TRAILER_BYTES)
             .and_then(|at| frame.get(at..))
-            .is_some_and(|t| has_magic(t) && t[MAGIC.len()..] == self.name)
+            .is_some_and(|t| has_magic(t) && t[MAGIC.len()..MAGIC.len() + NAME_BYTES] == self.name)
     }
 }
 
@@ -359,7 +380,7 @@ fn trailer_name(frame: &[u8]) -> Option<[u8; NAME_BYTES]> {
         return None;
     }
     let mut key = [0u8; NAME_BYTES];
-    key.copy_from_slice(t.get(MAGIC.len()..)?);
+    key.copy_from_slice(t.get(MAGIC.len()..MAGIC.len() + NAME_BYTES)?);
     let name = CStr::from_bytes_until_nul(&key).ok()?.to_str().ok()?;
     is_arena_entry(name.strip_prefix('/')?).then_some(key)
 }

@@ -1,4 +1,4 @@
-use flux_core::arena::{HEAP_BASE, TRAILER_BYTES};
+use flux_core::arena::{BLOCK_BYTES, HEAP_BASE, TRAILER_BYTES};
 use flux_core::{
     Channel, DEFAULT_MAX_SUBSCRIBERS, MemoryPolicy, NO_SCHEMA, Published, signpost_name,
 };
@@ -39,7 +39,7 @@ fn a_frame_carries_a_run_past_its_slot_and_frees_it_when_the_slot_comes_back() {
     let (mut p, mut s) = pair("run", 2);
     let off = publish(&mut p, 7, 1 << 20);
     let v = s.take().unwrap();
-    assert_eq!(v.data().len(), 8 + TRAILER_BYTES);
+    assert_eq!(v.data().len(), 8 + BLOCK_BYTES + TRAILER_BYTES);
     let heap = v.heap().expect("the trailer names the arena");
     let at = u64::from_le_bytes(v.data()[..8].try_into().unwrap()) - HEAP_BASE;
     assert_eq!(at, off);
