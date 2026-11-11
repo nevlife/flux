@@ -399,16 +399,6 @@ struct Gpu<sensor_msgs::msg::PointCloud2>
     "frame_id, a field name or the field count over its cap (256 bytes, 32 bytes, 32 fields)";
 };
 
-// The device address of p, a host address in f's frame: a subscription with a stream on a host
-// channel has the frame at device_ptr() too, at the same offset.
-inline auto device_at(const flux::FrameView & f, const std::uint8_t * p) noexcept -> const void *
-{
-  const auto * d = static_cast<const std::uint8_t *>(f.device_ptr());
-  if (d == nullptr || p == nullptr) {
-    return d;
-  }
-  return d + (p - static_cast<const std::uint8_t *>(f.data()));
-}
 #endif
 
 #ifdef FLUX_WRAPPER_CUDA

@@ -765,18 +765,6 @@ auto scratch_tensor(nb::handle dtype, nb::handle shape) -> nb::object
   return handed_out(Tensor(buf, {p, t, std::move(dims), {}}, true));
 }
 
-auto addr_of(const void * p) -> std::uintptr_t
-{
-  return reinterpret_cast<std::uintptr_t>(p);  // NOLINT(*-reinterpret-cast)
-}
-
-auto device_array(nb::handle owner, const void * p, std::size_t n, nb::handle dtype, int device)
-  -> nb::object
-{
-  const flux_py::TensorFields f{nullptr, dl_named(dtype), {static_cast<std::int64_t>(n)}, {}};
-  return flux_py::tensor_dlpack(f, addr_of(p), owner, nb::device::cuda::value, device);
-}
-
 // A numeric array where the device reads it, as a DLPack tensor holding the reader; None where
 // this reader has no device address for it.
 auto reader_device(nb::handle self, std::size_t off, nb::handle dtype) -> nb::object
@@ -789,7 +777,7 @@ auto reader_device(nb::handle self, std::size_t off, nb::handle dtype) -> nb::ob
     return std::pair<const void *, std::size_t>(s.data(), s.size());
   });
   Reader::check(w, "device array", off);
-  return p == nullptr ? nb::none() : device_array(self, p, n, dtype, r.device());
+  return p == nullptr ? nb::none() : flux_py::device_span(self, p, n, dtype, r.device(), true);
 }
 
 // n elements in the GPU arena on the loan's device, as a DLPack tensor to write on the loan's
@@ -809,7 +797,7 @@ auto writer_alloc_device(nb::handle self, std::size_t off, nb::handle count, nb:
         "flux: device array at " + std::to_string(off) +
         " found no room in the GPU arena, or the publisher declared no device");
     }
-    return device_array(self, p, n, dtype, w.device());
+    return flux_py::device_span(self, p, n, dtype, w.device(), false);
   });
 }
 

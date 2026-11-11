@@ -112,7 +112,7 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 - 장치 프레임을 `stream()`이 아닌 stream에서 읽으면, 놓기 전에 `View::after(s)`를 부른다. `stream()`이 `s`에 지금까지 올린 작업 뒤에 오게 해서, 슬롯이나 장치 버퍼가 그 작업이 끝난 뒤 돌아간다. 부르지 않으면 그 작업이 끝나기 전에 발행자가 슬롯에 새 프레임을 쓸 수 있다.
 - GPU 기능은 CMake가 CUDAToolkit을 찾을 때 컴파일된다. 찾지 못해도 `Device::Cuda`는 있으므로 코드는 그대로 빌드된다.
 - Python 모듈 `flux_wrapper`도 같은 구조다. 다만 `max_borrow`와 `HeldCallback`은 없다. `flux`를 import할 수 있고 `ENABLE_FLUX=1`이면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`한다.
-- Python의 `Publisher`와 `Subscription`은 `device="cpu"|"cuda"`를 받는다. GPU 채널과 그 필드 배치가 C++와 같아서, C++ 발행자의 프레임을 Python 구독이 받고 그 반대도 된다. `loan.alloc_buffer(n)`은 `uint8[n]`의 `flux.Loan`을 주고, 그 loan은 `__dlpack__`이나 `__cuda_array_interface__`로 장치에서 쓴다. `device="cuda"` 발행자의 loan은 `alloc_buffer()`나 `alloc_data()`를 부를 때 슬롯을 잡는다. 빈 슬롯이 없으면 그 결과가 `None`이고, 그 전까지 loan은 참이다. 받은 `View`는 `on_device`가 참이고 `device_data`(`flux.Frame`)로 읽는다. `"cuda"`를 쓸 수 없으면 경고를 한 번 남기고 `"cpu"`로 간다(`uses_device`).
+- Python의 `Publisher`와 `Subscription`은 `device="cpu"|"cuda"`를 받는다. GPU 채널과 그 필드 배치가 C++와 같아서, C++ 발행자의 프레임을 Python 구독이 받고 그 반대도 된다. `loan.alloc_buffer(n)`은 `uint8[n]`의 `flux.Loan`을 주고, 그 loan은 `__dlpack__`이나 `__cuda_array_interface__`로 장치에서 쓴다. `device="cuda"` 발행자의 loan은 `alloc_buffer()`나 `alloc_data()`를 부를 때 슬롯을 잡는다. 빈 슬롯이 없으면 그 결과가 `None`이고, 그 전까지 loan은 참이다. 받은 `View`는 `on_device`가 참이고 `device_data`로 읽는다. 장치 작업은 `View.stream`에 올린다. `device="cuda"` 발행자의 프레임이면 `device_data`는 `flux.Frame`이다. `"cpu"` 발행자의 프레임이면 `flux.wire.DeviceSpan`(`__dlpack__`, `__cuda_array_interface__`, `nbytes`)이고, `data`와 `to_msg()`도 호스트 메모리에서 읽힌다. 외장 GPU에서는 구독자가 장치로 한 번 복사한다. 통합 GPU에서는 슬롯을 넘어 arena에 간 `data`에 아직 장치 주소가 없어 `on_device`가 거짓이다. `"cuda"`를 쓸 수 없으면 경고를 한 번 남기고 `"cpu"`로 간다(`uses_device`).
 
 flux Python 모듈에는 호스트 메모리와 장치 메모리 사이의 복사가 없다. 그래서 Python에서는 아래가 C++와 다르다.
 
@@ -120,7 +120,6 @@ flux Python 모듈에는 호스트 메모리와 장치 메모리 사이의 복�
 | --- | --- |
 | ROS 경로의 `device="cuda"` | `"cpu"`로 간다 |
 | 외장 GPU에서 `device="cuda"` 발행자의 `publish(msg)` | `False`를 돌려주고 오류 로그를 한 번 남긴다. 데이터는 `loan.alloc_buffer()`로 쓴다. 통합 GPU에서는 슬롯이 호스트 메모리이기도 해서 그대로 보낸다 |
-| `device="cuda"` 구독이 `"cpu"` 발행자의 프레임을 받을 때 | 호스트 메모리로 받고(`on_device`가 거짓), 그 구독이 경고를 한 번 남긴다. 필드를 읽으려면 프레임의 호스트 바이트가 필요한데, flux Python 모듈은 장치 구독의 프레임에서 그것을 주지 않는다 |
 | 장치 메모리에 있는 프레임의 `data` | `None`이다. 통합 GPU에서도 같다 |
 | 장치 메모리에 있는 프레임의 `to_msg()` | `RuntimeError`다 |
 

@@ -275,6 +275,39 @@ def test_cuda_publisher_reaches_cuda_and_cpu_subscriptions(node, msg_type):
     assert got["host"] == (False, bytes(want.data), want)
 
 
+def from_view(v):
+    """The bytes of a View's device_data, once its stream is done."""
+    assert CUDART.cudaStreamSynchronize(ctypes.c_void_p(v.stream)) == 0
+    d = v.device_data
+    out = ctypes.create_string_buffer(d.nbytes)
+    ptr = d.__cuda_array_interface__["data"][0]
+    assert CUDART.cudaMemcpy(out, ctypes.c_void_p(ptr), ctypes.c_size_t(d.nbytes), 2) == 0
+    return out.raw
+
+
+@needs_cuda
+@pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
+def test_cuda_subscription_gets_a_cpu_publishers_data_on_the_device(node):
+    """In the slot or past it in the publisher's arena, the data comes on the device, and the host
+    fields with it."""
+    small, big = image(3), image(4)
+    big.data = bytes(i * 7 % 256 for i in range(64 * 1024))
+    got, done = {}, threading.Event()
+
+    def on_image(v):
+        sec = v.header.stamp.sec
+        if sec in (3, 4) and sec not in got:
+            got[sec] = (v.on_device, v.stream is not None, from_view(v), bytes(v.data), v.to_msg())
+            if len(got) == 2:
+                done.set()
+
+    sub = flux_wrapper.Subscription(node, Image, "cpu_to_cuda", on_image, 4, device="cuda")
+    pub = flux_wrapper.Publisher(node, Image, "cpu_to_cuda", 4, max_message_size=4096)
+    run_until(node, sub, done, lambda: pub.publish(small) and pub.publish(big))
+    for m in (small, big):
+        assert got[m.header.stamp.sec] == (True, True, bytes(m.data), bytes(m.data), m)
+
+
 @needs_cuda
 def test_cuda_publish_of_a_ros_message(node):
     want = cloud(2)

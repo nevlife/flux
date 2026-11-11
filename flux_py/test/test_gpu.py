@@ -406,7 +406,9 @@ def test_a_device_field_goes_through_the_gpu_arena(node, blob):
     b = blob.Builder(loan.array, loan)
     b.name = "frame"
     with torch.cuda.stream(torch.cuda.ExternalStream(loan.stream)):
-        torch.from_dlpack(b.alloc_device__data(n)).fill_(0x41)
+        span = b.alloc_device__data(n)
+        assert span.__cuda_array_interface__["data"][1] is False and span.nbytes == n
+        torch.from_dlpack(span).fill_(0x41)
     items = b.alloc__items(2)
     with torch.cuda.stream(torch.cuda.ExternalStream(loan.stream)):
         torch.from_dlpack(items[1].alloc_device__ids(300)).fill_(7)
@@ -448,7 +450,11 @@ def test_every_cpu_field_of_a_frame_reaches_a_gpu_reader(node, blob):
 
     with dev.take() as f, torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
         v = blob.View(f)
-        d = torch.from_dlpack(v.data__device)
+        span = v.data__device
+        assert isinstance(span, flux.wire.DeviceSpan) and len(span) == span.nbytes == 3 << 20
+        cai = span.__cuda_array_interface__
+        assert cai["data"][0] != 0 and cai["data"][1] is True and cai["typestr"] == "|u1"
+        d = torch.from_dlpack(span)
         assert d.shape == (3 << 20,) and bool((d == 0x5A).all())
         for i, n in enumerate((10, 100_000, 20)):
             ids = torch.from_dlpack(v.items[i].ids__device).cpu().numpy()

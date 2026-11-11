@@ -406,16 +406,20 @@ class View:
     """The fields of a received message. On the flux path `data` and the View alias the slot and
     are valid only during the callback; copy out (to_msg()) what is kept longer.
 
-    A frame of a device="cuda" publisher read by a device="cuda" subscription is on the device
-    (on_device): device_data is then a flux.Frame of uint8 with __dlpack__,
-    __cuda_array_interface__ and stream, and data is None."""
+    A device="cuda" subscription has `data` on the device too (on_device): device_data then has
+    __dlpack__, __cuda_array_interface__ and nbytes, and stream is the stream to queue its work on.
+    Of a device="cuda" publisher's frame it is a flux.Frame of uint8 and data is None; of a "cpu"
+    publisher's, a flux.wire.DeviceSpan beside data in host memory."""
 
-    def __init__(self, msg_type, msg=None, flux_view=None, frame=None):
+    def __init__(self, msg_type, msg=None, flux_view=None, frame=None, device=None, stream=None):
         self._type = msg_type
         self._msg = msg
         self._v = flux_view
         # A GPU channel's frame, with its fields in _msg: a host array, or a flux.Frame.
         self._frame = frame
+        # A "cpu" publisher's data on the device, for a device="cuda" subscription.
+        self._device = device
+        self._stream = stream
 
     def __getattr__(self, name):
         if name not in _SCALARS[self._type]:
@@ -450,11 +454,22 @@ class View:
 
     @property
     def on_device(self):
+        if self._device is not None:
+            return True
         return self._frame is not None and not isinstance(self._frame, np.ndarray)
 
     @property
     def device_data(self):
+        if self._device is not None:
+            return self._device
         return self._frame if self.on_device else None
+
+    @property
+    def stream(self):
+        """The stream device_data is read on, which the release waits for; None off the device."""
+        if self._device is not None:
+            return self._stream
+        return self._frame.stream if self.on_device else None
 
     @property
     def ros_message(self):
@@ -482,9 +497,8 @@ class Subscription:
     On the flux path it also takes the frames of a device="cuda" publisher, whose fields come in
     the frame's aux bytes; a frame whose aux bytes do not parse is skipped and counted in rejected.
 
-    device="cuda" keeps the frames of a device="cuda" publisher on the device (View.on_device).
-    Frames of a "cpu" publisher still come in host memory, with a warning: the flux Python module
-    does not give a frame's host bytes beside its device ones, which reading their fields needs.
+    device="cuda" has every frame's data on the device (View.on_device): a device="cuda"
+    publisher's in its slot, a "cpu" publisher's as this subscription's copy beside its host bytes.
     """
 
     def __init__(self, node, msg_type, topic, callback, qos, *, callback_group=None, device="cpu"):
@@ -498,21 +512,20 @@ class Subscription:
             adapter = _adapters()[msg_type][0]
             q = _flux.QoS(depth=_depth(qos))
 
-            host_logged = [False]
-
-            def on_host(f):
-                if cuda and not host_logged[0]:
-                    # shortcut: in host memory until the flux Python module gives a Frame's host
-                    # bytes.
-                    host_logged[0] = True
-                    logger.warning(
-                        f'{topic}: device="cuda": frames of a "cpu" publisher arrive in host '
-                        "memory in Python"
-                    )
-                callback(View(msg_type, flux_view=adapter.View(f)))
+            def on_typed(f):
+                v = adapter.View(f)
+                if isinstance(f, _flux.Frame):
+                    callback(View(msg_type, flux_view=v, device=v.data__device, stream=f.stream))
+                else:
+                    callback(View(msg_type, flux_view=v))
 
             self._flux = _flux.Subscription(
-                node, topic, callback=on_host, fingerprint=adapter.FINGERPRINT__, qos=q
+                node,
+                topic,
+                callback=on_typed,
+                fingerprint=adapter.FINGERPRINT__,
+                qos=q,
+                device="cuda" if cuda else "cpu",
             )
             rejects = self._rejects
 

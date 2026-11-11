@@ -791,6 +791,61 @@ TEST_F(WrapperTest, CudaSubscriptionGetsAHostPointCloudOnTheDevice)
 #endif
 }
 
+// Data past a small slot goes to the publisher's arena; a Cuda subscription reads it on the device
+// as it reads data in the slot.
+TEST_F(WrapperTest, CudaSubscriptionGetsHostDataPastItsSlotOnTheDevice)
+{
+  SKIP_WITHOUT_CUDA();
+#ifdef FLUX_WRAPPER_CUDA
+  std::optional<OnDevice<Image>> image_got;
+  std::optional<OnDevice<PointCloud2>> cloud_got;
+  std::atomic<bool> done{false};
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.device = flux_wrapper::Device::Cuda;
+  flux_wrapper::Subscription<Image> image_sub(
+    *node_, "big_image", rclcpp::QoS(4),
+    [&](const flux_wrapper::View<Image> & v) {
+      image_got = read_device(v);
+      done = image_got && cloud_got;
+    },
+    sub_options);
+  flux_wrapper::Subscription<PointCloud2> cloud_sub(
+    *node_, "big_cloud", rclcpp::QoS(4),
+    [&](const flux_wrapper::View<PointCloud2> & v) {
+      cloud_got = read_device(v);
+      done = image_got && cloud_got;
+    },
+    sub_options);
+  flux_wrapper::PublisherOptions small;
+  small.max_message_size = 4096;
+  flux_wrapper::Publisher<Image> image_pub(*node_, "big_image", rclcpp::QoS(4), small);
+  flux_wrapper::Publisher<PointCloud2> cloud_pub(*node_, "big_cloud", rclcpp::QoS(4), small);
+
+  std::vector<std::uint8_t> pixels(64 * 1024);
+  for (std::size_t i = 0; i < pixels.size(); ++i) {
+    pixels[i] = static_cast<std::uint8_t>(i * 7);
+  }
+  const Image image_want = image(5, pixels);
+  PointCloud2 cloud_want = cloud(5, 3);
+  cloud_want.width = 8192;
+  cloud_want.row_step = cloud_want.width * cloud_want.point_step;
+  cloud_want.data.assign(pixels.begin(), pixels.end());
+  cloud_want.data.resize(cloud_want.row_step);
+  run_until(done, [&] {
+    EXPECT_TRUE(image_pub.publish(image_want));
+    EXPECT_TRUE(cloud_pub.publish(cloud_want));
+  });
+
+  ASSERT_TRUE(image_got && cloud_got);
+  EXPECT_TRUE(image_got->on_device);
+  EXPECT_EQ(image_got->device_bytes, image_want.data);
+  EXPECT_EQ(image_got->msg, image_want);
+  EXPECT_TRUE(cloud_got->on_device);
+  EXPECT_EQ(cloud_got->device_bytes, cloud_want.data);
+  EXPECT_EQ(cloud_got->msg, cloud_want);
+#endif
+}
+
 // Held Views keep their device bytes: over flux their slots, over ROS their device buffers. Read
 // on another stream, after() holds them back until that read is done.
 TEST_F(WrapperTest, CudaHeldViewsKeepTheirDeviceBytes)

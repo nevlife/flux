@@ -4,9 +4,9 @@ adapters use, bound with numpy views; what is left here only hands out per-eleme
 
 import numpy as np
 
-from ._flux import Reader, Tensor, WireError, Writer, _scratch_tensor
+from ._flux import DeviceSpan, Reader, Tensor, WireError, Writer, _scratch_tensor
 
-__all__ = ["ElemArray", "NullWriter", "Reader", "Tensor", "WireError", "Writer"]
+__all__ = ["DeviceSpan", "ElemArray", "NullWriter", "Reader", "Tensor", "WireError", "Writer"]
 
 
 class ElemArray:

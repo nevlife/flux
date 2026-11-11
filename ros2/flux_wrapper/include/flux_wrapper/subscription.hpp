@@ -255,7 +255,7 @@ private:
           [sink](flux::FrameView && f) {
             (*sink)(std::move(f), [](const flux::FrameView & g) {
               const typename Adapter::View v(g);
-              return View<MsgT>(v, detail::device_at(g, v.data().data()), g.stream());
+              return View<MsgT>(v, v.data__device().data(), g.stream());
             });
           },
           device);

@@ -141,7 +141,7 @@ with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stre
 ```
 
 - 생성 모듈은 import할 때 fingerprint를 등록하므로, `device="cuda"` 발행자도 C++처럼 슬롯이 호스트 메모리다.
-- `<필드>__device`는 장치 주소가 없으면 None이다. 생성된 `View`는 `device="cuda"` 구독의 `Frame`도 받고, 그 `with` 블록 안에서만 만든다.
+- `<필드>__device`와 `alloc_device__<필드>`는 `flux.wire.DeviceSpan`을 돌려준다. `__dlpack__`, `__cuda_array_interface__`, `nbytes`, `dtype`을 갖고, 받는 쪽 것은 읽기 전용이다. `<필드>__device`는 장치 주소가 없으면 None이다. 생성된 `View`는 `device="cuda"` 구독의 `Frame`도 받고, 그 `with` 블록 안에서만 만든다.
 - 장치를 선언하지 않은 발행자의 `alloc_device__<필드>`는 `WireError`이고, 그 `Builder`의 `commit__()`은 `TOO_LARGE`다.
 - tensor 메시지의 `__dlpack__`도 data가 arena에 있을 때 외장 GPU에서 위의 복사본을 준다. 통합 GPU에서는 `RuntimeError`다.
 

@@ -21,13 +21,17 @@ class FrameView;
 namespace flux_py
 {
 
+// n `dtype` elements at device address p, as a flux.wire.DeviceSpan holding `owner`.
+auto device_span(
+  nanobind::handle owner, const void * p, std::size_t n, nanobind::handle dtype, int device,
+  bool readonly) -> nanobind::object;
+
 // The view a take result's array holds and its stream's device (-1 for none); null for others.
 auto frame_of(nanobind::handle buf, int * device) -> const flux::FrameView *;
 
 using TensorAt = std::array<std::size_t, 7>;
 
-// A tensor message's fields, copied out of the frame before tensor_fault() checks them: the
-// writer may still change the frame.
+// A tensor message's fields, copied out first: the writer may still change the frame.
 struct TensorFields
 {
   const std::uint8_t * data;

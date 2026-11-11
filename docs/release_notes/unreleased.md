@@ -24,7 +24,7 @@
 * 발행자가 지금 구독하는 프로세스 수를 센다(C++ `subscriber_count()`, Python `subscriber_count`, C `flux_channel_subscriber_count`). 죽은 구독 프로세스는 세지 않는다
 * `ros2/flux_wrapper`: flux가 있든 없든 빌드되는 발행·구독 API. 빌드할 때와 실행할 때 `ENABLE_FLUX=1`이면 flux로, 아니면 ROS 2로 보낸다. `sensor_msgs/Image`와 `PointCloud2`를 다룬다
 * 슬롯마다 프레임과 함께 commit되는 호스트 메모리(aux)를 둘 수 있다. 장치 메모리 채널에서도 호스트 메모리라서, GPU 프레임에 stamp 같은 헤더를 같은 채널로 붙인다
-* `flux_wrapper`가 `sensor_msgs/Image`와 `PointCloud2`를 GPU 메모리째 보내고 받는다(C++ `Device::Cuda`, Python `device="cuda"`). flux가 없으면 호스트로 복사해 ROS 메시지로 보낸다. `Cuda` 구독은 CPU 발행자와 ROS 경로의 메시지도 장치 메모리로 받는다(C++)
+* `flux_wrapper`가 `sensor_msgs/Image`와 `PointCloud2`를 GPU 메모리째 보내고 받는다(C++ `Device::Cuda`, Python `device="cuda"`). flux가 없으면 호스트로 복사해 ROS 메시지로 보낸다. `Cuda` 구독은 CPU 발행자와 ROS 경로의 메시지도 장치 메모리로 받는다. Python `device="cuda"` 구독도 CPU 발행자의 메시지를 장치 메모리로 받는다(ROS 경로는 C++만).
 * `record_flux`가 프레임의 aux와 채널의 `aux_size`를 `FluxFrame.meta` 끝에 담고, `play_flux`가 같은 `aux_size`로 발행자를 만들어 aux와 함께 발행한다. `flux_wrapper`의 GPU 이미지 채널도 헤더와 함께 녹화하고 재생한다. aux를 담은 bag은 이전 `flux_bag`이 읽지 못한다
 * 구독이 콜백 뒤에도 프레임을 복사 없이 들고 있을 수 있다. C++ `flux::Subscription`의 콜백은 `FrameView`를 move해서 들고 있고, `flux_wrapper`의 콜백은 `std::shared_ptr<const View<Msg>>`를 받아 들고 있는다. 들고 있을 수는 `max_borrow`이고, 슬롯이 그보다 적은 발행자는 거절한다
 * 생성된 adapter의 가변 필드가 슬롯에 들어가지 않으면 발행 프로세스의 공유메모리 arena에 들어간다. `slot_size`를 메시지의 최대 크기에 맞추지 않아도 된다. 크기는 `FLUX_ARENA_BYTES`(기본이자 최대 1 GiB, 페이지는 쓰는 만큼 잡는다)로 정한다
@@ -73,11 +73,11 @@
 * `flux::ComponentManager`, `flux::run_component_container`
 * `flux::Publisher::mirror_to_ros`, Python `Publisher(mirror_to_ros=...)`
 * aux: C++ `Publisher`의 `aux_size` 인자와 `aux_size()`, `WriteSlot::aux`, `WriteSlot::set_aux_len`, `FrameView::aux`. Python `Publisher(aux_size=...)`, `Loan.aux`, `Loan.aux_len`, `flux.aux`. C `flux_loan_aux`, `flux_loan_set_aux_len`, `flux_view_aux`, `flux_channel_aux_size`, `FLUX_MAX_AUX_SIZE`
-* `flux_wrapper`: `Device`, `PublisherOptions::device`, `SubscriptionOptions::device`, `Buffer`, `Loan<Image>`와 `Loan<PointCloud2>`의 `alloc_buffer`, `View<Image>`와 `View<PointCloud2>`의 `on_device`·`device_ptr`·`size`·`stream`, `Publisher::uses_device`, `Subscription::rejected`. Python `Publisher(device=...)`, `Publisher.uses_device`, `Subscription(device=...)`, `Subscription.rejected`, `Loan.alloc_buffer`, `View.on_device`, `View.device_data`
+* `flux_wrapper`: `Device`, `PublisherOptions::device`, `SubscriptionOptions::device`, `Buffer`, `Loan<Image>`와 `Loan<PointCloud2>`의 `alloc_buffer`, `View<Image>`와 `View<PointCloud2>`의 `on_device`·`device_ptr`·`size`·`stream`, `Publisher::uses_device`, `Subscription::rejected`. Python `Publisher(device=...)`, `Publisher.uses_device`, `Subscription(device=...)`, `Subscription.rejected`, `Loan.alloc_buffer`, `View.on_device`, `View.device_data`, `View.stream`
 * `flux::Subscription::require_publisher_slots`
 * `flux_wrapper`: `SubscriptionOptions::max_borrow`, `Subscription::HeldCallback`, `View::after`
 * arena: C++ `flux::ArenaScope`, `WriteSlot::heap`, `FrameView::heap`, `wire::Heap`, 생성된 `adopt__<name>`, `View::budget__`. Python `flux.arena_scope`, 생성된 `adopt__<name>`, `flux.wire.Reader.budget`. C `flux_heap`, `flux_loan_heap`, `flux_heap_alloc`, `flux_heap_adopt`, `flux_view_heap`, `flux_arena_acquire`, `flux_arena_release`, `flux_arena_scope_enter`, `flux_arena_scope_leave`, `FLUX_HEAP_BASE`. 라이브러리 `libflux_heaphook.so`
-* GPU arena: C++ `wire::DeviceSpan`, `wire::GpuHeap`, `wire::GpuBlock`, `Writer::alloc_device`, `Reader::device`, `FrameView::gpu_heap`, 생성된 `alloc_device__<name>`와 `<name>__device`. C `flux_heap.gpu`, `flux_heap_alloc_device`, `flux_gpu_heap`, `flux_gpu_block`, `flux_view_gpu_heap`, `flux_layout_register`, `FLUX_GPU_HEAP_BASE`. Python 생성된 `alloc_device__<name>`와 `<name>__device`, `flux.wire.Reader.device`, `flux.wire.Writer.alloc_device`
+* GPU arena: C++ `wire::DeviceSpan`, `wire::GpuHeap`, `wire::GpuBlock`, `Writer::alloc_device`, `Reader::device`, `FrameView::gpu_heap`, 생성된 `alloc_device__<name>`와 `<name>__device`. C `flux_heap.gpu`, `flux_heap_alloc_device`, `flux_gpu_heap`, `flux_gpu_block`, `flux_view_gpu_heap`, `flux_layout_register`, `FLUX_GPU_HEAP_BASE`. Python 생성된 `alloc_device__<name>`와 `<name>__device`, `flux.wire.DeviceSpan`, `flux.wire.Reader.device`, `flux.wire.Writer.alloc_device`
 
 ### 호환이 깨지는 변경
 

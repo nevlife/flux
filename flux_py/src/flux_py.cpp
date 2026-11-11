@@ -624,6 +624,47 @@ auto aux_of(nb::handle taken) -> nb::object
 
 }  // namespace
 
+namespace
+{
+
+// A field's device memory, from a generated View's `<field>__device` or a Builder's
+// `alloc_device__<field>`: both GPU protocols over it, holding `owner` (the reader, which holds the
+// frame, or the writer) while a consumer's tensor lives.
+class DeviceSpan
+{
+public:
+  DeviceSpan(const DeviceArray & a, nb::handle owner) : a_(a), owner_(nb::borrow(owner)) {}
+
+  [[nodiscard]] auto cai() const -> nb::dict { return cuda_array_interface(a_); }
+  [[nodiscard]] auto dlpack(const nb::kwargs & /*kw*/) const -> nb::object
+  {
+    return dlpack_of(a_, owner_);
+  }
+  [[nodiscard]] auto dlpack_device() const -> nb::tuple
+  {
+    return nb::make_tuple(nb::device::cuda::value, a_.device);
+  }
+  [[nodiscard]] auto size() const noexcept -> std::size_t { return a_.shape[0]; }
+  [[nodiscard]] auto nbytes() const noexcept -> std::size_t
+  {
+    return a_.shape[0] * flux::dtype_size(a_.dtype);
+  }
+  [[nodiscard]] auto dtype() const -> nb::object { return descr_of(a_.dtype); }
+
+private:
+  DeviceArray a_;
+  nb::object owner_;
+};
+
+}  // namespace
+
+auto flux_py::device_span(
+  nb::handle owner, const void * p, std::size_t n, nb::handle dtype, int device,
+  bool readonly) -> nb::object
+{
+  return nb::cast(DeviceSpan({addr_of(p), dtype_named(dtype), {n}, device, readonly}, owner));
+}
+
 auto flux_py::frame_of(nb::handle buf, int * device) -> const flux::FrameView *
 {
   PyObject * base = PyArray_Check(buf.ptr()) != 0 ? PyArray_BASE(flux_py::as_array(buf)) : nullptr;
@@ -1532,6 +1573,14 @@ NB_MODULE(_flux, m)
     .def_ro("reason", &flux::gpu::Platform::reason);
   m.def("probe", &flux::gpu::probe, "device"_a = 0);
   m.def("gpu_wedged", &flux::gpu::wedged);
+
+  nb::class_<DeviceSpan>(m, "DeviceSpan")
+    .def_prop_ro("__cuda_array_interface__", &DeviceSpan::cai)
+    .def("__dlpack__", &DeviceSpan::dlpack)
+    .def("__dlpack_device__", &DeviceSpan::dlpack_device)
+    .def("__len__", &DeviceSpan::size)
+    .def_prop_ro("nbytes", &DeviceSpan::nbytes)
+    .def_prop_ro("dtype", &DeviceSpan::dtype);
 
   nb::class_<Frame>(m, "Frame")
     .def(
