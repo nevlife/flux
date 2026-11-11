@@ -93,5 +93,5 @@ repos:
         name: real orderings under Miri (scripts/miri.sh)
         entry: scripts/miri.sh
         language: system
-        files: ^(flux_core/src/(channel|executor|segment|reader|manifest)\.rs|scripts/miri\.sh)$
+        files: ^(flux_core/src/(channel/\w+|executor|segment|reader|manifest)\.rs|scripts/miri\.sh)$
         pass_filenames: false
