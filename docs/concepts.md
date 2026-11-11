@@ -24,7 +24,7 @@ C++·Python API가 공통으로 따르는 규칙이다. 언어별 사용법은 [
 
 | 인자 | 기본값 | 뜻 |
 | --- | --- | --- |
-| `slot_size` | 8 MiB | 슬롯 하나의 바이트 수. 프레임 하나의 상한이다 |
+| `slot_size` | 8 MiB | 슬롯 하나의 바이트 수. 생성된 adapter의 가변 필드는 넘치면 arena에 들어가고(아래), 그 밖의 프레임은 이것이 상한이다 |
 | `slot_count` | 16 | 링의 슬롯 수. 2 이상이어야 한다 |
 | `max_subscribers` | 16 | 이 채널을 구독할 수 있는 프로세스 수. 최대 4096 |
 | `aux_size` | 0 | 슬롯마다 프레임과 함께 commit되는 호스트 메모리 바이트 수(aux). 최대 32 KiB |
@@ -33,6 +33,19 @@ C++·Python API가 공통으로 따르는 규칙이다. 언어별 사용법은 [
 - `max_subscribers`는 구독 수가 아니라 구독 프로세스 수다. 한 프로세스의 구독들은 자리 하나를 같이 쓴다. 자리가 모자라면 그 구독은 `SUBSCRIBERS_FULL`로 거절된다.
 - aux는 payload와 따로 있는 호스트 메모리다. payload가 장치 메모리인 채널에서도 aux는 호스트 메모리라서 CPU 구독자와 GPU 구독자가 모두 읽는다. 프레임에 붙일 작은 값(stamp, 크기 같은 헤더)을 쓴다. 프레임마다 쓴 길이를 함께 담고, `aux_size`를 넘는 길이의 commit은 `TOO_LARGE`다.
 - 프레임은 dtype, shape(8차원까지), 바이트로 이루어진다. dtype은 `u8 i8 u16 i16 u32 i32 u64 i64 f16 f32 f64 bf16`이다. 생성된 adapter가 쓰는 프레임은 `u8` 바이트열이고, 스키마는 fingerprint로 구별한다.
+
+### arena
+
+생성된 adapter의 `Builder`는 슬롯에 들어가지 않는 가변 배열과 문자열을 발행 프로세스마다 하나인 공유메모리 arena에 둔다. 프레임에는 arena 안의 위치만 적는다. 그래서 `slot_size`를 메시지의 최대 크기에 맞추지 않아도 된다.
+
+- arena는 슬롯을 넘는 프레임이 처음 나올 때 만든다. 크기는 환경 변수 `FLUX_ARENA_BYTES`(기본이자 최대 2 GiB)이고, `/dev/shm`의 페이지는 블록이 닿는 만큼 4 MiB씩 잡는다(`fallocate`). 공간이 모자라면 그 프레임의 commit이 `TOO_LARGE`이고, SIGBUS로 죽지 않는다.
+- `FLUX_ARENA_BYTES=0`이면 끈다. 그때 슬롯보다 큰 프레임은 `TOO_LARGE`다.
+- 블록은 그 프레임의 슬롯을 다시 쓸 때 푼다. 그래서 채널 하나가 arena에 남기는 것은 슬롯 수만큼의 프레임이고, 구독자가 쥔 프레임의 블록은 놓을 때까지 남는다. 발행자를 지우면 구독자가 쥐지 않은 블록을 바로 풀고, 쥔 블록은 그 프로세스가 끝날 때까지 남는다.
+- arena를 쓴 프레임은 슬롯 끝 64바이트에 arena 이름을 담는다. 그 자리 때문에 arena가 켜진 `Builder`는 슬롯의 마지막 71바이트를 가변 필드에 쓰지 않는다.
+- 받는 쪽의 생성된 `View`(C++, Python)가 arena를 읽기 전용으로 매핑하고, 그 구독과 `View`가 모두 사라지면 푼다.
+- `MemoryPolicy`의 `precommit`과 `lock`은 arena의 페이지에도 적용된다. 한 프로세스의 요청을 합친 것이다.
+- arena는 정상 종료할 때 지운다. 죽은 프로세스가 남긴 arena는 다음 flux 프로세스가 지운다.
+- arena를 쓰지 않는 것: 원시 loan(`loan(dtype, shape)`), 장치 메모리 채널, arena를 만든 부모에게서 fork한 자식.
 
 ## 전달
 

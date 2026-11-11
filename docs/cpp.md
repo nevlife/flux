@@ -66,7 +66,7 @@ flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
 | --- | --- |
 | `Ok` | 발행했다 |
 | `Backpressure` | 모든 슬롯을 구독자가 쥐고 있어 이 프레임을 버렸다 |
-| `TooLarge` | 슬롯보다 크거나 8차원을 넘거나, aux 길이가 `aux_size`보다 크다. 1차원이 아닌 loan의 `commit(nbytes)`, loan보다 큰 `nbytes`도 이 값이다 |
+| `TooLarge` | 슬롯보다 크거나(생성된 adapter의 가변 필드는 arena가 꺼졌거나 찼을 때) 8차원을 넘거나, aux 길이가 `aux_size`보다 크다. 1차원이 아닌 loan의 `commit(nbytes)`, loan보다 큰 `nbytes`도 이 값이다 |
 | `NotPublisher` | 발행할 수 없는 채널이다 |
 | `InvalidArgument` | 알 수 없는 dtype이거나 이미 끝난 loan의 commit이다 |
 | `InUse` | 다른 스레드가 같은 발행자를 쓰는 중이다 |

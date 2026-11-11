@@ -25,7 +25,7 @@ bridge는 노드 하나(`flux_bridge_<pid>`)를 띄우고, `--poll`초(기본 1)
 
 | 항목 | 값 |
 | --- | --- |
-| 프레임 경로 | 슬롯에서 프레임을 복사하고 view를 놓은 뒤, 그 사본에서 메시지의 CDR 바이트를 바로 써서 `GenericPublisher`로 낸다. 메시지 객체를 거치지 않는다 |
+| 프레임 경로 | 슬롯에서 프레임을 복사하고 view를 놓은 뒤, 그 사본에서 메시지의 CDR 바이트를 바로 써서 `GenericPublisher`로 낸다. 메시지 객체를 거치지 않는다. 필드를 arena에 둔 프레임([concepts.md](concepts.md#arena))은 relay하지 않는다 |
 | DDS QoS | depth 1, best effort, volatile |
 | flux QoS | depth 1, `max_borrow` 1 |
 | 같은 이름의 채널 둘 | fingerprint가 다른 채널이 둘이면 signpost 순서로 첫 것을 고른다 |
@@ -55,7 +55,7 @@ pub = flux.Publisher(node, "image", fingerprint=Image.FINGERPRINT__, mirror_to_r
 
 | 항목 | 값 |
 | --- | --- |
-| 프레임 경로 | 발행자 프로세스 안의 스레드가 자기 채널을 읽는다. 슬롯에서 프레임을 복사하고 view를 놓은 뒤, 그 사본에서 메시지의 CDR을 써서 낸다. bridge와 같은 경로다 |
+| 프레임 경로 | 발행자 프로세스 안의 스레드가 자기 채널을 읽는다. 슬롯에서 프레임을 복사하고 view를 놓은 뒤, 그 사본에서 메시지의 CDR을 써서 낸다. bridge와 같은 경로이고, 필드를 arena에 둔 프레임은 내지 않는다 |
 | 발행 경로 | `publish()`와 commit은 변환을 기다리지 않는다 |
 | ROS 2 구독자가 없을 때 | flux 구독을 놓고 100 ms마다 구독자 수만 본다. 구독자 번호(`max_subscribers`)를 차지하지 않는다 |
 | ROS 2 구독자가 있을 때 | flux 구독자 하나로 붙으므로 구독자 번호 하나를 쓴다. 발행자의 `subscriber_count`에도 1로 들어간다 |
@@ -171,7 +171,8 @@ uint8[] data             # raw: 슬롯에 있던 프레임 바이트 그대로
 | 이미지 압축 | `--image-codec jpeg`는 `sensor_msgs/Image` 채널의 `rgb8`, `bgr8`, `mono8` 프레임의 픽셀을 JPEG(품질 `--jpeg-quality`, 기본 90)로 저장한다. 손실 압축이다. 픽셀 밖의 바이트(header, encoding, step 등)는 그대로 둔다. 다른 encoding과 다른 타입의 프레임은 raw로 저장한다. 기본은 `raw`다 |
 | aux | 채널을 `aux_size`와 함께 만들었으면 프레임마다 meta 끝에 채널의 `aux_size`와 그 프레임의 aux 바이트를 담는다. aux를 쓰지 않은 프레임도 `aux_size`는 담는다 |
 | 장치 메모리 채널 | `flux_wrapper`의 `Device::Cuda` Image, PointCloud2 채널 같은 장치 메모리 채널도 녹화한다. 녹화기는 CPU 구독자라서 take마다 자기 호스트 버퍼로 한 번 복사하고, 그 바이트를 `data`에 담는다. 헤더는 aux로 함께 담긴다 |
-| 끝날 때 | 채널마다 큐에 넣은 수, 캐시가 차서 버린 수, `lost`를 로그로 남긴다 |
+| arena | 필드를 arena에 둔 프레임([concepts.md](concepts.md#arena))은 녹화하지 않는다. 프레임에는 arena 안의 위치만 있어 재생할 수 없기 때문이다. 처음 한 번 경고를 남긴다 |
+| 끝날 때 | 채널마다 큐에 넣은 수, 캐시가 차서 버린 수, `lost`, arena 때문에 녹화하지 않은 수를 로그로 남긴다 |
 
 ### 재생
 

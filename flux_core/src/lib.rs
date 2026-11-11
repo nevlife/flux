@@ -1,5 +1,6 @@
 //! flux engine: same-host zero-copy frames over POSIX shm, one publisher per channel.
 
+pub mod arena;
 mod channel;
 mod discovery;
 mod error;
@@ -19,7 +20,9 @@ mod storm;
 mod sys;
 pub mod trace;
 
-pub use channel::{Channel, FrameView, Published, PublisherWatch, Refused, ReleaseMode, WriteSlot};
+pub use channel::{
+    Channel, FrameView, Heap, Published, PublisherWatch, Refused, ReleaseMode, WriteSlot,
+};
 pub use discovery::{flatten_key, signpost_name};
 pub use error::{Error, Result};
 pub use executor::{DEFAULT_TICK_NS, DEFAULT_TURN_NS, Executor, ExecutorHandle, MAX_DRAIN, Source};

@@ -93,8 +93,8 @@ geometry_msgs/Pose pose
 | `Header header` | `v.header__sec()`, `v.header__nanosec()`, `v.header__frame_id()` | `v.header__stamp`(튜플), `v.header__frame_id` | `b.set__header__stamp(s, ns)`, `b.set__header__frame_id(f)` | `b.set__header__stamp(s, ns)`, `b.header__frame_id = f` |
 
 - 중첩된 메시지는 이름을 `_`로 이어 펼친다. `pose.position.x`는 `pose_position_x`다. 최상위의 `std_msgs/Header`와 `builtin_interfaces/Time` 필드는 `__`로 잇는다(`header__sec`, `stamp__sec`, Python `stamp__stamp`). 더 깊은 곳에서는 다른 메시지처럼 펼친다.
-- 가변 배열은 `alloc__<name>(n)`으로 슬롯 안에 자리를 잡는다. 이 함수는 잡은 자리를 돌려주고, 거기에 바로 쓰면 복사가 없다. 호출 순서는 상관없다. 고정 길이 배열은 자리가 이미 정해져 있으므로 `alloc__` 없이 바로 쓴다.
-- 자리가 모자라면 C++ `alloc__`은 빈 `Span`을 준다. 그때부터 `Builder`는 `false`이고, `commit__()`은 발행하지 않고 `TooLarge`를 돌려준다.
+- 가변 배열은 `alloc__<name>(n)`으로 슬롯 안에, 슬롯에 들어가지 않으면 arena에 자리를 잡는다([concepts.md](concepts.md#arena)). 이 함수는 잡은 자리를 돌려주고, 거기에 바로 쓰면 복사가 없다. 호출 순서는 상관없다. 고정 길이 배열은 자리가 이미 정해져 있으므로 `alloc__` 없이 바로 쓴다.
+- 슬롯과 arena 모두 자리가 모자라면(arena를 껐거나 찼다) C++ `alloc__`은 빈 `Span`을 준다. 그때부터 `Builder`는 `false`이고, `commit__()`은 발행하지 않고 `TooLarge`를 돌려준다.
 - Python 접근자와 `frame_to_msg()`는 문자열을 첫 NUL에서 끊는다. rclpy도 같다. C++ `View` 접근자는 쓰인 바이트를 그대로 준다.
 - C++ 이름이 C++ 키워드와 겹치면 끝에 `_`를 붙인다. Python은 Python 키워드만 피한다. 메시지 이름 `View`, `Builder`는 쓸 수 없다.
 
@@ -119,7 +119,34 @@ geometry_msgs/Pose pose
 | `T[N]`에서 N > 65536 | `T[]`를 쓴다 |
 | 자기 자신을 포함하는 타입, 필드가 없는 중첩 타입 | 펼칠 수 없다 |
 
-프레임 하나는 4 GiB를 넘지 못한다. 길이와 위치를 32비트로 적기 때문이다. 실제 상한은 발행자의 `slot_size`다.
+프레임 하나는 4 GiB를 넘지 못한다. 길이와 위치를 32비트로 적기 때문이다. 슬롯 안의 부분은 발행자의 `slot_size`, arena에 둔 부분은 arena 크기(최대 2 GiB)가 상한이다.
+
+## 라이브러리가 만든 버퍼 보내기
+
+라이브러리가 돌려준 버퍼(디코더 출력, `std::vector`)는 보통 슬롯으로 한 번 복사한다. 그 버퍼를 arena에서 만들게 하면 복사하지 않고 필드로 넘길 수 있다.
+
+```cpp
+std::vector<std::uint8_t> pixels;
+{
+  flux::ArenaScope scope;  // 이 스레드의 할당이 arena로 간다
+  pixels = decode(jpeg);
+}
+auto b = sensor_msgs::flux_msg::Image::build__(pub);
+b.adopt__data(std::move(pixels));  // arena에 있으면 복사 없이 필드가 된다
+```
+
+```python
+with flux.arena_scope():
+    pixels = decode(jpeg)  # numpy 배열
+b = Image.build__(pub)
+b.adopt__data(pixels)
+```
+
+- 프로세스를 `LD_PRELOAD=libflux_heaphook.so`로 띄워야 한다. 라이브러리는 flux_ffi와 같은 `lib`에 설치된다. 없으면 `ArenaScope::open()`과 `arena_scope()`가 `false`이고 아무것도 바뀌지 않는다.
+- scope 안에서는 그 스레드의 모든 할당(`malloc`, `new`, numpy 배열)이 arena로 간다. 버퍼를 만드는 호출만 감싼다. arena가 차면 그 할당은 일반 힙으로 간다.
+- `adopt__<name>`은 기본 타입 가변 배열 필드에 있다. 버퍼가 arena에 없으면 복사하고 `false`를 돌려준다. Python은 C-contiguous이고 원소 크기가 필드와 같은 numpy 배열만 받는다.
+- 넘긴 버퍼는 프레임이 가진다. 그 슬롯을 다시 쓸 때 C++ 컨테이너를 지우고 Python 배열의 참조를 놓는다.
+- preload한 프로세스의 모든 `malloc`에 검사 하나가 더해진다.
 
 ## tensor 메시지
 

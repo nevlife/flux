@@ -127,6 +127,11 @@ pub(crate) fn fstat(fd: RawFd) -> io::Result<Stat> {
 /// Sizes the file and reserves its pages, so a full `/dev/shm` fails here with ENOSPC instead of
 /// raising SIGBUS on the first store into a page that cannot be backed.
 pub(crate) fn allocate(fd: RawFd, bytes: usize) -> io::Result<()> {
+    allocate_range(fd, 0, bytes)
+}
+
+/// `allocate` for `bytes` from `from`.
+pub(crate) fn allocate_range(fd: RawFd, from: usize, bytes: usize) -> io::Result<()> {
     // tmpfs gives up on any pending signal, a stop and continue included, and frees what that call
     // reserved. In steps, a signal costs one step; over the whole range, steady signals (a profiler,
     // a timer) would restart it forever.
@@ -138,7 +143,7 @@ pub(crate) fn allocate(fd: RawFd, bytes: usize) -> io::Result<()> {
     while done < bytes {
         let n = (bytes - done).min(STEP);
         // SAFETY: plain syscall on a descriptor we hold.
-        if unsafe { libc::fallocate(fd, 0, off(done)?, off(n)?) } == 0 {
+        if unsafe { libc::fallocate(fd, 0, off(from + done)?, off(n)?) } == 0 {
             done += n;
             continue;
         }

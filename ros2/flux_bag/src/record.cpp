@@ -331,9 +331,11 @@ public:
     stop_ = true;
     thread_.join();
     RCLCPP_INFO(
-      recorder_.get_logger(), "%s: %lu frames queued, %lu dropped with the cache full, %lu lost",
+      recorder_.get_logger(),
+      "%s: %lu frames queued, %lu dropped with the cache full, %lu lost, %lu in the arena",
       flux_topic_.c_str(), static_cast<unsigned long>(queued_),
-      static_cast<unsigned long>(dropped_), static_cast<unsigned long>(sub_.lost()));
+      static_cast<unsigned long>(dropped_), static_cast<unsigned long>(sub_.lost()),
+      static_cast<unsigned long>(arena_left_));
   }
 
   // What ended the thread early, rethrown on the main thread so the bag is still closed.
@@ -385,6 +387,17 @@ private:
     }
     // As rosbag2 does with a message that arrives while paused: taken, not written.
     if (recorder_.is_paused()) {
+      return;
+    }
+    // shortcut: the frame holds only offsets into its publisher's arena, which a bag cannot
+    // replay; record the arena blocks with it to keep such frames.
+    if (!v.heap().empty()) {
+      if (arena_left_++ == 0) {
+        RCLCPP_WARN(
+          recorder_.get_logger(),
+          "%s: frames with fields in their publisher's arena are not recorded",
+          flux_topic_.c_str());
+      }
       return;
     }
     const rclcpp::Time stamp = recorder_.now();
@@ -479,6 +492,7 @@ private:
   rosbag2_transport::Recorder & recorder_;
   WriteQueue & queue_;
   std::string flux_topic_;
+  std::uint64_t arena_left_ = 0;
   std::string bag_topic_;
   std::uint64_t fingerprint_;
   flux::Subscription sub_;

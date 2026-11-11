@@ -6,6 +6,7 @@ out of slots (QoS max_borrow).
 """
 
 import atexit
+import contextlib
 import functools
 import threading
 import weakref
@@ -55,6 +56,7 @@ __all__ = [
     "Route",
     "Status",
     "Subscription",
+    "arena_scope",
     "aux",
     "enumerate_topics",
     "faulted",
@@ -90,6 +92,22 @@ def _on_device(array):
         return True
     dlpack_device = getattr(array, "__dlpack_device__", None)
     return dlpack_device is not None and dlpack_device()[0] != 1
+
+
+@contextlib.contextmanager
+def arena_scope():
+    """This thread's allocations go to the process arena while open.
+
+    Needs LD_PRELOAD=libflux_heaphook.so and the arena on (FLUX_ARENA_BYTES not 0); yields False
+    without them. An array made inside can be handed to a Builder's adopt__<field>() without a
+    copy.
+    """
+    opened = _flux._arena_scope_enter()
+    try:
+        yield opened
+    finally:
+        if opened:
+            _flux._arena_scope_leave()
 
 
 def _timeout_ns(seconds):

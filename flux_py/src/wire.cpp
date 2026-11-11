@@ -6,6 +6,7 @@
 #include "flux/wire.hpp"
 
 #include "bind_wire.hpp"
+#include "flux/channel.hpp"
 #include "numpy_api.hpp"
 
 #include <nanobind/nanobind.h>
@@ -18,6 +19,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -144,12 +146,24 @@ auto rw_array(void * p, std::size_t n, const DType & t, nb::handle owner) -> nb:
 class Reader
 {
 public:
-  explicit Reader(nb::handle buf) : buf_(buf, false) {}
+  explicit Reader(nb::handle buf) : buf_(buf, false)
+  {
+    const std::uint8_t * base = nullptr;
+    std::size_t n = 0;
+    arena_ = flux_arena_acquire(
+      reinterpret_cast<const std::uint8_t *>(buf_.data()), buf_.size(), &base, &n);  // NOLINT
+    heap_ = {reinterpret_cast<const std::byte *>(base), arena_ != nullptr ? n : 0};  // NOLINT
+  }
+  ~Reader() { flux_arena_release(arena_); }
+  Reader(const Reader &) = delete;
+  auto operator=(const Reader &) -> Reader & = delete;
+  Reader(Reader &&) = delete;
+  auto operator=(Reader &&) -> Reader & = delete;
 
   [[nodiscard]] auto size() const noexcept -> std::size_t { return buf_.size(); }
   [[nodiscard]] auto reader() const noexcept -> flux::wire::Reader
   {
-    return {buf_.data(), buf_.size()};
+    return {buf_.data(), buf_.size(), heap_};
   }
 
   static void check(const flux::wire::Reader & r, const char * what, std::size_t off)
@@ -162,6 +176,9 @@ public:
 
 private:
   Buffer buf_;
+  // The arena the frame's trailer names, mapped while this reader and its views live.
+  const void * arena_ = nullptr;
+  flux::wire::Span<const std::byte> heap_;
 };
 
 auto reader_block(nb::handle self, std::size_t off, nb::handle dtype, std::size_t n) -> nb::object
@@ -223,7 +240,10 @@ auto reader_strings(const Reader & r, std::size_t off) -> nb::list
   const flux::wire::Reader w = r.reader();
   const std::size_t n = w.len(off, sizeof(flux::wire::Desc), alignof(flux::wire::Desc));
   Reader::check(w, "string array", off);
-  std::size_t unread = w.size() - n * sizeof(flux::wire::Desc);
+  if (n > w.budget() / sizeof(flux::wire::Desc)) {
+    throw WireError("flux: string array at " + std::to_string(off) + " reads the same bytes twice");
+  }
+  std::size_t unread = w.budget() - n * sizeof(flux::wire::Desc);
   nb::list out;
   for (std::size_t i = 0; i < n; ++i) {
     const std::string_view s = w.str_at(off, i);
@@ -248,11 +268,25 @@ auto reader_elems(const Reader & r, std::size_t off, std::size_t stride, std::si
   return {w.desc(off).off, n};
 }
 
+auto heap_of(nb::handle h) -> flux::wire::Heap
+{
+  if (h.is_none()) {
+    return {};
+  }
+  const auto t = nb::cast<std::array<std::uintptr_t, 4>>(h);
+  // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
+  return flux::detail::heap_of(
+    {reinterpret_cast<std::uint8_t *>(t[0]), t[1], reinterpret_cast<const void *>(t[2]),
+     static_cast<std::uint32_t>(t[3])});
+  // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
+}
+
 class Writer
 {
 public:
-  Writer(nb::handle buf, std::size_t scalar_bytes)
-  : buf_(buf, true), w_(buf_.data(), buf_.size(), scalar_bytes)
+  // `heap` is a loan's `_heap`, or None.
+  Writer(nb::handle buf, std::size_t scalar_bytes, nb::handle heap)
+  : buf_(buf, true), w_(buf_.data(), buf_.size(), scalar_bytes, heap_of(heap))
   {
     if (w_.bad()) {
       throw WireError(
@@ -376,6 +410,42 @@ auto writer_alloc(nb::handle self, std::size_t off, nb::handle count, nb::handle
       by_size(t.size, [&](auto e) -> void * { return w.w().alloc<decltype(e)>(off, n).data(); });
     w.check("array", off);
     return rw_array(p, n, t, self);
+  });
+}
+
+// A C-contiguous array whose memory the malloc hook placed in the arena becomes the
+// field without a copy, and the frame keeps it alive; any other is copied. True when not copied.
+auto writer_adopt(nb::handle self, std::size_t off, nb::handle a, nb::handle dtype) -> bool
+{
+  Writer & w = *nb::inst_ptr<Writer>(self);
+  return poisoning(w, [&] {
+    const DType t = dtype_of(dtype);
+    if (PyArray_Check(a.ptr()) == 0) {
+      throw nb::type_error("flux: adopt takes a numpy array");
+    }
+    PyArrayObject * arr = flux_py::as_array(a);
+    if (
+      PyArray_IS_C_CONTIGUOUS(arr) == 0 ||
+      static_cast<std::size_t>(PyArray_ITEMSIZE(arr)) != t.size) {
+      throw nb::type_error("flux: adopt takes a C-contiguous array of the field's dtype");
+    }
+    const auto n = static_cast<std::size_t>(PyArray_SIZE(arr));
+    const auto release = [](void * o) {
+      const PyGILState_STATE g = PyGILState_Ensure();
+      Py_DECREF(static_cast<PyObject *>(o));
+      PyGILState_Release(g);
+    };
+    if (w.w().adopt(off, PyArray_DATA(arr), n, t.size, release, a.inc_ref().ptr())) {
+      return true;
+    }
+    a.dec_ref();
+    void * p =
+      by_size(t.size, [&](auto e) -> void * { return w.w().alloc<decltype(e)>(off, n).data(); });
+    w.check("array", off);
+    if (n != 0) {
+      std::memcpy(p, PyArray_DATA(arr), n * t.size);
+    }
+    return false;
   });
 }
 
@@ -641,8 +711,7 @@ auto handed_out(Tensor && t) -> nb::object
 
 auto reader_tensor(nb::handle self, const flux_py::TensorAt & at, bool array) -> nb::object
 {
-  const flux::wire::Reader w = nb::inst_ptr<Reader>(self)->reader();
-  Tensor t(self, flux_py::read_tensor(w.base(), w.size(), at), false);
+  Tensor t(self, flux_py::read_tensor(nb::inst_ptr<Reader>(self)->reader(), at), false);
   return array ? handed_out(std::move(t)) : nb::cast(std::move(t));
 }
 
@@ -683,10 +752,16 @@ auto scratch_tensor(nb::handle dtype, nb::handle shape) -> nb::object
 
 }  // namespace
 
-auto flux_py::read_tensor(const void * frame, std::size_t size, const TensorAt & at)
+auto flux_py::read_tensor(const flux::wire::Reader & w, const TensorAt & at)
   -> flux_py::TensorFields
 {
-  const flux::wire::Reader w(frame, size);
+  if (w.desc(at[6]).off >= flux::wire::kHeapBase && w.budget() == w.size()) {
+    // shortcut: a device frame reads its fields through the host mapping alone; give the arena a
+    // device address (iGPU registration or a VMM arena) to lift this.
+    throw WireError(
+      "flux: tensor at " + std::to_string(at[6]) +
+      " has its data in the publisher's arena, which this frame has no device address for");
+  }
   const flux::wire::DlType t{
     w.get<std::uint8_t>(at[0]), w.get<std::uint8_t>(at[1]), w.get<std::uint16_t>(at[2])};
   const auto shape = w.span<std::int64_t>(at[3]);
@@ -727,6 +802,7 @@ void bind_wire(nb::module_ & m)
   nb::class_<Reader>(m, "Reader")
     .def(nb::init<nb::handle>(), "buf"_a)
     .def("__len__", &Reader::size)
+    .def("budget", [](const Reader & r) { return r.reader().budget(); })
     .def("get", &reader_get, "off"_a, "dtype"_a)
     .def("block", &reader_block, "off"_a, "dtype"_a, "count"_a)
     .def(
@@ -764,7 +840,9 @@ void bind_wire(nb::module_ & m)
   m.def("_scratch_tensor", &scratch_tensor, "dtype"_a, "shape"_a);
 
   nb::class_<Writer>(m, "Writer")
-    .def(nb::init<nb::handle, std::size_t>(), "buf"_a, "scalar_bytes"_a)
+    .def(
+      nb::init<nb::handle, std::size_t, nb::handle>(), "buf"_a, "scalar_bytes"_a,
+      "heap"_a = nb::none())
     .def_prop_ro("bad", &Writer::bad)
     .def_prop_ro("size", &Writer::size)
     .def("poison", &Writer::poison)
@@ -772,6 +850,7 @@ void bind_wire(nb::module_ & m)
     .def("put", &writer_put, "off"_a, "dtype"_a, "value"_a.none())
     .def("block_view", &writer_block, "off"_a, "dtype"_a, "count"_a)
     .def("alloc", &writer_alloc, "off"_a, "n"_a.none(), "dtype"_a)
+    .def("adopt", &writer_adopt, "off"_a, "array"_a, "dtype"_a)
     .def("tensor", &writer_tensor, "at"_a, "dtype"_a, "shape"_a.none())
     .def("put_str", &writer_put_str, "off"_a, "s"_a.none())
     .def("put_strs", &writer_put_strs, "off"_a, "items"_a.none(), "count"_a = nb::none())

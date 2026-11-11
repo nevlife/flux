@@ -68,7 +68,60 @@ void relocate(C & to, C & from) noexcept
   std::memcpy(&to, &from, sizeof(C));
   std::memset(&from, 0, sizeof(C));
 }
+
+inline auto raw_heap(const wire::Heap & h) noexcept -> flux_heap
+{
+  return {reinterpret_cast<std::uint8_t *>(h.base), h.size, h.channel, h.slot};  // NOLINT
+}
+
+// A loan's flux_heap as the Writer takes it; empty when there is no arena.
+inline auto heap_of(const flux_heap & h) noexcept -> wire::Heap
+{
+  if (h.channel == nullptr) {
+    return {};
+  }
+  wire::Heap w;
+  w.base = reinterpret_cast<std::byte *>(h.base);  // NOLINT(*-reinterpret-cast)
+  w.size = h.size;
+  w.channel = h.channel;
+  w.slot = h.slot;
+  w.alloc = [](const wire::Heap & x, std::size_t n, std::size_t a, std::uint64_t * off) -> void * {
+    const flux_heap r = raw_heap(x);
+    return flux_heap_alloc(&r, n, a, off);
+  };
+  w.adopt = [](
+              const wire::Heap & x, const void * p, std::size_t n, void (*release)(void *),
+              void * owner, std::uint64_t * off) {
+    const flux_heap r = raw_heap(x);
+    return flux_heap_adopt(&r, static_cast<const std::uint8_t *>(p), n, release, owner, off);
+  };
+  return w;
+}
 }  // namespace detail
+
+// While one is open, this thread's allocations go to the process arena, when libflux_heaphook.so
+// is preloaded and the arena is on. A container filled meanwhile can be handed to a Builder
+// (adopt__) without a copy.
+class ArenaScope
+{
+public:
+  ArenaScope() : open_(flux_arena_scope_enter()) {}
+  ~ArenaScope()
+  {
+    if (open_) {
+      flux_arena_scope_leave();
+    }
+  }
+  ArenaScope(const ArenaScope &) = delete;
+  auto operator=(const ArenaScope &) -> ArenaScope & = delete;
+  ArenaScope(ArenaScope &&) = delete;
+  auto operator=(ArenaScope &&) -> ArenaScope & = delete;
+
+  [[nodiscard]] auto open() const noexcept -> bool { return open_; }
+
+private:
+  bool open_;
+};
 
 // Where a channel's frames are produced or consumed. Cuda declares a stream flux creates.
 enum class Device : std::uint8_t {
@@ -361,6 +414,13 @@ public:
   {
     return flux_view_publish_ns(raw());
   }
+  // The arena the frame's trailer names, read-only; empty for none.
+  [[nodiscard]] auto heap() const noexcept -> wire::Span<const std::byte>
+  {
+    std::size_t n = 0;
+    const auto * p = flux_view_heap(raw(), &n);
+    return {reinterpret_cast<const std::byte *>(p), p != nullptr ? n : 0};  // NOLINT
+  }
 
   void release() noexcept { flux_view_release(&v_); }
 
@@ -422,6 +482,12 @@ public:
     return {p, n};
   }
   void set_aux_len(std::size_t n) noexcept { flux_loan_set_aux_len(&l_, n); }
+
+  // The loan's handle on the process arena, for a Writer; empty without one.
+  [[nodiscard]] auto heap() const noexcept -> wire::Heap
+  {
+    return detail::heap_of(flux_loan_heap(raw()));
+  }
 
   auto commit() noexcept -> Published { return static_cast<Published>(flux_loan_commit(&l_)); }
   // Shrinks a one-dimensional loan to nbytes.

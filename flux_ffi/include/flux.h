@@ -39,6 +39,8 @@
 
 #define FLUX_NO_STAMP -1
 
+#define FLUX_HEAP_BASE 2147483648
+
 #define FLUX_DTYPE_U8 0
 
 #define FLUX_DTYPE_I8 1
@@ -177,6 +179,15 @@ typedef struct flux_qos {
 typedef struct flux_loan {
   uint64_t opaque[16];
 } flux_loan;
+
+// A live loan's arena (`flux_loan_heap`): `channel` null for none, `base` null until made.
+// `flux_heap_alloc` gives the frame arena memory, `flux_heap_adopt` the hook's; a claim frees it.
+typedef struct flux_heap {
+  uint8_t *base;
+  size_t size;
+  const void *channel;
+  uint32_t slot;
+} flux_heap;
 
 // A borrowed frame in caller memory, never copied. A move copies the bytes and zeroes the source.
 typedef struct flux_view {
@@ -357,6 +368,33 @@ void *flux_loan_stream(const struct flux_loan *l);
 uint64_t flux_loan_device_ptr(const struct flux_loan *l);
 
 flux_published flux_loan_commit(struct flux_loan *l);
+
+struct flux_heap flux_loan_heap(const struct flux_loan *l);
+
+uint8_t *flux_heap_alloc(const struct flux_heap *h, size_t bytes, size_t align, uint64_t *off);
+
+bool flux_heap_adopt(const struct flux_heap *h,
+                     const uint8_t *p,
+                     size_t bytes,
+                     void (*release)(void*),
+                     void *ctx,
+                     uint64_t *off);
+
+// The arena the view's frame names, read-only while the view lives; null for none.
+const uint8_t *flux_view_heap(const struct flux_view *v, size_t *size);
+
+// Maps the arena frame bytes name, for a reader without a view, until `flux_arena_release`.
+const void *flux_arena_acquire(const uint8_t *frame,
+                               size_t len,
+                               const uint8_t **base,
+                               size_t *size);
+
+void flux_arena_release(const void *handle);
+
+// Routes this thread's allocations to the arena under the hook until `flux_arena_scope_leave`.
+bool flux_arena_scope_enter(void);
+
+void flux_arena_scope_leave(void);
 
 // Shrinks a one-dimensional loan to `nbytes`.
 flux_published flux_loan_commit_len(struct flux_loan *l, size_t nbytes);

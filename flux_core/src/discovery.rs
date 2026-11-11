@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
+use crate::arena;
 use crate::error::{Error, Result};
 use crate::gpu;
 use crate::layout::{
@@ -103,7 +104,7 @@ fn id_of(fd: RawFd) -> SegmentId {
 
 /// Called with a lock held on `fd`, which pins the binding: an unlinker needs the write lock.
 /// By path, so it costs no descriptor: at the fd limit an open would fail and read as unbound.
-fn name_still_bound(name: &str, fd: RawFd) -> bool {
+pub(crate) fn name_still_bound(name: &str, fd: RawFd) -> bool {
     std::fs::metadata(format!("/dev/shm{name}")).is_ok_and(|m| {
         SegmentId {
             dev: m.dev(),
@@ -605,7 +606,9 @@ pub fn sweep_dead() {
         if !n.starts_with(&format!("flux.v{LAYOUT_VERSION}.")) {
             continue;
         }
-        let byte = if is_signpost_entry(n) {
+        let byte = if arena::is_arena_entry(n) {
+            arena::LOCK_BYTE
+        } else if is_signpost_entry(n) {
             SIGNPOST_USER_BYTE
         } else if is_segment_entry(n) {
             PUBLISHER_LOCK_BYTE
@@ -617,7 +620,7 @@ pub fn sweep_dead() {
 }
 
 /// Unlinks `name` if this user owns it and no process holds a read lock on `byte`.
-fn remove_if_dead(name: &str, byte: i64) -> bool {
+pub(crate) fn remove_if_dead(name: &str, byte: i64) -> bool {
     let Ok(fd) = sys::shm_open(name, libc::O_RDWR) else {
         return false;
     };

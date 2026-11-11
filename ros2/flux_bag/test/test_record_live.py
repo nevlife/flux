@@ -179,3 +179,23 @@ def test_frames_past_the_cache_are_dropped_and_counted(node, tmp_path):
     line = next(x for x in err.splitlines() if f"{k}: " in x)
     queued, dropped, lost = (int(w) for w in re.findall(r"(\d+) (?:frames|dropped|lost)", line))
     assert queued == len(got) and dropped > 0 and queued + dropped + lost == 100, line
+
+
+def test_frames_with_fields_in_the_arena_are_left_out(node, tmp_path):
+    from sensor_msgs_flux.image import Image
+
+    k = key("arena")
+    bag = str(tmp_path / "bag")
+    pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=4096, slot_count=4)
+    rec = record(bag, k)
+    time.sleep(1.0)
+    for i, n in enumerate((16, 8192, 16, 8192, 16)):
+        b = Image.build__(pub)
+        b.height, b.width, b.encoding, b.step = 1, n, "mono8", n
+        b.alloc__data(n)[:] = i
+        assert b.commit__() == flux.Published.OK
+        time.sleep(0.05)
+    err = stop(rec)
+    assert len(values(bag)) == 3
+    assert "frames with fields in their publisher's arena are not recorded" in err, err
+    assert ", 2 in the arena" in err, err

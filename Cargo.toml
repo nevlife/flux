@@ -1,5 +1,5 @@
 [workspace]
-members = ["flux_core", "flux_ffi", "flux_cli", "flux_gen"]
+members = ["flux_core", "flux_ffi", "flux_cli", "flux_gen", "flux_heaphook"]
 # Nightly only (cargo-fuzz); built from its own directory.
 exclude = ["fuzz"]
 resolver = "3"

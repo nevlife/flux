@@ -495,7 +495,7 @@ public:
   {
     const flux::FrameView & v = host_view();
     const DeviceArray a = array();
-    const flux_py::TensorFields f = flux_py::read_tensor(v.data(), v.size(), at);
+    const flux_py::TensorFields f = flux_py::read_tensor({v.data(), v.size()}, at);
     remember_stream(held_->streams, kw);
     const auto offset = f.data - static_cast<const std::uint8_t *>(v.data());
     const auto addr = static_cast<std::uintptr_t>(a.ptr + static_cast<std::uint64_t>(offset));
@@ -693,6 +693,18 @@ public:
 
   [[nodiscard]] auto valid() const noexcept -> bool { return w_.valid(); }
   auto capacity() noexcept -> std::size_t { return w_.capacity(); }
+
+  // The loan's arena handle for a wire Writer, None without an arena.
+  [[nodiscard]] auto heap() const -> nb::object
+  {
+    const flux::wire::Heap h = w_.heap();
+    if (h.channel == nullptr) {
+      return nb::none();
+    }
+    return nb::make_tuple(
+      reinterpret_cast<std::uintptr_t>(h.base), h.size,      // NOLINT(*-reinterpret-cast)
+      reinterpret_cast<std::uintptr_t>(h.channel), h.slot);  // NOLINT(*-reinterpret-cast)
+  }
 
   auto cai() -> nb::dict { return cuda_array_interface(device_array()); }
   auto dlpack(nb::handle self, const nb::kwargs & kw) -> nb::object
@@ -1520,6 +1532,7 @@ NB_MODULE(_flux, m)
     .def_prop_ro("capacity", &Loan::capacity)
     .def_prop_ro("aux", [](nb::handle self) { return nb::inst_ptr<Loan>(self)->aux(self); })
     .def_prop_rw("aux_len", &Loan::aux_len, &Loan::set_aux_len)
+    .def_prop_ro("_heap", &Loan::heap)
     .def_prop_ro("__cuda_array_interface__", &Loan::cai)
     .def(
       "__dlpack__",
@@ -1644,4 +1657,6 @@ NB_MODULE(_flux, m)
     "fingerprint"_a);
 
   bind_wire(m);
+  m.def("_arena_scope_enter", &flux_arena_scope_enter);
+  m.def("_arena_scope_leave", &flux_arena_scope_leave);
 }

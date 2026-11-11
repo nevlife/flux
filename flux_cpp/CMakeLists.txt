@@ -55,7 +55,8 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(sensor_msgs REQUIRED)
   find_package(rclcpp_lifecycle REQUIRED)
-  foreach(t test_channel test_executor test_ros test_partitioned test_message_filters test_gpu)
+  foreach(t test_channel test_executor test_ros test_partitioned test_message_filters test_gpu
+      test_arena)
     ament_add_gtest(${t} test/${t}.cpp TIMEOUT 120)
     target_link_libraries(${t} flux_cpp ${std_msgs_TARGETS} ${sensor_msgs_TARGETS})
     target_compile_options(${t} PRIVATE -Wall -Wextra -Werror)
@@ -80,11 +81,18 @@ if(BUILD_TESTING)
   # are checked together.
   find_package(flux_gen REQUIRED)
   set(_adapters ${CMAKE_CURRENT_BINARY_DIR}/test_adapters)
+  set(_msgs Stamped Item Blob)
+  set(_args)
+  set(_outs)
+  foreach(m ${_msgs})
+    string(TOLOWER ${m} _lower)
+    list(APPEND _args --msg ${CMAKE_CURRENT_SOURCE_DIR}/test/msg/${m}.msg)
+    list(APPEND _outs ${_adapters}/flux_test/flux/${_lower}.hpp)
+  endforeach()
   add_custom_command(
-    OUTPUT ${_adapters}/flux_test/flux/stamped.hpp
-    COMMAND "${FLUX_GEN_EXECUTABLE}" --pkg flux_test
-            --msg ${CMAKE_CURRENT_SOURCE_DIR}/test/msg/Stamped.msg --out-cpp ${_adapters}
-    DEPENDS test/msg/Stamped.msg
+    OUTPUT ${_outs}
+    COMMAND "${FLUX_GEN_EXECUTABLE}" --pkg flux_test ${_args} --out-cpp ${_adapters}
+    DEPENDS test/msg/Stamped.msg test/msg/Item.msg test/msg/Blob.msg
     VERBATIM)
   # The documents' examples use the sensor_msgs/Image adapter flux_std_adapters installs.
   set(_image ${_adapters}/sensor_msgs/flux/image.hpp ${_adapters}/sensor_msgs/flux/image_ros.hpp)
@@ -94,10 +102,19 @@ if(BUILD_TESTING)
             --msg ${sensor_msgs_DIR}/../msg/Image.msg --out-cpp ${_adapters}
     DEPENDS ${sensor_msgs_DIR}/../msg/Image.msg
     VERBATIM)
-  add_custom_target(flux_cpp_test_adapters
-    DEPENDS ${_adapters}/flux_test/flux/stamped.hpp ${_image})
-  add_dependencies(test_message_filters flux_cpp_test_adapters)
-  target_include_directories(test_message_filters PRIVATE ${_adapters})
+  add_custom_target(flux_cpp_test_adapters DEPENDS ${_outs} ${_image})
+  foreach(t test_message_filters test_arena)
+    add_dependencies(${t} flux_cpp_test_adapters)
+    target_include_directories(${t} PRIVATE ${_adapters})
+  endforeach()
+  # The arena again, with the malloc hook preloaded.
+  find_library(FLUX_HEAPHOOK flux_heaphook HINTS ${flux_ffi_DIR}/../../../lib REQUIRED NO_DEFAULT_PATH)
+  set(_result ${AMENT_TEST_RESULTS_DIR}/${PROJECT_NAME}/test_arena_hooked.gtest.xml)
+  ament_add_test(test_arena_hooked
+    COMMAND $<TARGET_FILE:test_arena> --gtest_output=xml:${_result}
+    RESULT_FILE ${_result}
+    TIMEOUT 120
+    ENV LD_PRELOAD=${FLUX_HEAPHOOK})
   ament_add_gtest(test_doc_examples test/test_doc_examples.cpp TIMEOUT 120)
   target_link_libraries(test_doc_examples flux_cpp ${sensor_msgs_TARGETS})
   target_compile_options(test_doc_examples PRIVATE -Wall -Wextra -Werror)

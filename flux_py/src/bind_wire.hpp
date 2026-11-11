@@ -29,7 +29,7 @@ struct TensorFields
 };
 
 // WireError when they do not fit the frame.
-auto read_tensor(const void * frame, std::size_t size, const TensorAt & at) -> TensorFields;
+auto read_tensor(const flux::wire::Reader & w, const TensorAt & at) -> TensorFields;
 
 // A DLPack capsule of `t` with its first element at `addr`, holding `owner`.
 auto tensor_dlpack(

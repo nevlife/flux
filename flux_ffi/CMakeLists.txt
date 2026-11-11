@@ -21,7 +21,7 @@ set(CARGO_DIR ${CMAKE_CURRENT_BINARY_DIR}/cargo)
 add_custom_target(flux_c_cargo ALL
   COMMAND ${CMAKE_COMMAND} -E env --unset=MAKEFLAGS --unset=MFLAGS
     CARGO_TARGET_DIR=${CARGO_DIR} PATH=${cargo_home}/bin:$ENV{PATH}
-    ${CARGO} build --release --locked -p flux_ffi
+    ${CARGO} build --release --locked -p flux_ffi -p flux_heaphook
   WORKING_DIRECTORY ${WORKSPACE}
   USES_TERMINAL
   COMMENT "cargo build flux_ffi")
@@ -36,6 +36,8 @@ file(CREATE_LINK ${soname} ${CMAKE_CURRENT_BINARY_DIR}/libflux_ffi.so SYMBOLIC)
 install(FILES ${CARGO_DIR}/release/libflux_ffi.so DESTINATION lib RENAME ${soname})
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/libflux_ffi.so ${CARGO_DIR}/release/libflux_ffi.a
   DESTINATION lib)
+# LD_PRELOAD it to route flux::ArenaScope allocations to the arena.
+install(FILES ${CARGO_DIR}/release/libflux_heaphook.so DESTINATION lib)
 install(FILES include/flux.h DESTINATION include)
 install(FILES include/flux/trace.h DESTINATION include/flux)
 

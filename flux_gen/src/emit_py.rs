@@ -165,6 +165,14 @@ fn builder_body(block: &Block, base: &str, out: &mut Vec<String>, prefix: &[&Pla
                     at(base, o),
                     dtype(p)
                 ));
+                // An array made under flux.arena_scope(), without a copy.
+                out.push(String::new());
+                out.push(format!("{IND}def adopt__{n}(self, a):"));
+                out.push(format!(
+                    "{IND}    return self._w.adopt({}, a, {})",
+                    at(base, o),
+                    dtype(p)
+                ));
             }
             LeafKind::String => {
                 setter(
@@ -391,7 +399,11 @@ class Builder:
 
     def __init__(self, buf, loan=None):
         # No buffer is a build__ that found no free slot: writes go nowhere, as in C++.
-        self._w = _Writer(buf, SCALAR_BYTES__) if buf is not None else _NullWriter()
+        self._w = (
+            _Writer(buf, SCALAR_BYTES__, getattr(loan, "_heap", None))
+            if buf is not None
+            else _NullWriter()
+        )
         self._loan = loan
 
     def __bool__(self):
