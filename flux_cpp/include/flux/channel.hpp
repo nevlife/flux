@@ -438,6 +438,8 @@ public:
     if (!flux_view_gpu_heap(raw(), &g)) {
       return {};
     }
+    static_assert(wire::kWireHeap == FLUX_HEAP_BASE && wire::kWireGpu == FLUX_GPU_HEAP_BASE);
+    static_assert(wire::kArenaUnit == FLUX_ARENA_UNIT && wire::kGpuBase == FLUX_GPU_HEAP_POS);
     static_assert(sizeof(wire::GpuBlock) == sizeof(flux_gpu_block));
     static_assert(offsetof(wire::GpuBlock, host) == offsetof(flux_gpu_block, host));
     static_assert(offsetof(wire::GpuBlock, device) == offsetof(flux_gpu_block, device));

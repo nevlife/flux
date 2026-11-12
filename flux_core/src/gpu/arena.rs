@@ -149,7 +149,7 @@ impl GpuFrame {
         let size = usize::try_from(u64_at(32)).ok()?;
         let chunks = u32_at(40);
         let fits = size > 0
-            && size <= host_arena::MAX_ARENA_BYTES
+            && size <= host_arena::MAX_GPU_ARENA_BYTES
             && size.is_multiple_of(CHUNK)
             && chunks as usize <= size / CHUNK;
         fits.then(|| GpuFrame {
@@ -192,10 +192,11 @@ unsafe impl Send for GpuArena {}
 static ARENAS: PiMutex<Vec<&'static GpuArena>> = PiMutex::new(Vec::new());
 
 /// This process's arena on `ordinal`, made on first use. Its size is the host arena's
-/// (`FLUX_ARENA_BYTES`).
+/// (`FLUX_ARENA_BYTES`), up to `MAX_GPU_ARENA_BYTES`.
 pub fn gpu_arena(ordinal: i32) -> Result<&'static GpuArena> {
     let size = host_arena::configured()
-        .ok_or_else(|| Error::Unsupported("the arena is off (FLUX_ARENA_BYTES=0)".into()))?;
+        .ok_or_else(|| Error::Unsupported("the arena is off (FLUX_ARENA_BYTES=0)".into()))?
+        .min(host_arena::MAX_GPU_ARENA_BYTES);
     let mut all = ARENAS.lock();
     let born = sys::fork_gen();
     if let Some(a) = all.iter().find(|a| a.ordinal == ordinal && a.born == born) {
@@ -832,7 +833,7 @@ mod tests {
                 ..frame(Place::Device)
             },
             GpuFrame {
-                size: host_arena::MAX_ARENA_BYTES + CHUNK,
+                size: host_arena::MAX_GPU_ARENA_BYTES + CHUNK,
                 ..frame(Place::Device)
             },
         ];
@@ -879,7 +880,8 @@ mod tests {
             put(&mut frame, gpu, 0, u32::MAX);
             assert!(host_arena::blocks(&frame, None).is_none());
         }
-        let at = host_arena::HEAP_BASE + 64;
+        // Descriptor offsets count UNITs: 4 is arena byte 64.
+        let at = host_arena::HEAP_BASE + 4;
         put(&mut frame, false, at, 2);
         assert!(
             host_arena::blocks(&frame, None).is_none(),
@@ -887,7 +889,7 @@ mod tests {
         );
         let l = host_arena::blocks(&frame, Some(&heap)).expect("in the arena");
         assert_eq!((l.as_ptr(), l.len()), (heap[64..].as_ptr(), 16));
-        put(&mut frame, false, at + 4096 - 8, 2);
+        put(&mut frame, false, at + (4096 - 64) / host_arena::UNIT, 2);
         assert!(host_arena::blocks(&frame, Some(&heap)).is_none(), "past it");
         put(&mut frame, false, host_arena::GPU_BASE, 1);
         assert!(host_arena::blocks(&frame, Some(&heap)).is_none());

@@ -9,7 +9,7 @@ use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::Ordering;
 
-use crate::arena::{self, GPU_BASE, HEAP_BASE};
+use crate::arena;
 use crate::channel::{Channel, FrameView};
 use crate::discovery::{SignpostView, map_validate, segment_name};
 use crate::gpu::arena::{CHUNK, GpuFrame};
@@ -83,7 +83,7 @@ pub fn trailer(data: &[u8]) {
     let (frame, heap) = rest.split_at(usize::from(u16::from_le_bytes([a, b])).min(rest.len()));
     let mut gpu_size = heap.len();
     if let Some(f) = arena::gpu_trailer(frame).and_then(GpuFrame::decode) {
-        assert!(f.size.is_multiple_of(CHUNK) && f.size <= arena::MAX_ARENA_BYTES);
+        assert!(f.size.is_multiple_of(CHUNK) && f.size <= arena::MAX_GPU_ARENA_BYTES);
         assert!(f.chunks as usize <= f.size / CHUNK, "chunks past the arena");
         gpu_size = f.size;
     }
@@ -99,8 +99,8 @@ pub fn trailer(data: &[u8]) {
     );
     touch(list);
     for (from, to, size) in [
-        (HEAP_BASE, GPU_BASE, heap.len()),
-        (GPU_BASE, 1 << 32, gpu_size),
+        (arena::HEAP_POS, arena::GPU_POS, heap.len()),
+        (arena::GPU_POS, u64::MAX, gpu_size),
     ] {
         for (off, len) in arena::entries_in(list, from, to, size)
             .into_iter()
@@ -303,11 +303,7 @@ mod corpus {
             let heap_len = 64 + below(&mut seed, 512);
             let mut buf = vec![0u8; 2 + frame_len + heap_len];
             buf[..2].copy_from_slice(&u16::try_from(frame_len).unwrap().to_le_bytes());
-            let list_at = if in_arena {
-                HEAP_BASE + 16
-            } else {
-                body as u64
-            };
+            let list_at = if in_arena { HEAP_BASE + 1 } else { body as u64 };
             let entry_at = if in_arena {
                 2 + frame_len + 16
             } else {

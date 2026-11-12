@@ -15,6 +15,7 @@ import pytest
 import rclpy
 from ament_index_python.packages import get_package_prefix
 from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import Image as RosImage
 from sensor_msgs.msg import Imu
 from sensor_msgs_flux import image, imu, imu_ros
 
@@ -153,6 +154,44 @@ def test_a_watched_channel_is_relayed_and_a_bad_frame_is_skipped(node, bridge):
     assert stopped.endswith(" 1 unreadable"), stopped
     proc.send_signal(signal.SIGINT)
     assert proc.wait(timeout=10) == 0
+
+
+def send_image(node, pub, value, n=8192):
+    """An Image of `n` bytes all `value`: past a 4096-byte slot, so its data is in the arena."""
+    b = image.build__(pub)
+    b.height, b.width, b.encoding, b.step = 1, n, "mono8", n
+    b.alloc__data(n)[:] = value
+    assert b.commit__() == flux.Published.OK
+    rclpy.spin_once(node, timeout_sec=0.01)
+
+
+def images(node, pub, got, value):
+    return eventually(
+        lambda: any(m.width == 8192 and m.data[-1] == value for m in got),
+        each=lambda: send_image(node, pub, value),
+    )
+
+
+def test_a_frame_with_fields_in_the_arena_is_relayed_whole(node, bridge):
+    _, log = bridge
+    pub = flux.Publisher(node, topic("arena"), fingerprint=image.FINGERPRINT__, **SMALL)
+    got = []
+    sub = node.create_subscription(RosImage, pub.topic_name, got.append, BEST_EFFORT)
+    assert eventually(lambda: f"{pub.topic_name}: relaying as sensor_msgs/msg/Image" in output(log))
+    assert images(node, pub, got, 7) and images(node, pub, got, 9)
+    assert all(len(m.data) == 8192 for m in got)
+    node.destroy_subscription(sub)
+
+
+def test_a_mirror_sends_a_frame_with_fields_in_the_arena_whole(node):
+    pub = flux.Publisher(
+        node, topic("arena_mirror"), fingerprint=image.FINGERPRINT__, mirror_to_ros=True, **SMALL
+    )
+    got = []
+    sub = node.create_subscription(RosImage, pub.topic_name, got.append, BEST_EFFORT)
+    assert images(node, pub, got, 3) and images(node, pub, got, 4)
+    assert all(len(m.data) == 8192 for m in got)
+    node.destroy_subscription(sub)
 
 
 def test_a_channel_back_under_another_type_within_one_poll_is_relayed_as_that(node, start_bridge):

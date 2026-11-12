@@ -6,7 +6,7 @@
 
 use std::ffi::{CStr, c_void};
 
-use flux_core::arena::{BLOCK_BYTES, GPU_BASE, HEAP_BASE, TRAILER_BYTES};
+use flux_core::arena::{BLOCK_BYTES, GPU_POS, HEAP_POS, TRAILER_BYTES};
 use flux_core::gpu::arena::{CHUNK, GpuArena, GpuArenaImport, Place};
 use flux_core::gpu::{Route, Stream, probe};
 use flux_core::{
@@ -180,7 +180,7 @@ fn host_numa_chunks_reach_another_processs_cpu_and_gpu() {
 
 const FINGERPRINT: u64 = 0x5eed;
 
-/// Frames of the channel test: a descriptor-like word, `GPU_BASE` + the run's arena offset, then
+/// Frames of the channel test: a descriptor-like word, `GPU_POS` + the run's arena offset, then
 /// the run's length, then its fill byte.
 const RUNS: [(usize, u8); 2] = [(3 << 20, 0x51), (40 << 20, 0x52)];
 
@@ -225,7 +225,7 @@ fn subscribe_runs(cu: &Cuda) {
             .gpu_heap()
             .expect("the trailer names a GPU arena this process imports");
         assert_ne!(g.device, 0);
-        let off = word(0) - GPU_BASE;
+        let off = word(0) - GPU_POS;
         assert!(off + len as u64 <= g.size as u64);
         let mut got = vec![0u8; len];
         // SAFETY: got holds len bytes; the run is inside what was imported.
@@ -269,7 +269,7 @@ fn a_frame_names_its_device_run_to_a_subscriber_in_another_process() {
         // SAFETY: the run is len bytes of device memory this frame owns.
         assert_eq!(unsafe { (cu.memset)(at, fill, len) }, 0);
         let d = w.data_mut();
-        d[..8].copy_from_slice(&(GPU_BASE + off).to_le_bytes());
+        d[..8].copy_from_slice(&(GPU_POS + off).to_le_bytes());
         d[8..16].copy_from_slice(&(len as u64).to_le_bytes());
         assert_eq!(w.commit_len(16), Published::Ok);
     }
@@ -316,7 +316,7 @@ fn a_gpu_subscriber_reads_a_cpu_frames_arena_run_on_the_device() {
         // SAFETY: alloc handed out len writable bytes.
         unsafe { std::ptr::write_bytes(at, fill, len) };
         let data = w.data_mut();
-        data[..8].copy_from_slice(&(HEAP_BASE + off).to_le_bytes());
+        data[..8].copy_from_slice(&(HEAP_POS + off).to_le_bytes());
         data[8..16].fill(fill);
         assert_eq!(w.commit_len(used), Published::Ok);
 
@@ -328,7 +328,7 @@ fn a_gpu_subscriber_reads_a_cpu_frames_arena_run_on_the_device() {
         assert_eq!(g.count, 1, "the run, copied");
         // SAFETY: count blocks at blocks, valid while v lives.
         let b = unsafe { *g.blocks };
-        assert_eq!((b.off, b.len), (HEAP_BASE + off, len as u64));
+        assert_eq!((b.off, b.len), (HEAP_POS + off, len as u64));
         assert!(v.stream().wait());
         let mut got = vec![0u8; len];
         // SAFETY: got holds len bytes; the copy holds the run.

@@ -1,6 +1,8 @@
+#include "flux/channel.hpp"
 #include "flux_tools/cloud_from_frame.hpp"
 
 #include <gtest/gtest.h>
+#include <unistd.h>
 
 #include <array>
 #include <cmath>
@@ -102,4 +104,49 @@ TEST(CloudFromFrame, RefusesAFieldPastThePoint)
   std::string error;
   EXPECT_FALSE(flux_tools::cloud_from_frame(frame.data(), frame.size(), error));
   EXPECT_NE(error.find("'rgb' lies past point_step"), std::string::npos) << error;
+}
+
+// A cloud larger than its 512-byte slot: its points go to the publisher's arena, and the View made
+// from the FrameView reads them there. The frame's bytes alone do not hold them.
+TEST(CloudFromFrame, ReadsAPointCloudPastItsSlotFromTheArena)
+{
+  const std::string name = flux::detail::signpost_name(
+    "/flux_tools_cloud" + std::to_string(getpid()), Cloud::kFingerprint);
+  auto pub = flux::detail::Channel::create(name, 512, 2, Cloud::kFingerprint);
+  auto sub = flux::detail::Channel::open(name, Cloud::kFingerprint);
+  flux::WriteSlot slot = pub.loan();
+  ASSERT_TRUE(slot);
+  constexpr std::size_t kPoints = 100;
+  constexpr std::size_t kStep = 12;
+  Cloud::Builder b(slot);
+  b.set__header__frame_id("map");
+  b.set__height(1);
+  b.set__width(static_cast<std::uint32_t>(kPoints));
+  auto f = b.alloc__fields(3);
+  for (std::uint32_t i = 0; i < 3; ++i) {
+    f[i].set__name(std::string(1, static_cast<char>('x' + i)));
+    f[i].set__offset(4 * i);
+    f[i].set__datatype(sensor_msgs::msg::PointField::FLOAT32);
+    f[i].set__count(1);
+  }
+  b.set__point_step(kStep);
+  auto data = b.alloc__data(kPoints * kStep);
+  ASSERT_EQ(data.size(), kPoints * kStep);
+  for (std::size_t p = 0; p < kPoints; ++p) {
+    const std::array<float, 3> xyz = {static_cast<float>(p), 1, 2};
+    std::memcpy(data.data() + p * kStep, xyz.data(), kStep);
+  }
+  ASSERT_TRUE(b.ok__());
+  ASSERT_EQ(slot.commit(b.size__()), flux::Published::Ok);
+  const flux::FrameView frame = sub.take_blocking(1'000'000'000);
+  ASSERT_TRUE(frame);
+  ASSERT_FALSE(frame.heap().empty()) << "the points should be in the arena";
+  std::string error;
+  EXPECT_FALSE(flux_tools::cloud_from_frame(frame.data(), frame.size(), error));
+  const auto msg = flux_tools::cloud_from_frame(Cloud::View(frame), error);
+  ASSERT_TRUE(msg) << error;
+  EXPECT_EQ(msg->width, kPoints);
+  float x = 0;
+  std::memcpy(&x, msg->data.data() + (kPoints - 1) * kStep, sizeof x);
+  EXPECT_EQ(x, 99.0F);
 }

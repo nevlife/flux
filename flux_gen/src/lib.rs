@@ -11,6 +11,7 @@ pub mod fingerprint;
 pub mod flatten;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;
+pub mod inline;
 pub mod layout;
 pub mod model;
 pub mod parse;

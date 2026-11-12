@@ -116,11 +116,13 @@ inline void copy_valid_points(
 // The points of the frame whose x, y and z are finite, or nullptr with `error` saying why the
 // frame is refused. Every size the frame states is checked against the bytes it has before
 // anything is copied, so a frame cannot make this allocate or read more than it holds.
-inline auto cloud_from_frame(const void * frame, std::size_t frame_size, std::string & error)
-  -> sensor_msgs::msg::PointCloud2::SharedPtr
+// `view` over a frame and, when its fields are past its slot, its publisher's arena: a View made
+// from the FrameView maps both.
+inline auto cloud_from_frame(
+  const sensor_msgs::flux_msg::PointCloud2::View & view,
+  std::string & error) -> sensor_msgs::msg::PointCloud2::SharedPtr
 {
   using Cloud = sensor_msgs::flux_msg::PointCloud2;
-  const Cloud::View view(frame, frame_size);
   auto msg = std::make_shared<sensor_msgs::msg::PointCloud2>();
   msg->header.stamp.sec = view.header__sec();
   msg->header.stamp.nanosec = view.header__nanosec();
@@ -131,7 +133,7 @@ inline auto cloud_from_frame(const void * frame, std::size_t frame_size, std::st
   msg->point_step = view.point_step();
   msg->is_dense = view.is_dense();
   const flux::wire::Span<const std::uint8_t> data = view.data();
-  // Disjoint names fit in the frame; more name bytes than that means descriptors share bytes.
+  // Disjoint names fit in the bytes the frame names; more than that means descriptors share them.
   std::size_t name_bytes = 0;
   for (std::size_t i = 0; i < view.fields__size(); ++i) {
     name_bytes += view.fields(i).name().size();
@@ -140,7 +142,7 @@ inline auto cloud_from_frame(const void * frame, std::size_t frame_size, std::st
     error = "Frame does not parse as sensor_msgs/PointCloud2";
     return nullptr;
   }
-  if (name_bytes > frame_size) {
+  if (name_bytes > view.budget__()) {
     error = "Field names overlap: they hold more bytes than the frame";
     return nullptr;
   }
@@ -174,6 +176,13 @@ inline auto cloud_from_frame(const void * frame, std::size_t frame_size, std::st
   }
   detail::copy_valid_points(data.data(), points, xyz, *msg);
   return msg;
+}
+
+// A frame whose fields are all in its slot.
+inline auto cloud_from_frame(const void * frame, std::size_t frame_size, std::string & error)
+  -> sensor_msgs::msg::PointCloud2::SharedPtr
+{
+  return cloud_from_frame(sensor_msgs::flux_msg::PointCloud2::View(frame, frame_size), error);
 }
 
 }  // namespace flux_tools

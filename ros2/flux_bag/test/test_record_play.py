@@ -435,15 +435,18 @@ def publish_images(pub, encoding, channels, count, height=48, width=64, pad=8):
     return sent
 
 
+# A 4096-byte slot sends the pixels to the publisher's arena: the recorder copies them into the
+# frame before it compresses.
+@pytest.mark.parametrize("slot", [1 << 16, 4096])
 @pytest.mark.parametrize("encoding,channels", [("rgb8", 3), ("bgr8", 3), ("mono8", 1)])
 def test_an_image_recorded_as_jpeg_plays_back_close_to_what_was_sent(
-    node, tmp_path, encoding, channels
+    node, tmp_path, encoding, channels, slot
 ):
     from sensor_msgs_flux.image import Image
 
-    k = key("jpeg_" + encoding)
+    k = key(f"jpeg_{encoding}_{slot}")
     bag = str(tmp_path / "bag")
-    pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=1 << 16, slot_count=4)
+    pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=slot, slot_count=4)
     rec = record(bag, k, "--image-codec", "jpeg", "--jpeg-quality", "95")
     time.sleep(0.5)
     sent = publish_images(pub, encoding, channels, 20)

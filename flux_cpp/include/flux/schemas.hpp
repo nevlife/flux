@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace flux
 {
@@ -36,6 +37,26 @@ public:
       detail::check(
         flux_schema_write_cdr(s_, static_cast<const std::uint8_t *>(data), size, out, cap, &n));
       return n;
+    }
+
+    // A frame whose fields are in its publisher's arena (FrameView::heap()) as one that holds them
+    // itself, of the same schema, into `out`. Throws Error (FLUX_MISMATCH) for a frame that does
+    // not match the schema or has a field in GPU memory.
+    void inline_arena(
+      const void * data, std::size_t size, wire::Span<const std::byte> heap,
+      std::vector<std::uint8_t> & out) const
+    {
+      const auto * d = static_cast<const std::uint8_t *>(data);
+      const auto * h = reinterpret_cast<const std::uint8_t *>(heap.data());  // NOLINT
+      std::size_t n = 0;
+      flux_status s =
+        flux_schema_inline_arena(s_, d, size, h, heap.size(), out.data(), out.size(), &n);
+      if (s == FLUX_INVALID_ARGUMENT && n > out.size()) {
+        out.resize(n);
+        s = flux_schema_inline_arena(s_, d, size, h, heap.size(), out.data(), out.size(), &n);
+      }
+      detail::check(s);
+      out.resize(n);
     }
 
   private:

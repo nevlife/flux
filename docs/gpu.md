@@ -118,7 +118,7 @@ read_on_device(data.data(), data.size(), frame.stream());
 
 - 생성 타입의 fingerprint로 스트림을 선언한 발행자는 외장 GPU에서도 슬롯이 호스트 메모리다(`device_backed()`가 `false`, loan의 `device_ptr()`이 `0`).
 - `alloc_device__<필드>(n)`은 그 필드를 발행 프로세스의 GPU arena에 할당한다. 통합 GPU에서는 CPU와 GPU가 함께 읽는 호스트 메모리, 외장 GPU에서는 GPU 메모리다. 이 필드는 채널 스트림에서 쓰고, commit이 그 스트림을 기다린다.
-- GPU arena는 프로세스에 GPU마다 하나다. 크기는 호스트 arena와 같은 `FLUX_ARENA_BYTES`(기본값이자 최대값 1 GiB)다. 블록은 그 프레임의 슬롯에 다음 프레임을 쓰는 시점에 해제된다.
+- GPU arena는 프로세스에 GPU마다 하나다. 크기는 호스트 arena와 같은 `FLUX_ARENA_BYTES`이고, 최대 1 GiB다. 블록은 그 프레임의 슬롯에 다음 프레임을 쓰는 시점에 해제된다.
 - 받는 쪽의 `<필드>__device()`는 GPU 주소와 개수를 반환한다. 구독 스트림이 발행자와 다른 GPU(UUID)에 있으면 빈 값이다.
 - arena가 활성화된 `Builder`는 슬롯의 마지막 71 B(스트림을 선언한 발행자는 135 B)를 가변 필드에 쓰지 않는다.
 

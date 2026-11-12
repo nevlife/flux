@@ -4,6 +4,7 @@ use std::ffi::c_char;
 use flux_core::Error;
 use flux_gen::ament::installed_layouts;
 use flux_gen::cdr::{cdr_size, write_cdr};
+use flux_gen::inline::inline_arena;
 use flux_gen::layout::Layout;
 
 use crate::status::{flux_status, status};
@@ -137,4 +138,43 @@ pub unsafe extern "C" fn flux_schema_write_cdr(
         }
         Err(e) => unreadable(&e),
     }
+}
+
+/// The frame with its arena (`heap`) fields copied in, sized as `write_cdr`; GPU fields mismatch.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_schema_inline_arena(
+    s: *const flux_schema,
+    data: *const u8,
+    len: usize,
+    heap: *const u8,
+    heap_len: usize,
+    out: *mut u8,
+    cap: usize,
+    written: *mut usize,
+) -> flux_status {
+    // SAFETY: data holds len bytes while the call runs.
+    let f = unsafe { frame(data, len) };
+    // SAFETY: heap holds heap_len bytes while the call runs.
+    let h = unsafe { frame(heap, heap_len) };
+    let Some(body) = flux_core::arena::body(f) else {
+        return status(Err(Error::Mismatch(
+            "flux: a field is in GPU memory".into(),
+        )));
+    };
+    // SAFETY: s is a live schema.
+    let v = match inline_arena(&unsafe { &*s }.layout, body, h) {
+        Ok(v) => v,
+        Err(e) => return unreadable(&e),
+    };
+    // SAFETY: written is valid for a write.
+    unsafe { written.write(v.len()) };
+    if v.len() > cap {
+        return status(Err(Error::InvalidArgument(format!(
+            "buffer of {cap} bytes is too small for a frame of {}",
+            v.len()
+        ))));
+    }
+    // SAFETY: out is writable for cap >= v.len() bytes and aliases nothing else.
+    unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len()) };
+    status(Ok(()))
 }

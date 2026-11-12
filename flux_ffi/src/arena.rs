@@ -29,7 +29,8 @@ impl flux_heap {
 
 /// A frame's fields across `PCIe` (`flux_view_gpu_heap`): the GPU arena's offset 0 (0 for none)
 /// and reach, the frame's device address with a stream, and the subscriber's copies of the
-/// `count` blocks on the other side (host for a CPU subscriber, device for a discrete GPU one).
+/// `count` blocks on the other side (host for a CPU subscriber, device for a discrete GPU one),
+/// each at its position (`FLUX_GPU_HEAP_POS`).
 #[repr(C)]
 pub struct flux_gpu_heap {
     pub device: u64,

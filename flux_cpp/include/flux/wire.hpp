@@ -42,16 +42,60 @@ static_assert(sizeof(Desc) == 8);
 
 constexpr std::size_t kMaxFrameBytes = 0xFFFFFFFFu;  // descriptors are uint32
 
-// A descriptor offset at or past this is kHeapBase + an offset into the publisher's arena, a shm
-// file the frame's trailer names (FLUX_HEAP_BASE). Frames stay pointer-free.
-constexpr std::size_t kHeapBase = std::size_t{1} << 31;
+// A descriptor offset at or past kWireHeap is kWireHeap + an offset into the publisher's arena in
+// kArenaUnit bytes, a shm file the frame's trailer names (FLUX_HEAP_BASE); from kWireGpu up the
+// same into its GPU arena (FLUX_GPU_HEAP_BASE). Frames stay pointer-free. Readers and writers
+// work in positions, bytes from 0: a slot's below kHeapBase, the arena's from it, the GPU
+// arena's from kGpuBase (FLUX_GPU_HEAP_POS). position() and wire() convert.
+constexpr std::uint32_t kWireHeap = std::uint32_t{1} << 31;
+constexpr std::uint32_t kWireGpu = std::uint32_t{3} << 30;
+constexpr std::size_t kArenaUnit = 16;
+constexpr std::size_t kHeapBase = kWireHeap;
 // Room the commit needs at the frame's end to name the arena: 64 bytes on an 8-byte boundary. The
 // list of the frame's arena blocks goes there too while the slot has room, else to the arena.
 constexpr std::size_t kHeapTrailer = 64 + 7;
-// From here up a descriptor offset is kGpuBase + an offset into the publisher's GPU arena, which
-// the frame's trailer names (FLUX_GPU_HEAP_BASE). Each arena has a quarter of the u32 range.
-constexpr std::size_t kGpuBase = std::size_t{3} << 30;
-constexpr std::size_t kArenaSpan = std::size_t{1} << 30;
+constexpr std::size_t kGpuBase = kHeapBase + std::size_t{kWireGpu - kWireHeap} * kArenaUnit;
+constexpr std::size_t kGpuArenaSpan = std::size_t{1} << 30;
+
+// A descriptor as readers and writers use it: `off` a position.
+struct Ref
+{
+  std::size_t off;
+  std::uint32_t len;
+};
+
+constexpr auto position(std::uint32_t w) noexcept -> std::size_t
+{
+  if (w >= kWireGpu) {
+    return kGpuBase + std::size_t{w - kWireGpu} * kArenaUnit;
+  }
+  if (w >= kWireHeap) {
+    return kHeapBase + std::size_t{w - kWireHeap} * kArenaUnit;
+  }
+  return w;
+}
+
+// False for an arena position off a kArenaUnit boundary, and past the range.
+constexpr auto wire(std::size_t pos, std::uint32_t * w) noexcept -> bool
+{
+  std::size_t base = 0;
+  std::size_t at = pos;
+  if (pos >= kGpuBase) {
+    base = kWireGpu;
+    at = pos - kGpuBase;
+  } else if (pos >= kHeapBase) {
+    base = kWireHeap;
+    at = pos - kHeapBase;
+  } else {
+    *w = static_cast<std::uint32_t>(pos);
+    return true;
+  }
+  if (at % kArenaUnit != 0 || at / kArenaUnit > 0xFFFFFFFFu - base) {
+    return false;
+  }
+  *w = static_cast<std::uint32_t>(base + at / kArenaUnit);
+  return true;
+}
 // A frame with GPU arena blocks has that arena's trailer too: 128 bytes on an 8-byte boundary.
 constexpr std::size_t kGpuTrailer = 128 + 7;
 // Device blocks start on this boundary, as cudaMalloc's do.
@@ -370,12 +414,16 @@ public:
     return p != nullptr ? Span<const T>(reinterpret_cast<const T *>(p), n) : Span<const T>();
   }
 
-  auto desc(std::size_t off) const noexcept -> Desc { return get<Desc>(off); }
+  auto desc(std::size_t off) const noexcept -> Ref
+  {
+    const Desc d = get<Desc>(off);
+    return {position(d.off), d.len};
+  }
   // Element count of a variable array. 0 (and bad()) if its `esize`-byte elements do not fit, so
   // a loop bounded by it never indexes past the frame.
   auto len(std::size_t off, std::size_t esize, std::size_t align) const noexcept -> std::size_t
   {
-    const Desc d = desc(off);
+    const Ref d = desc(off);
     return region(d.off, d.len, esize, align) != nullptr ? d.len : 0;
   }
 
@@ -384,7 +432,7 @@ public:
   template <class T>
   auto span(std::size_t off) const noexcept -> Span<const T>
   {
-    const Desc d = desc(off);
+    const Ref d = desc(off);
     const std::byte * p = region(d.off, d.len, sizeof(T), alignof(T));
     return p != nullptr ? Span<const T>(reinterpret_cast<const T *>(p), d.len) : Span<const T>();
   }
@@ -395,7 +443,7 @@ public:
   template <class T>
   auto device(std::size_t off) const noexcept -> DeviceSpan<const T>
   {
-    const Desc d = desc(off);
+    const Ref d = desc(off);
     std::uint64_t base = gpu_.frame;
     std::size_t at = d.off;
     std::size_t size = size_;
@@ -425,7 +473,7 @@ public:
 
   auto str(std::size_t off) const noexcept -> std::string_view
   {
-    const Desc d = desc(off);
+    const Ref d = desc(off);
     const std::byte * p = region(d.off, d.len, 1, 1);
     return p != nullptr ? std::string_view(reinterpret_cast<const char *>(p), d.len)
                         : std::string_view();
@@ -434,24 +482,24 @@ public:
   // Entry `i` of a string array whose descriptor is at `off`.
   auto str_at(std::size_t off, std::size_t i) const noexcept -> std::string_view
   {
-    const Desc d = desc(off);
+    const Ref d = desc(off);
     if (region(d.off, d.len, sizeof(Desc), alignof(Desc)) == nullptr || i >= d.len) {
       bad_ = true;
       return {};
     }
-    return str(static_cast<std::size_t>(d.off) + i * sizeof(Desc));
+    return str(d.off + i * sizeof(Desc));
   }
 
   // Frame offset of element `i` of a record/jagged array whose descriptor is at `off`.
   auto elem(std::size_t off, std::size_t i, std::size_t stride, std::size_t align) const noexcept
     -> std::size_t
   {
-    const Desc d = desc(off);
+    const Ref d = desc(off);
     if (region(d.off, d.len, stride, align) == nullptr || i >= d.len) {
       bad_ = true;
       return 0;
     }
-    return static_cast<std::size_t>(d.off) + i * stride;
+    return d.off + i * stride;
   }
 
   // Aliases the data field. Empty (and bad()) when tensor_fault() finds one; `why` then names it,
@@ -609,14 +657,18 @@ public:
     std::uint64_t p = 0;
     if (n != 0) {
       std::uint64_t aoff = 0;
-      if (heap_.alloc_device != nullptr && n <= kArenaSpan / sizeof(T)) {
+      if (heap_.alloc_device != nullptr && n <= kGpuArenaSpan / sizeof(T)) {
         p = heap_.alloc_device(heap_, n * sizeof(T), kDeviceAlign, &aoff);
       }
       if (p == 0) {
         bad_ = true;
         return {};
       }
-      d = {static_cast<std::uint32_t>(kGpuBase + aoff), static_cast<std::uint32_t>(n)};
+      if (!wire(kGpuBase + static_cast<std::size_t>(aoff), &d.off)) {
+        bad_ = true;
+        return {};
+      }
+      d.len = static_cast<std::uint32_t>(n);
     }
     std::memcpy(dp, &d, sizeof(d));
     // NOLINTNEXTLINE(performance-no-int-to-ptr): a device address, never dereferenced here
@@ -689,7 +741,7 @@ public:
       bad_ = true;
       return false;
     }
-    return put_str(static_cast<std::size_t>(d.off) + i * sizeof(Desc), s);
+    return put_str(position(d.off) + i * sizeof(Desc), s);
   }
 
   // Reserve n element blocks of `stride` bytes and return the first one's frame offset;
@@ -719,7 +771,10 @@ public:
     if (heap_.base == nullptr) {
       heap_.base = static_cast<std::byte *>(const_cast<void *>(p)) - aoff;  // NOLINT
     }
-    const Desc d{static_cast<std::uint32_t>(kHeapBase + aoff), static_cast<std::uint32_t>(n)};
+    Desc d{0, static_cast<std::uint32_t>(n)};
+    if (!wire(kHeapBase + static_cast<std::size_t>(aoff), &d.off)) {
+      return false;
+    }
     std::memcpy(dp, &d, sizeof(d));
     return true;
   }
@@ -805,7 +860,11 @@ private:
       bad_ = true;
       return nullptr;
     }
-    const Desc d{static_cast<std::uint32_t>(where), static_cast<std::uint32_t>(n)};
+    Desc d{0, static_cast<std::uint32_t>(n)};
+    if (!wire(where, &d.off)) {
+      bad_ = true;
+      return nullptr;
+    }
     std::memcpy(dp, &d, sizeof(d));
     if (zero) {
       std::memset(p, 0, n * esize);

@@ -99,7 +99,9 @@ impl Heap {
         ctx: *mut c_void,
     ) -> Option<u64> {
         let len = u32::try_from(bytes).ok()?;
-        let off = arena::existing()?.offset_of(p, bytes)?;
+        let off = arena::existing()?
+            .offset_of(p, bytes)
+            .filter(|o| o.is_multiple_of(arena::UNIT))?;
         // SAFETY: the live loan holds the channel.
         unsafe { &*self.sh }.own(self.slot, Owned::Adopted(release, ctx, off, len));
         Some(off)
@@ -285,7 +287,13 @@ impl WriteSlot {
                 // SAFETY: list bytes of the arena, this frame's from here.
                 unsafe { write_list(v, a.ptr(off)) };
                 v.push(Owned::Block(off, len));
-                (true, gpu, blocks, arena::HEAP_BASE + off, at)
+                (
+                    true,
+                    gpu,
+                    blocks,
+                    u64::from(arena::wire(arena::HEAP_POS + off)?),
+                    at,
+                )
             }
         };
         let host = if host { arena::existing() } else { None };

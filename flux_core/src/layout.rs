@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64};
 
 pub const MAGIC: u32 = 0x464C_5832; // 'FLX2'
 pub const SIGNPOST_MAGIC: u32 = 0x464C_5350; // 'FLSP'
-pub const LAYOUT_VERSION: u32 = 7;
+pub const LAYOUT_VERSION: u32 = 8;
 pub const CACHE_LINE: usize = 64;
 // One page, so a subscriber can drop the payload to read-only while the headers it writes stay
 // writable. Fixed rather than read from the kernel: the layout must match across processes.

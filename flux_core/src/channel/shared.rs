@@ -148,15 +148,16 @@ pub enum Owned {
 }
 
 impl Owned {
-    /// The block's trailer entry: its descriptor offset and length.
+    /// The block's trailer entry: its descriptor offset and length. Blocks start on a `UNIT`
+    /// boundary, so every one has a descriptor offset.
     pub(super) fn entry(&self) -> [u8; arena::BLOCK_BYTES] {
         let (base, off, len) = match *self {
-            Owned::Block(off, len) | Owned::Adopted(_, _, off, len) => (arena::HEAP_BASE, off, len),
-            Owned::Gpu(_, off, len) => (arena::GPU_BASE, off, len),
+            Owned::Block(off, len) | Owned::Adopted(_, _, off, len) => (arena::HEAP_POS, off, len),
+            Owned::Gpu(_, off, len) => (arena::GPU_POS, off, len),
         };
         let mut e = [0u8; arena::BLOCK_BYTES];
-        #[allow(clippy::cast_possible_truncation)]
-        e[..4].copy_from_slice(&((base + off) as u32).to_le_bytes());
+        let wire = arena::wire(base + off).unwrap_or_default();
+        e[..4].copy_from_slice(&wire.to_le_bytes());
         e[4..].copy_from_slice(&len.to_le_bytes());
         e
     }
@@ -238,8 +239,8 @@ impl ChannelShared {
             .get_or_init(|| Stream::on_device(m.ordinal()).ok())
             .as_ref()?;
         let src = Source {
-            from: arena::GPU_BASE,
-            to: 1 << 32,
+            from: arena::GPU_POS,
+            to: u64::MAX,
             size: m.mapped_bytes(),
         };
         let blocks = self.copy_blocks(
@@ -256,7 +257,7 @@ impl ChannelShared {
                 #[allow(clippy::cast_possible_truncation)]
                 stream.copy_to_host(
                     b.host.cast_mut(),
-                    m.device_ptr(b.off - arena::GPU_BASE),
+                    m.device_ptr(b.off - arena::GPU_POS),
                     b.len as usize,
                 )
             },
@@ -291,8 +292,8 @@ impl ChannelShared {
             return None;
         }
         let src = Source {
-            from: arena::HEAP_BASE,
-            to: arena::GPU_BASE,
+            from: arena::HEAP_POS,
+            to: arena::GPU_POS,
             size: heap.len(),
         };
         self.copy_blocks(
@@ -307,7 +308,7 @@ impl ChannelShared {
             },
             |b| {
                 #[allow(clippy::cast_possible_truncation)]
-                let (at, len) = ((b.off - arena::HEAP_BASE) as usize, b.len as usize);
+                let (at, len) = ((b.off - arena::HEAP_POS) as usize, b.len as usize);
                 // SAFETY: copy_blocks checked the block against the mapping's length.
                 let from = unsafe { heap.as_ptr().add(at) };
                 g.stream.copy_to_device(b.device, from, len)

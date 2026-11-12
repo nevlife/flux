@@ -53,6 +53,18 @@ def stop(proc):
     return err
 
 
+def frames(bag):
+    """(recv_timestamp, FluxFrame) of every frame in the bag, in order."""
+    reader = rosbag2_py.SequentialReader()
+    reader.open(rosbag2_py.StorageOptions(uri=bag), rosbag2_py.ConverterOptions("cdr", "cdr"))
+    out = []
+    while reader.has_next():
+        topic, data, recv = reader.read_next()
+        if topic.endswith("/flux"):
+            out.append((recv, deserialize_message(data, FluxFrame)))
+    return out
+
+
 def values(bag):
     """The first byte of every frame in the bag, in order."""
     reader = rosbag2_py.SequentialReader()
@@ -181,7 +193,7 @@ def test_frames_past_the_cache_are_dropped_and_counted(node, tmp_path):
     assert queued == len(got) and dropped > 0 and queued + dropped + lost == 100, line
 
 
-def test_frames_with_fields_in_the_arena_are_left_out(node, tmp_path):
+def test_frames_with_fields_in_the_arena_are_recorded_and_play_back_as_they_were(node, tmp_path):
     from sensor_msgs_flux.image import Image
 
     k = key("arena")
@@ -189,13 +201,48 @@ def test_frames_with_fields_in_the_arena_are_left_out(node, tmp_path):
     pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=4096, slot_count=4)
     rec = record(bag, k)
     time.sleep(1.0)
-    for i, n in enumerate((16, 8192, 16, 8192, 16)):
+    sizes = (16, 8192, 16, 8192, 16)
+    for i, n in enumerate(sizes):
         b = Image.build__(pub)
         b.height, b.width, b.encoding, b.step = 1, n, "mono8", n
         b.alloc__data(n)[:] = i
         assert b.commit__() == flux.Published.OK
         time.sleep(0.05)
     err = stop(rec)
-    assert len(values(bag)) == 3
-    assert "frames with fields in their publisher's arena are not recorded" in err, err
-    assert ", 2 in the arena" in err, err
+    del pub
+    gc.collect()
+    assert "0 left out with fields in the arena" in err, err
+    # The bag's copy holds the 8192 bytes the arena did.
+    recorded = frames(bag)
+    assert [len(bytes(f.data)) >= n for _, f in recorded] == [True] * len(sizes)
+
+    sub = flux.Subscription(node, k, fingerprint=Image.FINGERPRINT__, qos=flux.QoS(depth=16))
+    play = subprocess.Popen(
+        [program("play"), bag], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    got = []
+    while True:
+        frame = sub.take_blocking(50_000_000)
+        if frame is not None:
+            img = Image.View(frame.copy())
+            got.append((img.width, int(np.asarray(img.data)[-1])))
+        elif play.poll() is not None:
+            break
+    assert play.returncode == 0
+    assert got == [(n, i) for i, n in enumerate(sizes)]
+
+    # convert_flux reads the copy as an Image: the ROS bag has every frame's bytes.
+    from sensor_msgs.msg import Image as RosImage
+
+    out = str(tmp_path / "ros")
+    run = subprocess.run([program("convert"), bag, "-o", out], capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    reader = rosbag2_py.SequentialReader()
+    reader.open(rosbag2_py.StorageOptions(uri=out), rosbag2_py.ConverterOptions("cdr", "cdr"))
+    ros = []
+    while reader.has_next():
+        topic, data, _ = reader.read_next()
+        if topic == k:
+            m = deserialize_message(data, RosImage)
+            ros.append((m.width, m.data[-1]))
+    assert ros == [(n, i) for i, n in enumerate(sizes)]

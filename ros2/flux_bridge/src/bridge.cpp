@@ -107,8 +107,18 @@ private:
         continue;
       }
       // Sizing and writing must read the same bytes, and a peer can still write a committed slot.
-      const auto * data = static_cast<const std::uint8_t *>(frame.data());
-      bytes.assign(data, data + frame.size());
+      // A frame with fields in its publisher's arena is copied with them, while it is held.
+      try {
+        if (frame.heap().empty()) {
+          const auto * data = static_cast<const std::uint8_t *>(frame.data());
+          bytes.assign(data, data + frame.size());
+        } else {
+          type_.inline_arena(frame.data(), frame.size(), frame.heap(), bytes);
+        }
+      } catch (const flux::Error &) {
+        ++unreadable_;
+        continue;
+      }
       frame.release();
       try {
         const std::size_t n = type_.cdr_size(bytes.data(), bytes.size());

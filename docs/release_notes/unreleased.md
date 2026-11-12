@@ -27,9 +27,13 @@
 * `flux_wrapper`가 `sensor_msgs/Image`와 `PointCloud2`를 GPU 메모리째 보내고 받는다(C++ `Device::Cuda`, Python `device="cuda"`). flux가 없으면 호스트로 복사해 ROS 메시지로 보낸다. `Cuda` 구독(Python `device="cuda"`)은 CPU 발행자의 메시지도 GPU 메모리로 받는다. ROS 경로의 메시지는 C++ 구독만 GPU 메모리로 받는다
 * `record_flux`가 프레임의 aux와 채널의 `aux_size`를 `FluxFrame.meta` 끝에 담고, `play_flux`가 같은 `aux_size`로 발행자를 만들어 aux와 함께 발행한다. `flux_wrapper`의 GPU 이미지 채널도 헤더와 함께 녹화하고 재생한다. aux를 담은 bag은 이전 `flux_bag`이 읽지 못한다
 * 구독이 콜백 뒤에도 프레임을 복사 없이 보유 가능하다. C++ `flux::Subscription`의 콜백은 `FrameView`를 move해서 보유하고, `flux_wrapper`의 콜백은 `std::shared_ptr<const View<Msg>>`를 받아 보유한다. 보유 가능한 수는 `max_borrow`이고, 슬롯이 그보다 적은 발행자는 거절한다
-* 생성된 어댑터의 가변 필드가 슬롯에 들어가지 않으면 발행 프로세스의 공유 메모리 arena에 저장된다. `slot_size`를 메시지의 최대 크기에 맞출 필요가 없다. 크기는 `FLUX_ARENA_BYTES`(기본값이자 최대값 1 GiB, 페이지는 사용하는 만큼 예약한다)로 정한다
+* 생성된 어댑터의 가변 필드가 슬롯에 들어가지 않으면 발행 프로세스의 공유 메모리 arena에 저장된다. `slot_size`를 메시지의 최대 크기에 맞출 필요가 없다. 크기는 `FLUX_ARENA_BYTES`(기본값이자 최대값 16 GiB, 페이지는 사용하는 만큼 예약한다)로 정한다. 프로세스의 모든 발행자가 나눠 쓴다
 * 생성된 어댑터 메시지의 숫자 배열 필드를 GPU에서 쓰고 GPU에서 읽는다(C++ `alloc_device__<name>`, `<name>__device()`). 나머지 필드는 호스트 슬롯에 남는다. 외장 GPU에서도 그 발행자의 슬롯은 호스트 메모리이고, 필드는 프로세스마다 GPU마다 하나인 GPU arena에 저장한다. 외장 GPU의 CPU 구독자는 그 프레임을 처음 읽는 시점에 GPU 필드를 복사한다. 반대로 CPU 발행자가 쓴 필드도 GPU 구독자가 `__device()`로 읽고, 외장 GPU에서 arena에 저장된 필드는 그 구독자가 처음 읽는 시점에 복사한다(통합 GPU에서는 슬롯 안의 필드만). Python에서도 같다(생성된 `alloc_device__<name>`, `<name>__device`, DLPack)
 * 라이브러리가 만든 버퍼를 복사 없이 필드로 넘긴다(`LD_PRELOAD=libflux_heaphook.so`, C++ `flux::ArenaScope`, Python `flux.arena_scope()`, 생성된 `adopt__<name>`)
+
+* `record_flux`가 필드를 arena에 저장한 프레임을 녹화한다. arena의 필드를 프레임 안으로 복사한 사본을 bag에 담으므로 `play_flux`와 `convert_flux`는 다른 프레임과 똑같이 읽는다. 그 타입이 설치되어 있어야 하고, GPU 메모리의 필드는 녹화하지 않는다
+* `flux_tools`의 rviz2 PointCloud2 디스플레이가 점을 arena에 저장한 프레임을 표시한다
+* `flux_bridge`와 ROS 2 mirror가 필드를 arena에 저장한 프레임을 중계한다. view를 보유한 동안 arena의 필드까지 사본에 복사한 뒤 CDR로 바꾼다
 
 ### 버그 수정
 
@@ -77,7 +81,7 @@
 * `flux::Subscription::require_publisher_slots`
 * `flux_wrapper`: `SubscriptionOptions::max_borrow`, `Subscription::HeldCallback`, `View::after`
 * arena: C++ `flux::ArenaScope`, `WriteSlot::heap`, `FrameView::heap`, `wire::Heap`, 생성된 `adopt__<name>`, `View::budget__`. Python `flux.arena_scope`, 생성된 `adopt__<name>`, `flux.wire.Reader.budget`. C `flux_heap`, `flux_loan_heap`, `flux_heap_alloc`, `flux_heap_adopt`, `flux_view_heap`, `flux_arena_acquire`, `flux_arena_release`, `flux_arena_scope_enter`, `flux_arena_scope_leave`, `FLUX_HEAP_BASE`. 라이브러리 `libflux_heaphook.so`
-* GPU arena: C++ `wire::DeviceSpan`, `wire::GpuHeap`, `wire::GpuBlock`, `Writer::alloc_device`, `Reader::device`, `FrameView::gpu_heap`, 생성된 `alloc_device__<name>`와 `<name>__device`. C `flux_heap.gpu`, `flux_heap_alloc_device`, `flux_gpu_heap`, `flux_gpu_block`, `flux_view_gpu_heap`, `flux_layout_register`, `FLUX_GPU_HEAP_BASE`. Python 생성된 `alloc_device__<name>`와 `<name>__device`, `flux.wire.DeviceSpan`, `flux.wire.Reader.device`, `flux.wire.Writer.alloc_device`
+* GPU arena: C++ `wire::DeviceSpan`, `wire::GpuHeap`, `wire::GpuBlock`, `Writer::alloc_device`, `Reader::device`, `FrameView::gpu_heap`, 생성된 `alloc_device__<name>`와 `<name>__device`. C `flux_heap.gpu`, `flux_heap_alloc_device`, `flux_gpu_heap`, `flux_gpu_block`, `flux_view_gpu_heap`, `flux_layout_register`, `FLUX_GPU_HEAP_BASE`, `FLUX_ARENA_UNIT`, `FLUX_GPU_HEAP_POS`. C++ `wire::Ref`, `wire::position`, `wire::wire`. arena 필드를 프레임 안으로 복사: C `flux_schema_inline_arena`, C++ `Schemas::Type::inline_arena`. Python 생성된 `alloc_device__<name>`와 `<name>__device`, `flux.wire.DeviceSpan`, `flux.wire.Reader.device`, `flux.wire.Writer.alloc_device`
 
 ### 호환이 깨지는 변경
 
@@ -85,7 +89,7 @@
     사용자가 고쳐야 하는 것마다 번호를 매기고, 고치기 전과 후를 코드로 보인다.
 -->
 
-1. 공유 메모리 배치 버전이 6에서 7로, C ABI 버전이 3에서 4로 올랐다. 슬롯에 aux 영역이 생겼기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
+1. 공유 메모리 배치 버전이 6에서 8로, C ABI 버전이 3에서 4로 올랐다. 슬롯에 aux 영역이 생겼고, arena를 가리키는 위치의 단위가 16 B가 되었기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
 2. C `flux_channel_create`에 `max_subscribers` 다음 인자로 `aux_size`가 생겼다. aux가 필요 없으면 0을 준다. `flux_frame_meta.reserved0[2]`는 `uint16_t aux_len`이 되었다.
 
    ```c
@@ -106,7 +110,7 @@
    flux::Subscription sub(*node, "image", flux::kNoSchema, flux::QoS{}, [](flux::FrameView && f) {});
    ```
 
-4. arena가 기본으로 활성화된다. 생성된 어댑터의 가변 필드가 슬롯에 들어가지 않으면 전에는 `commit__()`이 `TooLarge`였고, 이제는 arena에 넣어 발행한다. arena가 활성화된 `Builder`는 슬롯의 마지막 71 B를 가변 필드에 쓰지 않으므로, 슬롯 크기를 프레임에 꼭 맞게 설정한 발행자의 프레임도 arena로 넘칠 가능성이 있다. `flux_bridge`, ROS 2 mirror, `record_flux`는 필드를 arena에 저장한 프레임을 건너뛴다. 전처럼 동작하게 하려면 arena를 비활성화한다.
+4. arena가 기본으로 활성화된다. 생성된 어댑터의 가변 필드가 슬롯에 들어가지 않으면 전에는 `commit__()`이 `TooLarge`였고, 이제는 arena에 넣어 발행한다. arena가 활성화된 `Builder`는 슬롯의 마지막 71 B를 가변 필드에 쓰지 않으므로, 슬롯 크기를 프레임에 꼭 맞게 설정한 발행자의 프레임도 arena로 넘칠 가능성이 있다. `flux_bridge`, ROS 2 mirror, `record_flux`는 그 필드를 프레임 안으로 복사한 사본을 다룬다. 사본을 만들려면 그 타입이 설치되어 있어야 한다. 전처럼 동작하게 하려면 arena를 비활성화한다.
 
    ```bash
    # 전: 설정 없음

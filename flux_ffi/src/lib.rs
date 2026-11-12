@@ -44,6 +44,9 @@ pub const FLUX_MAX_AUX_SIZE: u32 = 32 * 1024;
 pub const FLUX_NO_STAMP: i32 = -1;
 pub const FLUX_HEAP_BASE: u64 = 0x8000_0000;
 pub const FLUX_GPU_HEAP_BASE: u64 = 0xC000_0000;
+// Arena descriptor offsets count 16-byte units. Readers use byte positions (GPU arena from POS).
+pub const FLUX_ARENA_UNIT: u64 = 16;
+pub const FLUX_GPU_HEAP_POS: u64 = 0x4_8000_0000;
 
 const _: () = {
     assert!(FLUX_MAX_DIMS == flux_core::MAX_DIMS);
@@ -60,4 +63,9 @@ const _: () = {
     assert!(FLUX_NO_STAMP == flux_core::trace::NO_STAMP);
     assert!(FLUX_HEAP_BASE == flux_core::arena::HEAP_BASE);
     assert!(FLUX_GPU_HEAP_BASE == flux_core::arena::GPU_BASE);
+    assert!(FLUX_ARENA_UNIT == flux_core::arena::UNIT);
+    assert!(FLUX_GPU_HEAP_POS == flux_core::arena::GPU_POS);
+    assert!(flux_gen::wire::HEAP_POS as u64 == flux_core::arena::HEAP_POS);
+    assert!(flux_gen::wire::GPU_POS as u64 == flux_core::arena::GPU_POS);
+    assert!(flux_gen::wire::UNIT as u64 == flux_core::arena::UNIT);
 };

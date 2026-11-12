@@ -7,10 +7,12 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include <gtest/gtest.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -101,6 +103,35 @@ TEST_F(Arena, AnArenaOffsetPastTheArenaIsRefused)
   const flux::wire::Reader r(f.data(), f.size(), {heap.data(), 0});
   EXPECT_TRUE(r.span<std::uint8_t>(8).empty());
   EXPECT_TRUE(r.bad());
+}
+
+// A descriptor past 1 GiB of the arena: offsets count 16-byte units, so a reader finds the run
+// at its byte position. The arena here is sparse anonymous memory, touched at one page.
+TEST(ArenaWire, AFieldPastOneGibIsReadAtItsPosition)
+{
+  using flux::wire::Desc;
+  constexpr std::size_t kSize = std::size_t{2} << 30;
+  constexpr std::size_t kAt = std::size_t{3} << 29;
+  void * m = mmap(
+    nullptr, kSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+  ASSERT_NE(m, MAP_FAILED);
+  auto * heap = static_cast<std::byte *>(m);
+  for (std::size_t i = 0; i < 64; ++i) {
+    heap[kAt + i] = static_cast<std::byte>(i);
+  }
+  std::uint32_t w = 0;
+  ASSERT_TRUE(flux::wire::wire(flux::wire::kHeapBase + kAt, &w));
+  EXPECT_EQ(w, flux::wire::kWireHeap + kAt / flux::wire::kArenaUnit);
+  EXPECT_FALSE(flux::wire::wire(flux::wire::kHeapBase + kAt + 8, &w)) << "off a unit";
+  const Desc d{w, 64};
+  std::vector<std::byte> frame(sizeof(Desc));
+  std::memcpy(frame.data(), &d, sizeof(d));
+  const flux::wire::Reader r(frame.data(), frame.size(), {heap, kSize});
+  const auto s = r.span<std::uint8_t>(0);
+  ASSERT_EQ(s.size(), 64U);
+  EXPECT_EQ(s[63], 63);
+  EXPECT_FALSE(r.bad());
+  munmap(m, kSize);
 }
 
 TEST_F(Arena, AdoptCopiesAContainerTheHookDidNotPlace)

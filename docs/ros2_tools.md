@@ -25,7 +25,7 @@ bridge는 노드 하나(`flux_bridge_<pid>`)를 생성하고, `--poll` 간격(�
 
 | 항목 | 값 |
 | --- | --- |
-| 프레임 경로 | 슬롯에서 프레임을 복사하고 view를 반납한 뒤, 그 사본에서 CDR bytes를 써서 `GenericPublisher`로 발행한다. 메시지 객체를 거치지 않는다. 필드를 arena에 저장한 프레임([concepts.md](concepts.md#arena))은 중계하지 않는다 |
+| 프레임 경로 | 슬롯에서 프레임을 복사하고 view를 반납한 뒤, 그 사본에서 CDR bytes를 써서 `GenericPublisher`로 발행한다. 메시지 객체를 거치지 않는다. 필드를 arena에 저장한 프레임([concepts.md](concepts.md#arena))은 view를 반납하기 전에 그 필드까지 사본에 복사한다 |
 | DDS QoS | depth 1, best-effort, volatile |
 | flux QoS | depth 1, `max_borrow` 1 |
 | 같은 이름의 채널 둘 | fingerprint가 다른 채널이 둘이면 signpost 순서로 첫 채널을 고른다 |
@@ -59,7 +59,7 @@ mirror를 활성화하면 발행자가 같은 이름의 ROS 2 토픽도 발행�
 
 | 항목 | 값 |
 | --- | --- |
-| 프레임 경로 | 발행자 프로세스 안의 스레드가 자기 채널을 읽는다. 이후는 bridge와 같고, 필드를 arena에 저장한 프레임은 발행하지 않는다 |
+| 프레임 경로 | 발행자 프로세스 안의 스레드가 자기 채널을 읽는다. 이후는 bridge와 같다. 필드를 arena에 저장한 프레임도 발행한다 |
 | 발행 경로 | `publish()`와 commit은 변환을 기다리지 않는다 |
 | ROS 2 구독자가 없는 경우 | flux 구독을 해제하고 100 ms마다 구독자 수만 확인한다. 구독자 번호(`max_subscribers`)를 차지하지 않는다 |
 | ROS 2 구독자가 있는 경우 | flux 구독자 하나로 연결되므로 구독자 번호 하나를 사용한다. 발행자의 `subscriber_count`에도 1로 들어간다 |
@@ -204,8 +204,8 @@ uint8[] data             # raw: 슬롯에 있던 프레임 bytes 그대로
 | 이미지 압축 | `--image-codec jpeg`는 `sensor_msgs/Image` 채널의 `rgb8`, `bgr8`, `mono8` 프레임의 픽셀을 JPEG(품질 `--jpeg-quality`, 기본 90)로 저장한다. 손실 압축이다. 픽셀 밖의 bytes(header, encoding, step 등)는 그대로 유지한다. 다른 encoding과 다른 타입의 프레임은 raw로 저장한다. 기본은 `raw`다 |
 | aux | 채널을 `aux_size`와 함께 생성했으면 프레임마다 meta 끝에 채널의 `aux_size`와 그 프레임의 aux bytes를 담는다. aux를 쓰지 않은 프레임도 `aux_size`는 담는다 |
 | GPU 메모리 채널 | `flux_wrapper`의 `Device::Cuda` Image, PointCloud2 채널 같은 GPU 메모리 채널도 녹화한다. 녹화기는 CPU 구독자라서 take마다 자기 호스트 버퍼로 한 번 복사하고, 그 bytes를 `data`에 담는다. 헤더는 aux로 함께 담긴다 |
-| arena | 필드를 arena에 저장한 프레임([concepts.md](concepts.md#arena))은 녹화하지 않는다. 프레임에는 arena 안의 위치만 있어 재생이 불가능하기 때문이다. 처음 한 번 경고를 남긴다 |
-| 종료 시 | 채널마다 큐에 넣은 수, 캐시가 차서 버린 수, `lost`, arena 때문에 녹화하지 않은 수를 로그로 남긴다 |
+| arena | 필드를 arena에 저장한 프레임([concepts.md](concepts.md#arena))은 arena의 필드를 프레임 안으로 복사한 사본으로 녹화한다. 프레임에는 arena 안의 위치만 있어 그대로는 재생이 불가능하기 때문이다. 재생과 변환은 이 사본을 다른 프레임과 똑같이 읽고, 재생은 사본이 들어가는 슬롯으로 발행자를 생성한다. 사본을 만들려면 그 타입이 설치되어 있어야 한다. 타입이 설치되어 있지 않거나 필드가 GPU 메모리에 있는 프레임은 녹화하지 않고, 처음 한 번 경고를 남긴다 |
+| 종료 시 | 채널마다 큐에 넣은 수, 캐시가 차서 버린 수, `lost`, 위 이유로 녹화하지 않은 arena 프레임 수를 로그로 남긴다 |
 
 ### 재생
 
@@ -257,7 +257,7 @@ rviz2에서 `Add` -> `flux_tools`를 고른다. 세 디스플레이 모두 rviz2
 | 디스플레이 | 타입 | 하는 일 |
 | --- | --- | --- |
 | `flux_tools/Image` | `sensor_msgs/Image` | 슬롯의 bytes를 텍스처로 바로 올린다. `rgb8`, `bgr8`, `rgba8`, `bgra8`, `mono8`, `8UC1`, `mono16`, `16UC1`, `32FC1`, `nv12` |
-| `flux_tools/PointCloud2` | `sensor_msgs/PointCloud2` | 점을 메시지로 한 번 복사해 rviz2 기본 point cloud renderer에 넘긴다. `x`, `y`, `z`가 `FLOAT32`여야 한다 |
+| `flux_tools/PointCloud2` | `sensor_msgs/PointCloud2` | 점을 메시지로 한 번 복사해 rviz2 기본 point cloud renderer에 넘긴다. `x`, `y`, `z`가 `FLOAT32`여야 한다. 점이 arena에 있는 프레임도 읽는다 |
 | `flux_tools/DepthCloud` | depth `sensor_msgs/Image` | depth 이미지(`16UC1`, `mono16`은 mm, `32FC1`은 m)를 GPU에서 3D 점으로 변환해 그린다. 같은 카메라의 `CameraInfo`는 DDS에서 받는다 |
 
 - Image: 16-bit와 `32FC1` 프레임에서는 `Normalize Range`(기본 활성화)가 프레임마다 최솟값과 최댓값을 검정과 흰색에 맞춘다. 비활성화하면 `Min Value`, `Max Value`를 사용한다. 픽셀 변환은 shader가 하고, CPU에서 픽셀을 바꾸지 않는다.

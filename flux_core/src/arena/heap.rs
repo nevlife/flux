@@ -1,4 +1,5 @@
-//! The allocator both arenas use: segregated free lists over boundary-tagged blocks.
+//! The allocator both arenas use: segregated free lists over boundary-tagged blocks, two levels
+//! of them as in TLSF, so finding a block never walks a list.
 
 use std::io;
 use std::ptr::NonNull;
@@ -12,7 +13,11 @@ const USED: u64 = 1;
 const PREV_USED: u64 = 2;
 const FLAGS: u64 = GRAIN - 1;
 const NIL: u64 = u64::MAX;
-const BINS: usize = 32;
+/// Each power of two of block sizes is split into this many lists.
+const SL_BITS: u32 = 3;
+const SL: usize = 1 << SL_BITS;
+/// Powers of two: blocks below 2^40 bytes, well past the largest arena.
+const FL: usize = 40;
 
 /// Makes `[from, to)` of an allocator's memory usable before the allocator writes there.
 pub(crate) type Grow<'a> = &'a mut dyn FnMut(u64, u64) -> io::Result<()>;
@@ -22,8 +27,10 @@ pub(crate) type Grow<'a> = &'a mut dyn FnMut(u64, u64) -> io::Result<()>;
 pub(crate) struct Heap {
     base: NonNull<u8>,
     size: u64,
-    pub(super) heads: [u64; BINS],
-    pub(super) nonempty: u32,
+    heads: [[u64; SL]; FL],
+    /// Bit i: some list of power i has a block. Bit j of `sl_map[i]`: list j of it has one.
+    fl_map: u64,
+    sl_map: [u8; FL],
     /// Bytes from the start made usable. Nothing past it is written.
     pub(super) committed: u64,
     /// How far `committed` moves at a time.
@@ -33,9 +40,13 @@ pub(crate) struct Heap {
 // SAFETY: reached only under the arena's lock.
 unsafe impl Send for Heap {}
 
+/// The list a free block of `size` bytes (at least `MIN_BLOCK`) goes on: its power of two, then
+/// which eighth of that power.
 #[allow(clippy::cast_possible_truncation)]
-fn bin(size: u64) -> usize {
-    (size.ilog2() as usize).min(BINS - 1)
+fn list_of(size: u64) -> (usize, usize) {
+    let fl = size.ilog2();
+    let sl = (size >> (fl - SL_BITS)) as usize & (SL - 1);
+    ((fl as usize).min(FL - 1), sl)
 }
 
 fn round_up(n: u64, a: u64) -> u64 {
@@ -55,8 +66,9 @@ impl Heap {
         let mut h = Heap {
             base,
             size,
-            heads: [NIL; BINS],
-            nonempty: 0,
+            heads: [[NIL; SL]; FL],
+            fl_map: 0,
+            sl_map: [0; FL],
             committed: if grow.is_some() { 0 } else { size },
             step,
         };
@@ -104,30 +116,34 @@ impl Heap {
     }
 
     fn insert(&mut self, b: u64) {
-        let i = bin(self.block_size(b));
-        let next = self.heads[i];
+        let (f, s) = list_of(self.block_size(b));
+        let next = self.heads[f][s];
         self.set(b + 16, next);
         self.set(b + 24, NIL);
         if next != NIL {
             self.set(next + 24, b);
         }
-        self.heads[i] = b;
-        self.nonempty |= 1 << i;
+        self.heads[f][s] = b;
+        self.sl_map[f] |= 1 << s;
+        self.fl_map |= 1 << f;
     }
 
     fn remove(&mut self, b: u64) {
-        let i = bin(self.block_size(b));
+        let (f, s) = list_of(self.block_size(b));
         let (next, prev) = (self.get(b + 16), self.get(b + 24));
         if prev == NIL {
-            self.heads[i] = next;
+            self.heads[f][s] = next;
         } else {
             self.set(prev + 16, next);
         }
         if next != NIL {
             self.set(next + 24, prev);
         }
-        if self.heads[i] == NIL {
-            self.nonempty &= !(1 << i);
+        if self.heads[f][s] == NIL {
+            self.sl_map[f] &= !(1 << s);
+            if self.sl_map[f] == 0 {
+                self.fl_map &= !(1 << f);
+            }
         }
     }
 
@@ -151,18 +167,32 @@ impl Heap {
         }
     }
 
-    /// First fit in `need`'s bin, else the head of a larger one, every block of which fits.
+    /// The head of `need`'s own list when it fits, the common case of frames of one size; else
+    /// the head of the first list at or above `need` rounded up to the next list, every block of
+    /// which fits. Either way no list is walked.
     fn find(&self, need: u64) -> Option<u64> {
-        let i = bin(need);
-        let mut b = self.heads[i];
-        while b != NIL {
-            if self.block_size(b) >= need {
-                return Some(b);
-            }
-            b = self.get(b + 16);
+        let (f, s) = list_of(need);
+        let head = self.heads[f][s];
+        if head != NIL && self.block_size(head) >= need {
+            return Some(head);
         }
-        let above = self.nonempty & !((2u32 << i).wrapping_sub(1));
-        (above != 0).then(|| self.heads[above.trailing_zeros() as usize])
+        let up = need.checked_add((1 << (need.ilog2() - SL_BITS)) - 1)?;
+        let (f, s) = list_of(up);
+        let here = u32::from(self.sl_map[f]) & (u32::MAX << s);
+        let (f, s) = if here != 0 {
+            (f, here.trailing_zeros() as usize)
+        } else {
+            let above = self.fl_map
+                & u64::MAX
+                    .checked_shl(u32::try_from(f + 1).ok()?)
+                    .unwrap_or(0);
+            if above == 0 {
+                return None;
+            }
+            let f = above.trailing_zeros() as usize;
+            (f, self.sl_map[f].trailing_zeros() as usize)
+        };
+        Some(self.heads[f][s])
     }
 
     /// The payload offset, on an `align` boundary (a power of two). None when no block fits or
@@ -225,6 +255,12 @@ impl Heap {
     pub(crate) fn usable(&self, payload: u64) -> u64 {
         self.block_size(payload - HEADER) - HEADER
     }
+
+    /// Lists with a free block: one once everything has coalesced back.
+    #[cfg(test)]
+    pub(super) fn lists_in_use(&self) -> u32 {
+        self.sl_map.iter().map(|m| m.count_ones()).sum()
+    }
 }
 
 #[cfg(test)]
@@ -267,8 +303,77 @@ mod tests {
                 h.free(*p);
             }
         }
-        assert_eq!(h.nonempty.count_ones(), 1);
-        assert_eq!(h.block_size(h.heads[bin(h.size)]), h.size);
+        assert_eq!(h.lists_in_use(), 1);
+        let (f, s) = list_of(h.size);
+        assert_eq!(h.block_size(h.heads[f][s]), h.size);
+    }
+
+    /// A list full of free blocks too small for the request is not walked: the request goes to a
+    /// later list, whose every block fits.
+    #[test]
+    fn a_request_skips_a_list_of_blocks_too_small_for_it() {
+        let (_mem, mut h) = heap(1 << 20);
+        let all: Vec<_> = (0..2000)
+            .map(|_| h.alloc(80, 16, &mut no_grow).unwrap())
+            .collect();
+        for p in all.iter().step_by(2) {
+            h.free(*p);
+        }
+        let p = h.alloc(96, 16, &mut no_grow).unwrap();
+        assert!(h.usable(p) >= 96);
+        assert!(
+            all.iter().all(|&q| q + 80 <= p - HEADER || q >= p + 96),
+            "overlaps a block"
+        );
+    }
+
+    /// Freed blocks of one size between blocks still used cannot coalesce; once nothing else is
+    /// left, a request of that size still gets one of them. 1024 bytes make a 1040-byte block,
+    /// inside its list rather than at its start, so rounding up alone would pass them over.
+    #[test]
+    fn a_freed_block_between_used_ones_serves_a_request_of_its_size() {
+        let (_mem, mut h) = heap(1 << 16);
+        let mut mine = Vec::new();
+        while let Some(p) = h.alloc(1024, 16, &mut no_grow) {
+            mine.push(p);
+            if h.alloc(100, 16, &mut no_grow).is_none() {
+                break;
+            }
+        }
+        for p in &mine {
+            h.free(*p);
+        }
+        for _ in 0..mine.len() {
+            assert!(
+                h.alloc(1024, 16, &mut no_grow).is_some(),
+                "a freed block fits"
+            );
+        }
+    }
+
+    /// ns per alloc and free with `n` free blocks too small for the request on its list, for
+    /// `n` from 10 to 10000: flat when no list is walked. `cargo test --release -- --ignored`.
+    #[test]
+    #[ignore = "a timing run"]
+    fn alloc_time_against_free_blocks_on_its_list() {
+        for n in [10usize, 100, 1000, 10_000] {
+            let (_mem, mut h) = heap(4 << 20);
+            let all: Vec<_> = (0..2 * n)
+                .map(|_| h.alloc(80, 16, &mut no_grow).unwrap())
+                .collect();
+            for p in all.iter().step_by(2) {
+                h.free(*p);
+            }
+            // Fewer rounds where each is slow, so a run stays short on the timing cores.
+            let rounds = (2_000_000 / u32::try_from(n).unwrap()).clamp(2000, 200_000);
+            let t = std::time::Instant::now();
+            for _ in 0..rounds {
+                let p = h.alloc(96, 16, &mut no_grow).unwrap();
+                h.free(std::hint::black_box(p));
+            }
+            let ns = t.elapsed().as_nanos() / u128::from(rounds);
+            println!("free blocks {n:>6}: {ns} ns per alloc and free");
+        }
     }
 
     #[test]

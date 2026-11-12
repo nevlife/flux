@@ -7,10 +7,31 @@
 //! A frame is written by another process, so `Reader` trusts none of it: every descriptor is
 //! checked against the frame size and the alignment its type needs. A violation latches `bad`
 //! and turns further reads into `None`. Values are native-endian, as both ends share the host.
+//!
+//! A descriptor offset at or past `WIRE_HEAP` names the publisher's arena in `UNIT`s, from
+//! `WIRE_GPU` its GPU arena. The reader works in positions, bytes from 0: the frame's below
+//! `HEAP_POS`, the arena's from it (`flux_core::arena` has the same numbers).
 
 use std::cell::Cell;
 
 use crate::layout::{DESC_ALIGN, DESC_SIZE};
+
+pub const WIRE_HEAP: u32 = 1 << 31;
+pub const WIRE_GPU: u32 = 3 << 30;
+pub const UNIT: usize = 16;
+pub const HEAP_POS: usize = 1 << 31;
+pub const GPU_POS: usize = HEAP_POS + (WIRE_GPU - WIRE_HEAP) as usize * UNIT;
+
+/// The position a descriptor offset names.
+pub fn position(wire: u32) -> usize {
+    if wire >= WIRE_GPU {
+        GPU_POS + (wire - WIRE_GPU) as usize * UNIT
+    } else if wire >= WIRE_HEAP {
+        HEAP_POS + (wire - WIRE_HEAP) as usize * UNIT
+    } else {
+        wire as usize
+    }
+}
 
 fn fits(off: usize, bytes: usize, size: usize) -> bool {
     off <= size && bytes <= size - off
@@ -20,13 +41,21 @@ fn fits(off: usize, bytes: usize, size: usize) -> bool {
 /// slot does (it starts on a page).
 pub struct Reader<'a> {
     buf: &'a [u8],
+    heap: &'a [u8],
     bad: Cell<bool>,
 }
 
 impl<'a> Reader<'a> {
     pub fn new(buf: &'a [u8]) -> Reader<'a> {
+        Reader::with_heap(buf, &[])
+    }
+
+    /// A frame whose descriptors may name `heap`, the arena its trailer names. GPU arena
+    /// positions are not the CPU's: reading one latches bad.
+    pub fn with_heap(buf: &'a [u8], heap: &'a [u8]) -> Reader<'a> {
         Reader {
             buf,
+            heap,
             bad: Cell::new(false),
         }
     }
@@ -40,29 +69,49 @@ impl<'a> Reader<'a> {
         None
     }
 
-    /// `n` elements of `esize` bytes at `off`, which must be a multiple of `align`.
+    /// `n` elements of `esize` bytes at position `off`, which must be a multiple of `align`.
     pub fn region(&self, off: usize, n: usize, esize: usize, align: usize) -> Option<&'a [u8]> {
-        let size = self.buf.len();
-        if self.bad() || !off.is_multiple_of(align) || off > size || n > (size - off) / esize {
+        let (mem, at) = if off >= GPU_POS {
+            return self.fail();
+        } else if off >= HEAP_POS {
+            (self.heap, off - HEAP_POS)
+        } else {
+            (self.buf, off)
+        };
+        let size = mem.len();
+        if self.bad() || !at.is_multiple_of(align) || at > size || n > (size - at) / esize {
             return self.fail();
         }
-        Some(&self.buf[off..off + n * esize])
+        Some(&mem[at..at + n * esize])
     }
 
+    /// Bytes descriptors can name: the frame's and its arena's.
+    pub fn budget(&self) -> usize {
+        self.buf.len() + self.heap.len()
+    }
+
+    /// `N` bytes at position `off`, unaligned.
     pub fn bytes<const N: usize>(&self, off: usize) -> Option<[u8; N]> {
-        if self.bad() || !fits(off, N, self.buf.len()) {
+        let (mem, at) = if off >= GPU_POS {
+            return self.fail();
+        } else if off >= HEAP_POS {
+            (self.heap, off - HEAP_POS)
+        } else {
+            (self.buf, off)
+        };
+        if self.bad() || !fits(at, N, mem.len()) {
             return self.fail();
         }
-        self.buf[off..off + N].try_into().ok()
+        mem[at..at + N].try_into().ok()
     }
 
     pub fn u32(&self, off: usize) -> Option<u32> {
         self.bytes(off).map(u32::from_ne_bytes)
     }
 
-    /// `(off, len)` of the descriptor at `off`.
+    /// `(position, len)` of the descriptor at `off`.
     pub fn desc(&self, off: usize) -> Option<(usize, usize)> {
-        Some((self.u32(off)? as usize, self.u32(off + 4)? as usize))
+        Some((position(self.u32(off)?), self.u32(off + 4)? as usize))
     }
 
     /// Element count of a variable array, checked to fit in the frame.

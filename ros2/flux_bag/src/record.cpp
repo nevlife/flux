@@ -1,3 +1,4 @@
+#include "flux/schemas.hpp"
 #include "flux/subscription.hpp"
 #include "flux/topics.hpp"
 #include "flux/trace.h"
@@ -332,7 +333,9 @@ public:
     thread_.join();
     RCLCPP_INFO(
       recorder_.get_logger(),
-      "%s: %lu frames queued, %lu dropped with the cache full, %lu lost, %lu in the arena",
+      "%s: %lu frames queued, %lu dropped with the cache full, %lu lost, %lu left out with fields "
+      "in "
+      "the arena",
       flux_topic_.c_str(), static_cast<unsigned long>(queued_),
       static_cast<unsigned long>(dropped_), static_cast<unsigned long>(sub_.lost()),
       static_cast<unsigned long>(arena_left_));
@@ -389,16 +392,16 @@ private:
     if (recorder_.is_paused()) {
       return;
     }
-    // shortcut: the frame holds only offsets into its publisher's arena, which a bag cannot
-    // replay; record the arena blocks with it, when frames past their slot need recording.
+    // A frame with fields in its publisher's arena holds only offsets there, which a bag cannot
+    // replay: the bag gets a copy that holds the fields itself. That needs the installed type.
+    const void * data = v.data();
+    std::size_t size = v.size();
     if (!v.heap().empty()) {
-      if (arena_left_++ == 0) {
-        RCLCPP_WARN(
-          recorder_.get_logger(),
-          "%s: frames with fields in their publisher's arena are not recorded",
-          flux_topic_.c_str());
+      if (!inline_arena(v)) {
+        return;
       }
-      return;
+      data = inlined_.data();
+      size = inlined_.size();
     }
     const rclcpp::Time stamp = recorder_.now();
     const std::int64_t sent = on_clock(v.publish_ns(), monotonic_ns(), stamp);
@@ -413,6 +416,21 @@ private:
     meta_.dtype = static_cast<flux::DType>(m.dtype);
     meta_.ndim = m.ndim;
     std::memcpy(meta_.shape.data(), m.shape, sizeof(meta_.shape));
+    if (data != v.data()) {
+      // The copy is a byte frame of its own size, and replay needs a slot that holds it.
+      meta_.dtype = flux::DType::U8;
+      meta_.ndim = 1;
+      meta_.shape.fill(0);
+      meta_.shape[0] = size;
+      std::uint64_t slot = 4096;
+      while (slot < size) {
+        slot *= 2;
+      }
+      inlined_slot_ = std::max(inlined_slot_, slot);
+      meta_.slot_size = std::max<std::uint32_t>(
+        meta_.slot_size,
+        static_cast<std::uint32_t>(std::min<std::uint64_t>(inlined_slot_, 1u << 31)));
+    }
 
     flux_bag::FluxFrameFields f;
     f.sec = static_cast<std::int32_t>(sent / 1'000'000'000);
@@ -422,10 +440,13 @@ private:
     f.codec = "raw";
     f.meta = meta_bytes_.data();
     f.meta_size = meta_.write(meta_bytes_.data());
-    f.data = v.data();
-    f.data_size = v.size();
+    f.data = data;
+    f.data_size = size;
     if (jpeg_) {
-      compress(v, f, meta_bytes_.data());
+      const sensor_msgs::flux_msg::Image::View img =
+        data == v.data() ? sensor_msgs::flux_msg::Image::View(v)
+                         : sensor_msgs::flux_msg::Image::View(data, size);
+      compress(img, static_cast<const std::uint8_t *>(data), size, f, meta_bytes_.data());
     }
     if (aux_size_ != 0) {
       const auto aux = v.aux();
@@ -453,11 +474,36 @@ private:
     }
   }
 
-  // An Image frame JPEG holds becomes codec "jpeg" in `f`, its data in packed_; any other frame
-  // stays raw.
-  void compress(const flux::FrameView & v, flux_bag::FluxFrameFields & f, std::uint8_t * meta)
+  // `v` with its arena fields copied in, into `inlined_`; false, and nothing recorded, when its
+  // type is not installed or a field is in GPU memory.
+  auto inline_arena(const flux::FrameView & v) -> bool
   {
-    const sensor_msgs::flux_msg::Image::View img(v);
+    // Every .msg on AMENT_PREFIX_PATH, read once by the first channel that needs it.
+    static const flux::Schemas schemas;
+    const char * why = "its type is not installed";
+    if (schemas.contains(fingerprint_)) {
+      try {
+        schemas.at(fingerprint_).inline_arena(v.data(), v.size(), v.heap(), inlined_);
+        return true;
+      } catch (const flux::Error &) {
+        why = "it does not match its type or has a field in GPU memory";
+      }
+    }
+    if (arena_left_++ == 0) {
+      RCLCPP_WARN(
+        recorder_.get_logger(),
+        "%s: a frame with fields in its publisher's arena is not recorded: %s", flux_topic_.c_str(),
+        why);
+    }
+    return false;
+  }
+
+  // An Image frame JPEG holds becomes codec "jpeg" in `f`, its data in packed_; any other frame
+  // stays raw. `frame` is the frame `img` reads, of `size` bytes.
+  void compress(
+    const sensor_msgs::flux_msg::Image::View & img, const std::uint8_t * frame, std::size_t size,
+    flux_bag::FluxFrameFields & f, std::uint8_t * meta)
+  {
     const std::uint32_t width = img.width();
     const std::uint32_t height = img.height();
     const std::uint32_t step = img.step();
@@ -473,12 +519,11 @@ private:
     if (n == 0) {
       return;
     }
-    const auto * frame = static_cast<const std::uint8_t *>(v.data());
     flux_bag::JpegMeta jm;
     jm.raw = meta_;
     jm.at = static_cast<std::uint64_t>(pixels.data() - frame);
     jm.len = pixels.size();
-    const std::size_t rest = v.size() - jm.at - jm.len;
+    const std::size_t rest = size - jm.at - jm.len;
     packed_.resize(jm.at + rest + n);
     std::memcpy(packed_.data(), frame, jm.at);
     std::memcpy(packed_.data() + jm.at, frame + jm.at + jm.len, rest);
@@ -503,6 +548,9 @@ private:
   std::vector<std::uint8_t> meta_bytes_;
   std::unique_ptr<flux_bag::JpegEncoder> jpeg_;
   std::vector<std::uint8_t> packed_;
+  // A frame with fields in the arena, copied to hold them, and the slot replay needs for it.
+  std::vector<std::uint8_t> inlined_;
+  std::uint64_t inlined_slot_ = 0;
   std::uint64_t queued_ = 0;
   std::uint64_t dropped_ = 0;
   std::uint64_t reported_lost_ = 0;

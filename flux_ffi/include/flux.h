@@ -43,6 +43,10 @@
 
 #define FLUX_GPU_HEAP_BASE 3221225472
 
+#define FLUX_ARENA_UNIT 16
+
+#define FLUX_GPU_HEAP_POS 19327352832
+
 #define FLUX_DTYPE_U8 0
 
 #define FLUX_DTYPE_I8 1
@@ -193,7 +197,8 @@ typedef struct flux_gpu_block {
 
 // A frame's fields across `PCIe` (`flux_view_gpu_heap`): the GPU arena's offset 0 (0 for none)
 // and reach, the frame's device address with a stream, and the subscriber's copies of the
-// `count` blocks on the other side (host for a CPU subscriber, device for a discrete GPU one).
+// `count` blocks on the other side (host for a CPU subscriber, device for a discrete GPU one),
+// each at its position (`FLUX_GPU_HEAP_POS`).
 typedef struct flux_gpu_heap {
   uint64_t device;
   const uint8_t *host;
@@ -687,6 +692,16 @@ flux_status flux_schema_write_cdr(const struct flux_schema *s,
                                   uint8_t *out,
                                   size_t cap,
                                   size_t *written);
+
+// The frame with its arena (`heap`) fields copied in, sized as `write_cdr`; GPU fields mismatch.
+flux_status flux_schema_inline_arena(const struct flux_schema *s,
+                                     const uint8_t *data,
+                                     size_t len,
+                                     const uint8_t *heap,
+                                     size_t heap_len,
+                                     uint8_t *out,
+                                     size_t cap,
+                                     size_t *written);
 
 // Why this thread's last failed call failed. Valid until its next failed call.
 const char *flux_last_error(void);

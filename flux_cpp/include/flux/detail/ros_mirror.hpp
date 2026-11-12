@@ -47,10 +47,15 @@ public:
       return 0;
     }
     // Sizing and writing must read the same bytes, and a peer can still write a committed slot.
-    const auto * data = static_cast<const std::uint8_t *>(frame.data());
-    bytes_.assign(data, data + frame.size());
-    frame.release();
+    // A frame with fields in its publisher's arena is copied with them, while it is held.
     try {
+      if (frame.heap().empty()) {
+        const auto * data = static_cast<const std::uint8_t *>(frame.data());
+        bytes_.assign(data, data + frame.size());
+      } else {
+        type_.inline_arena(frame.data(), frame.size(), frame.heap(), bytes_);
+      }
+      frame.release();
       const std::size_t n = type_.cdr_size(bytes_.data(), bytes_.size());
       return type_.write_cdr(bytes_.data(), bytes_.size(), out(n), n);
     } catch (const Error &) {

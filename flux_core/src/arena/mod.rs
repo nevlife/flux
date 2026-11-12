@@ -2,8 +2,10 @@
 //!
 //! A frame names arena bytes by offset, never by pointer, so a subscriber maps the file wherever
 //! it lands and a Python reader reads it as it reads a slot. A descriptor offset at or past
-//! `HEAP_BASE` and below `GPU_BASE` is `HEAP_BASE` + an arena offset; the frame ends in a
-//! trailer naming the file. Offsets from `GPU_BASE` up are the GPU arena's (`gpu::arena`).
+//! `HEAP_BASE` and below `GPU_BASE` is `HEAP_BASE` + an arena offset in `UNIT`s; the frame ends
+//! in a trailer naming the file. Offsets from `GPU_BASE` up are the GPU arena's (`gpu::arena`).
+//! Readers work in positions, bytes from 0: a slot's below `HEAP_POS`, the arena's from it, the
+//! GPU arena's from `GPU_POS`. `position` and `wire` convert.
 //! The publisher frees what a frame owns when it claims that frame's slot again, so the slot's
 //! reader counts guard the arena bytes too.
 //!
@@ -35,8 +37,42 @@ pub(crate) use heap::Heap;
 
 pub const HEAP_BASE: u64 = 1 << 31;
 pub const GPU_BASE: u64 = 3 << 30;
-/// Descriptors are u32: the arena has the third quarter of their range, the GPU arena the fourth.
-pub const MAX_ARENA_BYTES: usize = 1 << 30;
+/// Descriptors are u32: the arena has the third quarter of their range, the GPU arena the fourth,
+/// each value one `UNIT`. Every block starts on a `UNIT` boundary (the allocator's grain).
+pub const UNIT: u64 = 16;
+pub const MAX_ARENA_BYTES: usize = 16 << 30;
+/// The GPU arena stays at 1 GiB: its address reservation and chunks were sized for that.
+pub const MAX_GPU_ARENA_BYTES: usize = 1 << 30;
+pub const HEAP_POS: u64 = HEAP_BASE;
+pub const GPU_POS: u64 = HEAP_POS + (GPU_BASE - HEAP_BASE) * UNIT;
+
+/// The position a descriptor offset names.
+pub fn position(wire: u32) -> u64 {
+    let w = u64::from(wire);
+    if w >= GPU_BASE {
+        GPU_POS + (w - GPU_BASE) * UNIT
+    } else if w >= HEAP_BASE {
+        HEAP_POS + (w - HEAP_BASE) * UNIT
+    } else {
+        w
+    }
+}
+
+/// The descriptor offset of a position; None for an arena position off a `UNIT` boundary or
+/// past the range.
+pub fn wire(pos: u64) -> Option<u32> {
+    let (base, at) = if pos >= GPU_POS {
+        (GPU_BASE, pos - GPU_POS)
+    } else if pos >= HEAP_POS {
+        (HEAP_BASE, pos - HEAP_POS)
+    } else {
+        return u32::try_from(pos).ok();
+    };
+    if !at.is_multiple_of(UNIT) {
+        return None;
+    }
+    u32::try_from(base + at / UNIT).ok()
+}
 /// A frame with arena blocks ends in the GPU arena's trailer when it has GPU blocks, then this
 /// one: its magic, the arena's name, and the list of the blocks, by descriptor offset and length.
 /// The list is in the frame before the trailers when it fits the slot, else in the arena.
@@ -307,34 +343,50 @@ pub fn blocks<'a>(frame: &'a [u8], heap: Option<&'a [u8]>) -> Option<&'a [u8]> {
         let end = at.checked_add(len)?;
         return (end <= frame.len().checked_sub(behind)?).then(|| &frame[at..end]);
     }
-    let at = usize::try_from(at - HEAP_BASE).ok()?;
-    if at >= MAX_ARENA_BYTES {
+    if at >= GPU_BASE {
         return None;
     }
+    let at = usize::try_from((at - HEAP_BASE) * UNIT).ok()?;
     heap?.get(at..at.checked_add(len)?)
 }
 
-/// The entries of a block `list` whose descriptor offsets are in `from..to`, as (descriptor
-/// offset, length); None when one of them runs past `size` bytes from `from`.
+/// The entries of a block `list` whose positions are in `from..to`, as (position, length); None
+/// when one of them runs past `size` bytes from `from`.
 pub fn entries_in(
     list: &[u8],
     from: u64,
     to: u64,
     size: usize,
 ) -> Option<impl Iterator<Item = (u64, u64)> + '_> {
-    let u32_at = |b: [u8; 4]| u64::from(u32::from_le_bytes(b));
+    let u32_at = |b: [u8; 4]| u32::from_le_bytes(b);
     let mine = list
         .as_chunks::<BLOCK_BYTES>()
         .0
         .iter()
         .map(move |&[o0, o1, o2, o3, l0, l1, l2, l3]| {
-            (u32_at([o0, o1, o2, o3]), u32_at([l0, l1, l2, l3]))
+            (
+                position(u32_at([o0, o1, o2, o3])),
+                u64::from(u32_at([l0, l1, l2, l3])),
+            )
         })
         .filter(move |&(off, _)| (from..to).contains(&off));
     let fits = mine
         .clone()
         .all(|(off, len)| off - from + len <= size as u64);
     fits.then_some(mine)
+}
+
+/// `frame` without its arena trailer: the frame itself when it has none. None when a GPU
+/// arena's trailer comes first, whose fields the CPU cannot read here.
+pub fn body(frame: &[u8]) -> Option<&[u8]> {
+    let Some(at) = frame.len().checked_sub(TRAILER_BYTES) else {
+        return Some(frame);
+    };
+    match &frame[at..at + MAGIC.len()] {
+        m if *m == MAGIC => Some(&frame[..at]),
+        m if *m == MAGIC_GPU => None,
+        _ => Some(frame),
+    }
 }
 
 /// The GPU arena's trailer in `frame`, if its own says one comes before it.
@@ -564,7 +616,76 @@ mod tests {
         let b = h.alloc(1000, 16, &mut broken).unwrap();
         h.free(a);
         h.free(b);
-        assert_eq!(h.nonempty.count_ones(), 1);
+        assert_eq!(h.lists_in_use(), 1);
+        // SAFETY: mapped above; nothing points into it any more.
+        unsafe { sys::munmap(base, size) };
+    }
+
+    #[test]
+    fn positions_and_descriptor_offsets_convert_both_ways() {
+        let gib = 1u64 << 30;
+        for pos in [
+            0,
+            4096,
+            HEAP_POS,
+            HEAP_POS + UNIT,
+            HEAP_POS + gib,
+            HEAP_POS + 16 * gib - UNIT,
+            GPU_POS,
+            GPU_POS + 256,
+        ] {
+            let w = wire(pos).expect("a descriptor offset");
+            assert_eq!(position(w), pos, "{pos:#x}");
+        }
+        assert_eq!(wire(HEAP_POS + 8), None, "off a UNIT boundary");
+        assert_eq!(wire(GPU_POS + 16 * gib), None, "past u32");
+        assert_eq!(
+            position(u32::try_from(HEAP_BASE).unwrap() - 1),
+            HEAP_BASE - 1
+        );
+    }
+
+    /// An arena past 1 GiB: a block there has a descriptor offset, and a list there is found and
+    /// read back as positions. The memory is sparse, so only the touched pages are used.
+    #[test]
+    fn a_block_and_a_list_past_one_gib_are_named_and_found() {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let size = 2usize << 30;
+        // SAFETY: plain syscall.
+        let raw = unsafe { libc::memfd_create(c"arena_far".as_ptr(), 0) };
+        assert!(raw >= 0);
+        // SAFETY: a fresh descriptor, owned here.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        let len = libc::off_t::try_from(size).unwrap();
+        // SAFETY: plain syscall on a descriptor we hold.
+        assert_eq!(unsafe { libc::ftruncate(fd.as_raw_fd(), len) }, 0);
+        let base = sys::map_shared(fd.as_raw_fd(), size).unwrap();
+        let mut grow = |_, _| Ok(());
+        let mut h = Heap::new(base, size as u64, COMMIT_STEP, Some(&mut grow)).unwrap();
+        let big = h.alloc(3 << 29, 16, &mut grow).unwrap();
+        let far = h.alloc(64, 16, &mut grow).unwrap();
+        assert!(far > 1 << 30, "{far:#x}");
+        let w = wire(HEAP_POS + far).expect("a descriptor offset past 1 GiB");
+        assert_eq!(position(w), HEAP_POS + far);
+        // A list of one entry naming `far` itself, in the arena at `far`.
+        let mut entry = [0u8; BLOCK_BYTES];
+        entry[..4].copy_from_slice(&w.to_le_bytes());
+        entry[4..].copy_from_slice(&64u32.to_le_bytes());
+        let far_at = usize::try_from(far).unwrap();
+        // SAFETY: far has 64 bytes in the mapping.
+        let dst = unsafe { base.as_ptr().add(far_at) };
+        // SAFETY: as above; nothing else writes there.
+        unsafe { std::ptr::copy_nonoverlapping(entry.as_ptr(), dst, BLOCK_BYTES) };
+        let mut frame = vec![0u8; 128];
+        frame[64..].copy_from_slice(&trailer(None, false, w, 1));
+        // SAFETY: mapped above with size; read only below.
+        let heap = unsafe { std::slice::from_raw_parts(base.as_ptr(), size) };
+        let list = blocks(&frame, Some(heap)).expect("the list past 1 GiB");
+        assert_eq!(list, &entry);
+        let got: Vec<_> = entries_in(list, HEAP_POS, GPU_POS, size).unwrap().collect();
+        assert_eq!(got, [(HEAP_POS + far, 64)]);
+        h.free(far);
+        h.free(big);
         // SAFETY: mapped above; nothing points into it any more.
         unsafe { sys::munmap(base, size) };
     }

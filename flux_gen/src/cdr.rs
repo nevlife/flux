@@ -214,15 +214,15 @@ impl<S: Sink> Walk<'_, '_, S> {
     }
 }
 
-fn walk<S: Sink>(layout: &Layout, frame: &[u8], mut sink: S) -> Result<S, Unreadable> {
-    let r = Reader::new(frame);
+fn walk<S: Sink>(layout: &Layout, frame: &[u8], heap: &[u8], mut sink: S) -> Result<S, Unreadable> {
+    let r = Reader::with_heap(frame, heap);
     let type_name = layout.type_name();
     sink.put(&ENCAPSULATION_CDR_LE);
     let mut w = Walk {
         r: &r,
         sink,
         type_name: &type_name,
-        unread: frame.len(),
+        unread: r.budget(),
     };
     w.block(&layout.root, 0)?;
     Ok(w.sink)
@@ -230,11 +230,26 @@ fn walk<S: Sink>(layout: &Layout, frame: &[u8], mut sink: S) -> Result<S, Unread
 
 /// Bytes `write_cdr` will write for this frame, encapsulation header included.
 pub fn cdr_size(layout: &Layout, frame: &[u8]) -> Result<usize, Unreadable> {
-    walk(layout, frame, Counter(0)).map(|c| c.0)
+    cdr_size_in(layout, frame, &[])
+}
+
+/// `cdr_size` of a frame whose fields may be in `heap`, the arena its trailer names.
+pub fn cdr_size_in(layout: &Layout, frame: &[u8], heap: &[u8]) -> Result<usize, Unreadable> {
+    walk(layout, frame, heap, Counter(0)).map(|c| c.0)
 }
 
 /// Writes the frame as CDR into `out` and returns its size. A size past `out.len()` means `out` was
 /// too small and holds no complete message.
 pub fn write_cdr(layout: &Layout, frame: &[u8], out: &mut [u8]) -> Result<usize, Unreadable> {
-    walk(layout, frame, Fill { out, pos: 0 }).map(|f| f.pos)
+    write_cdr_in(layout, frame, &[], out)
+}
+
+/// `write_cdr` of a frame whose fields may be in `heap`.
+pub fn write_cdr_in(
+    layout: &Layout,
+    frame: &[u8],
+    heap: &[u8],
+    out: &mut [u8],
+) -> Result<usize, Unreadable> {
+    walk(layout, frame, heap, Fill { out, pos: 0 }).map(|f| f.pos)
 }

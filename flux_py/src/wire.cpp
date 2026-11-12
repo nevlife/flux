@@ -853,7 +853,7 @@ void bind_wire(nb::module_ & m)
       "desc",
       [](const Reader & r, std::size_t off) {
         const flux::wire::Reader w = r.reader();
-        const flux::wire::Desc d = w.desc(off);
+        const flux::wire::Ref d = w.desc(off);
         Reader::check(w, "descriptor", off);
         return std::pair<std::size_t, std::size_t>(d.off, d.len);
       },
