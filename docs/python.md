@@ -116,7 +116,7 @@ flux.Subscription(node, topic, callback=None, fingerprint=flux.NO_SCHEMA, qos=No
 - 노드가 있으면 helper 스레드가 GIL 없이 프레임을 기다렸다가 rclpy executor에 task를 넣는다.
 - rclpy executor로는 `SingleThreadedExecutor`와 `EventsExecutor`가 사용 가능하다. `MultiThreadedExecutor`는 사용하지 않는다. 바쁜 구독이 있으면 다른 스레드가 넣은 task를 늦게 실행하거나 놓치기 때문이다(flux 없이도 재현된다).
 - flux 처리가 한 번에 1 ms를 넘으면 ROS 콜백에 차례를 넘긴다. 우선순위 규칙은 C++와 같다(값이 큰 구독이 먼저, 같으면 한 프레임씩 번갈아).
-- 연결 시 거절된 구독은 로그를 한 번 남기고, 발행자 재시작 시까지 executor에서 빠진다. 나머지 구독은 계속 실행된다.
+- 연결 시 거절된 구독은 로그를 한 번 남기고, 발행자 재시작 시까지 executor에서 제외된다. 나머지 구독은 계속 실행된다.
 
 ## executor 없이 읽기
 
@@ -163,7 +163,7 @@ sub = flux.Subscription(node, "cmd", qos=qos)
 
 생략한 필드는 기본값이다. 값의 뜻은 [qos.md](qos.md)에 있다.
 
-## 메시지 타입 붙이기
+## 생성 메시지 사용
 
 `.msg`에서 생성한 어댑터 모듈은 `FINGERPRINT__`, `View`, `Builder`를 제공한다. 생성 방법과 접근자 규칙은 [messages.md](messages.md)에 있다.
 

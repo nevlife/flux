@@ -204,7 +204,7 @@ flux::Subscription sub(*node, "cmd", flux::kNoSchema, qos);
 
 값의 뜻은 [qos.md](qos.md)에 있다.
 
-## 메시지 타입 붙이기
+## 생성 메시지 사용
 
 `.msg`에서 생성한 어댑터는 fingerprint와 `View`, `Builder`를 제공한다. 생성 방법과 접근자 규칙은 [messages.md](messages.md)에 있다.
 

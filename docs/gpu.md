@@ -160,7 +160,7 @@ with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stre
 | --- | --- | --- |
 | CPU → CPU | 복사 없음 | 복사 없음 |
 | GPU → GPU | 복사 없음 | 복사 없음 |
-| CPU → GPU | 복사 없음 | 구독자가 take마다 자기 GPU 버퍼로 복사한다. 복사는 구독 스트림에 걸린다 |
+| CPU → GPU | 복사 없음 | 구독자가 take마다 자기 GPU 버퍼로 복사한다. 복사는 구독 스트림에서 실행된다 |
 | GPU → CPU | 복사 없음 | 구독자가 take마다 자기 호스트 버퍼로 복사하고, take 안에서 완료를 기다린다 |
 | `publish(호스트 배열)` → GPU 메모리 채널 | 해당 없음 | 발행자가 슬롯으로 복사한 뒤 commit한다 |
 

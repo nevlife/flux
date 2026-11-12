@@ -65,7 +65,7 @@ from sensor_msgs_flux.image_ros import frame_to_msg, msg_to_frame
 | `build__(pub)` | `build__(pub)` | 슬롯을 loan해 `Builder`를 반환한다 |
 | `.msg`의 상수 | `.msg`의 상수 | 같은 이름의 상수 |
 
-사용 예는 [cpp.md](cpp.md#메시지-타입-붙이기)와 [python.md](python.md#메시지-타입-붙이기)에 있다.
+사용 예는 [cpp.md](cpp.md#생성-메시지-사용)와 [python.md](python.md#생성-메시지-사용)에 있다.
 
 ## 접근자 규칙
 
@@ -99,7 +99,7 @@ geometry_msgs/Pose pose
 - 숫자 가변 배열은 `alloc_device__<name>(n)`으로 GPU에서 쓰고 `<name>__device`(C++는 `<name>__device()`)로 GPU에서 읽는 것도 가능하다([gpu.md](gpu.md#생성-메시지의-gpu-필드)).
 - 슬롯과 arena 모두 자리가 모자라면(arena가 비활성화되었거나 가득 찬 경우) C++ `alloc__`은 빈 `Span`을 반환하고, 그 뒤 `Builder`는 `false`, `commit__()`은 발행 없이 `TooLarge`를 반환한다.
 - Python 접근자와 `frame_to_msg()`는 문자열을 첫 NUL에서 자른다. rclpy도 같다. C++ `View` 접근자는 쓰인 bytes를 그대로 반환한다.
-- C++ 이름이 C++ 키워드와 겹치면 끝에 `_`를 붙인다. Python은 Python 키워드만 피한다. 메시지 이름 `View`, `Builder`는 사용 불가능하다.
+- C++ 이름이 C++ 키워드와 겹치면 끝에 `_`를 추가한다. Python은 Python 키워드만 피한다. 메시지 이름 `View`, `Builder`는 사용 불가능하다.
 
 ## 받는 쪽의 검사
 

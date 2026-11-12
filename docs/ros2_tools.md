@@ -111,7 +111,7 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 - 구독은 `SubscriptionOptions`로 callback group을 받는다. flux 경로의 구독은 그 그룹을 실행하는 flux executor가 처리한다. `flux_wrapper::Executor`는 flux로 빌드했으면 `flux::Executor`, 아니면 `rclcpp::executors::SingleThreadedExecutor`다.
 - 콜백이 `std::shared_ptr<const View<Msg>>`를 받으면(`HeldCallback`) 콜백 뒤에도 View를 보유 가능하다. 포인터가 살아 있는 동안 View가 읽는 메시지가 남고, flux 경로에서는 슬롯도 남는다. 마지막 포인터가 사라지는 시점에 반납되며, 반납하는 스레드는 무관하다.
 - `SubscriptionOptions::max_borrow`(기본 1)는 한 구독에서 동시에 살아 있는 View의 최대 수다. 콜백 안의 View와 보유한 View를 합한다. 0이면 생성자가 `std::invalid_argument`를 던진다.
-- flux 경로에서는 View를 `max_borrow`개 보유한 동안 다음 프레임이 발행자의 링에서 기다린다. 슬롯이 `max_borrow`개 이하인 발행자는 거절한다. 생성자에서 연결 시에는 `flux::Error`를 던지고, executor 아래에서는 로그를 한 번 남기고 발행자 재시작 시까지 그 구독을 뺀다.
+- flux 경로에서는 View를 `max_borrow`개 보유한 동안 다음 프레임이 발행자의 링에서 기다린다. 슬롯이 `max_borrow`개 이하인 발행자는 거절한다. 생성자에서 연결 시에는 `flux::Error`를 던지고, executor 아래에서는 로그를 한 번 남기고 발행자 재시작 시까지 그 구독을 제외한다.
 - 보유된 슬롯에는 발행자가 쓰지 않는다. 프레임이 버려지지 않으려면 발행자의 `slot_count`가 같은 토픽의 모든 구독이 동시에 점유하는 수보다 1 이상 커야 한다.
 - ROS 경로에서 `max_borrow`는 `Cuda` 구독의 GPU 버퍼 수만 정한다. 버퍼가 모두 점유되어 있으면 그 메시지를 건너뛰고 오류 로그를 한 번 남긴다. Reentrant 그룹에서 콜백이 `max_borrow`개보다 많이 겹치는 경우도 같다. 호스트 구독에는 제한이 없다.
 
