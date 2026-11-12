@@ -110,7 +110,7 @@ flux.Subscription(node, topic, callback=None, fingerprint=flux.NO_SCHEMA, qos=No
 | `add(source, priority=0)` | 콜백이 있는 `Subscription`이나 `flux.message_filters.Subscriber`를 추가한다. 콜백이 없으면 `ValueError` |
 | `add_node(node)` | rclpy 노드를 추가한다 |
 | `spin()` | `stop()`, 콜백 예외, rclpy context 종료 중 하나가 발생할 시점까지 실행한다 |
-| `stop()` | 어느 스레드, 콜백, signal handler에서든 `spin()`을 끝낸다. `spin()` 전에 호출하면 다음 `spin()`이 바로 끝난다 |
+| `stop()` | 어느 스레드, 콜백, signal handler에서든 spin을 끝낸다. spin 전에 호출하면 다음 `spin()`이 바로 끝난다 |
 
 - flux 구독만 있으면 executor는 rclpy executor 없이 실행된다. 대기 중에는 GIL을 해제하고, 콜백 호출 시와 100 ms 주기마다 GIL을 획득한다.
 - 노드가 있으면 helper 스레드가 GIL 없이 프레임을 기다렸다가 rclpy executor에 task를 넣는다.
@@ -242,7 +242,7 @@ ex.spin()
 | `on_thread_start(unit, init)` | 그룹이나 노드의 스레드가 실행되기 전에 `init()`을 그 스레드에서 호출한다 |
 | `add_sync_group(*inputs)` | 한 synchronizer의 입력들을 알린다. 입력은 모두 flux 입력이고 한 그룹에 있어야 한다 |
 | `spin()` | 어느 스레드에서든 첫 오류가 발생하면 모든 스레드를 멈추고 그 오류를 여기서 낸다 |
-| `stop()` | 어느 스레드에서든 `spin()`을 끝낸다 |
+| `stop()` | 어느 스레드에서든 spin을 끝낸다 |
 
 - flux 구독을 넣은 그룹에 ROS 엔티티(구독, 타이머, 서비스 등)가 있으면 `spin()`이 거절한다. rclpy executor에는 엔티티를 그룹 단위로 넣는 것이 불가능해서, 그 엔티티가 노드의 스레드에서 실행되어 그룹의 상호 배제가 깨지기 때문이다.
 - flux 입력과 ROS 입력이 섞인 synchronizer는 `flux.Executor`로 실행한다.

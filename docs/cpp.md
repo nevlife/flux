@@ -64,7 +64,7 @@ flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
 | `topic_name()` | 해석된 토픽 이름 |
 | `subscriber_count()` | 구독 중인 프로세스 수. 구독자가 없는 경우 프레임 생성을 건너뛰는 데 사용한다. 지금까지 사용된 구독자 번호마다 시스템 호출을 한 번 한다. 발행자와 같은 프로세스의 구독은 첫 대기나 take 시점부터 센다 |
 
-`publish`와 commit은 `flux::Published`를 반환한다. `flux::faulted(p)`는 `Ok`나 `Backpressure`가 아니면 참이다. `Backpressure`는 그 프레임 하나만 버렸다는 뜻이고, 나머지는 고칠 것이 있다는 뜻이다. 다만 `InUse`와, 완료 신호 상한이 설정된 채널의 `FenceFailed`는 다른 호출이나 GPU 작업이 끝나면 자동으로 해소된다.
+`publish()`와 `commit()`은 `flux::Published`를 반환한다. `flux::faulted(p)`는 `Ok`나 `Backpressure`가 아니면 참이다. `Backpressure`는 그 프레임 하나만 버렸다는 뜻이고, 나머지는 고칠 것이 있다는 뜻이다. 다만 `InUse`와, 완료 신호 상한이 설정된 채널의 `FenceFailed`는 다른 호출이나 GPU 작업이 끝나면 자동으로 해소된다.
 
 | 값 | 뜻 |
 | --- | --- |
@@ -74,7 +74,7 @@ flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
 | `NotPublisher` | 발행 불가능한 채널이다 |
 | `InvalidArgument` | 정의되지 않은 dtype이거나, 슬롯이 없는 loan(이미 commit했거나 빈 loan)의 commit이다 |
 | `InUse` | 다른 스레드가 같은 발행자를 사용 중이다 |
-| `WrongDevice` | 현재는 반환하지 않는다. GPU 메모리 채널의 `publish()`는 호스트 배열을 복사해 발행한다([gpu.md](gpu.md)) |
+| `WrongDevice` | 반환하지 않는다. GPU 메모리 채널의 `publish()`는 호스트 배열을 복사해 발행한다([gpu.md](gpu.md)) |
 | `FenceFailed` | CUDA 스트림을 기다리지 못했다. 완료 신호 상한이 없으면 그 슬롯은 다시 사용되지 않고, 있으면 작업이 끝난 뒤 반납된다 |
 | `GpuWedged` | 프로세스의 GPU가 복구 불가능한 CUDA 오류로 멈췄다. 프로세스를 다시 시작한다 |
 
@@ -155,7 +155,7 @@ flux::Subscription(node, topic, fingerprint = flux::kNoSchema, const QoS & qos =
 | `add(sub, priority = 0)` | 콜백이 있는 구독을 넣는다. 콜백이 없으면 `std::invalid_argument`. 구독은 executor보다 오래 살아야 하고, 다른 executor에 넣지 않는다 |
 | `add_node(node)` | rclcpp와 같다. 노드에 나중에 생긴 엔티티와, 콜백 그룹에 넣은 flux 구독([컴포넌트 컨테이너](#컴포넌트-컨테이너))도 찾는다 |
 | `spin()`, `spin_until_future_complete()` | `cancel()`, context 종료(Ctrl-C), 콜백 예외 중 하나가 발생 시까지 실행한다 |
-| `cancel()` | 어느 스레드에서든 `spin()`을 끝낸다. `spin()` 전에 호출하면 다음 `spin()`이 바로 끝난다 |
+| `cancel()` | 어느 스레드에서든 spin을 끝낸다. spin 전에 호출하면 다음 spin이 바로 끝난다 |
 | `spin_once()`, `spin_some()`, `spin_all()` | 예외를 던진다. rclcpp wait set 기준으로 처리량을 정해 flux 구독을 건너뛰기 때문이다 |
 
 - 우선순위가 큰 구독이 먼저 실행되고, 같은 우선순위는 한 프레임씩 번갈아 실행된다. pass마다 flux 콜백을 64개까지 실행한다.
@@ -291,7 +291,7 @@ ex.spin();
 | 멤버 | 뜻 |
 | --- | --- |
 | `add(sub, group, priority = 0)` | 구독을 그룹에 넣는다. 그룹은 `add_node()`로 넣은 노드의 것이어야 한다 |
-| `add_node(node)` | 노드의 그룹마다 스레드를 생성한다. `spin()` 중에 생긴 그룹도 포함한다. `spin()` 중에 호출하면 그 노드의 스레드가 모두 시작된 뒤 반환한다. 거절할 그룹이 있으면 스레드를 시작하지 않고 예외를 던진다 |
+| `add_node(node)` | 노드의 그룹마다 스레드를 생성한다. spin 중에 생긴 그룹도 포함한다. spin 중에 호출하면 그 노드의 스레드가 모두 시작된 뒤 반환한다. 거절할 그룹이 있으면 스레드를 시작하지 않고 예외를 던진다 |
 | `remove_node(node)` | 노드의 그룹 스레드를 멈추고 join한 뒤 반환한다. 이후 노드를 소멸시켜도 된다. 그 그룹 스레드 안에서는 호출하지 않는다 |
 | `on_thread_start(group, fn)` | 그룹 스레드가 실행되기 전에 그 스레드에서 `fn`을 호출한다. 스레드 우선순위와 CPU를 정하는 위치다 |
 | `on_thread_start(fn)` | 모든 그룹의 스레드가 실행되기 전에 `fn(node, group)`을 호출한다. 그룹별 훅보다 먼저 실행된다. 하나만 설정 가능하다 |
@@ -341,7 +341,7 @@ void message_filters::Subscriber<Adapter>::add_to_callback_group(node, group = n
 - `group`을 비우면 노드의 기본 그룹에 넣는다. 한 번만 호출하고, 같은 구독을 executor의 `add()`에 다시 넣지 않는다.
 - 구독은 그 그룹을 실행하는 executor보다 오래 살아야 한다. 노드의 멤버로 선언하면 충족된다. 컨테이너가 노드를 소멸시키기 전에 그 노드의 스레드를 멈추기 때문이다.
 
-> **주의:** `spin()` 중에 구독만 소멸시키면(rclcpp 구독을 `reset()`하는 것처럼) executor가 해제된 메모리를 읽는다.
+> **주의:** spin 중에 구독만 소멸시키면(rclcpp 구독을 `reset()`하는 것처럼) executor가 해제된 메모리를 읽는다.
 
 - `flux::Executor`에서는 `remove_node()` 뒤에도 그 노드에서 찾은 flux 구독이 executor 소멸 시까지 실행된다.
 - rclcpp executor(rclcpp_components의 `component_container` 등)가 그 그룹을 실행하면 구독에 프레임이 전달되지 않고, flux가 error 로그를 한 번 남긴다.

@@ -23,7 +23,7 @@ const flux::gpu::Platform p = flux::gpu::probe();   // p.route, p.reason
 p = flux.probe()                                     # p.route, p.reason
 ```
 
-확인한 장비는 Jetson AGX Orin(JetPack 7.2, `ShmRegistered`)과 RTX 4070 SUPER(`DeviceHandle`)다. `ShmDirect`는 실제 장비에서 실행해 보지 않았다.
+확인한 장비는 Jetson AGX Orin(JetPack 7.2, `ShmRegistered`)과 RTX 4070 SUPER(`DeviceHandle`)다.
 
 ## C++
 
@@ -116,12 +116,11 @@ const flux::wire::DeviceSpan<const std::uint8_t> data = m.data__device();
 read_on_device(data.data(), data.size(), frame.stream());
 ```
 
-- 생성 타입의 fingerprint로 스트림을 선언한 발행자는 외장 GPU에서도 슬롯이 호스트 메모리다(`device_backed()`가 false, loan의 `device_ptr()`이 0).
+- 생성 타입의 fingerprint로 스트림을 선언한 발행자는 외장 GPU에서도 슬롯이 호스트 메모리다(`device_backed()`가 `false`, loan의 `device_ptr()`이 `0`).
 - `alloc_device__<필드>(n)`은 그 필드를 발행 프로세스의 GPU arena에 할당한다. 통합 GPU에서는 CPU와 GPU가 함께 읽는 호스트 메모리, 외장 GPU에서는 GPU 메모리다. 이 필드는 채널 스트림에서 쓰고, commit이 그 스트림을 기다린다.
 - GPU arena는 프로세스에 GPU마다 하나다. 크기는 호스트 arena와 같은 `FLUX_ARENA_BYTES`(기본값이자 최대값 1 GiB)다. 블록은 그 프레임의 슬롯에 다음 프레임을 쓰는 시점에 해제된다.
 - 받는 쪽의 `<필드>__device()`는 GPU 주소와 개수를 반환한다. 구독 스트림이 발행자와 다른 GPU(UUID)에 있으면 빈 값이다.
 - arena가 활성화된 `Builder`는 슬롯의 마지막 71 B(스트림을 선언한 발행자는 135 B)를 가변 필드에 쓰지 않는다.
-- 확인한 장비는 RTX 4070 SUPER이고, Jetson에서는 실행해 보지 않았다.
 
 CPU와 GPU가 서로의 필드를 읽는 경우는 다음과 같다.
 
@@ -129,7 +128,7 @@ CPU와 GPU가 서로의 필드를 읽는 경우는 다음과 같다.
 | --- | --- | --- |
 | `alloc_device__` → CPU 구독자의 일반 접근자 | 복사 없음 | 그 프레임의 첫 `View` 생성 시 GPU 필드만 호스트 버퍼로 복사하고 완료를 기다린다. 같은 프레임의 다음 `View`는 그 복사본을 읽는다 |
 | `alloc__`(슬롯 안) → GPU 구독자의 `__device()` | 복사 없음 | take가 만든 프레임 복사본에 있다 |
-| `alloc__`(arena) → GPU 구독자의 `__device()` | 아직 빈 값 | 그 프레임의 첫 `View` 생성 시 GPU 버퍼로 복사한다. 복사는 구독 스트림에 걸리고 기다리지 않는다 |
+| `alloc__`(arena) → GPU 구독자의 `__device()` | 빈 값 | 그 프레임의 첫 `View` 생성 시 GPU 버퍼로 복사한다. 복사는 구독 스트림에 걸리고 기다리지 않는다 |
 
 Python에서는 같은 필드가 DLPack 객체로 오간다. GPU 필드는 loan의 스트림에서 쓴다.
 
@@ -170,7 +169,7 @@ with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stre
 | loan의 `data()`, Python `loan.array` | 각각 `nullptr`, 예외다. `device_ptr()`이나 `__dlpack__`을 사용한다 |
 | 어댑터의 `Builder`, GPU 구독자의 `View` | 프레임 배치가 호스트 메모리를 전제하므로 사용 불가능하다. CPU 구독자의 `View`는 자기 복사본을 읽는다 |
 
-- GPU 메모리 채널의 CPU 구독자가 받는 view는 `data()`가 자기 복사본이고, `device_ptr()`은 0이다.
+- GPU 메모리 채널의 CPU 구독자가 받는 view는 `data()`가 자기 복사본이고, `device_ptr()`은 `0`이다.
 - GPU 메모리 채널에서도 aux는 호스트 메모리다. stamp나 크기 같은 헤더는 발행자를 `aux_size`와 함께 생성해 aux에 쓴다([concepts.md](concepts.md#발행자와-슬롯)). CPU 구독과 GPU 구독 모두 aux를 복사 없이 읽는다.
 - 복사가 실패한 take는 빈 결과이고 `refused.fence`로 센다. 그 슬롯은 반납하지 않는다.
 - 구독자는 메모리를 할당한 GPU를 번호가 아니라 UUID로 찾으므로, `CUDA_VISIBLE_DEVICES`가 달라도 같은 GPU를 찾는다. 구독 스트림의 GPU가 그 GPU와 다르면 `MISMATCH`다.
@@ -186,8 +185,8 @@ with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stre
 | 해제 방식 | `set_release_mode(gpu::ReleaseMode::Deferred)` | `release="deferred"` | `Wait` |
 
 - 상한이 없으면 GPU가 멈춘 경우 완료 신호를 기다리는 executor 스레드도 멈춘다. 상한을 넘긴 대기는 실패로 세고, commit은 `FenceFailed`를 반환하며, 슬롯은 작업 완료 시까지 점유를 유지한다.
-- `Wait`에서는 해제가 스트림을 기다린 뒤 반환된다. `Deferred`에서는 해제가 즉시 반환되고, 슬롯은 GPU 사용이 끝난 뒤 다음 `take()`나 executor pass에 반납된다. 반납 시까지 그 view는 `max_borrow`에 포함된다. `Deferred`는 콜백이 GPU 작업을 건 채 끝나는 노드에서 사용한다.
-- 완료 신호 대기가 실패한 슬롯은 반납하지 않는다. 다시 쓰면 다른 쪽이 아직 사용 중인 메모리를 덮기 때문이다. 해제가 실패한 view가 `max_borrow`를 채우면, 그 구독의 `take()`는 `refused.fence`로 센다.
+- `Wait`에서는 해제가 스트림을 기다린 뒤 반환된다. `Deferred`에서는 해제가 즉시 반환되고, 슬롯은 GPU 사용이 끝난 뒤 다음 take나 executor pass에 반납된다. 반납 시까지 그 view는 `max_borrow`에 포함된다. `Deferred`는 콜백이 GPU 작업을 건 채 끝나는 노드에서 사용한다.
+- 완료 신호 대기가 실패한 슬롯은 반납하지 않는다. 다시 쓰면 다른 쪽이 아직 사용 중인 메모리를 덮기 때문이다. 해제가 실패한 view가 `max_borrow`를 채우면, 그 구독의 take는 `refused.fence`로 센다.
 
 | 값 | 뜻 |
 | --- | --- |

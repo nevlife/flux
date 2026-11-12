@@ -1,6 +1,6 @@
 # flux v?.?.?
 
-릴리스 노트 양식이다. 릴리스 시 `unreleased.md`를 `v<버전>.md`로 옮기고, 이 양식을 복사해 새 `unreleased.md`를 만든다.
+릴리스 노트 양식이다. 릴리스 시 `unreleased.md`의 이름을 `v<버전>.md`로 바꾸고, 이 양식을 복사해 새 `unreleased.md`를 만든다.
 
 ## v?.?.?
 

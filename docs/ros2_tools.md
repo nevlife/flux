@@ -1,6 +1,6 @@
 # ROS 2 도구
 
-flux 채널은 DDS의 ROS 그래프에 없으므로 기본 ROS 2 도구(`ros2 topic`, `rqt`, `ros2 bag`, rviz2)로는 확인 불가능하다. `ros2/` 아래의 세 패키지가 flux 채널을 이 도구들과 연결한다.
+flux 채널은 DDS의 ROS 그래프에 없으므로 기본 ROS 2 도구(`ros2 topic`, `ros2 bag`, rqt, rviz2)로는 확인 불가능하다. `ros2/` 아래의 세 패키지가 flux 채널을 이 도구들과 연결한다.
 
 | 패키지 | 하는 일 | 복사 |
 | --- | --- | --- |
@@ -145,7 +145,7 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
   | `device="cuda"` | `flux.Frame` |
   | `"cpu"` | `flux.wire.DeviceSpan`(`__dlpack__`, `__cuda_array_interface__`, `nbytes`). `data`와 `to_msg()`도 호스트 메모리에서 읽힌다. 외장 GPU에서는 구독자가 GPU로 한 번 복사한다 |
 
-- 통합 GPU에서는 슬롯을 넘어 arena에 저장된 `data`에 아직 GPU 주소가 없어 `on_device`가 거짓이다.
+- 통합 GPU에서는 슬롯을 넘어 arena에 저장된 `data`에 GPU 주소가 없어 `on_device`가 거짓이다.
 - `"cuda"`를 사용 불가능하면 경고를 한 번 남기고 `"cpu"`로 바뀐다(`uses_device`).
 
 flux Python 모듈에는 호스트 메모리와 GPU 메모리 사이의 복사가 없으므로, 아래 경우가 C++와 다르다.
@@ -230,7 +230,7 @@ flux 채널은 자기 시계를 따른다. player의 pause, resume, rate(서비�
 ros2 bag convert_flux BAG -o OUT
 ```
 
-bag을 새 bag으로 옮긴다.
+bag의 flux 프레임을 ROS 메시지로 변환해 새 bag에 저장한다.
 
 | 대상 | 결과 |
 | --- | --- |
