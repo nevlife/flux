@@ -1,6 +1,6 @@
 # flux 명령
 
-`flux_cli`가 `flux` 명령을 설치한다. 워크스페이스를 source하면 PATH에 있다. 이 명령은 Python이나 ROS 없이 돈다. `/dev/shm`을 읽기만 하고 lock이나 슬롯을 잡지 않는다. 그래서 대상 프로세스의 동작에 영향을 주지 않는다.
+`flux_cli`가 설치하는 `flux` 명령은 워크스페이스를 source하면 PATH에 들어가고, Python과 ROS 없이 실행된다. `/dev/shm`을 읽기만 하고 lock을 획득하거나 슬롯을 점유하지 않으므로 대상 프로세스에 영향을 주지 않는다.
 
 ```text
 flux topic list
@@ -8,13 +8,12 @@ flux topic info <channel>
 flux topic hz <channel> [--window SEC]
 ```
 
-명령을 실행한 사용자가 열 수 있는 채널만 다룬다. 다른 사용자의 채널은 보이지 않는다.
-
-bash에서는 워크스페이스를 source하면 Tab 자동완성이 켜진다. 하위 명령, `--window`, 지금 이 호스트에 보이는 채널 이름을 채운다.
+- 실행한 사용자의 채널만 보인다.
+- bash에서는 워크스페이스를 source하면 Tab 자동완성이 활성화된다. 하위 명령, `--window`, 이 호스트의 채널 이름을 완성한다.
 
 ## topic list
 
-채널마다 한 줄이다.
+채널마다 한 줄을 출력한다.
 
 ```text
 CHANNEL         SEGMENT  ENDPOINTS
@@ -24,9 +23,9 @@ CHANNEL         SEGMENT  ENDPOINTS
 
 | 열 | 뜻 |
 | --- | --- |
-| `CHANNEL` | 채널 이름. 이름을 알리는 endpoint가 없으면 `/dev/shm` 파일 이름에서 이름을 복원하고 뒤에 `(from name)`을 붙인다 |
-| `SEGMENT` | `up`이면 발행자가 떠 있다. `down`이면 구독만 남아 발행자를 기다린다 |
-| `ENDPOINTS` | 발행자와 구독자 수 |
+| `CHANNEL` | 채널 이름. 이름을 알리는 엔드포인트가 없으면 `/dev/shm` 파일 이름에서 복원하고 `(from name)`을 추가한다 |
+| `SEGMENT` | `up`은 발행자가 실행 중, `down`은 구독만 남아 발행자를 기다리는 중 |
+| `ENDPOINTS` | 발행자 수와 구독자 수 |
 
 ## topic info
 
@@ -47,11 +46,15 @@ endpoints
   sub   1587957  /clidemo/detector
 ```
 
-- `epoch`는 발행자가 재시작할 때마다 바뀐다. `published`는 이 세그먼트에서 commit된 프레임 수다.
-- `parked`는 프레임을 기다리며 잠든 구독자 수다. 0보다 크면 발행자는 발행할 때마다 futex wake를 한 번 보낸다.
-- `storage`는 슬롯 데이터가 있는 곳이다. `host`는 공유메모리, `cuda-ipc`는 장치 메모리(`DeviceHandle`, [gpu.md](gpu.md))다.
-- `LABEL`은 노드의 전체 이름이다.
-- endpoint 목록에는 62개까지 들어간다. 그보다 많으면 나머지는 표시하지 않고, 생략했다는 줄을 하나 덧붙인다. 이 제한은 프레임 전달과 상관없다.
+| 줄 | 뜻 |
+| --- | --- |
+| `epoch` | 발행자 재시작마다 바뀌는 번호 |
+| `published` | 이 세그먼트에서 commit된 프레임 수 |
+| `parked` | 프레임을 기다리며 잠든 구독자 수. 0보다 크면 발행자는 발행마다 futex wake를 한 번 보낸다 |
+| `storage` | 슬롯 데이터의 위치. `host`는 공유 메모리, `cuda-ipc`는 GPU 메모리(`DeviceHandle`, [gpu.md](gpu.md)) |
+| `LABEL` | 노드의 전체 이름 |
+
+엔드포인트 목록은 62개까지 표시하고, 초과분은 생략했다는 줄 하나로 대신한다. 이 제한은 프레임 전달과 관계가 없다.
 
 ## topic hz
 
@@ -61,12 +64,15 @@ sampling /clidemo/image every 1s (Ctrl-C to stop)
      98.99 Hz   (99 frames in 1.00s)
 ```
 
-`--window`로 준 초(기본 1, 최소 0.001)마다 발행 속도를 출력한다. 속도는 발행자가 commit한 프레임 수로 잰다. 그래서 어느 구독자가 받았는지와 상관없다. 발행자가 재시작하면 그 구간은 표시만 하고 다음 구간부터 다시 잰다. Ctrl-C로 멈춘다.
+- `--window`로 지정한 초(기본 1, 최소 0.001)마다 발행 속도를 출력한다.
+- 속도는 발행자가 commit한 프레임 수로 측정하므로 구독자의 수신과 관계가 없다.
+- 발행자가 재시작한 구간은 표시만 하고 다음 구간부터 다시 측정한다.
+- Ctrl-C로 종료한다.
 
 ## 종료 코드
 
 | 코드 | 뜻 |
 | --- | --- |
 | 0 | 성공 |
-| 1 | 채널이 없거나, 이름이 fingerprint가 다른 채널 여럿과 맞거나, `hz`의 채널에 발행자가 없다 |
-| 2 | 인자가 틀렸다 |
+| 1 | 채널이 없거나, 이름이 fingerprint가 다른 채널 여럿과 일치하거나, `hz`의 채널에 발행자가 없다 |
+| 2 | 인자가 잘못되었다 |
