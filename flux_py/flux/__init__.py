@@ -36,6 +36,7 @@ from ._flux import (
     gpu_wedged,
     probe,
     read_channel_stats,
+    gpu_fingerprint,
     ros_type_of,
 )
 
@@ -63,10 +64,15 @@ __all__ = [
     "gpu_wedged",
     "probe",
     "read_channel_stats",
+    "gpu_fingerprint",
     "ros_type_of",
 ]
 
+# 0: the slot of the fingerprint's generated type (its scalar block, SLOT_STRING_BYTES for its
+# own strings and the arena trailer, in pages), or UNTYPED_SLOT_SIZE without one.
 DEFAULT_SLOT_SIZE = _flux.DEFAULT_SLOT_SIZE
+UNTYPED_SLOT_SIZE = _flux.UNTYPED_SLOT_SIZE
+SLOT_STRING_BYTES = _flux.SLOT_STRING_BYTES
 DEFAULT_SLOT_COUNT = _flux.DEFAULT_SLOT_COUNT
 # Subscribing processes, not subscriptions; each adds a counter that every publish reads.
 DEFAULT_MAX_SUBSCRIBERS = _flux.DEFAULT_MAX_SUBSCRIBERS

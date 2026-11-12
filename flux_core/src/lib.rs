@@ -29,7 +29,8 @@ pub use error::{Error, Result};
 pub use executor::{DEFAULT_TICK_NS, DEFAULT_TURN_NS, Executor, ExecutorHandle, MAX_DRAIN, Source};
 pub use layout::{
     DEFAULT_MAX_SUBSCRIBERS, DEFAULT_SLOT_COUNT, DEFAULT_SLOT_SIZE, DType, FrameMeta, MAX_AUX_SIZE,
-    MAX_DIMS, MAX_LABEL_LEN, MAX_SUBSCRIBERS, NO_SCHEMA, ROSTER_ENTRIES,
+    MAX_DIMS, MAX_LABEL_LEN, MAX_SUBSCRIBERS, NO_SCHEMA, ROSTER_ENTRIES, SLOT_STRING_BYTES,
+    UNTYPED_SLOT_SIZE, typed_slot_size,
 };
 pub use manifest::{
     Announcement, ChannelStats, Endpoint, ManifestEntry, Topic, enumerate_topics,

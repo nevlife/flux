@@ -197,18 +197,17 @@ def without_data(m):
     return out
 
 
-def fnv1a(s):
-    h = 0xCBF29CE484222325
-    for b in s.encode():
-        h = ((h ^ b) * 0x100000001B3) % (1 << 64)
-    return h
+def test_gpu_aux_is_a_frame_of_the_type_without_data():
+    """The fingerprint is flux.gpu_fingerprint of the type's; the aux a frame of the type."""
+    import flux
+    from sensor_msgs_flux import image, point_cloud2
 
-
-def test_gpu_layouts_match_the_cpp_ones():
-    """The C++ static_asserts give the same sizes and offsets; the fingerprints name the channel."""
-    assert flux_wrapper._GPU[Image][:2] == (fnv1a("flux_wrapper/GpuImage"), 316)
-    assert flux_wrapper._GPU[PointCloud2][:2] == (fnv1a("flux_wrapper/GpuPointCloud2"), 1700)
-    assert (flux_wrapper._GPU_CLOUD.size, flux_wrapper._GPU_FIELD.size) == (292, 44)
+    assert flux_wrapper._gpu_fingerprint(Image) == flux.gpu_fingerprint(image.FINGERPRINT__)
+    assert flux_wrapper._gpu_fingerprint(PointCloud2) == flux.gpu_fingerprint(
+        point_cloud2.FINGERPRINT__
+    )
+    aux = flux_wrapper._pack(Image, Image(header=header(1, "ok"), encoding="rgb8"))
+    assert image.View(aux).encoding == "rgb8"
     m = cloud(3)
     assert flux_wrapper._unpack(PointCloud2, flux_wrapper._pack(PointCloud2, m)) == without_data(m)
 
@@ -302,7 +301,7 @@ def test_cuda_subscription_gets_a_cpu_publishers_data_on_the_device(node):
                 done.set()
 
     sub = flux_wrapper.Subscription(node, Image, "cpu_to_cuda", on_image, 4, device="cuda")
-    pub = flux_wrapper.Publisher(node, Image, "cpu_to_cuda", 4, max_message_size=4096)
+    pub = flux_wrapper.Publisher(node, Image, "cpu_to_cuda", 4)
     run_until(node, sub, done, lambda: pub.publish(small) and pub.publish(big))
     for m in (small, big):
         assert got[m.header.stamp.sec] == (True, True, bytes(m.data), bytes(m.data), m)
@@ -317,27 +316,17 @@ def test_cuda_publish_of_a_ros_message(node):
 
 
 @needs_cuda
-def test_cuda_field_over_its_cap_fails_the_loan(node):
+def test_cuda_fields_over_the_aux_fail_the_loan(node):
     pub = flux_wrapper.Publisher(node, Image, "capped", 4, device="cuda")
     loan = pub.loan()
-    loan.header = header(1, "f" * 257)
+    loan.header = header(1, "f" * 5000)
     assert not loan
     assert not pub.publish(loan)
-    loan = pub.loan()
-    loan.encoding = "e" * 33
-    assert not loan
 
-    clouds = flux_wrapper.Publisher(node, PointCloud2, "capped_cloud", 4, device="cuda")
-    for bad in (cloud(1, 33), cloud(1, 2, name=lambda i: "n" * 33)):
-        loan = clouds.loan()
-        loan.fields = bad.fields
-        assert not loan
-        assert not clouds.publish(loan)
-
-    # At the caps a cloud goes out whole.
-    want = cloud(1, 32, name=lambda i: "n" * 30 + str(10 + i))
-    want.header.frame_id = "f" * 256
-    _, got = gpu_round_trip(node, PointCloud2, "at_caps", want, write_on_device(want))
+    # Past the old caps (32 fields, 32-byte names, a 256-byte frame_id) a cloud goes out whole.
+    want = cloud(1, 40, name=lambda i: "n" * 40 + str(10 + i))
+    want.header.frame_id = "f" * 300
+    _, got = gpu_round_trip(node, PointCloud2, "past_caps", want, write_on_device(want))
     assert got["host"] == (False, bytes(want.data), want)
 
 
@@ -353,6 +342,62 @@ class _Warnings:
 
     def __getattr__(self, name):
         return getattr(self._logger, name)
+
+
+class _Errors(_Warnings):
+    """A logger that keeps what was warned and what was logged as an error."""
+
+    def error(self, text):
+        self.lines.append(text)
+
+
+@needs_cuda
+def test_a_header_past_the_aux_is_logged_once_with_its_field(node, monkeypatch):
+    logs = _Errors(node.get_logger())
+    monkeypatch.setattr(node, "get_logger", lambda: logs)
+    pub = flux_wrapper.Publisher(node, Image, "over_logged", 4, device="cuda")
+    for _ in range(3):
+        loan = pub.loan()
+        loan.header = header(5, "f" * 5000)
+        assert not pub.publish(loan)
+    clouds = flux_wrapper.Publisher(node, PointCloud2, "over_logged_cloud", 4, device="cuda")
+    loan = clouds.loan()
+    loan.fields = cloud(1, 200, name=lambda i: "n" * 40 + str(i)).fields
+    assert not clouds.publish(loan)
+    want = (
+        'over_logged: a message did not go out on device="cuda": header.frame_id (5000 B) did '
+        "not fit the aux (4096 B, 48 B used before it); header.stamp 5.000000007"
+    )
+    assert sum(want in line for line in logs.lines) == 1, logs.lines
+    want = (
+        'over_logged_cloud: a message did not go out on device="cuda": fields (200 entries, '
+        "names 8490 B)"
+    )
+    assert sum(want in line for line in logs.lines) == 1, logs.lines
+
+
+@pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
+def test_a_string_past_the_slot_is_logged_once_with_its_field(node, monkeypatch):
+    """On "cpu" the message's own strings go after its fixed fields in the slot. One past the slot
+    fails the message, set by hand or copied from a ROS message, and is logged once."""
+    logs = _Errors(node.get_logger())
+    monkeypatch.setattr(node, "get_logger", lambda: logs)
+    pub = flux_wrapper.Publisher(node, Image, "slot_over_logged", 4)
+    for _ in range(2):
+        loan = pub.loan()
+        loan.header = header(5, "f" * 9000)
+        assert not loan
+        assert not pub.publish(loan)
+    m = image(5)
+    m.header = header(5, "f" * 9000)
+    assert not pub.publish(m)
+    want = (
+        "slot_over_logged: a message did not go out: header.frame_id (9000 B) did not fit the slot "
+        "(8192 B, 48 B used before it); header.stamp 5.000000007"
+    )
+    assert sum(want in line for line in logs.lines) == 1, logs.lines
+    m.header = header(5, "f" * 4096)
+    assert pub.publish(m)
 
 
 @pytest.mark.skipif(NO_CUDA == "", reason="device=cuda is had here")
@@ -399,13 +444,12 @@ def test_gpu_frame_with_a_bad_aux_is_skipped(node):
     sub = flux_wrapper.Subscription(
         node, Image, "bad_aux", lambda v: delivered.append(v.header.frame_id), 4
     )
-    fingerprint, size, _ = flux_wrapper._GPU[Image]
+    fingerprint, size = flux_wrapper._gpu_fingerprint(Image), flux_wrapper._GPU_AUX_BYTES
     raw = flux.Publisher(node, "bad_aux", fingerprint=fingerprint, slot_size=4096, aux_size=size)
     good = bytearray(flux_wrapper._pack(Image, Image(header=header(1, "ok"))))
-    bad_version, bad_frame_id, bad_encoding = bytearray(good), bytearray(good), bytearray(good)
-    struct.pack_into("=I", bad_version, 0, 2)
-    struct.pack_into("=H", bad_frame_id, 26, 257)
-    struct.pack_into("=B", bad_encoding, 25, 33)
+    # frame_id's descriptor (at 8) pointed past the aux.
+    far = bytearray(good)
+    struct.pack_into("=I", far, 8, 1 << 20)
 
     def send(aux):
         loan = raw.loan((0,))
@@ -414,7 +458,7 @@ def test_gpu_frame_with_a_bad_aux_is_skipped(node):
             loan.aux_len = len(aux)
             loan.commit()
 
-    for aux in (good[:10], bad_version, bad_frame_id, bad_encoding):
+    for aux in (good[:10], far):
         before, done = sub.rejected, threading.Event()
 
         def publish_once(aux=aux, before=before, done=done):

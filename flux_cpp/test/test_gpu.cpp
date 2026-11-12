@@ -175,6 +175,28 @@ TEST_F(Gpu, AFrameWrittenOnTheDeviceReachesHostAndDeviceSubscribers)
   EXPECT_EQ(dev.fence_failed(), 0U);
 }
 
+// A loan of device memory aborted with work still queued on its stream, its channel dropped at
+// once: that work must not land in device memory that is gone, which leaves a sticky
+// CUDA_ERROR_LAUNCH_FAILED on the process and fails every later CUDA call.
+TEST_F(Gpu, AnAbortedLoanWithWorkQueuedDoesNotOutliveItsMemory)
+{
+  constexpr std::size_t kBytes = std::size_t{64} << 20;
+  for (int i = 0; i < 10; ++i) {
+    auto pub = flux::detail::Channel::create(
+      unique_name("abort") + std::to_string(i), kBytes, 2, flux::kNoSchema, {},
+      FLUX_DEFAULT_MAX_SUBSCRIBERS, flux::gpu::Stream::create());
+    flux::WriteSlot w = pub.loan();
+    ASSERT_TRUE(w);
+    ASSERT_NE(w.device_ptr(), nullptr);
+    for (int k = 0; k < 20; ++k) {
+      ASSERT_EQ(driver()->memset(addr(w.device_ptr()), 0x6b, kBytes, w.stream()), 0);
+    }
+    w.abort();
+  }
+  EXPECT_EQ(flux::gpu::wedged(), 0);
+  EXPECT_NO_THROW(flux::gpu::Stream::create());
+}
+
 // The aux bytes stay in host memory, whatever the payload is, for both kinds of subscriber.
 TEST_F(Gpu, AuxBytesReachHostAndDeviceSubscribers)
 {

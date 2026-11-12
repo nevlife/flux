@@ -19,13 +19,13 @@ ros2 run flux_bridge bridge [--poll SEC]
 bridge는 노드 하나(`flux_bridge_<pid>`)를 생성하고, `--poll` 간격(기본 1 s)마다 채널 목록을 읽고, 아래 조건이 모두 맞는 채널만 중계한다. 그래서 구독자가 없는 채널에는 비용이 없다.
 
 - 발행자가 살아 있고 이름이 정확히 알려진 채널이다.
-- 채널의 fingerprint가 설치된 `.msg` 타입(`AMENT_PREFIX_PATH`)과 맞는다. 어댑터를 설치하지 않은 타입도 된다.
+- 채널의 fingerprint가 설치된 `.msg` 타입(`AMENT_PREFIX_PATH`)과 맞거나, 그 타입의 GPU 메모리 채널([gpu.md](gpu.md#gpu-메모리-채널devicehandle))이다. 어댑터를 설치하지 않은 타입도 된다.
 - bridge 외에 그 이름의 ROS 2 구독자가 있다.
 - bridge 외에 그 이름의 ROS 2 발행자가 없다(발행자의 mirror 포함). 둘 다 발행하면 ROS 2 구독자가 같은 프레임을 두 번 받는다.
 
 | 항목 | 값 |
 | --- | --- |
-| 프레임 경로 | 슬롯에서 프레임을 복사하고 view를 반납한 뒤, 그 사본에서 CDR bytes를 써서 `GenericPublisher`로 발행한다. 메시지 객체를 거치지 않는다. 필드를 arena에 저장한 프레임([concepts.md](concepts.md#arena))은 view를 반납하기 전에 그 필드까지 사본에 복사한다 |
+| 프레임 경로 | 슬롯에서 프레임을 복사하고 view를 반납한 뒤, 그 사본에서 CDR bytes를 써서 `GenericPublisher`로 발행한다. 메시지 객체를 거치지 않는다. 필드를 arena에 저장한 프레임([concepts.md](concepts.md#arena))은 view를 반납하기 전에 그 필드까지 사본에 복사한다. GPU 메모리 채널은 aux와 payload의 호스트 사본을 한 메시지로 합친다 |
 | DDS QoS | depth 1, best-effort, volatile |
 | flux QoS | depth 1, `max_borrow` 1 |
 | 같은 이름의 채널 둘 | fingerprint가 다른 채널이 둘이면 signpost 순서로 첫 채널을 고른다 |
@@ -66,7 +66,7 @@ mirror를 활성화하면 발행자가 같은 이름의 ROS 2 토픽도 발행�
 | DDS QoS | depth 1, best-effort, volatile |
 | flux QoS | depth 1, `max_borrow` 1 |
 | 생성 비용 | 활성화 시 설치된 `.msg`를 모두 읽는다 |
-| 거절하는 것 | 타입이 없는 발행자(`kNoSchema`, `NO_SCHEMA`), fingerprint가 설치된 `.msg`에 없는 발행자, GPU 메모리 발행자. C++은 `flux::Error`, Python은 `flux.Error`(`INVALID_ARGUMENT`)다 |
+| 거절하는 것 | 타입이 없는 발행자(`kNoSchema`, `NO_SCHEMA`), fingerprint가 설치된 `.msg`에 없는 발행자, 설치된 타입의 GPU 메모리 채널이 아닌 GPU 메모리 발행자. C++은 `flux::Error`, Python은 `flux.Error`(`INVALID_ARGUMENT`)다 |
 | Python | 스레드는 `threading.Thread`이고 rclpy 발행자에 `bytes`로 발행한다. 발행자 객체가 사라지면 스레드도 종료된다 |
 
 FHD 이미지처럼 큰 메시지를 여러 토픽으로 보내면 DDS의 UDP 수신 버퍼가 넘쳐 best-effort 메시지가 버려질 가능성이 있다. bridge도 같다. `netstat -su`의 `receive buffer errors`가 늘어나면 rmw 설정에서 소켓 버퍼를 늘린다(Cyclone DDS는 `CYCLONEDDS_URI`의 `SocketReceiveBufferSize`, 상한은 `net.core.rmem_max`).
@@ -102,9 +102,9 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 ### 발행
 
 - 타입은 `sensor_msgs/Image`와 `sensor_msgs/PointCloud2`다.
-- `publish(std::unique_ptr<Msg>)`와 `publish(const Msg &)`는 이미 만든 ROS 메시지를 보낸다. flux 경로에서는 슬롯으로 한 번 복사한다. 메시지를 계속 사용하는 쪽은 `const Msg &`를 사용한다. ROS 경로에서 복사본을 만들지 않는다.
+- `publish(std::unique_ptr<Msg>)`와 `publish(const Msg &)`는 이미 만든 ROS 메시지를 보낸다. flux 경로에서는 슬롯과 arena로 한 번 복사한다. 메시지를 계속 사용하는 쪽은 `const Msg &`를 사용한다. ROS 경로에서 복사본을 만들지 않는다.
 - `get_subscription_count()`는 ROS 경로에서 rclcpp 값을, flux 경로에서 `subscriber_count()`를 반환한다.
-- `PublisherOptions`의 `max_message_size`, `slot_count`, `mirror_to_ros`는 flux 경로에만 적용된다. mirror는 기본 비활성화이고, 그 상태에서는 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
+- `PublisherOptions`의 `slot_count`, `mirror_to_ros`, `max_device_data_size`는 flux 경로에만 적용된다. 슬롯 크기는 타입에서 정하고, `data`는 크기와 상관없이 발행 프로세스의 arena에 저장한다. `max_device_data_size`(기본 8 MiB)는 `Cuda` 발행자의 `data` 최대 크기이고, 그 크기가 GPU 슬롯 크기다. 메시지 자신의 문자열(`header.frame_id`, `encoding`)이 슬롯을 넘으면 publish가 `false`를 반환하고, 발행자마다 처음 한 번 그 필드와 크기를 오류 로그로 남긴다. mirror는 기본 비활성화이고, 그 상태에서는 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
 
 ### 구독
 
@@ -118,16 +118,11 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 ### GPU(C++)
 
 - `PublisherOptions::device = flux_wrapper::Device::Cuda`면 메시지의 `data`를 GPU 메모리째 보낸다. 두 타입 모두 지원한다. `loan.alloc_buffer(n)`이 데이터 자리를 할당하고, `on_device()`가 GPU 메모리인지 알려 준다. `copy_from(src, n)`은 원본이 호스트 메모리든 GPU 메모리든 받는다. 커널이 직접 쓰는 경우에는 `device_ptr()`와 `stream()`을 사용하고, publish가 그 스트림의 작업이 완료된 뒤 발행한다.
-- flux 경로에서는 타입마다 따로 있는 GPU 채널로 보내고, `data` 밖의 필드를 같은 프레임에 담는다. ROS 경로에서는 wrapper가 GPU 버퍼를 하나 생성하고, publish 시 호스트로 복사해 ROS 메시지로 보낸다.
-- GPU 채널의 필드에는 상한이 있다. 넘으면 loan이 `false`가 되고 publish가 `false`를 반환한다.
+- flux 경로에서는 `data`를 payload로, 나머지 필드를 aux로 보내는 GPU 메모리 채널([gpu.md](gpu.md#gpu-메모리-채널devicehandle))로 보낸다. ROS 경로에서는 wrapper가 GPU 버퍼를 하나 생성하고, publish 시 호스트로 복사해 ROS 메시지로 보낸다.
+- `data` 밖의 필드는 aux 4096 B에 들어가야 한다. 넘으면 loan이 `false`가 되고 publish가 `false`를 반환한다. 발행자마다 처음 한 번, 들어가지 않은 첫 필드와 그 크기, 그 앞까지 쓴 크기, 메시지의 `header.stamp`를 오류 로그로 남긴다.
 
-  | 타입 | 상한 |
-  | --- | --- |
-  | `Image` | `encoding` 32 B, `frame_id` 256 B |
-  | `PointCloud2` | `frame_id` 256 B, `fields` 32개, 필드 이름 32 B |
-
-- `Cuda`를 사용 불가능하면(CUDA 없이 빌드했거나, GPU 경로나 GPU가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Host`로 바뀐다. `uses_device()`가 실제로 사용하는 쪽을 알려 준다. GPU 채널에서는 `mirror_to_ros`를 무시한다.
-- 구독은 flux 경로에서 `Cuda` 발행자의 프레임도 받는다. `SubscriptionOptions::device`가 `Host`(기본)면 `data()`가 호스트 메모리다(외장 GPU에서는 take 시 한 번 복사한다). 헤더가 잘못된 프레임은 건너뛰고 `rejected()`로 센다.
+- `Cuda`를 사용 불가능하면(CUDA 없이 빌드했거나, GPU 경로나 GPU가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Host`로 바뀐다. `uses_device()`가 실제로 사용하는 쪽을 알려 준다. `mirror_to_ros`를 켜면 mirror가 ROS 2 구독자가 있는 동안 `data`를 호스트로 복사해 발행한다.
+- 구독은 flux 경로에서 `Cuda` 발행자의 프레임도 받는다. `SubscriptionOptions::device`가 `Host`(기본)면 `data()`가 호스트 메모리다(외장 GPU에서는 take 시 한 번 복사한다). aux가 잘못된 프레임은 건너뛰고 `rejected()`로 센다.
 - 구독의 `device`가 `Cuda`면 발행자가 어느 쪽이든 `data`가 GPU 메모리에 있다. `on_device()`, `device_ptr()`, `size()`, `stream()`으로 읽고, GPU 작업은 `stream()`에 올린다. `Host` 발행자의 프레임은 외장 GPU에서 take 시 GPU로 한 번 복사하고, 통합 GPU에서는 복사하지 않는다. 호스트 메모리에도 있는 프레임은 `data()`로도 읽힌다.
 - ROS 경로의 `Cuda` 구독은 구독마다 GPU 버퍼를 `max_borrow`개 생성하고, 메시지 수신마다 빈 버퍼로 복사한다. 버퍼마다 스트림이 따로 있다.
 - GPU 메모리 프레임을 `stream()`이 아닌 스트림 `s`에서 읽으면, 반납 전에 `View::after(s)`를 호출한다. `stream()`이 `s`에 지금까지 올린 작업 뒤에 오게 해서, 슬롯이나 GPU 버퍼가 그 작업이 완료된 뒤 반납된다. 호출하지 않으면 그 작업이 완료되기 전에 발행자가 슬롯에 새 프레임을 쓸 가능성이 있다.
@@ -136,7 +131,7 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 ### Python
 
 - Python 모듈 `flux_wrapper`도 같은 구조다. 다만 `max_borrow`와 `HeldCallback`은 없다. `flux`를 import 가능하고 `ENABLE_FLUX=1`이면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`한다.
-- `Publisher`와 `Subscription`은 `device="cpu"|"cuda"`를 받는다. GPU 채널과 그 필드 배치가 C++와 같아서, C++ 발행자의 프레임을 Python 구독이 받고 그 반대도 된다.
+- `Publisher`와 `Subscription`은 `device="cpu"|"cuda"`를 받는다. GPU 메모리 채널의 형식이 C++와 같아서, C++ 발행자의 프레임을 Python 구독이 받고 그 반대도 된다.
 - `loan.alloc_buffer(n)`은 `uint8[n]`의 `flux.Loan`을 반환하고, 그 loan은 `__dlpack__`이나 `__cuda_array_interface__`로 GPU에서 쓴다. `device="cuda"` 발행자의 loan은 `alloc_buffer()`나 `alloc_data()` 호출 시 슬롯을 할당한다. 빈 슬롯이 없으면 그 결과가 `None`이고, 그 전까지 loan은 참이다.
 - 받은 `View`는 `on_device`가 참이고 `device_data`로 읽는다. GPU 작업은 `View.stream`에 올린다.
 

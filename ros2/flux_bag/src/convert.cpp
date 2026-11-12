@@ -78,6 +78,8 @@ struct Route
 {
   std::string topic;
   std::optional<flux::Schemas::Type> type;
+  // A GPU memory channel: the frame is its aux (from the aux tail) and its payload.
+  bool gpu = false;
   std::uint64_t converted = 0;
   std::uint64_t kept = 0;
 };
@@ -141,10 +143,21 @@ private:
       ++r.kept;
       return;
     }
-    const std::size_t n = r.type->cdr_size(f.data, f.data_size);
+    const auto * data = static_cast<const std::uint8_t *>(f.data);
+    std::size_t size = f.data_size;
+    if (r.gpu) {
+      if (aux.aux_size == 0) {
+        throw std::runtime_error(
+          msg->topic_name + ": a GPU memory channel's FluxFrame without aux");
+      }
+      r.type->with_data({aux.aux, aux.aux_len}, {data, size}, joined_);
+      data = joined_.data();
+      size = joined_.size();
+    }
+    const std::size_t n = r.type->cdr_size(data, size);
     auto out = std::make_shared<rclcpp::SerializedMessage>(n);
     rcutils_uint8_array_t & cdr = out->get_rcl_serialized_message();
-    cdr.buffer_length = r.type->write_cdr(f.data, f.data_size, cdr.buffer, cdr.buffer_capacity);
+    cdr.buffer_length = r.type->write_cdr(data, size, cdr.buffer, cdr.buffer_capacity);
     auto converted = std::make_shared<rosbag2_storage::SerializedBagMessage>();
     converted->serialized_data = std::shared_ptr<rcutils_uint8_array_t>(out, &cdr);
     converted->recv_timestamp = msg->recv_timestamp;
@@ -216,8 +229,9 @@ private:
     }
     Route r;
     r.topic = bag_topic;
-    if (schemas_.contains(fp)) {
-      const flux::Schemas::Type type = schemas_.at(fp);
+    r.gpu = !schemas_.contains(fp) && schemas_.contains_gpu(fp);
+    if (schemas_.contains(fp) || r.gpu) {
+      const flux::Schemas::Type type = r.gpu ? schemas_.at_gpu(fp) : schemas_.at(fp);
       const std::string ros_type = type.ros_type();
       const auto taken = types_.find(channel);
       if (taken == types_.end()) {
@@ -244,6 +258,7 @@ private:
   flux::Schemas schemas_;
   rclcpp::Serialization<sensor_msgs::msg::CompressedImage> compressed_;
   std::vector<std::uint8_t> fields_;
+  std::vector<std::uint8_t> joined_;
   rosbag2_cpp::Reader reader_;
   rosbag2_cpp::Writer writer_;
   std::map<std::string, rosbag2_storage::TopicMetadata> frame_topics_;

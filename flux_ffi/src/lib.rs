@@ -37,7 +37,10 @@ pub const FLUX_MAX_DRAIN: u32 = 64;
 pub const FLUX_DEFAULT_TICK_NS: i64 = 100_000_000;
 pub const FLUX_DEFAULT_TURN_NS: i64 = 1_000_000;
 pub const FLUX_DEFAULT_MAX_SUBSCRIBERS: u32 = 16;
-pub const FLUX_DEFAULT_SLOT_SIZE: u32 = 8 << 20;
+/// 0: a generated type's own slot (scalar block, string room, trailer), else the untyped size.
+pub const FLUX_DEFAULT_SLOT_SIZE: u32 = 0;
+pub const FLUX_UNTYPED_SLOT_SIZE: u32 = 8 << 20;
+pub const FLUX_SLOT_STRING_BYTES: u32 = 4096;
 pub const FLUX_DEFAULT_SLOT_COUNT: u32 = 16;
 pub const FLUX_MAX_SUBSCRIBERS: u32 = 4096;
 pub const FLUX_MAX_AUX_SIZE: u32 = 32 * 1024;
@@ -57,6 +60,8 @@ const _: () = {
     assert!(FLUX_DEFAULT_TURN_NS == flux_core::DEFAULT_TURN_NS);
     assert!(FLUX_DEFAULT_MAX_SUBSCRIBERS == flux_core::DEFAULT_MAX_SUBSCRIBERS);
     assert!(FLUX_DEFAULT_SLOT_SIZE == flux_core::DEFAULT_SLOT_SIZE);
+    assert!(FLUX_UNTYPED_SLOT_SIZE == flux_core::UNTYPED_SLOT_SIZE);
+    assert!(FLUX_SLOT_STRING_BYTES == flux_core::SLOT_STRING_BYTES);
     assert!(FLUX_DEFAULT_SLOT_COUNT == flux_core::DEFAULT_SLOT_COUNT);
     assert!(FLUX_MAX_SUBSCRIBERS == flux_core::MAX_SUBSCRIBERS);
     assert!(FLUX_MAX_AUX_SIZE == flux_core::MAX_AUX_SIZE);

@@ -55,7 +55,7 @@ constexpr std::size_t kHeapBase = kWireHeap;
 // list of the frame's arena blocks goes there too while the slot has room, else to the arena.
 constexpr std::size_t kHeapTrailer = 64 + 7;
 constexpr std::size_t kGpuBase = kHeapBase + std::size_t{kWireGpu - kWireHeap} * kArenaUnit;
-constexpr std::size_t kGpuArenaSpan = std::size_t{1} << 30;
+constexpr std::size_t kGpuArenaSpan = std::size_t{16} << 30;
 
 // A descriptor as readers and writers use it: `off` a position.
 struct Ref
@@ -578,17 +578,21 @@ private:
 
 // Write side: a bump allocator over a loaned slot. Each alloc aligns the cursor, hands back
 // slot-resident memory to fill, and stores the descriptor. Allocation order is free -- the
-// descriptor records where each part landed.
+// descriptor records where each part landed. With an arena, where a variable-length field goes
+// is fixed by its kind, not its size: a string of the message itself (its descriptor in the
+// scalar block) goes after the scalar block in the slot or fails, every other one (arrays, element
+// arrays and what they hold) to the arena. Without one all go to the slot.
 class Writer
 {
 public:
   Writer() = default;
-  // With a `heap`, what does not fit the slot goes to the arena instead of failing.
+  // With a `heap`, the variable-length fields but the message's own strings go to the arena.
   Writer(
     void * base, std::size_t capacity, std::size_t scalar_bytes, const Heap & heap = {}) noexcept
   : base_(static_cast<std::byte *>(base)),
     cap_(capacity),
     used_(scalar_bytes),
+    scalar_(scalar_bytes),
     trailer_(heap.alloc_device != nullptr ? kGpuTrailer : kHeapTrailer),
     // No room for the trailer that names the arena: the slot alone it is.
     heap_(scalar_bytes + trailer_ <= capacity ? heap : Heap{}),
@@ -715,7 +719,8 @@ public:
 
   auto put_str(std::size_t off, std::string_view s) noexcept -> bool
   {
-    void * p = reserve(off, s.size(), 1, 1, false);
+    // The message's own strings stay in the slot; those of elements go where the element is.
+    void * p = reserve(off, s.size(), 1, 1, false, nullptr, off < scalar_);
     if (p == nullptr) {
       return false;
     }
@@ -829,10 +834,11 @@ private:
     return base + off;
   }
 
-  // In the slot while it fits, else in the arena.
+  // In the arena when there is one, unless `in_slot`; else in the slot. An empty run takes no
+  // bytes and stays in the slot.
   auto reserve(
     std::size_t off, std::size_t n, std::size_t esize, std::size_t align, bool zero,
-    std::size_t * at_off = nullptr) noexcept -> void *
+    std::size_t * at_off = nullptr, bool in_slot = false) noexcept -> void *
   {
     std::byte * dp = at(off, 1, sizeof(Desc));
     if (dp == nullptr) {
@@ -844,11 +850,13 @@ private:
     const std::size_t start = detail::align_up(used_, align);
     std::byte * p = nullptr;
     std::size_t where = 0;
-    if (start <= cap && n <= (cap - start) / esize && start + n * esize <= limit) {
-      p = base_ + start;
-      where = start;
-      used_ = start + n * esize;
-    } else if (heap && n <= 0xFFFFFFFFu && n <= heap_.size / esize) {
+    if (!heap || in_slot || n == 0) {
+      if (start <= cap && n <= (cap - start) / esize && start + n * esize <= limit) {
+        p = base_ + start;
+        where = start;
+        used_ = start + n * esize;
+      }
+    } else if (n <= 0xFFFFFFFFu && n <= heap_.size / esize) {
       std::uint64_t aoff = 0;
       p = static_cast<std::byte *>(heap_.alloc(heap_, n * esize, align, &aoff));
       where = kHeapBase + static_cast<std::size_t>(aoff);
@@ -878,6 +886,7 @@ private:
   std::byte * base_ = nullptr;
   std::size_t cap_ = 0;
   std::size_t used_ = 0;
+  std::size_t scalar_ = 0;
   std::size_t trailer_ = kHeapTrailer;
   Heap heap_;
   bool bad_ = false;

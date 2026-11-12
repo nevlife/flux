@@ -41,8 +41,8 @@ pub const GPU_BASE: u64 = 3 << 30;
 /// each value one `UNIT`. Every block starts on a `UNIT` boundary (the allocator's grain).
 pub const UNIT: u64 = 16;
 pub const MAX_ARENA_BYTES: usize = 16 << 30;
-/// The GPU arena stays at 1 GiB: its address reservation and chunks were sized for that.
-pub const MAX_GPU_ARENA_BYTES: usize = 1 << 30;
+/// The GPU arena reserves this much address space; chunks are mapped into it as blocks need them.
+pub const MAX_GPU_ARENA_BYTES: usize = MAX_ARENA_BYTES;
 pub const HEAP_POS: u64 = HEAP_BASE;
 pub const GPU_POS: u64 = HEAP_POS + (GPU_BASE - HEAP_BASE) * UNIT;
 
@@ -376,15 +376,15 @@ pub fn entries_in(
     fits.then_some(mine)
 }
 
-/// `frame` without its arena trailer: the frame itself when it has none. None when a GPU
-/// arena's trailer comes first, whose fields the CPU cannot read here.
+/// `frame` without its arena trailers (the GPU arena's too): the frame itself when it has none.
+/// None for a GPU trailer the frame is too short to hold.
 pub fn body(frame: &[u8]) -> Option<&[u8]> {
     let Some(at) = frame.len().checked_sub(TRAILER_BYTES) else {
         return Some(frame);
     };
     match &frame[at..at + MAGIC.len()] {
         m if *m == MAGIC => Some(&frame[..at]),
-        m if *m == MAGIC_GPU => None,
+        m if *m == MAGIC_GPU => frame.get(..frame.len().checked_sub(GPU_TRAILER_BYTES)?),
         _ => Some(frame),
     }
 }

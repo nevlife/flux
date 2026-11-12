@@ -1,6 +1,7 @@
 """record while it runs: pausing it through its service, and channels that appear after it
 started."""
 
+import ctypes
 import gc
 import os
 import re
@@ -18,6 +19,38 @@ from rosbag2_interfaces.srv import Pause, Resume
 
 import flux
 from flux_msgs.msg import FluxFrame
+
+
+def device_fill(span, value, nbytes, stream):
+    """Fills `nbytes` of the device memory `span` names with `value`, on `stream`, without torch."""
+    cuda = ctypes.CDLL("libcuda.so.1")
+    ctx = ctypes.c_void_p()
+    assert cuda.cuInit(0) == 0
+    assert cuda.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), 0) == 0
+    assert cuda.cuCtxPushCurrent_v2(ctx) == 0
+    ptr = span.__cuda_array_interface__["data"][0]
+    rc = cuda.cuMemsetD8Async(
+        ctypes.c_uint64(ptr),
+        ctypes.c_ubyte(value),
+        ctypes.c_size_t(nbytes),
+        ctypes.c_void_p(stream),
+    )
+    cuda.cuCtxPopCurrent_v2(ctypes.byref(ctypes.c_void_p()))
+    assert rc == 0, rc
+
+
+def publish_device_image(pub, value, n):
+    """An Image whose `n` bytes of data are in the GPU arena, all `value`."""
+    from sensor_msgs_flux.image import Image
+
+    loan = pub.loan(dtype="uint8")
+    b = Image.Builder(loan.array, loan)
+    b.height, b.width, b.encoding, b.step = 1, n, "mono8", n
+    device_fill(b.alloc_device__data(n), value, n, loan.stream)
+    assert b.commit__() == flux.Published.OK
+
+
+NO_GPU = flux.probe().route == flux.Route.NONE
 
 
 def program(name):
@@ -246,3 +279,42 @@ def test_frames_with_fields_in_the_arena_are_recorded_and_play_back_as_they_were
             m = deserialize_message(data, RosImage)
             ros.append((m.width, m.data[-1]))
     assert ros == [(n, i) for i, n in enumerate(sizes)]
+
+
+@pytest.mark.skipif(NO_GPU, reason="needs a CUDA device")
+def test_frames_with_fields_in_the_gpu_arena_are_recorded_and_play_back_as_they_were(
+    node, tmp_path
+):
+    from sensor_msgs_flux.image import Image
+
+    k = key("gpu_arena")
+    bag = str(tmp_path / "bag")
+    pub = flux.Publisher(
+        node, k, fingerprint=Image.FINGERPRINT__, device="cuda", slot_size=4096, slot_count=4
+    )
+    rec = record(bag, k)
+    time.sleep(1.0)
+    for v in (5, 6, 7):
+        publish_device_image(pub, v, 8192)
+        time.sleep(0.05)
+    err = stop(rec)
+    del pub
+    gc.collect()
+    assert "0 left out with fields in the arena" in err, err
+    assert len(frames(bag)) == 3
+
+    sub = flux.Subscription(node, k, fingerprint=Image.FINGERPRINT__, qos=flux.QoS(depth=16))
+    play = subprocess.Popen(
+        [program("play"), bag], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    got = []
+    while True:
+        frame = sub.take_blocking(50_000_000)
+        if frame is not None:
+            img = Image.View(frame.copy())
+            data = np.asarray(img.data)
+            got.append((img.width, int(data[0]), int(data[-1])))
+        elif play.poll() is not None:
+            break
+    assert play.returncode == 0
+    assert got == [(8192, v, v) for v in (5, 6, 7)]

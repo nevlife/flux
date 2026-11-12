@@ -76,12 +76,13 @@ protected:
   }
 
 #ifdef USE_FLUX_ENABLED
-  // Sends each of `bad` and then `good` from a raw publisher on MsgT's GPU channel: each bad one is
-  // counted in rejected() and none is delivered, and the good one, whose frame_id is "ok", is.
-  template <class MsgT, class Aux>
+  // Sends each of `bad` and then `good` (aux bytes) from a raw publisher on MsgT's GPU channel:
+  // each bad one is counted in rejected() and none is delivered, and the good one, whose frame_id
+  // is "ok", is.
+  template <class MsgT>
   void expect_bad_aux_skipped(
-    const std::string & topic, const Aux & good,
-    const std::vector<std::pair<Aux, std::size_t>> & bad)
+    const std::string & topic, const std::vector<std::uint8_t> & good,
+    const std::vector<std::vector<std::uint8_t>> & bad)
   {
     std::atomic<int> delivered{0};
     flux_wrapper::Subscription<MsgT> sub(
@@ -92,21 +93,21 @@ protected:
     // A host channel will do: the subscription parses the aux bytes the same way.
     flux::Publisher raw(
       *node_, topic, flux_wrapper::detail::Gpu<MsgT>::kFingerprint, 4096, 4, flux::MemoryPolicy{},
-      flux::Publisher::kDefaultMaxSubscribers, sizeof(Aux));
-    const auto send = [&](const Aux & a, std::size_t aux_len) {
+      flux::Publisher::kDefaultMaxSubscribers, flux_wrapper::detail::Gpu<MsgT>::kAuxBytes);
+    const auto send = [&](const std::vector<std::uint8_t> & a) {
       flux::WriteSlot w = raw.loan();
       if (!w) {
         return;
       }
-      std::memcpy(w.aux().data(), &a, sizeof(a));
-      w.set_aux_len(aux_len);
+      std::memcpy(w.aux().data(), a.data(), a.size());
+      w.set_aux_len(a.size());
       EXPECT_FALSE(flux::faulted(w.commit(0)));
     };
-    for (const auto & [aux, len] : bad) {
+    for (const auto & aux : bad) {
       const std::uint64_t before = sub.rejected();
       std::atomic<bool> done{false};
       run_until(done, [&] {
-        send(aux, len);
+        send(aux);
         done = sub.rejected() > before;
       });
       EXPECT_GT(sub.rejected(), before);
@@ -114,7 +115,7 @@ protected:
     }
     std::atomic<bool> done{false};
     run_until(done, [&] {
-      send(good, sizeof(good));
+      send(good);
       done = delivered > 0;
     });
     EXPECT_GT(delivered, 0);
@@ -378,8 +379,8 @@ TEST_F(WrapperTest, PointCloudFromARosMessage)
   EXPECT_EQ(*got, cloud);
 }
 
-// A message over the default slot size goes out once max_message_size makes room for it.
-TEST_F(WrapperTest, LargerSlotTakesALargerMessage)
+// A message far larger than its slot goes out: its data field goes to the publisher's arena.
+TEST_F(WrapperTest, AMessageLargerThanItsSlotGoesOut)
 {
   constexpr std::size_t kBytes = 9u << 20;
   std::atomic<bool> done{false};
@@ -389,7 +390,6 @@ TEST_F(WrapperTest, LargerSlotTakesALargerMessage)
       done = true;
     });
   flux_wrapper::PublisherOptions options;
-  options.max_message_size = 10u << 20;
   options.slot_count = 2;
   flux_wrapper::Publisher<Image> pub(*node_, "large", rclcpp::QoS(1), options);
 
@@ -649,12 +649,12 @@ TEST_F(WrapperTest, CudaSubscriptionKeepsFramesOnTheDevice)
 #endif
 }
 
-// encoding and frame_id travel in the frame's aux bytes, which cap them; the ROS path has no cap.
-TEST_F(WrapperTest, CudaFieldOverItsCapFailsTheLoan)
+// encoding and frame_id travel in the frame's aux bytes, 4096 of them; the ROS path has no cap.
+TEST_F(WrapperTest, CudaFieldsOverTheAuxFailTheLoan)
 {
   SKIP_WITHOUT_CUDA();
   if (!expect_flux()) {
-    GTEST_SKIP() << "the caps are of a flux GPU frame";
+    GTEST_SKIP() << "the aux is a flux GPU frame's";
   }
   std::optional<Image> got;
   std::atomic<bool> done{false};
@@ -670,15 +670,9 @@ TEST_F(WrapperTest, CudaFieldOverItsCapFailsTheLoan)
 
   auto long_frame = pub.loan();
   ASSERT_TRUE(long_frame);
-  long_frame.set_header(header(1, std::string(257, 'f')));
+  long_frame.set_header(header(1, std::string(5000, 'f')));
   EXPECT_FALSE(long_frame);
   EXPECT_FALSE(pub.publish(std::move(long_frame)));
-
-  auto long_encoding = pub.loan();
-  ASSERT_TRUE(long_encoding);
-  long_encoding.set_encoding(std::string(33, 'e'));
-  EXPECT_FALSE(long_encoding);
-  EXPECT_FALSE(pub.publish(std::move(long_encoding)));
 
   // Data larger than the slot fails the loan the same way, not an empty frame.
   auto too_large = pub.loan();
@@ -688,12 +682,12 @@ TEST_F(WrapperTest, CudaFieldOverItsCapFailsTheLoan)
   EXPECT_FALSE(pub.publish(std::move(too_large)));
 
   Image msg = image(1, {1});
-  msg.header.frame_id = std::string(257, 'f');
+  msg.header.frame_id = std::string(5000, 'f');
   EXPECT_FALSE(pub.publish(msg));
 
-  // At the caps a frame goes out whole.
-  msg.header.frame_id = std::string(256, 'f');
-  msg.encoding = std::string(32, 'e');
+  // Past the old caps (a 256-byte frame_id, a 32-byte encoding) a frame goes out whole.
+  msg.header.frame_id = std::string(300, 'f');
+  msg.encoding = std::string(40, 'e');
   run_until(done, [&] { EXPECT_TRUE(pub.publish(msg)); });
   ASSERT_TRUE(got);
   EXPECT_EQ(*got, msg);
@@ -816,10 +810,8 @@ TEST_F(WrapperTest, CudaSubscriptionGetsHostDataPastItsSlotOnTheDevice)
       done = image_got && cloud_got;
     },
     sub_options);
-  flux_wrapper::PublisherOptions small;
-  small.max_message_size = 4096;
-  flux_wrapper::Publisher<Image> image_pub(*node_, "big_image", rclcpp::QoS(4), small);
-  flux_wrapper::Publisher<PointCloud2> cloud_pub(*node_, "big_cloud", rclcpp::QoS(4), small);
+  flux_wrapper::Publisher<Image> image_pub(*node_, "big_image", rclcpp::QoS(4));
+  flux_wrapper::Publisher<PointCloud2> cloud_pub(*node_, "big_cloud", rclcpp::QoS(4));
 
   std::vector<std::uint8_t> pixels(64 * 1024);
   for (std::size_t i = 0; i < pixels.size(); ++i) {
@@ -1031,13 +1023,12 @@ TEST_F(WrapperTest, CudaPointCloudReachesHostAndCudaSubscriptions)
 #endif
 }
 
-// The header and fields travel in the frame's aux bytes, which cap frame_id, the field count and
-// the field names; the ROS path has no cap.
-TEST_F(WrapperTest, CudaPointCloudOverItsCapsFailsTheLoan)
+// The header and fields travel in the frame's aux bytes, 4096 of them; the ROS path has no cap.
+TEST_F(WrapperTest, CudaPointCloudOverItsAuxFailsTheLoan)
 {
   SKIP_WITHOUT_CUDA();
   if (!expect_flux()) {
-    GTEST_SKIP() << "the caps are of a flux GPU frame";
+    GTEST_SKIP() << "the aux is a flux GPU frame's";
   }
   std::optional<PointCloud2> got;
   std::atomic<bool> done{false};
@@ -1051,25 +1042,16 @@ TEST_F(WrapperTest, CudaPointCloudOverItsCapsFailsTheLoan)
   flux_wrapper::Publisher<PointCloud2> pub(*node_, "capped_cloud", rclcpp::QoS(4), options);
   ASSERT_TRUE(pub.uses_device());
 
-  auto too_many = pub.loan();
-  ASSERT_TRUE(too_many);
-  too_many.set_fields(cloud(1, 33).fields);
-  EXPECT_FALSE(too_many);
-  EXPECT_FALSE(pub.publish(std::move(too_many)));
-
   auto long_frame = pub.loan();
   ASSERT_TRUE(long_frame);
-  long_frame.set_header(header(1, std::string(257, 'f')));
+  long_frame.set_header(header(1, std::string(5000, 'f')));
   EXPECT_FALSE(long_frame);
   EXPECT_FALSE(pub.publish(std::move(long_frame)));
 
-  PointCloud2 msg = cloud(1, 2);
-  msg.fields[1].name = std::string(33, 'n');
-  EXPECT_FALSE(pub.publish(msg));
-
-  // At the caps a cloud goes out whole.
-  msg = cloud(1, 32, [](std::size_t i) { return std::string(30, 'n') + std::to_string(10 + i); });
-  msg.header.frame_id = std::string(256, 'f');
+  // Past the old caps (32 fields, 32-byte names, a 256-byte frame_id) a cloud goes out whole.
+  PointCloud2 msg =
+    cloud(1, 40, [](std::size_t i) { return std::string(40, 'n') + std::to_string(10 + i); });
+  msg.header.frame_id = std::string(300, 'f');
   run_until(done, [&] { EXPECT_TRUE(pub.publish(msg)); });
   ASSERT_TRUE(got);
   EXPECT_EQ(*got, msg);
@@ -1206,6 +1188,76 @@ private:
 };
 
 // Each publisher and subscription that cannot have Cuda says so, with its topic.
+// A header past the aux is logged once per publisher, with its field and the message's stamp, so
+// the aux can be sized by it.
+TEST_F(WrapperTest, AHeaderPastTheAuxIsLoggedOnceWithItsField)
+{
+  SKIP_WITHOUT_CUDA();
+  if (!expect_flux()) {
+    GTEST_SKIP() << "the aux is a flux GPU frame's";
+  }
+  const Logs logs;
+  flux_wrapper::PublisherOptions options;
+  options.device = flux_wrapper::Device::Cuda;
+  flux_wrapper::Publisher<Image> pub(*node_, "over_logged", rclcpp::QoS(4), options);
+  ASSERT_TRUE(pub.uses_device());
+  for (int i = 0; i < 3; ++i) {
+    auto loan = pub.loan();
+    ASSERT_TRUE(loan);
+    loan.set_header(header(5, std::string(5000, 'f')));
+    EXPECT_FALSE(pub.publish(std::move(loan)));
+  }
+  flux_wrapper::Publisher<PointCloud2> clouds(*node_, "over_logged_cloud", rclcpp::QoS(4), options);
+  EXPECT_FALSE(clouds.publish(
+    cloud(1, 200, [](std::size_t i) { return std::string(40, 'n') + std::to_string(i); })));
+  EXPECT_EQ(
+    Logs::count(
+      "over_logged: a message did not go out on Device::Cuda: header.frame_id (5000 B) did not "
+      "fit the aux (4096 B, 48 B used before it); header.stamp 5.000000007"),
+    1);
+  EXPECT_EQ(
+    Logs::count("over_logged_cloud: a message did not go out on Device::Cuda: fields (200 entries, "
+                "names 8490 B)"),
+    1);
+}
+
+// On Host the message's own strings go after its fixed fields in the slot. One past the slot fails
+// the message, set by hand or copied from a ROS message, and is logged once per publisher.
+TEST_F(WrapperTest, AStringPastTheSlotIsLoggedOnceWithItsField)
+{
+  if (!expect_flux()) {
+    GTEST_SKIP() << "the slot is a flux one";
+  }
+  const Logs logs;
+  flux_wrapper::Publisher<Image> pub(*node_, "slot_over_logged", rclcpp::QoS(4));
+  for (int i = 0; i < 2; ++i) {
+    auto loan = pub.loan();
+    ASSERT_TRUE(loan);
+    loan.set_header(header(5, std::string(9000, 'f')));
+    EXPECT_FALSE(loan);
+    EXPECT_FALSE(pub.publish(std::move(loan)));
+  }
+  Image msg = image(5, {1, 2, 3});
+  msg.header.frame_id = std::string(9000, 'f');
+  EXPECT_FALSE(pub.publish(msg));
+  EXPECT_EQ(
+    Logs::count(
+      "slot_over_logged: a message did not go out: header.frame_id (9000 B) did not fit the slot "
+      "(8192 B, 48 B used before it); header.stamp 5.000000007"),
+    1);
+  msg.header.frame_id = std::string(4096, 'f');
+  std::optional<Image> got;
+  std::atomic<bool> done{false};
+  flux_wrapper::Subscription<Image> sub(
+    *node_, "slot_over_logged", rclcpp::QoS(4), [&](const flux_wrapper::View<Image> & v) {
+      got = v.to_msg();
+      done = true;
+    });
+  run_until(done, [&] { EXPECT_TRUE(pub.publish(msg)); });
+  ASSERT_TRUE(got);
+  EXPECT_EQ(*got, msg);
+}
+
 TEST_F(WrapperTest, EveryCudaFallbackIsLoggedWithItsTopic)
 {
 #ifdef FLUX_WRAPPER_CUDA
@@ -1252,28 +1304,45 @@ TEST_F(WrapperTest, GpuFramesGoThroughPython)
 
 #ifdef USE_FLUX_ENABLED
 // The aux bytes come from another process. A frame whose aux does not parse is not delivered.
+// A good aux is a frame of the type with data empty, written by its Builder.
+auto aux_of_image(std::string_view frame_id) -> std::vector<std::uint8_t>
+{
+  std::vector<std::uint8_t> buf(512);
+  sensor_msgs::flux_msg::Image::Builder b(buf.data(), buf.size());
+  b.set__header__frame_id(frame_id);
+  b.set__encoding("rgb8");
+  buf.resize(b.size__());
+  return buf;
+}
+
+auto aux_of_cloud(std::string_view frame_id) -> std::vector<std::uint8_t>
+{
+  std::vector<std::uint8_t> buf(512);
+  sensor_msgs::flux_msg::PointCloud2::Builder b(buf.data(), buf.size());
+  b.set__header__frame_id(frame_id);
+  auto f = b.alloc__fields(1);
+  f[0].set__name("x");
+  buf.resize(b.size__());
+  return buf;
+}
+
+// The same aux with its first descriptor (frame_id) pointed past it.
+auto past_the_end(std::vector<std::uint8_t> aux) -> std::vector<std::uint8_t>
+{
+  const std::uint32_t far = 1U << 20;
+  std::memcpy(aux.data() + 8, &far, sizeof(far));
+  return aux;
+}
+
 TEST_F(WrapperTest, GpuImageFrameWithABadAuxIsSkipped)
 {
   if (!expect_flux()) {
     GTEST_SKIP() << "flux path only";
   }
-  using flux_wrapper::detail::GpuImageAux;
-  GpuImageAux good{};
-  good.version = GpuImageAux::kVersion;
-  good.frame_id_len = 2;
-  std::memcpy(good.frame_id.data(), "ok", 2);
-  GpuImageAux bad_version = good;
-  bad_version.version = GpuImageAux::kVersion + 1;
-  GpuImageAux bad_frame_id = good;
-  bad_frame_id.frame_id_len = GpuImageAux::kFrameIdCap + 1;
-  GpuImageAux bad_encoding = good;
-  bad_encoding.encoding_len = GpuImageAux::kEncodingCap + 1;
+  const auto good = aux_of_image("ok");
   expect_bad_aux_skipped<Image>(
     "bad_aux", good,
-    {{good, 10},
-     {bad_version, sizeof(GpuImageAux)},
-     {bad_frame_id, sizeof(GpuImageAux)},
-     {bad_encoding, sizeof(GpuImageAux)}});
+    {std::vector<std::uint8_t>(good.begin(), good.begin() + 10), past_the_end(good)});
 }
 
 TEST_F(WrapperTest, GpuPointCloudFrameWithABadAuxIsSkipped)
@@ -1281,46 +1350,21 @@ TEST_F(WrapperTest, GpuPointCloudFrameWithABadAuxIsSkipped)
   if (!expect_flux()) {
     GTEST_SKIP() << "flux path only";
   }
-  using flux_wrapper::detail::GpuPointCloud2Aux;
-  using flux_wrapper::detail::GpuPointFieldAux;
-  GpuPointCloud2Aux good{};
-  good.version = GpuPointCloud2Aux::kVersion;
-  good.frame_id_len = 2;
-  std::memcpy(good.frame_id.data(), "ok", 2);
-  good.fields_len = 1;
-  good.fields[0].name_len = 1;
-  good.fields[0].name[0] = 'x';
-  GpuPointCloud2Aux bad_version = good;
-  bad_version.version = GpuPointCloud2Aux::kVersion + 1;
-  GpuPointCloud2Aux bad_frame_id = good;
-  bad_frame_id.frame_id_len = GpuPointCloud2Aux::kFrameIdCap + 1;
-  GpuPointCloud2Aux bad_fields = good;
-  bad_fields.fields_len = GpuPointCloud2Aux::kFieldCap + 1;
-  GpuPointCloud2Aux bad_name = good;
-  bad_name.fields[0].name_len = GpuPointFieldAux::kNameCap + 1;
+  const auto good = aux_of_cloud("ok");
   expect_bad_aux_skipped<PointCloud2>(
     "bad_cloud_aux", good,
-    {{good, sizeof(GpuPointCloud2Aux) - 1},
-     {bad_version, sizeof(GpuPointCloud2Aux)},
-     {bad_frame_id, sizeof(GpuPointCloud2Aux)},
-     {bad_fields, sizeof(GpuPointCloud2Aux)},
-     {bad_name, sizeof(GpuPointCloud2Aux)}});
+    {std::vector<std::uint8_t>(good.begin(), good.end() - 1), past_the_end(good)});
 }
 
-constexpr auto fnv1a(std::string_view s) -> std::uint64_t
+// The C ABI, the C++ constant and the Python module agree; a split would leave a channel unread.
+TEST(GpuChannel, FingerprintsAreTheTypesGpuFingerprint)
 {
-  std::uint64_t h = 0xCBF29CE484222325ULL;
-  for (const char c : s) {
-    h = (h ^ static_cast<std::uint8_t>(c)) * 0x100000001B3ULL;
-  }
-  return h;
-}
-
-// The Python module has the same values; a changed name would split the channel between them.
-TEST(GpuChannel, FingerprintsAreTheirNamesHash)
-{
-  EXPECT_EQ(fnv1a("flux_wrapper/GpuImage"), flux_wrapper::detail::kGpuImageFingerprint);
-  EXPECT_EQ(fnv1a("flux_wrapper/GpuPointCloud2"), flux_wrapper::detail::kGpuPointCloud2Fingerprint);
+  EXPECT_EQ(
+    flux_wrapper::detail::Gpu<Image>::kFingerprint,
+    flux_gpu_fingerprint(sensor_msgs::flux_msg::Image::kFingerprint));
+  EXPECT_EQ(
+    flux_wrapper::detail::Gpu<PointCloud2>::kFingerprint,
+    flux_gpu_fingerprint(sensor_msgs::flux_msg::PointCloud2::kFingerprint));
 }
 #endif
 

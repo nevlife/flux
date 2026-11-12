@@ -89,6 +89,62 @@ TEST_F(Arena, AFrameLargerThanItsSlotGoesThroughTheArena)
   EXPECT_TRUE(v.ok__());
 }
 
+// Where a variable-length field goes is its kind, not its size: the message's own string after the
+// scalar block in the slot, every array and element array, and what elements hold, in the arena,
+// however small. An empty array takes no bytes and stays in the slot. A string of the message
+// that does not fit the slot fails the frame rather than going to the arena.
+TEST_F(Arena, AVariableFieldGoesWhereItsKindSaysNotWhereItFits)
+{
+  flux::Publisher pub(*node_, topic("kind"), Blob::kFingerprint, kSlot, 4);
+  flux::Subscription sub(*node_, topic("kind"), Blob::kFingerprint);
+  auto b = Blob::build__(pub);
+  b.set__name("blob");
+  b.alloc__data(4)[3] = 9;
+  b.alloc__tags(1);
+  b.set__tags(0, "t");
+  auto items = b.alloc__items(1);
+  items[0].set__label("a");
+  items[0].alloc__ids(0);
+  ASSERT_TRUE(b.ok__());
+  ASSERT_EQ(b.commit__(), flux::Published::Ok);
+  const flux::FrameView f = sub.take();
+  ASSERT_TRUE(f.valid());
+  // The descriptors of the scalar block: name at 0, data at 8, tags at 16, items at 24.
+  const auto desc = [&](std::size_t at) {
+    std::uint32_t off = 0;
+    std::memcpy(&off, static_cast<const std::uint8_t *>(f.data()) + at, sizeof off);
+    return off;
+  };
+  EXPECT_LT(desc(0), flux::wire::kWireHeap) << "name in the slot";
+  EXPECT_GE(desc(8), flux::wire::kWireHeap) << "data in the arena";
+  EXPECT_GE(desc(16), flux::wire::kWireHeap) << "tags in the arena";
+  EXPECT_GE(desc(24), flux::wire::kWireHeap) << "items in the arena";
+  const Blob::View v(f);
+  EXPECT_EQ(v.name(), "blob");
+  EXPECT_EQ(v.data()[3], 9);
+  EXPECT_EQ(v.tags(0), "t");
+  EXPECT_EQ(v.items(0).label(), "a");
+  EXPECT_TRUE(v.items(0).ids().empty());
+  EXPECT_TRUE(v.ok__());
+
+  auto long_name = Blob::build__(pub);
+  long_name.set__name(std::string(kSlot, 'n'));
+  EXPECT_FALSE(long_name.ok__());
+  EXPECT_NE(long_name.commit__(), flux::Published::Ok);
+}
+
+// With no slot size a publisher of a generated type gets the type's: its scalar block, string room
+// and the arena trailer, in pages. One no generated header registered gets the untyped size.
+TEST_F(Arena, ASlotSizeOfZeroIsTheTypes)
+{
+  const flux::Publisher typed(*node_, topic("typed"), Blob::kFingerprint);
+  EXPECT_EQ(typed.slot_size(), 8192U) << "32 + 4096 + 71, in 4 KiB pages";
+  const flux::Publisher untyped(*node_, topic("untyped"), flux::kNoSchema);
+  EXPECT_EQ(untyped.slot_size(), FLUX_UNTYPED_SLOT_SIZE);
+  const flux::Publisher sized(*node_, topic("sized"), Blob::kFingerprint, 4096, 4);
+  EXPECT_EQ(sized.slot_size(), 4096U);
+}
+
 TEST_F(Arena, AnArenaOffsetPastTheArenaIsRefused)
 {
   flux::Publisher pub(*node_, topic("bad"), Blob::kFingerprint, kSlot, 4);

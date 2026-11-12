@@ -118,7 +118,7 @@ read_on_device(data.data(), data.size(), frame.stream());
 
 - 생성 타입의 fingerprint로 스트림을 선언한 발행자는 외장 GPU에서도 슬롯이 호스트 메모리다(`device_backed()`가 `false`, loan의 `device_ptr()`이 `0`).
 - `alloc_device__<필드>(n)`은 그 필드를 발행 프로세스의 GPU arena에 할당한다. 통합 GPU에서는 CPU와 GPU가 함께 읽는 호스트 메모리, 외장 GPU에서는 GPU 메모리다. 이 필드는 채널 스트림에서 쓰고, commit이 그 스트림을 기다린다.
-- GPU arena는 프로세스에 GPU마다 하나다. 크기는 호스트 arena와 같은 `FLUX_ARENA_BYTES`이고, 최대 1 GiB다. 블록은 그 프레임의 슬롯에 다음 프레임을 쓰는 시점에 해제된다.
+- GPU arena는 프로세스에 GPU마다 하나다. 크기는 호스트 arena와 같은 `FLUX_ARENA_BYTES`(기본값이자 최대값 16 GiB)이고, 실제 GPU 메모리는 블록이 사용하는 만큼 32 MiB 단위로 차지한다. 발행 프로세스는 GPU arena를 1 GiB 사용할 때마다 fd를 32개 사용한다. 블록은 그 프레임의 슬롯에 다음 프레임을 쓰는 시점에 해제된다.
 - 받는 쪽의 `<필드>__device()`는 GPU 주소와 개수를 반환한다. 구독 스트림이 발행자와 다른 GPU(UUID)에 있으면 빈 값이다.
 - arena가 활성화된 `Builder`는 슬롯의 마지막 71 B(스트림을 선언한 발행자는 135 B)를 가변 필드에 쓰지 않는다.
 
@@ -171,6 +171,7 @@ with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stre
 
 - GPU 메모리 채널의 CPU 구독자가 받는 view는 `data()`가 자기 복사본이고, `device_ptr()`은 `0`이다.
 - GPU 메모리 채널에서도 aux는 호스트 메모리다. stamp나 크기 같은 헤더는 발행자를 `aux_size`와 함께 생성해 aux에 쓴다([concepts.md](concepts.md#발행자와-슬롯)). CPU 구독과 GPU 구독 모두 aux를 복사 없이 읽는다.
+- 생성 메시지의 `data` 필드를 payload로, `data`를 비운 그 메시지의 프레임을 aux로 보내는 채널은 fingerprint를 `flux::gpu_fingerprint(타입의 fingerprint)`(Python `flux.gpu_fingerprint`, C `flux_gpu_fingerprint`)로 만든다. `data`가 `uint8[]`인 타입에 사용 가능하다. `flux_bridge`, ROS 2 mirror, `convert_flux`, `flux_tools`의 rviz2 디스플레이는 이 채널의 aux와 payload를 그 타입의 메시지 하나로 합쳐 읽는다. 외장 GPU에서는 payload를 호스트로 한 번 복사한다. `flux_wrapper`의 `Cuda` 발행자가 이 형식이다.
 - 복사가 실패한 take는 빈 결과이고 `refused.fence`로 센다. 그 슬롯은 반납하지 않는다.
 - 구독자는 메모리를 할당한 GPU를 번호가 아니라 UUID로 찾으므로, `CUDA_VISIBLE_DEVICES`가 달라도 같은 GPU를 찾는다. 구독 스트림의 GPU가 그 GPU와 다르면 `MISMATCH`다.
 - GPU 메모리 fd는 `/dev/shm/flux.gpu.<dev>.<ino>` 소켓으로 넘긴다. 세그먼트에 접근 가능한 곳에서는 이 소켓에도 접근 가능하다.

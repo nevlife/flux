@@ -1,11 +1,11 @@
 // The relay: one ROS 2 node that republishes flux channels on demand.
 //
 // Every poll the bridge lists the live channels on the host and, for each one whose fingerprint
-// names an installed message type, asks the ROS graph whether anyone other than itself
-// subscribes to a topic of that name while nobody else publishes on it. A relay starts when that
-// becomes true and stops when it stops being true, so a channel nobody watches costs nothing. The
-// frame path is flux slot -> CDR written by flux -> rmw, which is the cost of using stock tools on
-// a flux channel.
+// names an installed message type (or a GPU memory channel of one), asks the ROS graph whether
+// anyone other than itself subscribes to a topic of that name while nobody else publishes on it. A
+// relay starts when that becomes true and stops when it stops being true, so a channel nobody
+// watches costs nothing. The frame path is flux slot -> CDR written by flux -> rmw, which is the
+// cost of using stock tools on a flux channel.
 
 #include "flux/schemas.hpp"
 #include "flux/subscription.hpp"
@@ -51,9 +51,10 @@ std::atomic<bool> g_stop{false};  // NOLINT(*-avoid-non-const-global-variables)
 class Relay
 {
 public:
-  Relay(rclcpp::Node & node, const flux::Topic & topic, flux::Schemas::Type type)
+  Relay(rclcpp::Node & node, const flux::Topic & topic, flux::Schemas::Type type, bool gpu)
   : fingerprint_(topic.fingerprint),
     signpost_(topic.signpost),
+    gpu_(gpu),
     type_(type),
     sub_(node, topic.key, topic.fingerprint, flux::QoS(1).max_borrow(1)),
     pub_(node.create_generic_publisher(
@@ -109,11 +110,14 @@ private:
       // Sizing and writing must read the same bytes, and a peer can still write a committed slot.
       // A frame with fields in its publisher's arena is copied with them, while it is held.
       try {
-        if (frame.heap().empty()) {
+        if (gpu_) {
+          // A GPU memory channel: the aux and this subscriber's copy of the payload, one message.
+          type_.with_data(frame, bytes);
+        } else if (!flux::in_arena(frame)) {
           const auto * data = static_cast<const std::uint8_t *>(frame.data());
           bytes.assign(data, data + frame.size());
         } else {
-          type_.inline_arena(frame.data(), frame.size(), frame.heap(), bytes);
+          type_.inline_arena(frame, bytes);
         }
       } catch (const flux::Error &) {
         ++unreadable_;
@@ -138,6 +142,7 @@ private:
 
   std::uint64_t fingerprint_;
   std::string signpost_;
+  bool gpu_;
   flux::Schemas::Type type_;
   flux::Subscription sub_;
   std::shared_ptr<rclcpp::GenericPublisher> pub_;
@@ -183,7 +188,7 @@ public:
       }
       seen.insert(t.signpost);
       const bool valid = flux_bridge::is_ros_topic_name(t.key);
-      if (!valid || !schemas_.contains(t.fingerprint)) {
+      if (!valid || (!schemas_.contains(t.fingerprint) && !schemas_.contains_gpu(t.fingerprint))) {
         // Reported once while the signpost lasts, and its segment is not looked at again.
         if (!reported_.count(t.signpost) && flux::read_channel_stats(t.signpost).live) {
           reported_.insert(t.signpost);
@@ -234,9 +239,11 @@ public:
       if (relays_.count(key) || left_out_.count(topic.signpost) || !wanted(*node_, key)) {
         continue;
       }
-      const flux::Schemas::Type type = schemas_.at(topic.fingerprint);
+      const bool gpu = !schemas_.contains(topic.fingerprint);
+      const flux::Schemas::Type type =
+        gpu ? schemas_.at_gpu(topic.fingerprint) : schemas_.at(topic.fingerprint);
       try {
-        relays_.emplace(key, std::make_unique<Relay>(*node_, topic, type));
+        relays_.emplace(key, std::make_unique<Relay>(*node_, topic, type, gpu));
       } catch (const std::exception & e) {
         left_out(key, topic.signpost, e.what());
         continue;

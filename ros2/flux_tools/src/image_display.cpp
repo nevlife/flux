@@ -372,7 +372,7 @@ void ImageDisplay::update(float, float)
     return;
   }
 
-  Image::View view(frame);
+  const Image::View view = view_of<Image::View>(frame);
   const std::uint32_t width = view.width();
   const std::uint32_t height = view.height();
   const std::uint32_t step = view.step();

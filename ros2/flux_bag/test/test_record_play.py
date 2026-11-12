@@ -654,8 +654,14 @@ def test_a_frame_with_a_bad_aux_tail_is_refused(node, tmp_path):
     assert split_meta(deserialize_message(kept, FluxFrame).meta) == (8, b"a")
 
 
-GPU_IMAGE = 0x780CD7C35A0C29C8  # flux_wrapper's Device::Cuda Image channel
-GPU_IMAGE_AUX = 316
+def gpu_image():
+    """flux_wrapper's Device::Cuda Image channel: its fingerprint and aux size."""
+    from sensor_msgs_flux import image
+
+    return flux.gpu_fingerprint(image.FINGERPRINT__), 4096
+
+
+GPU_IMAGE, GPU_IMAGE_AUX = gpu_image()
 
 
 def load_cudart():
@@ -670,22 +676,18 @@ CUDART = load_cudart()
 
 
 def gpu_image_aux(i):
-    """flux_wrapper's GpuImageAux of a 64 x 64 mono8 frame."""
-    encoding, frame_id = b"mono8", b"cam%d" % i
-    return struct.pack(
-        "<IiIIIIBBH32s256s",
-        1,
-        100 + i,
-        7,
-        64,
-        64,
-        64,
-        0,
-        len(encoding),
-        len(frame_id),
-        encoding,
-        frame_id,
-    )
+    """The aux of flux_wrapper's Image channel for a 64 x 64 mono8 frame: an Image frame with data
+    empty."""
+    from sensor_msgs_flux import image
+
+    buf = np.zeros(GPU_IMAGE_AUX, np.uint8)
+    b = image.Builder(buf)
+    b.set__header__stamp(100 + i, 7)
+    b.header__frame_id = "cam%d" % i
+    b.height, b.width, b.step = 64, 64, 64
+    b.encoding = "mono8"
+    assert b
+    return bytes(buf[: b.size__])
 
 
 def cuda_copy(dst, src, n, kind):
@@ -724,7 +726,7 @@ def test_a_gpu_image_channel_is_recorded_and_played_to_cpu_and_cuda(node, tmp_pa
         loan = pub.loan((n,), "u1")
         cuda_copy(loan.__cuda_array_interface__["data"][0], pixels.ctypes.data, n, 1)
         assert CUDART.cudaDeviceSynchronize() == 0
-        loan.aux[:] = np.frombuffer(aux, np.uint8)
+        loan.aux[: len(aux)] = np.frombuffer(aux, np.uint8)
         loan.aux_len = len(aux)
         assert loan.commit() == flux.Published.OK
         sent.append((pixels.tobytes(), aux))
@@ -758,3 +760,14 @@ def test_a_gpu_image_channel_is_recorded_and_played_to_cpu_and_cuda(node, tmp_pa
     play_taking([taker(cpu, on_cpu), take_gpu], bag)
     assert [(a.tobytes(), aux) for a, aux in on_cpu] == sent[first:]
     assert on_gpu == sent[first:]
+
+    # convert_flux makes each frame, aux and payload, one Image.
+    from sensor_msgs.msg import Image as RosImage
+
+    convert(bag, str(tmp_path / "ros"))
+    ros_type, rows = messages(str(tmp_path / "ros"))[k]
+    assert ros_type == "sensor_msgs/msg/Image"
+    images = [deserialize_message(m, RosImage) for _, m in rows]
+    assert [(bytes(m.data), m.header.frame_id) for m in images] == [
+        (d, "cam%d" % i) for i, (d, _) in enumerate(sent)
+    ][first:]

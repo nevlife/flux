@@ -318,6 +318,11 @@ pub unsafe extern "C" fn flux_channel_create(
 ) -> flux_status {
     // SAFETY: stream is NULL or a live handle.
     let stream = unsafe { stream_of(stream) };
+    let slot_size = match (slot_size, scalar_bytes_of(fingerprint)) {
+        (0, Some(scalar)) => flux_core::typed_slot_size(scalar, stream.declared()),
+        (0, None) => flux_core::UNTYPED_SLOT_SIZE,
+        (n, _) => n,
+    };
     // SAFETY: name is a valid string.
     let r = unsafe { text(name) }.and_then(|n| {
         Channel::create_on(
@@ -988,25 +993,33 @@ pub extern "C" fn flux_stamp_offset(fingerprint: u64) -> i32 {
         .unwrap_or(crate::FLUX_NO_STAMP)
 }
 
-static GENERATED: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+static GENERATED: Mutex<Vec<(u64, u32)>> = Mutex::new(Vec::new());
 
-/// A generated type's fingerprint: its publishers that declare a stream keep host slots.
+/// A generated type's fingerprint and scalar block: its stream publishers' host slots, its slot size.
 #[unsafe(no_mangle)]
-pub extern "C" fn flux_layout_register(fingerprint: u64) {
+pub extern "C" fn flux_layout_register(fingerprint: u64, scalar_bytes: u32) {
     let mut g = GENERATED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !g.contains(&fingerprint) {
-        g.push(fingerprint);
+    if !g.iter().any(|(fp, _)| *fp == fingerprint) {
+        g.push((fingerprint, scalar_bytes));
     }
 }
 
+fn scalar_bytes_of(fingerprint: u64) -> Option<u32> {
+    if fingerprint == flux_core::NO_SCHEMA {
+        return None;
+    }
+    GENERATED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(fp, _)| *fp == fingerprint)
+        .map(|(_, s)| *s)
+}
+
 fn is_generated(fingerprint: u64) -> bool {
-    fingerprint != flux_core::NO_SCHEMA
-        && GENERATED
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&fingerprint)
+    scalar_bytes_of(fingerprint).is_some()
 }
 
 #[unsafe(no_mangle)]

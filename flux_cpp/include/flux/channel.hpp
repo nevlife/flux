@@ -12,11 +12,26 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace flux
 {
 
 inline constexpr std::uint64_t kNoSchema = FLUX_NO_SCHEMA;
+
+// The fingerprint of a GPU memory channel of the type `base`: its payload is the type's `data`
+// field, its aux a frame of the type with `data` empty. As flux_gpu_fingerprint, at compile time.
+constexpr auto gpu_fingerprint(std::uint64_t base) noexcept -> std::uint64_t
+{
+  std::uint64_t h = 0xcbf29ce484222325ULL;
+  for (const char c : std::string_view("flux/gpu-data/")) {
+    h = (h ^ static_cast<std::uint8_t>(c)) * 0x100000001b3ULL;
+  }
+  for (int i = 0; i < 8; ++i) {
+    h = (h ^ ((base >> (8 * i)) & 0xFF)) * 0x100000001b3ULL;
+  }
+  return h;
+}
 inline constexpr std::size_t kMaxDims = FLUX_MAX_DIMS;
 
 using Status = flux_status;

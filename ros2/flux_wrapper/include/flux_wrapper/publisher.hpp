@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
@@ -21,13 +22,16 @@ namespace flux_wrapper
 
 struct PublisherOptions
 {
-  // flux only: the largest message in bytes. Zero takes the flux default slot size (8 MiB).
-  std::uint32_t max_message_size = 0;
+  // flux with Device::Cuda only: the largest data field in bytes, which is the slot of device
+  // memory. Zero takes 8 MiB (FLUX_UNTYPED_SLOT_SIZE). On Host the slot is the type's and the
+  // data field goes to the publisher's arena, whatever its size.
+  std::uint32_t max_device_data_size = 0;
   // flux only: messages a subscriber may hold at once, plus one to write into. Zero takes the
-  // flux default (16). The topic reserves max_message_size * slot_count of shared memory.
+  // flux default (16).
   std::uint32_t slot_count = 0;
   // flux only: also publish each message as its ROS message on the same topic while a ROS
-  // subscriber (rviz2, ros2 bag) wants it. Not with Device::Cuda.
+  // subscriber (rviz2, ros2 bag) wants it. With Device::Cuda the mirror copies the data field
+  // from the device for each of those messages.
   bool mirror_to_ros = false;
   // Cuda: Loan::alloc_buffer() hands out device memory (see Device). On the flux path a slot of a
   // discrete GPU is device memory; on the ROS path publish() copies the buffer to the message.
@@ -52,27 +56,24 @@ public:
 #endif
 #ifdef USE_FLUX_ENABLED
     if (use_flux()) {
-      const std::uint32_t slot = options.max_message_size != 0 ? options.max_message_size
-                                                               : flux::Publisher::kDefaultSlotSize;
       const std::uint32_t count =
         options.slot_count != 0 ? options.slot_count : flux::Publisher::kDefaultSlotCount;
       if (cuda) {
+        const std::uint32_t slot =
+          options.max_device_data_size != 0 ? options.max_device_data_size : FLUX_UNTYPED_SLOT_SIZE;
         flux_ = std::make_unique<flux::Publisher>(
           node, topic, detail::Gpu<MsgT>::kFingerprint, slot, count, flux::Device::Cuda,
           flux::MemoryPolicy{}, flux::Publisher::kDefaultMaxSubscribers,
-          static_cast<std::uint32_t>(sizeof(typename detail::Gpu<MsgT>::Aux)));
+          detail::Gpu<MsgT>::kAuxBytes);
         device_ = true;
         if (options.mirror_to_ros) {
-          RCLCPP_WARN(
-            logger_,
-            "%s: mirror_to_ros is ignored with Device::Cuda: flux does not mirror a GPU "
-            "channel",
-            topic.c_str());
+          flux_->mirror_to_ros();
         }
         return;
       }
       flux_ = std::make_unique<flux::Publisher>(
-        node, topic, detail::AdapterT<MsgT>::kFingerprint, slot, count);
+        node, topic, detail::AdapterT<MsgT>::kFingerprint, flux::Publisher::kDefaultSlotSize,
+        count);
       if (options.mirror_to_ros) {
         flux_->mirror_to_ros();
       }
@@ -131,6 +132,11 @@ public:
       return commit_gpu(loan);
     }
     if (loan.builder_) {
+      if (!loan.builder_->ok__() && loan.over_.field != nullptr) {
+        (void)loan.builder_->commit__();  // refused: the slot goes back
+        overflow(loan.over_, "", "slot", flux_->slot_size());
+        return false;
+      }
       return report(loan.builder_->commit__());
     }
 #endif
@@ -155,12 +161,7 @@ public:
       return publish_gpu(*msg);
     }
     if (flux_) {
-      auto b = detail::AdapterT<MsgT>::build__(*flux_);
-      if (!b) {
-        return false;
-      }
-      sensor_msgs::flux_msg::msg_to_frame(*msg, b);
-      return report(b.commit__());
+      return publish_host(*msg);
     }
 #endif
     ros_->publish(std::move(msg));
@@ -175,12 +176,7 @@ public:
       return publish_gpu(msg);
     }
     if (flux_) {
-      auto b = detail::AdapterT<MsgT>::build__(*flux_);
-      if (!b) {
-        return false;
-      }
-      sensor_msgs::flux_msg::msg_to_frame(msg, b);
-      return report(b.commit__());
+      return publish_host(msg);
     }
 #endif
     ros_->publish(msg);
@@ -229,14 +225,52 @@ private:
       return false;
     }
     // The slot is the subscribers' after the commit, and the slot of nobody after an abort.
-    loan.aux_ = nullptr;
-    if (loan.bad_) {
+    if (loan.bad_ || !loan.builder_ || !loan.builder_->ok__()) {
       loan.slot_.abort();
-      device_error(detail::Gpu<MsgT>::kOverCap);
+      if (loan.over_.field != nullptr) {
+        overflow(loan.over_, " on Device::Cuda", "aux", detail::Gpu<MsgT>::kAuxBytes);
+      } else {
+        device_error(detail::Gpu<MsgT>::kOverCap);
+      }
       return false;
     }
-    loan.slot_.set_aux_len(sizeof(typename detail::Gpu<MsgT>::Aux));
+    loan.slot_.set_aux_len(loan.builder_->size__());
     return report(loan.slot_.commit(loan.len_));
+  }
+
+  // Once per publisher: which field of which message did not fit, to size the aux or slot by.
+  void overflow(
+    const detail::AuxOverflow & o, const char * on, const char * where, std::uint32_t size)
+  {
+    if (over_logged_) {
+      return;
+    }
+    over_logged_ = true;
+    std::string what = std::string(o.field) + " (" + std::to_string(o.bytes) + " B";
+    if (o.entries != 0) {
+      what = std::string(o.field) + " (" + std::to_string(o.entries) + " entries, names " +
+             std::to_string(o.bytes) + " B";
+    }
+    RCLCPP_ERROR(
+      logger_,
+      "%s: a message did not go out%s: %s) did not fit the %s (%u B, %zu B used before it); "
+      "header.stamp %d.%09u. Later ones are not logged",
+      flux_->topic_name().c_str(), on, what.c_str(), where, size, o.used, o.sec, o.nanosec);
+  }
+
+  // As a Loan filled from msg, so a field that does not fit is logged as one set by hand is.
+  auto publish_host(const MsgT & msg) -> bool
+  {
+    Loan<MsgT> l = loan();
+    if (!l) {
+      return false;
+    }
+    l.set_from(msg);
+    const auto d = l.alloc_data(msg.data.size());
+    if (d.size() == msg.data.size() && !msg.data.empty()) {
+      std::memcpy(d.data(), msg.data.data(), msg.data.size());
+    }
+    return publish(std::move(l));
   }
 
   auto publish_gpu(const MsgT & msg) -> bool
@@ -267,6 +301,7 @@ private:
 
   std::unique_ptr<flux::Publisher> flux_;
   bool fault_logged_ = false;
+  bool over_logged_ = false;
 #endif
 #ifdef FLUX_WRAPPER_CUDA
   std::unique_ptr<detail::DeviceStaging> staging_;

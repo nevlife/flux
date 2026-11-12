@@ -396,7 +396,7 @@ private:
     // replay: the bag gets a copy that holds the fields itself. That needs the installed type.
     const void * data = v.data();
     std::size_t size = v.size();
-    if (!v.heap().empty()) {
+    if (flux::in_arena(v)) {
       if (!inline_arena(v)) {
         return;
       }
@@ -475,7 +475,7 @@ private:
   }
 
   // `v` with its arena fields copied in, into `inlined_`; false, and nothing recorded, when its
-  // type is not installed or a field is in GPU memory.
+  // type is not installed.
   auto inline_arena(const flux::FrameView & v) -> bool
   {
     // Every .msg on AMENT_PREFIX_PATH, read once by the first channel that needs it.
@@ -483,10 +483,10 @@ private:
     const char * why = "its type is not installed";
     if (schemas.contains(fingerprint_)) {
       try {
-        schemas.at(fingerprint_).inline_arena(v.data(), v.size(), v.heap(), inlined_);
+        schemas.at(fingerprint_).inline_arena(v, inlined_);
         return true;
       } catch (const flux::Error &) {
-        why = "it does not match its type or has a field in GPU memory";
+        why = "it does not match its type";
       }
     }
     if (arena_left_++ == 0) {

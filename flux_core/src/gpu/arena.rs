@@ -33,8 +33,9 @@ use crate::arena::{self as host_arena, Heap};
 use crate::error::{Error, Result};
 use crate::sys::{self, PiMutex};
 
-/// One allocation each, so a 1 GiB arena is 32 descriptors at most. A multiple of the 2 MiB
-/// granularity the GPUs flux runs on report.
+/// One allocation each, and the publisher keeps one descriptor per chunk for later subscribers:
+/// 32 per GiB used, 512 for a full 16 GiB arena. A multiple of the 2 MiB granularity the GPUs
+/// flux runs on report.
 pub const CHUNK: usize = 32 << 20;
 const NOT_SUPPORTED: i32 = 801;
 
@@ -898,6 +899,31 @@ mod tests {
             host_arena::blocks(&frame, Some(&heap)).is_none(),
             "no trailer"
         );
+    }
+
+    /// Past the 1 GiB the arena once stopped at: a block there is mapped and named by a descriptor.
+    /// Uses about 1.1 GB of device memory while it runs.
+    #[test]
+    fn a_block_past_one_gib_of_the_gpu_arena_is_mapped_and_named() {
+        let Ok((core, _)) = vmm::vmm() else { return };
+        if vmm::device_handle(core, 0).is_none() {
+            return;
+        }
+        let a = GpuArena::create(0, 2 << 30, Some(Place::Device)).unwrap();
+        let big = a.alloc(1 << 30, 256).expect("1 GiB of device memory");
+        let far = a.alloc(4096, 256).expect("a block past 1 GiB");
+        assert!(far > 1 << 30, "{far:#x}");
+        assert_ne!(a.device_ptr(far), 0);
+        let pos = host_arena::GPU_POS + far;
+        assert_eq!(host_arena::position(host_arena::wire(pos).unwrap()), pos);
+        let f = a.frame();
+        assert_eq!(
+            GpuFrame::decode(&f.encode()).map(|g| g.size),
+            Some(2 << 30),
+            "a subscriber takes it"
+        );
+        a.free(far);
+        a.free(big);
     }
 
     #[test]

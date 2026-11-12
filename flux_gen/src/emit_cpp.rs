@@ -397,13 +397,13 @@ pub fn guard(layout: &Layout, suffix: &str) -> String {
 /// fingerprint alone.
 fn stamp_registration(layout: &Layout) -> &'static str {
     // The first line lets a publisher of this type that declares a stream keep host slots, for
-    // alloc_device__; the second lets a channel of it report header.stamp to trace collectors.
+    // alloc_device__, and one given no slot size take the type's; the second lets a channel of it report header.stamp to trace collectors.
     if layout.stamp_offset() < 0 {
         return "\n  inline static const bool kLayoutRegistered__ =\n    \
-                (flux_layout_register(kFingerprint), true);";
+                (flux_layout_register(kFingerprint, static_cast<std::uint32_t>(kScalarBytes)), true);";
     }
     "\n  inline static const bool kLayoutRegistered__ =\n    \
-     (flux_layout_register(kFingerprint), true);\n  inline static const bool kStampRegistered__ \
+     (flux_layout_register(kFingerprint, static_cast<std::uint32_t>(kScalarBytes)), true);\n  inline static const bool kStampRegistered__ \
      =\n    (flux_stamp_offset_register(kFingerprint, kStampOffset), true);"
 }
 

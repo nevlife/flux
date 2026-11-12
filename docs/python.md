@@ -35,12 +35,12 @@ if flux.faulted(p):
 ```
 
 ```python
-flux.Publisher(node, topic, fingerprint=flux.NO_SCHEMA, slot_size=8 << 20, slot_count=16,
+flux.Publisher(node, topic, fingerprint=flux.NO_SCHEMA, slot_size=0, slot_count=16,
                memory=None, max_subscribers=16, device="cpu", fence_timeout=None,
                mirror_to_ros=False, aux_size=0)
 ```
 
-- 기본값은 C++와 같고, 모듈 상수 `flux.DEFAULT_SLOT_SIZE`, `flux.DEFAULT_SLOT_COUNT`, `flux.DEFAULT_MAX_SUBSCRIBERS`로도 읽기 가능하다.
+- 기본값은 C++와 같고, 모듈 상수 `flux.DEFAULT_SLOT_SIZE`, `flux.DEFAULT_SLOT_COUNT`, `flux.DEFAULT_MAX_SUBSCRIBERS`, `flux.UNTYPED_SLOT_SIZE`, `flux.SLOT_STRING_BYTES`로도 읽기 가능하다.
 - `publish(array)`는 numpy 배열이나 `bytes`를 dtype, shape와 함께 슬롯에 한 번 복사한다.
 - 같은 채널에 실행 중인 발행자가 있으면 생성자가 `flux.Error`(`status`는 `Status.PUBLISHER_EXISTS`)를 던진다.
 - `dropped`, `slot_size`, `topic_name`, `signpost_name`, `subscriber_count`는 속성이다. `subscriber_count`의 뜻은 C++와 같다([cpp.md](cpp.md#발행)).

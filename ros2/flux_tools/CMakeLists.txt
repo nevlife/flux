@@ -63,6 +63,9 @@ if(BUILD_TESTING)
   ament_add_gtest(test_cloud_from_frame test/test_cloud_from_frame.cpp)
   target_include_directories(test_cloud_from_frame PRIVATE include ${flux_std_adapters_INCLUDE_DIRS})
   target_link_libraries(test_cloud_from_frame flux_cpp::flux_cpp ${sensor_msgs_TARGETS})
+  ament_add_gtest(test_typed_frames test/test_typed_frames.cpp)
+  target_include_directories(test_typed_frames PRIVATE include ${flux_std_adapters_INCLUDE_DIRS})
+  target_link_libraries(test_typed_frames flux_cpp::flux_cpp ${sensor_msgs_TARGETS})
 endif()
 
 install(TARGETS flux_tools_rviz

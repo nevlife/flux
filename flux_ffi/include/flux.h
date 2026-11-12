@@ -29,7 +29,12 @@
 
 #define FLUX_DEFAULT_MAX_SUBSCRIBERS 16
 
-#define FLUX_DEFAULT_SLOT_SIZE (8 << 20)
+// 0: a generated type's own slot (scalar block, string room, trailer), else the untyped size.
+#define FLUX_DEFAULT_SLOT_SIZE 0
+
+#define FLUX_UNTYPED_SLOT_SIZE (8 << 20)
+
+#define FLUX_SLOT_STRING_BYTES 4096
 
 #define FLUX_DEFAULT_SLOT_COUNT 16
 
@@ -537,8 +542,9 @@ void flux_stamp_offset_register(uint64_t fingerprint, int32_t stamp_offset);
 
 int32_t flux_stamp_offset(uint64_t fingerprint);
 
-// A generated type's fingerprint: its publishers that declare a stream keep host slots.
-void flux_layout_register(uint64_t fingerprint);
+// A generated type's fingerprint and scalar block: its stream publishers' host slots, its slot size.
+void flux_layout_register(uint64_t fingerprint,
+                          uint32_t scalar_bytes);
 
 flux_status flux_signpost_name(const char *key,
                                uint64_t fingerprint,
@@ -677,6 +683,11 @@ size_t flux_schemas_size(const struct flux_schemas *s);
 // NULL when no installed type has this fingerprint.
 const struct flux_schema *flux_schemas_find(const struct flux_schemas *s, uint64_t fingerprint);
 
+const struct flux_schema *flux_schemas_find_gpu(const struct flux_schemas *s, uint64_t fingerprint);
+
+// The fingerprint of a GPU memory channel of the type `base`: payload `data`, aux the rest.
+uint64_t flux_gpu_fingerprint(uint64_t base);
+
 const char *flux_schema_ros_type(const struct flux_schema *s);
 
 // The frame as the ROS message's CDR. `FLUX_MISMATCH` for a frame that does not match.
@@ -693,15 +704,26 @@ flux_status flux_schema_write_cdr(const struct flux_schema *s,
                                   size_t cap,
                                   size_t *written);
 
-// The frame with its arena (`heap`) fields copied in, sized as `write_cdr`; GPU fields mismatch.
+// The frame with its arena fields (`heap`; `gpu` host copies or NULL) copied in, as `write_cdr`.
 flux_status flux_schema_inline_arena(const struct flux_schema *s,
                                      const uint8_t *data,
                                      size_t len,
                                      const uint8_t *heap,
                                      size_t heap_len,
+                                     const struct flux_gpu_heap *gpu,
                                      uint8_t *out,
                                      size_t cap,
                                      size_t *written);
+
+// A GPU memory channel's `aux` and `data` as one frame of this type, sized as `write_cdr`.
+flux_status flux_schema_with_data(const struct flux_schema *s,
+                                  const uint8_t *aux,
+                                  size_t aux_len,
+                                  const uint8_t *data,
+                                  size_t data_len,
+                                  uint8_t *out,
+                                  size_t cap,
+                                  size_t *written);
 
 // Why this thread's last failed call failed. Valid until its next failed call.
 const char *flux_last_error(void);

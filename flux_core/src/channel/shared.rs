@@ -1024,7 +1024,11 @@ impl ChannelShared {
 
 impl Drop for ChannelShared {
     fn drop(&mut self) {
-        if self.gpu.is_some() {
+        if let Some(g) = &self.gpu {
+            // An aborted loan's work, or a copy a take queued, can still be running on the stream:
+            // it must not land in device memory freed below. A commit already waited for its own.
+            // A wait that fails (a wedged GPU) frees it anyway: nothing more runs on that context.
+            let _ = g.stream.wait();
             ledger::channel_gone(self.trace_handle());
         }
         // A frame left in a slot can still be taken after the publisher is gone, so its arena

@@ -374,9 +374,9 @@ pub fn emit(layout: &Layout, source: &str) -> String {
     // The first lets a publisher of this type that declares a device keep host slots, for
     // alloc_device__; the second lets a channel of it report header.stamp to trace collectors.
     let register = if stamp < 0 {
-        "\n_register_layout(FINGERPRINT__)"
+        "\n_register_layout(FINGERPRINT__, SCALAR_BYTES__)"
     } else {
-        "\n_register_layout(FINGERPRINT__)\n_register_stamp_offset(FINGERPRINT__, STAMP_OFFSET__)"
+        "\n_register_layout(FINGERPRINT__, SCALAR_BYTES__)\n_register_stamp_offset(FINGERPRINT__, STAMP_OFFSET__)"
     };
     let ns = layout.package.as_deref().unwrap_or("flux_msg");
     format!(

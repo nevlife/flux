@@ -20,12 +20,15 @@ namespace flux::detail
 class RosMirror
 {
 public:
-  // Throws Error (FLUX_INVALID_ARGUMENT) for a device-backed publisher or a fingerprint that
-  // names no installed message type.
+  // A GPU memory channel's fingerprint (gpu_fingerprint) mirrors as its type: aux and payload
+  // become one message. Throws Error (FLUX_INVALID_ARGUMENT) for a fingerprint that names no
+  // installed message type that way or the plain one, or a device-backed publisher of the plain
+  // one.
   RosMirror(const Channel & publisher, std::string signpost, std::uint64_t fingerprint)
   : signpost_(std::move(signpost)),
     fingerprint_(fingerprint),
-    type_(find(schemas_, fingerprint, publisher.device_backed()))
+    gpu_(schemas_.contains_gpu(fingerprint)),
+    type_(find(schemas_, fingerprint, gpu_, publisher.device_backed()))
   {
   }
 
@@ -49,11 +52,13 @@ public:
     // Sizing and writing must read the same bytes, and a peer can still write a committed slot.
     // A frame with fields in its publisher's arena is copied with them, while it is held.
     try {
-      if (frame.heap().empty()) {
+      if (gpu_) {
+        type_.with_data(frame, bytes_);
+      } else if (!in_arena(frame)) {
         const auto * data = static_cast<const std::uint8_t *>(frame.data());
         bytes_.assign(data, data + frame.size());
       } else {
-        type_.inline_arena(frame.data(), frame.size(), frame.heap(), bytes_);
+        type_.inline_arena(frame, bytes_);
       }
       frame.release();
       const std::size_t n = type_.cdr_size(bytes_.data(), bytes_.size());
@@ -64,9 +69,12 @@ public:
   }
 
 private:
-  static auto find(const Schemas & s, std::uint64_t fingerprint, bool device_backed)
+  static auto find(const Schemas & s, std::uint64_t fingerprint, bool gpu, bool device_backed)
     -> Schemas::Type
   {
+    if (gpu) {
+      return s.at_gpu(fingerprint);
+    }
     if (device_backed) {
       throw Error(FLUX_INVALID_ARGUMENT, "flux: a device-backed publisher has no ROS 2 mirror");
     }
@@ -79,6 +87,7 @@ private:
   std::string signpost_;
   std::uint64_t fingerprint_;
   Schemas schemas_;
+  bool gpu_;
   Schemas::Type type_;
   std::optional<Subscriber> sub_;
   std::vector<std::uint8_t> bytes_;

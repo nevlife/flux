@@ -16,7 +16,7 @@ namespace flux_tools::rviz
 using rviz_common::properties::StatusProperty;
 
 ChannelDisplay::ChannelDisplay(const char * description, std::uint64_t fingerprint)
-: fingerprint_(fingerprint)
+: frames_of_type_(fingerprint)
 {
   topic_property_ = new rviz_common::properties::EditableEnumProperty(
     "Topic", "", description, this, SLOT(updateTopic()));
@@ -59,7 +59,9 @@ void ChannelDisplay::fillTopicList(rviz_common::properties::EditableEnumProperty
 {
   property->clearOptions();
   for (const flux::Topic & t : flux::enumerate_topics()) {
-    if (t.fingerprint == fingerprint_ && t.key_exact && flux::read_channel_stats(t.signpost).live) {
+    if (
+      frames_of_type_.ours(t.fingerprint) && t.key_exact &&
+      flux::read_channel_stats(t.signpost).live) {
       property->addOptionStd(t.key);
     }
   }
@@ -75,8 +77,9 @@ void ChannelDisplay::subscribe()
   // depth 1: the newest frame only, the same policy a viewer wants. max_borrow 1: update() holds
   // one view and drops it before returning, so a second lease is never needed.
   const auto qos = flux::QoS(1).max_borrow(1);
+  const std::uint64_t fingerprint = frames_of_type_.fingerprint_for(topic);
   try {
-    sub_ = std::make_unique<flux::Subscription>(*node_, topic, fingerprint_, qos);
+    sub_ = std::make_unique<flux::Subscription>(*node_, topic, fingerprint, qos);
   } catch (const std::exception & e) {
     setStatus(StatusProperty::Error, "Topic", QString("Subscribe failed: ") + e.what());
     return;

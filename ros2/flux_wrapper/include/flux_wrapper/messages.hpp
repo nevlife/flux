@@ -223,181 +223,46 @@ template <class MsgT>
 using AdapterT = typename Adapter<MsgT>::type;
 
 // The channels of a publisher with Device::Cuda, beside the Adapter's typed ones: the payload is
-// the data field as one u8 run (device memory on a discrete GPU) and the aux bytes are the other
-// fields, one GpuImageAux or GpuPointCloud2Aux. A change to a layout bumps its kVersion. The
-// fingerprints are the FNV-1a of "flux_wrapper/GpuImage" and "flux_wrapper/GpuPointCloud2".
-inline constexpr std::uint64_t kGpuImageFingerprint = 0x780CD7C35A0C29C8ULL;
-inline constexpr std::uint64_t kGpuPointCloud2Fingerprint = 0xC900A921C6D8E9D6ULL;
-
-// In host byte order. The strings are not NUL-terminated.
-struct GpuImageAux
-{
-  static constexpr std::uint32_t kVersion = 1;
-  static constexpr std::size_t kEncodingCap = 32;
-  static constexpr std::size_t kFrameIdCap = 256;
-
-  std::uint32_t version;
-  std::int32_t sec;
-  std::uint32_t nanosec;
-  std::uint32_t height;
-  std::uint32_t width;
-  std::uint32_t step;
-  std::uint8_t is_bigendian;
-  std::uint8_t encoding_len;
-  std::uint16_t frame_id_len;
-  std::array<char, kEncodingCap> encoding;
-  std::array<char, kFrameIdCap> frame_id;
-};
-static_assert(
-  offsetof(GpuImageAux, encoding) == 28 && offsetof(GpuImageAux, frame_id) == 60 &&
-  sizeof(GpuImageAux) == 316);
-
-struct GpuPointFieldAux
-{
-  static constexpr std::size_t kNameCap = 32;
-
-  std::uint32_t offset;
-  std::uint32_t count;
-  std::uint8_t datatype;
-  std::uint8_t name_len;
-  std::uint16_t reserved;
-  std::array<char, kNameCap> name;
-};
-static_assert(offsetof(GpuPointFieldAux, name) == 12 && sizeof(GpuPointFieldAux) == 44);
-
-// As GpuImageAux. Only the first fields_len entries of `fields` are the message's.
-struct GpuPointCloud2Aux
-{
-  static constexpr std::uint32_t kVersion = 1;
-  static constexpr std::size_t kFrameIdCap = 256;
-  static constexpr std::size_t kFieldCap = 32;
-
-  std::uint32_t version;
-  std::int32_t sec;
-  std::uint32_t nanosec;
-  std::uint32_t height;
-  std::uint32_t width;
-  std::uint32_t point_step;
-  std::uint32_t row_step;
-  std::uint8_t is_bigendian;
-  std::uint8_t is_dense;
-  std::uint16_t frame_id_len;
-  std::uint32_t fields_len;
-  std::array<char, kFrameIdCap> frame_id;
-  std::array<GpuPointFieldAux, kFieldCap> fields;
-};
-static_assert(
-  offsetof(GpuPointCloud2Aux, frame_id) == 36 && offsetof(GpuPointCloud2Aux, fields) == 292 &&
-  sizeof(GpuPointCloud2Aux) == 1700);
-
-struct GpuHeader
-{
-  std::int32_t sec = 0;
-  std::uint32_t nanosec = 0;
-  std::string_view frame_id;
-};
-
-struct GpuImageFields
-{
-  GpuHeader header;
-  std::uint32_t height = 0;
-  std::uint32_t width = 0;
-  std::uint32_t step = 0;
-  std::uint8_t is_bigendian = 0;
-  std::string_view encoding;
-};
-
-struct GpuPointCloud2Fields
-{
-  GpuHeader header;
-  std::uint32_t height = 0;
-  std::uint32_t width = 0;
-  std::uint32_t point_step = 0;
-  std::uint32_t row_step = 0;
-  bool is_bigendian = false;
-  bool is_dense = false;
-  std::size_t fields_size = 0;
-  std::array<Field, GpuPointCloud2Aux::kFieldCap> fields;
-};
-
-// The aux bytes come from another process: each value is read once, and the strings alias the
-// frame only after their lengths were checked against the caps.
-inline auto decode_gpu(flux::wire::Span<const std::uint8_t> aux, GpuImageFields & out) noexcept
-  -> bool
-{
-  GpuImageAux a{};
-  if (aux.size() != sizeof(a)) {
-    return false;
-  }
-  std::memcpy(&a, aux.data(), sizeof(a));
-  if (
-    a.version != GpuImageAux::kVersion || a.encoding_len > GpuImageAux::kEncodingCap ||
-    a.frame_id_len > GpuImageAux::kFrameIdCap) {
-    return false;
-  }
-  const char * p = reinterpret_cast<const char *>(aux.data());  // NOLINT(*-reinterpret-cast)
-  out = {
-    {a.sec, a.nanosec, {p + offsetof(GpuImageAux, frame_id), a.frame_id_len}},
-    a.height,
-    a.width,
-    a.step,
-    a.is_bigendian,
-    {p + offsetof(GpuImageAux, encoding), a.encoding_len}};
-  return true;
-}
-
-inline auto decode_gpu(
-  flux::wire::Span<const std::uint8_t> aux, GpuPointCloud2Fields & out) noexcept -> bool
-{
-  using A = GpuPointCloud2Aux;
-  A a{};
-  if (aux.size() != sizeof(a)) {
-    return false;
-  }
-  std::memcpy(&a, aux.data(), sizeof(a));
-  if (a.version != A::kVersion || a.frame_id_len > A::kFrameIdCap || a.fields_len > A::kFieldCap) {
-    return false;
-  }
-  const char * p = reinterpret_cast<const char *>(aux.data());  // NOLINT(*-reinterpret-cast)
-  for (std::size_t i = 0; i < a.fields_len; ++i) {
-    const GpuPointFieldAux & f = a.fields[i];
-    if (f.name_len > GpuPointFieldAux::kNameCap) {
-      return false;
-    }
-    const std::size_t at = offsetof(A, fields) + i * sizeof(f) + offsetof(GpuPointFieldAux, name);
-    out.fields[i] = {{p + at, f.name_len}, f.offset, f.datatype, f.count};
-  }
-  out.header = {a.sec, a.nanosec, {p + offsetof(A, frame_id), a.frame_id_len}};
-  out.height = a.height;
-  out.width = a.width;
-  out.point_step = a.point_step;
-  out.row_step = a.row_step;
-  out.is_bigendian = a.is_bigendian != 0;
-  out.is_dense = a.is_dense != 0;
-  out.fields_size = a.fields_len;
-  return true;
-}
-
+// the data field as one u8 run (device memory on a discrete GPU) and the aux bytes are a frame of
+// the Adapter's type with data empty, which tools read as they read the type (flux::Schemas).
 template <class MsgT>
-struct Gpu;
-template <>
-struct Gpu<sensor_msgs::msg::Image>
+struct Gpu
 {
-  using Aux = GpuImageAux;
-  using Fields = GpuImageFields;
-  static constexpr std::uint64_t kFingerprint = kGpuImageFingerprint;
-  static constexpr const char * kOverCap =
-    "encoding or frame_id longer than its cap (32, 256 bytes)";
+  static constexpr std::uint64_t kFingerprint = flux::gpu_fingerprint(AdapterT<MsgT>::kFingerprint);
+  // Room for every field but data: the header, encoding or the point fields and their names.
+  static constexpr std::uint32_t kAuxBytes = 4096;
+  static constexpr const char * kOverCap = "the fields but data are over the aux's 4096 bytes";
 };
-template <>
-struct Gpu<sensor_msgs::msg::PointCloud2>
+
+// The first string or list of a loan that did not fit where it goes (a GPU loan's aux, a host
+// loan's slot), for the publisher's log line.
+struct AuxOverflow
 {
-  using Aux = GpuPointCloud2Aux;
-  using Fields = GpuPointCloud2Fields;
-  static constexpr std::uint64_t kFingerprint = kGpuPointCloud2Fingerprint;
-  static constexpr const char * kOverCap =
-    "frame_id, a field name or the field count over its cap (256 bytes, 32 bytes, 32 fields)";
+  const char * field = nullptr;  // null: every field fit
+  std::size_t bytes = 0;         // its string bytes, or its entries' name bytes
+  std::size_t entries = 0;       // its entries (PointCloud2 fields), 0 for a string
+  std::size_t used = 0;          // aux bytes written before it
+  std::int32_t sec = 0;          // header.stamp
+  std::uint32_t nanosec = 0;
 };
+
+// A GPU channel frame's fields but data, read from its aux; empty when the aux is not a frame of
+// the type. Each field is read once to check it, as a View built over another process's bytes.
+template <class MsgT>
+auto gpu_fields(const flux::FrameView & f) -> std::optional<typename AdapterT<MsgT>::View>
+{
+  const auto aux = f.aux();
+  typename AdapterT<MsgT>::View v(aux.data(), aux.size());
+  try {
+    (void)sensor_msgs::flux_msg::frame_to_msg(v);
+  } catch (const std::exception &) {
+    return std::nullopt;
+  }
+  if (!v.ok__()) {
+    return std::nullopt;
+  }
+  return v;
+}
 
 #endif
 
@@ -474,8 +339,7 @@ private:
 #endif
 
 // On a publisher with Device::Cuda the flux path writes the fields other than data to the frame's
-// aux bytes, where strings and PointCloud2's fields have caps (Gpu<MsgT>::Aux); a field over its
-// cap makes the Loan false.
+// aux bytes, through a Builder there; fields over Gpu<MsgT>::kAuxBytes make the Loan false.
 template <class MsgT>
 class LoanBase
 {
@@ -485,7 +349,7 @@ public:
   {
 #ifdef USE_FLUX_ENABLED
     if (gpu_) {
-      return slot_.valid() && !bad_;
+      return slot_.valid() && !bad_ && builder_ && builder_->ok__();
     }
     if (builder_) {
       return builder_->ok__();
@@ -497,17 +361,13 @@ public:
   void set_header(const std_msgs::msg::Header & h)
   {
 #ifdef USE_FLUX_ENABLED
-    if (gpu_) {
-      (void)gpu_put(offsetof(Aux, sec), h.stamp.sec);
-      (void)gpu_put(offsetof(Aux, nanosec), h.stamp.nanosec);
-      gpu_str(
-        offsetof(Aux, frame_id_len), offsetof(Aux, frame_id), Aux::kFrameIdCap, h.frame_id,
-        std::uint16_t{});
-      return;
-    }
     if (builder_) {
       builder_->set__header__stamp(h.stamp.sec, h.stamp.nanosec);
-      builder_->set__header__frame_id(h.frame_id);
+      over_.sec = h.stamp.sec;
+      over_.nanosec = h.stamp.nanosec;
+      put_variable("header.frame_id", h.frame_id.size(), 0, [&] {
+        builder_->set__header__frame_id(h.frame_id);
+      });
       return;
     }
 #endif
@@ -590,45 +450,36 @@ protected:
   explicit LoanBase(std::unique_ptr<MsgT> msg) : msg_(std::move(msg)) {}
 #ifdef USE_FLUX_ENABLED
   using Builder = typename AdapterT<MsgT>::Builder;
-  using Aux = typename Gpu<MsgT>::Aux;
   explicit LoanBase(Builder && b) : builder_(std::move(b)) {}
+  // The fields but data go to a Builder over the slot's aux, the data field to its payload.
   explicit LoanBase(flux::WriteSlot && slot) noexcept : slot_(std::move(slot)), gpu_(true)
   {
     if (slot_) {
-      aux_ = slot_.aux().data();
-      std::memset(aux_, 0, sizeof(Aux));
-      (void)gpu_put(offsetof(Aux, version), Aux::kVersion);
+      builder_.emplace(slot_.aux().data(), slot_.aux().size());
     }
   }
 
-  // False when this is not a GPU loan.
-  template <class T>
-  auto gpu_put(std::size_t at, T v) noexcept -> bool
+  // Runs put(), which writes `field`; notes it when it is the first that does not fit.
+  template <class Put>
+  void put_variable(const char * field, std::size_t bytes, std::size_t entries, Put && put)
   {
-    if (aux_ != nullptr) {
-      std::memcpy(aux_ + at, &v, sizeof(v));
-    }
-    return gpu_;
-  }
-  template <class Len>
-  void gpu_str(std::size_t len_at, std::size_t at, std::size_t cap, std::string_view s, Len)
-  {
-    if (s.size() > cap) {
-      bad_ = true;
-      return;
-    }
-    (void)gpu_put(len_at, static_cast<Len>(s.size()));
-    if (aux_ != nullptr) {
-      std::memcpy(aux_ + at, s.data(), s.size());
+    const bool fit = builder_->ok__();
+    const std::size_t used = builder_->size__();
+    put();
+    if (fit && !builder_->ok__()) {
+      over_.field = field;
+      over_.bytes = bytes;
+      over_.entries = entries;
+      over_.used = used;
     }
   }
 
   std::optional<Builder> builder_;
   flux::WriteSlot slot_;
-  std::uint8_t * aux_ = nullptr;
   std::size_t len_ = 0;
   bool gpu_ = false;
   bool bad_ = false;
+  AuxOverflow over_;
 #endif
   std::unique_ptr<MsgT> msg_;
 #ifdef FLUX_WRAPPER_CUDA
@@ -668,10 +519,10 @@ public:
   [[nodiscard]] auto stamp() const noexcept -> builtin_interfaces::msg::Time
   {
 #ifdef USE_FLUX_ENABLED
-    if (gpu_header_ || flux_) {
+    if (flux_) {
       builtin_interfaces::msg::Time t;
-      t.sec = gpu_header_ ? gpu_header_->sec : flux_->header__sec();
-      t.nanosec = gpu_header_ ? gpu_header_->nanosec : flux_->header__nanosec();
+      t.sec = flux_->header__sec();
+      t.nanosec = flux_->header__nanosec();
       return t;
     }
 #endif
@@ -680,9 +531,6 @@ public:
   [[nodiscard]] auto frame_id() const noexcept -> std::string_view
   {
 #ifdef USE_FLUX_ENABLED
-    if (gpu_header_) {
-      return gpu_header_->frame_id;
-    }
     if (flux_) {
       return flux::wire::until_nul(flux_->header__frame_id());
     }
@@ -693,7 +541,7 @@ public:
   [[nodiscard]] auto data() const noexcept -> Span<const std::uint8_t>
   {
 #ifdef USE_FLUX_ENABLED
-    if (gpu_header_) {
+    if (gpu_) {
       return host_ != nullptr ? Span<const std::uint8_t>(host_, size_) : Span<const std::uint8_t>();
     }
     if (flux_) {
@@ -710,7 +558,7 @@ public:
   [[nodiscard]] auto size() const noexcept -> std::size_t
   {
 #ifdef USE_FLUX_ENABLED
-    if (gpu_header_) {
+    if (gpu_) {
       return size_;
     }
 #endif
@@ -751,7 +599,11 @@ public:
   {
 #ifdef USE_FLUX_ENABLED
     if (flux_) {
-      return sensor_msgs::flux_msg::frame_to_msg(*flux_);
+      MsgT m = sensor_msgs::flux_msg::frame_to_msg(*flux_);
+      if (gpu_) {
+        gpu_data_to_msg(m);
+      }
+      return m;
     }
 #endif
     return *msg_;
@@ -760,8 +612,10 @@ public:
 protected:
   ViewBase() = default;
 #ifdef USE_FLUX_ENABLED
-  ViewBase(const flux::FrameView & f, const GpuHeader & h) noexcept
-  : gpu_header_(h),
+  // A GPU channel frame: `fields` read from its aux, the data field its payload.
+  ViewBase(const flux::FrameView & f, const typename AdapterT<MsgT>::View & fields) noexcept
+  : flux_(fields),
+    gpu_(true),
     host_(static_cast<const std::uint8_t *>(f.data())),
     size_(f.size()),
     device_(f.device_ptr()),
@@ -769,12 +623,10 @@ protected:
   {
   }
 
-  // A GPU channel frame's header and data field into m. A frame only on the device is copied to
-  // the host and waited for; m.data is empty when that copy failed.
-  void gpu_to_msg(MsgT & m) const
+  // A GPU channel frame's data field into m. A frame only on the device is copied to the host and
+  // waited for; m.data is empty when that copy failed.
+  void gpu_data_to_msg(MsgT & m) const
   {
-    m.header.stamp = stamp();
-    m.header.frame_id = gpu_header_->frame_id;
     if (host_ != nullptr) {
       m.data.assign(host_, host_ + size_);
     }
@@ -795,8 +647,9 @@ protected:
   const MsgT * msg_ = nullptr;
 #ifdef USE_FLUX_ENABLED
   std::optional<typename AdapterT<MsgT>::View> flux_;
-  // Set on a frame of a publisher with Device::Cuda, whose data field is host_ and device_.
-  std::optional<GpuHeader> gpu_header_;
+  // Set on a frame of a publisher with Device::Cuda: flux_ reads its aux, and its data field is
+  // host_ and device_.
+  bool gpu_ = false;
   const std::uint8_t * host_ = nullptr;
   std::size_t size_ = 0;
 #endif
@@ -814,19 +667,9 @@ protected:
     msg_->field = value;               \
   }
 #define FLUX_WRAPPER_GET(field) return flux_ ? flux_->field() : msg_->field;
-#define FLUX_WRAPPER_GPU_SET(field, value)                                       \
-  if (gpu_put(offsetof(Aux, field), static_cast<decltype(Aux::field)>(value))) { \
-    return;                                                                      \
-  }
-#define FLUX_WRAPPER_GPU_GET(field) \
-  if (gpu_) {                       \
-    return gpu_->field;             \
-  }
 #else
 #define FLUX_WRAPPER_SET(field, value) msg_->field = value;
 #define FLUX_WRAPPER_GET(field) return msg_->field;
-#define FLUX_WRAPPER_GPU_SET(field, value)
-#define FLUX_WRAPPER_GPU_GET(field)
 #endif
 
 template <>
@@ -835,24 +678,20 @@ class Loan<sensor_msgs::msg::Image> : public detail::LoanBase<sensor_msgs::msg::
 public:
   Loan() = default;
 
-  void set_height(std::uint32_t v) { FLUX_WRAPPER_GPU_SET(height, v) FLUX_WRAPPER_SET(height, v) }
-  void set_width(std::uint32_t v) { FLUX_WRAPPER_GPU_SET(width, v) FLUX_WRAPPER_SET(width, v) }
+  void set_height(std::uint32_t v) { FLUX_WRAPPER_SET(height, v) }
+  void set_width(std::uint32_t v) { FLUX_WRAPPER_SET(width, v) }
   void set_encoding(const std::string & v)
   {
 #ifdef USE_FLUX_ENABLED
-    if (gpu_) {
-      gpu_str(
-        offsetof(Aux, encoding_len), offsetof(Aux, encoding), Aux::kEncodingCap, v, std::uint8_t{});
+    if (builder_) {
+      put_variable("encoding", v.size(), 0, [&] { builder_->set__encoding(v); });
       return;
     }
 #endif
-    FLUX_WRAPPER_SET(encoding, v)
+    msg_->encoding = v;
   }
-  void set_is_bigendian(std::uint8_t v)
-  {
-    FLUX_WRAPPER_GPU_SET(is_bigendian, v) FLUX_WRAPPER_SET(is_bigendian, v)
-  }
-  void set_step(std::uint32_t v) { FLUX_WRAPPER_GPU_SET(step, v) FLUX_WRAPPER_SET(step, v) }
+  void set_is_bigendian(std::uint8_t v) { FLUX_WRAPPER_SET(is_bigendian, v) }
+  void set_step(std::uint32_t v) { FLUX_WRAPPER_SET(step, v) }
 
 private:
   using LoanBase::LoanBase;
@@ -877,37 +716,30 @@ class Loan<sensor_msgs::msg::PointCloud2> : public detail::LoanBase<sensor_msgs:
 public:
   Loan() = default;
 
-  void set_height(std::uint32_t v) { FLUX_WRAPPER_GPU_SET(height, v) FLUX_WRAPPER_SET(height, v) }
-  void set_width(std::uint32_t v) { FLUX_WRAPPER_GPU_SET(width, v) FLUX_WRAPPER_SET(width, v) }
-  void set_is_bigendian(bool v)
-  {
-    FLUX_WRAPPER_GPU_SET(is_bigendian, v) FLUX_WRAPPER_SET(is_bigendian, v)
-  }
-  void set_point_step(std::uint32_t v)
-  {
-    FLUX_WRAPPER_GPU_SET(point_step, v) FLUX_WRAPPER_SET(point_step, v)
-  }
-  void set_row_step(std::uint32_t v)
-  {
-    FLUX_WRAPPER_GPU_SET(row_step, v) FLUX_WRAPPER_SET(row_step, v)
-  }
-  void set_is_dense(bool v) { FLUX_WRAPPER_GPU_SET(is_dense, v) FLUX_WRAPPER_SET(is_dense, v) }
+  void set_height(std::uint32_t v) { FLUX_WRAPPER_SET(height, v) }
+  void set_width(std::uint32_t v) { FLUX_WRAPPER_SET(width, v) }
+  void set_is_bigendian(bool v) { FLUX_WRAPPER_SET(is_bigendian, v) }
+  void set_point_step(std::uint32_t v) { FLUX_WRAPPER_SET(point_step, v) }
+  void set_row_step(std::uint32_t v) { FLUX_WRAPPER_SET(row_step, v) }
+  void set_is_dense(bool v) { FLUX_WRAPPER_SET(is_dense, v) }
 
   void set_fields(const std::vector<sensor_msgs::msg::PointField> & fields)
   {
 #ifdef USE_FLUX_ENABLED
-    if (gpu_) {
-      gpu_fields(fields);
-      return;
-    }
     if (builder_) {
-      auto out = builder_->alloc__fields(fields.size());
-      for (std::size_t i = 0; i < out.size(); ++i) {
-        out[i].set__name(fields[i].name);
-        out[i].set__offset(fields[i].offset);
-        out[i].set__datatype(fields[i].datatype);
-        out[i].set__count(fields[i].count);
+      std::size_t names = 0;
+      for (const auto & f : fields) {
+        names += f.name.size();
       }
+      put_variable("fields", names, fields.size(), [&] {
+        auto out = builder_->alloc__fields(fields.size());
+        for (std::size_t i = 0; i < out.size(); ++i) {
+          out[i].set__name(fields[i].name);
+          out[i].set__offset(fields[i].offset);
+          out[i].set__datatype(fields[i].datatype);
+          out[i].set__count(fields[i].count);
+        }
+      });
       return;
     }
 #endif
@@ -916,27 +748,6 @@ public:
 
 private:
   using LoanBase::LoanBase;
-
-#ifdef USE_FLUX_ENABLED
-  void gpu_fields(const std::vector<sensor_msgs::msg::PointField> & fields)
-  {
-    using F = detail::GpuPointFieldAux;
-    if (fields.size() > Aux::kFieldCap) {
-      bad_ = true;
-      return;
-    }
-    (void)gpu_put(offsetof(Aux, fields_len), static_cast<std::uint32_t>(fields.size()));
-    for (std::size_t i = 0; i < fields.size(); ++i) {
-      const std::size_t at = offsetof(Aux, fields) + i * sizeof(F);
-      (void)gpu_put(at + offsetof(F, offset), fields[i].offset);
-      (void)gpu_put(at + offsetof(F, count), fields[i].count);
-      (void)gpu_put(at + offsetof(F, datatype), fields[i].datatype);
-      gpu_str(
-        at + offsetof(F, name_len), at + offsetof(F, name), F::kNameCap, fields[i].name,
-        std::uint8_t{});
-    }
-  }
-#endif
 
   // Every field but data.
   void set_from(const sensor_msgs::msg::PointCloud2 & m)
@@ -960,24 +771,17 @@ class View<sensor_msgs::msg::Image> : public detail::ViewBase<sensor_msgs::msg::
 public:
   using ViewBase::ViewBase;
 #ifdef USE_FLUX_ENABLED
-  View(const flux::FrameView & f, const detail::GpuImageFields & fields) noexcept
-  : ViewBase(f, fields.header), gpu_(fields)
+  View(const flux::FrameView & f, const sensor_msgs::flux_msg::Image::View & fields) noexcept
+  : ViewBase(f, fields)
   {
   }
 #endif
 
-  [[nodiscard]] auto height() const noexcept -> std::uint32_t
-  {
-    FLUX_WRAPPER_GPU_GET(height) FLUX_WRAPPER_GET(height)
-  }
-  [[nodiscard]] auto width() const noexcept -> std::uint32_t
-  {
-    FLUX_WRAPPER_GPU_GET(width) FLUX_WRAPPER_GET(width)
-  }
+  [[nodiscard]] auto height() const noexcept -> std::uint32_t { FLUX_WRAPPER_GET(height) }
+  [[nodiscard]] auto width() const noexcept -> std::uint32_t { FLUX_WRAPPER_GET(width) }
   [[nodiscard]] auto encoding() const noexcept -> std::string_view
   {
 #ifdef USE_FLUX_ENABLED
-    FLUX_WRAPPER_GPU_GET(encoding)
     if (flux_) {
       return flux::wire::until_nul(flux_->encoding());
     }
@@ -986,36 +790,13 @@ public:
   }
   [[nodiscard]] auto is_bigendian() const noexcept -> std::uint8_t
   {
-    FLUX_WRAPPER_GPU_GET(is_bigendian) FLUX_WRAPPER_GET(is_bigendian)
+    FLUX_WRAPPER_GET(is_bigendian)
   }
-  [[nodiscard]] auto step() const noexcept -> std::uint32_t
-  {
-    FLUX_WRAPPER_GPU_GET(step) FLUX_WRAPPER_GET(step)
-  }
+  [[nodiscard]] auto step() const noexcept -> std::uint32_t { FLUX_WRAPPER_GET(step) }
 
   // A copy that outlives the callback; a frame on the device only is copied to the host and
   // waited for. Its data is empty when that copy failed.
-  [[nodiscard]] auto to_msg() const -> sensor_msgs::msg::Image
-  {
-#ifdef USE_FLUX_ENABLED
-    if (gpu_) {
-      sensor_msgs::msg::Image m;
-      gpu_to_msg(m);
-      m.height = gpu_->height;
-      m.width = gpu_->width;
-      m.encoding = gpu_->encoding;
-      m.is_bigendian = gpu_->is_bigendian;
-      m.step = gpu_->step;
-      return m;
-    }
-#endif
-    return ViewBase::to_msg();
-  }
-
-private:
-#ifdef USE_FLUX_ENABLED
-  std::optional<detail::GpuImageFields> gpu_;
-#endif
+  using ViewBase::to_msg;
 };
 
 template <>
@@ -1024,24 +805,17 @@ class View<sensor_msgs::msg::PointCloud2> : public detail::ViewBase<sensor_msgs:
 public:
   using ViewBase::ViewBase;
 #ifdef USE_FLUX_ENABLED
-  View(const flux::FrameView & f, const detail::GpuPointCloud2Fields & fields) noexcept
-  : ViewBase(f, fields.header), gpu_(fields)
+  View(const flux::FrameView & f, const sensor_msgs::flux_msg::PointCloud2::View & fields) noexcept
+  : ViewBase(f, fields)
   {
   }
 #endif
 
-  [[nodiscard]] auto height() const noexcept -> std::uint32_t
-  {
-    FLUX_WRAPPER_GPU_GET(height) FLUX_WRAPPER_GET(height)
-  }
-  [[nodiscard]] auto width() const noexcept -> std::uint32_t
-  {
-    FLUX_WRAPPER_GPU_GET(width) FLUX_WRAPPER_GET(width)
-  }
+  [[nodiscard]] auto height() const noexcept -> std::uint32_t { FLUX_WRAPPER_GET(height) }
+  [[nodiscard]] auto width() const noexcept -> std::uint32_t { FLUX_WRAPPER_GET(width) }
   [[nodiscard]] auto fields_size() const noexcept -> std::size_t
   {
 #ifdef USE_FLUX_ENABLED
-    FLUX_WRAPPER_GPU_GET(fields_size)
     if (flux_) {
       return flux_->fields__size();
     }
@@ -1051,7 +825,6 @@ public:
   [[nodiscard]] auto field(std::size_t i) const noexcept -> Field
   {
 #ifdef USE_FLUX_ENABLED
-    FLUX_WRAPPER_GPU_GET(fields[i])
     if (flux_) {
       const auto f = flux_->fields(i);
       return {flux::wire::until_nul(f.name()), f.offset(), f.datatype(), f.count()};
@@ -1060,60 +833,17 @@ public:
     const auto & f = msg_->fields[i];
     return {f.name, f.offset, f.datatype, f.count};
   }
-  [[nodiscard]] auto is_bigendian() const noexcept -> bool
-  {
-    FLUX_WRAPPER_GPU_GET(is_bigendian) FLUX_WRAPPER_GET(is_bigendian)
-  }
-  [[nodiscard]] auto point_step() const noexcept -> std::uint32_t
-  {
-    FLUX_WRAPPER_GPU_GET(point_step) FLUX_WRAPPER_GET(point_step)
-  }
-  [[nodiscard]] auto row_step() const noexcept -> std::uint32_t
-  {
-    FLUX_WRAPPER_GPU_GET(row_step) FLUX_WRAPPER_GET(row_step)
-  }
-  [[nodiscard]] auto is_dense() const noexcept -> bool
-  {
-    FLUX_WRAPPER_GPU_GET(is_dense) FLUX_WRAPPER_GET(is_dense)
-  }
+  [[nodiscard]] auto is_bigendian() const noexcept -> bool { FLUX_WRAPPER_GET(is_bigendian) }
+  [[nodiscard]] auto point_step() const noexcept -> std::uint32_t { FLUX_WRAPPER_GET(point_step) }
+  [[nodiscard]] auto row_step() const noexcept -> std::uint32_t { FLUX_WRAPPER_GET(row_step) }
+  [[nodiscard]] auto is_dense() const noexcept -> bool { FLUX_WRAPPER_GET(is_dense) }
 
   // As View<Image>::to_msg().
-  [[nodiscard]] auto to_msg() const -> sensor_msgs::msg::PointCloud2
-  {
-#ifdef USE_FLUX_ENABLED
-    if (gpu_) {
-      sensor_msgs::msg::PointCloud2 m;
-      gpu_to_msg(m);
-      m.height = gpu_->height;
-      m.width = gpu_->width;
-      m.fields.resize(gpu_->fields_size);
-      for (std::size_t i = 0; i < m.fields.size(); ++i) {
-        const Field & f = gpu_->fields[i];
-        m.fields[i].name = f.name;
-        m.fields[i].offset = f.offset;
-        m.fields[i].datatype = f.datatype;
-        m.fields[i].count = f.count;
-      }
-      m.is_bigendian = gpu_->is_bigendian;
-      m.point_step = gpu_->point_step;
-      m.row_step = gpu_->row_step;
-      m.is_dense = gpu_->is_dense;
-      return m;
-    }
-#endif
-    return ViewBase::to_msg();
-  }
-
-private:
-#ifdef USE_FLUX_ENABLED
-  std::optional<detail::GpuPointCloud2Fields> gpu_;
-#endif
+  using ViewBase::to_msg;
 };
 
 #undef FLUX_WRAPPER_SET
 #undef FLUX_WRAPPER_GET
-#undef FLUX_WRAPPER_GPU_SET
-#undef FLUX_WRAPPER_GPU_GET
 
 }  // namespace flux_wrapper
 

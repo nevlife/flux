@@ -92,7 +92,7 @@ if(BUILD_TESTING)
   add_custom_command(
     OUTPUT ${_outs}
     COMMAND "${FLUX_GEN_EXECUTABLE}" --pkg flux_test ${_args} --out-cpp ${_adapters}
-    DEPENDS test/msg/Stamped.msg test/msg/Item.msg test/msg/Blob.msg
+    DEPENDS test/msg/Stamped.msg test/msg/Item.msg test/msg/Blob.msg "${FLUX_GEN_EXECUTABLE}"
     VERBATIM)
   # The documents' examples use the sensor_msgs/Image adapter flux_std_adapters installs.
   set(_image ${_adapters}/sensor_msgs/flux/image.hpp ${_adapters}/sensor_msgs/flux/image_ros.hpp)
@@ -100,7 +100,7 @@ if(BUILD_TESTING)
     OUTPUT ${_image}
     COMMAND "${FLUX_GEN_EXECUTABLE}" --pkg sensor_msgs
             --msg ${sensor_msgs_DIR}/../msg/Image.msg --out-cpp ${_adapters}
-    DEPENDS ${sensor_msgs_DIR}/../msg/Image.msg
+    DEPENDS ${sensor_msgs_DIR}/../msg/Image.msg "${FLUX_GEN_EXECUTABLE}"
     VERBATIM)
   add_custom_target(flux_cpp_test_adapters DEPENDS ${_outs} ${_image})
   foreach(t test_message_filters test_arena test_gpu)

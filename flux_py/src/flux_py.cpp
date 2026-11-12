@@ -1470,7 +1470,13 @@ NB_MODULE(_flux, m)
   // Objects a daemon thread still holds at exit are not a reference counting bug.
   nb::set_leak_warnings(false);
   m.attr("NO_SCHEMA") = flux::kNoSchema;
+  m.def(
+    "gpu_fingerprint", &flux::gpu_fingerprint, "fingerprint"_a,
+    "The fingerprint of a GPU memory channel of the type with this fingerprint: its payload is "
+    "the type's data field, its aux a frame of the type with data empty.");
   m.attr("DEFAULT_SLOT_SIZE") = FLUX_DEFAULT_SLOT_SIZE;
+  m.attr("UNTYPED_SLOT_SIZE") = FLUX_UNTYPED_SLOT_SIZE;
+  m.attr("SLOT_STRING_BYTES") = FLUX_SLOT_STRING_BYTES;
   m.attr("DEFAULT_SLOT_COUNT") = FLUX_DEFAULT_SLOT_COUNT;
   m.attr("DEFAULT_MAX_SUBSCRIBERS") = FLUX_DEFAULT_MAX_SUBSCRIBERS;
   m.attr("DEFAULT_TICK_NS") = FLUX_DEFAULT_TICK_NS;
@@ -1707,7 +1713,7 @@ NB_MODULE(_flux, m)
   m.def("signpost_name", &flux::detail::signpost_name, "key"_a, "fingerprint"_a);
   m.def("aux", &aux_of, "frame"_a);
   m.def("_register_stamp_offset", &flux_stamp_offset_register, "fingerprint"_a, "offset"_a);
-  m.def("_register_layout", &flux_layout_register, "fingerprint"_a);
+  m.def("_register_layout", &flux_layout_register, "fingerprint"_a, "scalar_bytes"_a);
 
   nb::class_<flux::Endpoint>(m, "Endpoint")
     .def_ro("pid", &flux::Endpoint::pid)
@@ -1734,10 +1740,13 @@ NB_MODULE(_flux, m)
     "ros_type_of",
     [](std::uint64_t fingerprint) -> std::optional<std::string> {
       const flux::Schemas schemas;
-      if (!schemas.contains(fingerprint)) {
-        return std::nullopt;
+      if (schemas.contains(fingerprint)) {
+        return schemas.at(fingerprint).ros_type();
       }
-      return schemas.at(fingerprint).ros_type();
+      if (schemas.contains_gpu(fingerprint)) {
+        return schemas.at_gpu(fingerprint).ros_type();
+      }
+      return std::nullopt;
     },
     "fingerprint"_a);
 

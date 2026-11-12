@@ -340,8 +340,8 @@ private:
   {
     rejects_ = std::make_shared<Rejects>(node.get_logger(), topic);
     auto on_frame = [sink = std::move(sink), r = rejects_](flux::FrameView && f) {
-      typename detail::Gpu<MsgT>::Fields fields;
-      if (!detail::decode_gpu(f.aux(), fields)) {
+      const auto fields = detail::gpu_fields<MsgT>(f);
+      if (!fields) {
         if (r->count.fetch_add(1, std::memory_order_relaxed) == 0) {
           RCLCPP_ERROR(
             r->logger,
@@ -351,7 +351,8 @@ private:
         }
         return;
       }
-      (*sink)(std::move(f), [&fields](const flux::FrameView & g) { return View<MsgT>(g, fields); });
+      (*sink)(
+        std::move(f), [&fields](const flux::FrameView & g) { return View<MsgT>(g, *fields); });
     };
     gpu_ = std::make_unique<flux::Subscription>(
       node, topic, detail::Gpu<MsgT>::kFingerprint, q, std::move(on_frame), device);

@@ -205,11 +205,11 @@ auto reader_get(nb::handle self, std::size_t off, nb::handle dtype) -> nb::objec
 {
   const Reader & r = *nb::inst_ptr<Reader>(self);
   const DType t = dtype_of(dtype);
-  if (!flux::wire::detail::fits(off, t.size, r.size())) {
-    throw WireError("flux: scalar at " + std::to_string(off) + " escapes the frame");
-  }
+  // Through the C++ Reader, so a scalar of an element in the publisher's arena is read there.
   const flux::wire::Reader w = r.reader();
-  return flux_py::numpy_scalar(w.base() + off, t.descr);
+  const std::uint8_t * p = w.block<std::uint8_t>(off, t.size).data();
+  Reader::check(w, "scalar", off);
+  return flux_py::numpy_scalar(p, t.descr);
 }
 
 auto reader_span(nb::handle self, std::size_t off, nb::handle dtype) -> nb::object

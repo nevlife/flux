@@ -49,9 +49,10 @@ auto PointCloud2Display::takeFrame() -> sensor_msgs::msg::PointCloud2::SharedPtr
     return nullptr;
   }
   std::string error;
-  // From the FrameView, so a cloud past its slot is read from the publisher's arena.
+  // From the FrameView, so a cloud past its slot is read from the publisher's arena, and a GPU
+  // memory channel's from its aux and payload.
   sensor_msgs::msg::PointCloud2::SharedPtr msg =
-    cloud_from_frame(sensor_msgs::flux_msg::PointCloud2::View(frame), error);
+    cloud_from_frame(view_of<sensor_msgs::flux_msg::PointCloud2::View>(frame), error);
   if (!msg) {
     setStatus(StatusProperty::Error, "Message", QString::fromStdString(error));
     return nullptr;

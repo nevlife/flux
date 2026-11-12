@@ -1,6 +1,7 @@
 """The bridge executable against real flux publishers and rclpy subscribers."""
 
 import argparse
+import ctypes
 import gc
 import os
 import re
@@ -24,8 +25,41 @@ from flux import _flux
 from flux_bridge.activate import add_arguments, find_channel, run_with_bridge
 
 SMALL = {"slot_size": 4096, "slot_count": 4}
+SMALL_GPU = {"slot_size": 8192, "slot_count": 4}
 BRIDGE = os.path.join(get_package_prefix("flux_bridge"), "lib", "flux_bridge", "bridge")
 BEST_EFFORT = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
+
+
+def device_fill(span, value, nbytes, stream):
+    """Fills `nbytes` of the device memory `span` names with `value`, on `stream`, without torch."""
+    cuda = ctypes.CDLL("libcuda.so.1")
+    ctx = ctypes.c_void_p()
+    assert cuda.cuInit(0) == 0
+    assert cuda.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), 0) == 0
+    assert cuda.cuCtxPushCurrent_v2(ctx) == 0
+    ptr = span.__cuda_array_interface__["data"][0]
+    rc = cuda.cuMemsetD8Async(
+        ctypes.c_uint64(ptr),
+        ctypes.c_ubyte(value),
+        ctypes.c_size_t(nbytes),
+        ctypes.c_void_p(stream),
+    )
+    cuda.cuCtxPopCurrent_v2(ctypes.byref(ctypes.c_void_p()))
+    assert rc == 0, rc
+
+
+def publish_device_image(pub, value, n):
+    """An Image whose `n` bytes of data are in the GPU arena, all `value`."""
+    from sensor_msgs_flux.image import Image
+
+    loan = pub.loan(dtype="uint8")
+    b = Image.Builder(loan.array, loan)
+    b.height, b.width, b.encoding, b.step = 1, n, "mono8", n
+    device_fill(b.alloc_device__data(n), value, n, loan.stream)
+    assert b.commit__() == flux.Published.OK
+
+
+NO_GPU = flux.probe().route == flux.Route.NONE
 
 
 def topic(name):
@@ -191,6 +225,96 @@ def test_a_mirror_sends_a_frame_with_fields_in_the_arena_whole(node):
     sub = node.create_subscription(RosImage, pub.topic_name, got.append, BEST_EFFORT)
     assert images(node, pub, got, 3) and images(node, pub, got, 4)
     assert all(len(m.data) == 8192 for m in got)
+    node.destroy_subscription(sub)
+
+
+def device_images(node, pub, got, value):
+    def send():
+        publish_device_image(pub, value, 8192)
+        rclpy.spin_once(node, timeout_sec=0.01)
+
+    return eventually(lambda: any(m.width == 8192 and m.data[-1] == value for m in got), each=send)
+
+
+@pytest.mark.skipif(NO_GPU, reason="needs a CUDA device")
+def test_a_frame_with_fields_in_the_gpu_arena_is_relayed_whole(node, bridge):
+    _, log = bridge
+    pub = flux.Publisher(
+        node, topic("gpu_arena"), fingerprint=image.FINGERPRINT__, device="cuda", **SMALL
+    )
+    got = []
+    sub = node.create_subscription(RosImage, pub.topic_name, got.append, BEST_EFFORT)
+    assert eventually(lambda: f"{pub.topic_name}: relaying as sensor_msgs/msg/Image" in output(log))
+    assert device_images(node, pub, got, 7) and device_images(node, pub, got, 9)
+    assert all(len(m.data) == 8192 and m.data[0] == m.data[-1] for m in got)
+    node.destroy_subscription(sub)
+
+
+@pytest.mark.skipif(NO_GPU, reason="needs a CUDA device")
+def test_a_mirror_sends_a_frame_with_fields_in_the_gpu_arena_whole(node):
+    pub = flux.Publisher(
+        node,
+        topic("gpu_arena_mirror"),
+        fingerprint=image.FINGERPRINT__,
+        device="cuda",
+        mirror_to_ros=True,
+        **SMALL,
+    )
+    got = []
+    sub = node.create_subscription(RosImage, pub.topic_name, got.append, BEST_EFFORT)
+    assert device_images(node, pub, got, 3) and device_images(node, pub, got, 4)
+    assert all(len(m.data) == 8192 and m.data[0] == m.data[-1] for m in got)
+    node.destroy_subscription(sub)
+
+
+# flux_wrapper's Device::Cuda Image channel: the payload is the data field in GPU memory, the aux
+# an Image frame with data empty.
+GPU_IMAGE = {"fingerprint": flux.gpu_fingerprint(image.FINGERPRINT__), "aux_size": 4096}
+
+
+def gpu_channel_images(node, pub, got, value, n=8192):
+    def send():
+        loan = pub.loan((n,), "u1")
+        if loan is not None:
+            device_fill(loan, value, n, loan.stream)
+            buf = np.zeros(4096, np.uint8)
+            b = image.Builder(buf)
+            b.height, b.width, b.encoding, b.step = 1, n, "mono8", n
+            b.header__frame_id = "gpu"
+            loan.aux[: b.size__] = buf[: b.size__]
+            loan.aux_len = b.size__
+            assert loan.commit() == flux.Published.OK
+        rclpy.spin_once(node, timeout_sec=0.01)
+
+    return eventually(lambda: any(m.width == n and m.data[-1] == value for m in got), each=send)
+
+
+@pytest.mark.skipif(NO_GPU, reason="needs a CUDA device")
+def test_a_gpu_memory_channel_is_relayed_as_its_type(node, bridge):
+    _, log = bridge
+    pub = flux.Publisher(node, topic("gpu_channel"), device="cuda", **GPU_IMAGE, **SMALL_GPU)
+    got = []
+    sub = node.create_subscription(RosImage, pub.topic_name, got.append, BEST_EFFORT)
+    assert eventually(lambda: f"{pub.topic_name}: relaying as sensor_msgs/msg/Image" in output(log))
+    assert gpu_channel_images(node, pub, got, 7) and gpu_channel_images(node, pub, got, 9)
+    assert all(len(m.data) == 8192 and m.header.frame_id == "gpu" for m in got)
+    node.destroy_subscription(sub)
+
+
+@pytest.mark.skipif(NO_GPU, reason="needs a CUDA device")
+def test_a_mirror_sends_a_gpu_memory_channel_as_its_type(node):
+    pub = flux.Publisher(
+        node,
+        topic("gpu_channel_mirror"),
+        device="cuda",
+        mirror_to_ros=True,
+        **GPU_IMAGE,
+        **SMALL_GPU,
+    )
+    got = []
+    sub = node.create_subscription(RosImage, pub.topic_name, got.append, BEST_EFFORT)
+    assert gpu_channel_images(node, pub, got, 3) and gpu_channel_images(node, pub, got, 4)
+    assert all(len(m.data) == 8192 and m.header.frame_id == "gpu" for m in got)
     node.destroy_subscription(sub)
 
 

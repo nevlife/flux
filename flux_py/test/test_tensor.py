@@ -181,13 +181,12 @@ def shm_path(addr):
 
 
 def in_place(t, frame):
-    """t aliases the slot: the same bytes as the frame numpy took, in the shared memory mapping."""
+    """t aliases shared memory, not a copy: the frame's slot or, where the Writer puts arrays when
+    there is one, the publisher's arena."""
+    path = shm_path(t.ctypes.data) or ""
     lo = frame.ctypes.data
-    return (
-        np.shares_memory(t, frame)
-        and lo <= t.ctypes.data < lo + frame.nbytes
-        and shm_path(t.ctypes.data).startswith("/dev/shm/")
-    )
+    in_slot = np.shares_memory(t, frame) and lo <= t.ctypes.data < lo + frame.nbytes
+    return path.startswith("/dev/shm/") and (in_slot or ".arena-" in path)
 
 
 @pytest.mark.parametrize(

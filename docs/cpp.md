@@ -49,11 +49,11 @@ if (flux::faulted(p)) {
 
 ```cpp
 flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
-                slot_size = 8 MiB, slot_count = 16, MemoryPolicy mem = {},
+                slot_size = 0, slot_count = 16, MemoryPolicy mem = {},
                 max_subscribers = 16, aux_size = 0);
 ```
 
-- 기본값은 `flux.h`의 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`이고, Python과 같다.
+- 기본값은 `flux.h`의 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`이고, Python과 같다. `slot_size` 0의 뜻은 [concepts.md](concepts.md#발행자와-슬롯)에 있다. 타입이 없는 발행자의 크기는 `FLUX_UNTYPED_SLOT_SIZE`(8 MiB), 문자열 자리는 `FLUX_SLOT_STRING_BYTES`(4096 B)다.
 - `publish(data, dtype, shape)`는 배열을 슬롯에 한 번 복사한다. `publish(data, nbytes)`는 `u8[nbytes]`로 발행한다.
 - 같은 채널에 살아 있는 발행자가 있으면 생성자가 `flux::Error`(`FLUX_PUBLISHER_EXISTS`)를 던진다.
 
