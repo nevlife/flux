@@ -177,6 +177,7 @@ mod tests {
             0,
             NO_SCHEMA,
             None,
+            1,
         )
         .unwrap();
         let pfd = seg.publisher_fd().unwrap();
@@ -212,6 +213,7 @@ mod tests {
                 0,
                 NO_SCHEMA,
                 None,
+                1,
             )
             .unwrap();
             let pfd = seg.publisher_fd().unwrap();
@@ -233,7 +235,7 @@ mod tests {
             drop(live);
         }
         for bad in [0, MAX_SUBSCRIBERS + 1] {
-            let r = open_publisher_segment(&topic("maxbad"), 64, 1, bad, 0, NO_SCHEMA, None);
+            let r = open_publisher_segment(&topic("maxbad"), 64, 1, bad, 0, NO_SCHEMA, None, 1);
             assert!(matches!(r, Err(Error::InvalidArgument(_))), "{bad}");
         }
     }

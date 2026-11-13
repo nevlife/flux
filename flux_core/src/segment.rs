@@ -18,7 +18,7 @@
 use std::alloc::{self, Layout};
 use std::os::fd::RawFd;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use crate::discovery::SignpostMap;
@@ -85,9 +85,14 @@ pub struct Segment {
     name: String,
     id: SegmentId,
     payload_readonly: bool,
-    /// The union of what the subscriptions sharing the mapping asked for.
+    /// The publisher's slots with payload memory (`ControlHeader::slots_ready`), its own count.
+    ready: AtomicU32,
+    /// The union of what the subscriptions sharing the mapping asked for, and the slots it covers.
     pages_committed: AtomicBool,
     pages_locked: AtomicBool,
+    committed_to: AtomicUsize,
+    locked_to: AtomicUsize,
+    cover: Mutex<()>,
     /// What makes the payload device-addressable, made once for every channel on this mapping.
     device: OnceLock<DevicePayload>,
     device_init: Mutex<()>,
@@ -120,7 +125,7 @@ impl Segment {
             ));
         };
         // SAFETY: base is a fresh zeroed allocation of total_bytes, aligned to a page.
-        let header = unsafe { init_header(base, layout, fingerprint, None) };
+        let header = unsafe { init_header(base, layout, fingerprint, None, layout.slot_count) };
         Ok(Segment::adopt(
             base,
             bytes,
@@ -176,10 +181,16 @@ impl Segment {
         name: String,
         id: SegmentId,
     ) -> Segment {
+        let layout = header.layout();
+        // SAFETY: the mapping starts with a ControlHeader that passed layout_config_ok.
+        let ready = unsafe { base.cast::<ControlHeader>().as_ref() }
+            .slots_ready
+            .load(Ordering::Acquire) // order: slots_ready
+            .min(layout.slot_count);
         Segment {
             base,
             bytes,
-            layout: header.layout(),
+            layout,
             header,
             map: Arc::new(Mapping {
                 base,
@@ -191,8 +202,12 @@ impl Segment {
             name,
             id,
             payload_readonly: false,
+            ready: AtomicU32::new(ready),
             pages_committed: AtomicBool::new(false),
             pages_locked: AtomicBool::new(false),
+            committed_to: AtomicUsize::new(0),
+            locked_to: AtomicUsize::new(0),
+            cover: Mutex::new(()),
             device: OnceLock::new(),
             device_init: Mutex::new(()),
         }
@@ -308,6 +323,14 @@ impl Segment {
         &self.header
     }
 
+    /// The slot registrations of a host payload, once a channel on this mapping made them.
+    pub(crate) fn registrations(&self) -> Option<&crate::gpu::SlotRegistrations> {
+        match self.device.get()? {
+            DevicePayload::Registered(r) => Some(r),
+            _ => None,
+        }
+    }
+
     /// Made by `init` on first use, then shared by every channel on this mapping.
     pub(crate) fn device_payload(
         &self,
@@ -362,8 +385,12 @@ impl Segment {
             name: self.name.clone(),
             id: self.id,
             payload_readonly: self.payload_readonly,
+            ready: AtomicU32::new(self.ready.load(Ordering::Relaxed)),
             pages_committed: AtomicBool::new(false),
             pages_locked: AtomicBool::new(false),
+            committed_to: AtomicUsize::new(0),
+            locked_to: AtomicUsize::new(0),
+            cover: Mutex::new(()),
             device: OnceLock::new(),
             device_init: Mutex::new(()),
         }
@@ -420,44 +447,132 @@ impl Segment {
         self.pages_locked.load(Ordering::Relaxed)
     }
 
-    /// Adds to what earlier calls did; never undoes it. Callers sharing a mapping serialize.
-    pub(crate) fn apply(&self, mem: MemoryPolicy) -> Result<()> {
-        if mem.lock && !self.pages_locked() {
-            self.lock_pages()
-        } else if mem.precommit && !self.pages_committed() {
-            self.commit_pages()
-        } else {
-            Ok(())
+    /// Slots whose payload has memory: the publisher's own count, or for a subscriber the
+    /// header's, at most `slot_count`. A host payload past them is a hole.
+    pub fn slots_ready(&self) -> u32 {
+        if self.is_publisher() {
+            return self.ready.load(Ordering::Relaxed);
         }
+        self.ctrl()
+            .slots_ready
+            .load(Ordering::Acquire) // order: slots_ready
+            .min(self.layout.slot_count)
+    }
+
+    /// The publisher of a host shm payload gives the next slot its memory, committed or locked as
+    /// `mem` asks, and returns it. None once every slot has memory, or when `/dev/shm` has no
+    /// room: then nothing changed.
+    pub(crate) fn add_slot(&self, mem: MemoryPolicy) -> Option<u32> {
+        let fd = self.publisher_fd()?;
+        let s = self.ready.load(Ordering::Relaxed);
+        if s >= self.layout.slot_count || !self.host_payload() {
+            return None;
+        }
+        let stride = self.layout.payload_stride();
+        sys::allocate_range(
+            fd,
+            self.layout.payload_offset() + s as usize * stride,
+            stride,
+        )
+        .ok()?;
+        self.ready.store(s + 1, Ordering::Relaxed);
+        self.ctrl().slots_ready.store(s + 1, Ordering::Release); // order: slots_ready
+        // Best effort, as a subscriber's: the slot is usable without it.
+        let _ = self.cover_to(s + 1, mem);
+        Some(s)
+    }
+
+    /// Adds to what earlier calls did; never undoes it. Covers the slots with memory now.
+    pub(crate) fn apply(&self, mem: MemoryPolicy) -> Result<()> {
+        if !mem.lock && !mem.precommit {
+            return Ok(());
+        }
+        self.cover_to(self.slots_ready(), mem)
+    }
+
+    /// Before a subscriber reads slot `s`: covers the slots added since, as `mem` asks. A check of
+    /// one word unless `mem` commits or locks and `s` is past what is covered.
+    pub(crate) fn cover_slot(&self, s: u32, mem: MemoryPolicy) {
+        let covered = if mem.lock {
+            self.locked_to.load(Ordering::Relaxed)
+        } else if mem.precommit {
+            self.committed_to.load(Ordering::Relaxed)
+        } else {
+            return;
+        };
+        if self.cover_end(s + 1) > covered {
+            // Best effort here: the take has the frame either way.
+            let _ = self.cover_to(self.slots_ready().max(s + 1), mem);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn committed_bytes(&self) -> usize {
+        self.committed_to.load(Ordering::Relaxed)
+    }
+
+    /// The bytes up to slot `slots`'s payload: the whole mapping where every slot has memory.
+    fn cover_end(&self, slots: u32) -> usize {
+        if self.is_heap() || !self.host_payload() {
+            return self.bytes;
+        }
+        (self.layout.payload_offset() + slots as usize * self.layout.payload_stride())
+            .min(self.bytes)
+    }
+
+    /// Commits or locks, as `mem` asks, the mapping up to slot `slots`'s payload, from where an
+    /// earlier call stopped. A lock commits too.
+    fn cover_to(&self, slots: u32, mem: MemoryPolicy) -> Result<()> {
+        let _g = self.cover.lock().unwrap_or_else(PoisonError::into_inner);
+        let to = self.cover_end(slots);
+        if mem.lock {
+            let from = self.locked_to.load(Ordering::Relaxed);
+            if to > from {
+                self.lock_pages(from, to)?;
+                self.locked_to.store(to, Ordering::Relaxed);
+                self.committed_to.fetch_max(to, Ordering::Relaxed);
+            }
+            self.pages_locked.store(true, Ordering::Relaxed);
+            self.pages_committed.store(true, Ordering::Relaxed);
+        } else if mem.precommit {
+            let from = self.committed_to.load(Ordering::Relaxed);
+            if to > from {
+                self.commit_pages(from, to)?;
+                self.committed_to.store(to, Ordering::Relaxed);
+            }
+            self.pages_committed.store(true, Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     // MADV_POPULATE_* rather than storing into every page: a store into a shared mapping is
     // visible to peers, and on a full tmpfs it is a SIGBUS instead of an error.
-    fn commit_pages(&self) -> Result<()> {
+    fn commit_pages(&self, from: usize, to: usize) -> Result<()> {
         const MADV_POPULATE_READ: libc::c_int = 22;
         const MADV_POPULATE_WRITE: libc::c_int = 23;
         // A read-only payload refuses POPULATE_WRITE, and a read fault is enough to make it resident.
         let split = if self.payload_readonly {
-            self.layout.payload_offset()
+            self.layout.payload_offset().clamp(from, to)
         } else {
-            self.bytes
+            to
         };
-        // SAFETY: the range is inside the mapping.
-        if unsafe { libc::madvise(self.base.as_ptr().cast(), split, MADV_POPULATE_WRITE) } != 0 {
-            return Err(Error::io(
-                "madvise(MADV_POPULATE_WRITE), needs Linux 5.14",
-                &self.name,
-                std::io::Error::last_os_error(),
-            ));
+        if split > from {
+            // SAFETY: from < split <= bytes keeps the range inside the mapping.
+            let p = unsafe { self.base.add(from) };
+            // SAFETY: the range is inside the mapping.
+            if unsafe { libc::madvise(p.as_ptr().cast(), split - from, MADV_POPULATE_WRITE) } != 0 {
+                return Err(Error::io(
+                    "madvise(MADV_POPULATE_WRITE), needs Linux 5.14",
+                    &self.name,
+                    std::io::Error::last_os_error(),
+                ));
+            }
         }
-        if split < self.bytes {
-            // SAFETY: split < bytes keeps the range inside the mapping.
+        if to > split {
+            // SAFETY: split < to <= bytes keeps the range inside the mapping.
             let rest = unsafe { self.base.add(split) };
             // SAFETY: the range is inside the mapping.
-            if unsafe {
-                libc::madvise(rest.as_ptr().cast(), self.bytes - split, MADV_POPULATE_READ)
-            } != 0
-            {
+            if unsafe { libc::madvise(rest.as_ptr().cast(), to - split, MADV_POPULATE_READ) } != 0 {
                 return Err(Error::io(
                     "madvise(MADV_POPULATE_READ)",
                     &self.name,
@@ -465,21 +580,23 @@ impl Segment {
                 ));
             }
         }
-        self.pages_committed.store(true, Ordering::Relaxed);
         Ok(())
     }
 
-    fn lock_pages(&self) -> Result<()> {
-        // SAFETY: the range is the whole mapping.
-        if unsafe { libc::mlock(self.base.as_ptr().cast(), self.bytes) } != 0 {
+    fn lock_pages(&self, from: usize, to: usize) -> Result<()> {
+        if to <= from {
+            return Ok(());
+        }
+        // SAFETY: from < to <= bytes keeps the range inside the mapping.
+        let p = unsafe { self.base.add(from) };
+        // SAFETY: the range is inside the mapping.
+        if unsafe { libc::mlock(p.as_ptr().cast(), to - from) } != 0 {
             return Err(Error::io(
                 "mlock (RLIMIT_MEMLOCK must cover the segment)",
                 &self.name,
                 std::io::Error::last_os_error(),
             ));
         }
-        self.pages_locked.store(true, Ordering::Relaxed);
-        self.pages_committed.store(true, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -521,7 +638,7 @@ pub(crate) fn checked_layout(
 
 /// Writes the control header and publishes `INIT_READY` last, and returns what it wrote. Zeroes only
 /// the headers: shm from fallocate is already zero, and touching the payload would fault in every
-/// page.
+/// page. `ready` slots have their payload memory.
 ///
 /// # Safety
 /// `base` must point at `layout.payload_offset()` writable bytes, and `total_bytes()` for a host
@@ -531,6 +648,7 @@ pub(crate) unsafe fn init_header(
     layout: SegmentLayout,
     fingerprint: u64,
     device: Option<(u32, [u8; 16])>,
+    ready: u32,
 ) -> HeaderConfig {
     // SAFETY: the header region is inside the allocation and nobody else reads it yet.
     unsafe { base.write_bytes(0, layout.payload_offset()) };
@@ -542,7 +660,7 @@ pub(crate) unsafe fn init_header(
         } else {
             StorageKind::HostInline
         };
-        let mut h = ControlHeader::new(layout, fingerprint, kind);
+        let mut h = ControlHeader::new(layout, fingerprint, kind, ready);
         if let Some((ordinal, uuid)) = device {
             h.device_id = ordinal;
             h.device_uuid = uuid;

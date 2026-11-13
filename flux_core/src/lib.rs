@@ -15,6 +15,7 @@ mod partitioned;
 mod qos;
 mod reader;
 mod segment;
+mod sizing;
 #[cfg(test)]
 mod storm;
 mod sys;
@@ -28,9 +29,8 @@ pub use discovery::{flatten_key, signpost_name};
 pub use error::{Error, Result};
 pub use executor::{DEFAULT_TICK_NS, DEFAULT_TURN_NS, Executor, ExecutorHandle, MAX_DRAIN, Source};
 pub use layout::{
-    DEFAULT_MAX_SUBSCRIBERS, DEFAULT_SLOT_COUNT, DEFAULT_SLOT_SIZE, DType, FrameMeta, MAX_AUX_SIZE,
-    MAX_DIMS, MAX_LABEL_LEN, MAX_SUBSCRIBERS, NO_SCHEMA, ROSTER_ENTRIES, SLOT_STRING_BYTES,
-    UNTYPED_SLOT_SIZE, typed_slot_size,
+    DEFAULT_MAX_SUBSCRIBERS, DType, FrameMeta, MAX_AUX_SIZE, MAX_DIMS, MAX_LABEL_LEN,
+    MAX_SUBSCRIBERS, NO_SCHEMA, ROSTER_ENTRIES,
 };
 pub use manifest::{
     Announcement, ChannelStats, Endpoint, ManifestEntry, Topic, enumerate_topics,
@@ -39,3 +39,7 @@ pub use manifest::{
 pub use partitioned::PartitionedExecutor;
 pub use qos::{Durability, MemoryPolicy, QoS};
 pub use segment::Mapped;
+pub use sizing::{
+    Bound, DEFAULT_SLOT_COUNT, DEFAULT_SLOT_SIZE, DEVICE_BOUND, HOST_BOUND, SLOT_STRING_BYTES,
+    START_SLOTS, UNTYPED_SLOT_SIZE, max_slots, slot_count, slot_size, start_slots, typed_slot_size,
+};

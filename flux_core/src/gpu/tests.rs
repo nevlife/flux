@@ -449,7 +449,7 @@ mod channel {
             mem,
             stream,
             crate::trace::NO_STAMP,
-            false,
+            None,
         )
         .unwrap()
     }
@@ -526,6 +526,42 @@ mod channel {
         assert_eq!(super::UNMAPPED_UNREGISTERS.get(), 0);
     }
 
+    /// A host payload left at count 0 is registered only where it has memory; a slot added later
+    /// is registered when it is first reached. The publisher's mapping is writable, so this
+    /// registers on any device that registers host memory.
+    #[test]
+    fn a_registered_payload_registers_only_the_slots_with_memory() {
+        if gpu().is_none() {
+            return;
+        }
+        let _route = Forced::route(super::Route::ShmRegistered);
+        let name = topic("regready");
+        let mut p = Channel::create_on(
+            &name,
+            1 << 16,
+            0,
+            DEFAULT_MAX_SUBSCRIBERS,
+            0,
+            NO_SCHEMA,
+            MemoryPolicy::default(),
+            Stream::create().unwrap(),
+            crate::trace::NO_STAMP,
+            None,
+        )
+        .unwrap();
+        assert_eq!(p.registered_slots(), crate::sizing::START_SLOTS as usize);
+        let mut cpu = subscriber(&name, Stream::default()).unwrap();
+        cpu.set_qos(QoS::new(20).unwrap()).unwrap();
+        for i in 0..15u8 {
+            let w = p.loan().unwrap();
+            assert_ne!(w.device_ptr(), 0);
+            assert_eq!(w.commit_len(64), Published::Ok);
+            assert!(cpu.take().is_some(), "frame {i}");
+        }
+        assert_eq!(p.slots_ready(), 15);
+        assert_eq!(p.registered_slots(), 15);
+    }
+
     fn discrete() -> Option<Forced> {
         let p = probe(0);
         (p.vmm && p.posix_fd_handle).then(|| Forced::route(super::Route::DeviceHandle))
@@ -583,7 +619,7 @@ mod channel {
             MemoryPolicy::default(),
             Stream::create().unwrap(),
             crate::trace::NO_STAMP,
-            false,
+            None,
         )
         .unwrap();
         assert!(p.device_backed());
@@ -652,6 +688,39 @@ mod channel {
         assert!(first.stream().wait());
         assert_eq!(read_back(copy, first.device_ptr(), bytes.len()), bytes);
         assert_eq!(read_back(copy, second.device_ptr(), other.len()), other);
+    }
+
+    /// The device copy of a host payload left at count 0 has memory for the slots with memory,
+    /// and more as added slots are taken.
+    #[test]
+    fn a_device_copy_is_backed_only_as_far_as_the_slots_taken() {
+        let Some((_, copy)) = gpu() else { return };
+        let Some(_route) = discrete() else { return };
+        let name = topic("h2dgrow");
+        let slot = 4 << 20;
+        let mut p = Channel::create(
+            &name,
+            slot,
+            0,
+            DEFAULT_MAX_SUBSCRIBERS,
+            0,
+            NO_SCHEMA,
+            MemoryPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(p.slot_count(), 64);
+        let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
+        dev.set_qos(QoS::new(20).unwrap()).unwrap();
+        let start = crate::sizing::START_SLOTS as usize * slot as usize;
+        assert_eq!(dev.device_copy_backed(), start);
+        for i in 0..15u8 {
+            assert_eq!(p.publish(&[i; 4096]), Published::Ok);
+            let v = dev.take().unwrap();
+            assert!(v.stream().wait());
+            assert_eq!(read_back(copy, v.device_ptr(), 4096), vec![i; 4096]);
+        }
+        assert_eq!(p.slots_ready(), 15);
+        assert_eq!(dev.device_copy_backed(), 15 * slot as usize);
     }
 
     /// The endpoint of the publisher's segment, found by the segment file's inode.

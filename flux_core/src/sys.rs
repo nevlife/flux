@@ -129,6 +129,18 @@ pub(crate) fn fstat(fd: RawFd) -> io::Result<Stat> {
     })
 }
 
+/// Sizes the file without reserving its pages: the ones past what `allocate_range` reserved are
+/// holes until then.
+pub(crate) fn truncate(fd: RawFd, bytes: usize) -> io::Result<()> {
+    let len =
+        libc::off_t::try_from(bytes).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    // SAFETY: plain syscall on a descriptor we hold.
+    if unsafe { libc::ftruncate(fd, len) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Sizes the file and reserves its pages, so a full `/dev/shm` fails here with ENOSPC instead of
 /// raising SIGBUS on the first store into a page that cannot be backed.
 pub(crate) fn allocate(fd: RawFd, bytes: usize) -> io::Result<()> {

@@ -318,11 +318,6 @@ pub unsafe extern "C" fn flux_channel_create(
 ) -> flux_status {
     // SAFETY: stream is NULL or a live handle.
     let stream = unsafe { stream_of(stream) };
-    let slot_size = match (slot_size, scalar_bytes_of(fingerprint)) {
-        (0, Some(scalar)) => flux_core::typed_slot_size(scalar, stream.declared()),
-        (0, None) => flux_core::UNTYPED_SLOT_SIZE,
-        (n, _) => n,
-    };
     // SAFETY: name is a valid string.
     let r = unsafe { text(name) }.and_then(|n| {
         Channel::create_on(
@@ -335,7 +330,7 @@ pub unsafe extern "C" fn flux_channel_create(
             mem.into(),
             stream,
             stamp_offset,
-            is_generated(fingerprint),
+            scalar_bytes_of(fingerprint),
         )
     });
     status(r.map(|ch| {
@@ -1016,10 +1011,6 @@ fn scalar_bytes_of(fingerprint: u64) -> Option<u32> {
         .iter()
         .find(|(fp, _)| *fp == fingerprint)
         .map(|(_, s)| *s)
-}
-
-fn is_generated(fingerprint: u64) -> bool {
-    scalar_bytes_of(fingerprint).is_some()
 }
 
 #[unsafe(no_mangle)]

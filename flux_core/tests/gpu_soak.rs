@@ -95,7 +95,7 @@ fn create(signpost: &str, stream: &Stream) -> Channel {
             MemoryPolicy::default(),
             stream.clone(),
             -1,
-            false,
+            None,
         ) {
             Ok(ch) => return ch,
             Err(Error::PublisherExists(_)) if Instant::now() < until => {

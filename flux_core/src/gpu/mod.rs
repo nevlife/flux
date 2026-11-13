@@ -868,19 +868,84 @@ impl Drop for HostBuffer {
     }
 }
 
+/// A host payload registered slot by slot, each when it is first reached: registering a slot
+/// that has no memory yet would give it memory (a publisher adds slots, `Segment::add_slot`).
+pub(crate) struct SlotRegistrations {
+    payload: usize,
+    stride: usize,
+    read_only: bool,
+    device: i32,
+    slots: Box<[OnceLock<HostRegistration>]>,
+    making: Mutex<()>,
+}
+
+impl SlotRegistrations {
+    /// Registers the first `ready` of `count` slots now, so a refusal is the caller's error.
+    pub(crate) fn new(
+        payload: *mut u8,
+        stride: usize,
+        count: u32,
+        ready: u32,
+        read_only: bool,
+        device: i32,
+    ) -> Result<SlotRegistrations> {
+        let r = SlotRegistrations {
+            payload: payload as usize,
+            stride,
+            read_only,
+            device,
+            slots: (0..count).map(|_| OnceLock::new()).collect(),
+            making: Mutex::new(()),
+        };
+        for s in 0..ready.min(count) {
+            r.slot(s)?;
+        }
+        Ok(r)
+    }
+
+    /// Slot `s`'s registration, made on first use.
+    pub(crate) fn slot(&self, s: u32) -> Result<&HostRegistration> {
+        let cell = self
+            .slots
+            .get(s as usize)
+            .ok_or_else(|| Error::InvalidArgument(format!("slot {s} is past the payload")))?;
+        if let Some(r) = cell.get() {
+            return Ok(r);
+        }
+        let _g = self.making.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(r) = cell.get() {
+            return Ok(r);
+        }
+        let base = (self.payload + s as usize * self.stride) as *mut u8;
+        let r = HostRegistration::new(base, self.stride, self.read_only, self.device)?;
+        Ok(cell.get_or_init(|| r))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registered(&self) -> usize {
+        self.slots.iter().filter(|c| c.get().is_some()).count()
+    }
+
+    /// Slot `s`'s device address, 0 when it could not be registered.
+    pub(crate) fn device_ptr(&self, s: u32) -> DevicePtr {
+        self.slot(s).map_or(0, HostRegistration::device_base)
+    }
+}
+
 /// What makes a segment's payload device-addressable, held once per mapping: registering or
 /// importing the same memory twice is refused by the driver.
 pub(crate) enum DevicePayload {
-    Registered(HostRegistration),
+    Registered(SlotRegistrations),
     Exported(DeviceAlloc),
     Imported(DeviceImport),
 }
 
 impl DevicePayload {
-    /// The device address of slot 0's payload.
+    /// The device address of slot 0's payload, from which the slots follow `payload_stride`
+    /// apart. 0 for a registered payload, whose slots each have their own.
     pub(crate) fn base(&self) -> DevicePtr {
         match self {
-            DevicePayload::Registered(r) => r.device_base(),
+            DevicePayload::Registered(_) => 0,
             DevicePayload::Exported(a) => a.base(),
             DevicePayload::Imported(i) => i.base(),
         }

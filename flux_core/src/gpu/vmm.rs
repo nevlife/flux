@@ -5,6 +5,8 @@
 
 use std::ffi::{c_int, c_void};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use super::driver::{
     AllocFlags, AllocHandle, Core, DevicePtr, Driver, MEM_ACCESS_READ, MEM_ACCESS_READ_WRITE,
@@ -80,6 +82,9 @@ fn pinned_on(device: c_int) -> MemAllocationProp {
         alloc_flags: AllocFlags::default(),
     }
 }
+
+/// The least a subscriber's device copy backs at once: rounded up to the device's granularity.
+const CHUNK_BYTES: usize = 2 << 20;
 
 /// The minimum granularity binds the allocation's size only, not slot offsets: `PAYLOAD_ALIGN`
 /// and the layout arithmetic stay as they are.
@@ -241,13 +246,24 @@ impl Drop for DeviceAlloc {
     }
 }
 
-/// A subscriber's own device copy of a host payload, never exported.
+/// A subscriber's own device copy of a host payload, never exported. Its range is reserved whole
+/// and backed a chunk at a time as slots are reached (`back`): a publisher adds slots, and memory
+/// for the ones it never adds would sit idle.
 pub(crate) struct DeviceBuffer {
-    region: Region,
+    base: DevicePtr,
+    size: usize,
+    chunk: usize,
+    device: c_int,
+    ctx: usize,
+    born: u32,
+    /// Chunk `i` maps at `base + i * chunk`.
+    chunks: Mutex<Vec<AllocHandle>>,
+    backed: AtomicUsize,
 }
 
 impl DeviceBuffer {
-    pub(crate) fn new(bytes: usize, ordinal: i32) -> Result<DeviceBuffer> {
+    /// `bytes` of range, the first `backed` of them with memory now.
+    pub(crate) fn new(bytes: usize, backed: usize, ordinal: i32) -> Result<DeviceBuffer> {
         let (core, vmm) = vmm()?;
         let ctx = core
             .primary_context(ordinal)
@@ -255,28 +271,114 @@ impl DeviceBuffer {
         let device = device_handle(core, ordinal)
             .ok_or_else(|| Error::Unsupported("cuDeviceGet failed".into()))?;
         sys::watch_fork();
-        let mut region = Region::new(ctx, rounded(vmm, device, bytes)?);
-        let prop = pinned_on(device);
-        // SAFETY: valid pointers; size is a multiple of the granularity.
-        if unsafe { (vmm.create)(&raw mut region.alloc, region.size, &raw const prop, 0) }
-            != SUCCESS
-        {
-            region.alloc = 0;
-            return Err(Error::Unsupported("cuMemCreate failed".into()));
+        let chunk = rounded(vmm, device, CHUNK_BYTES)?;
+        let size = bytes.div_ceil(chunk).max(1) * chunk;
+        let mut base = 0;
+        // SAFETY: valid out-pointer; no fixed address, default alignment.
+        let rc = core.with_context(ctx, || unsafe {
+            (vmm.address_reserve)(&raw mut base, size, 0, 0, 0)
+        });
+        if rc != SUCCESS {
+            return Err(Error::Unsupported("cuMemAddressReserve failed".into()));
         }
-        region.map(vmm, device, MEM_ACCESS_READ_WRITE)?;
-        ledger::made(Held::Copy(region.addr), region.size);
-        Ok(DeviceBuffer { region })
+        ledger::made(Held::Copy(base), size);
+        let buf = DeviceBuffer {
+            base,
+            size,
+            chunk,
+            device,
+            ctx: ctx as usize,
+            born: sys::fork_gen(),
+            chunks: Mutex::new(Vec::new()),
+            backed: AtomicUsize::new(0),
+        };
+        buf.back(backed)?;
+        Ok(buf)
     }
 
     pub(crate) fn base(&self) -> DevicePtr {
-        self.region.addr
+        self.base
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backed(&self) -> usize {
+        self.backed.load(Ordering::Relaxed)
+    }
+
+    /// Gives the first `bytes` of the range memory, if they have none yet.
+    pub(crate) fn back(&self, bytes: usize) -> Result<()> {
+        // order: backed
+        if bytes <= self.backed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let (core, vmm) = vmm()?;
+        let mut chunks = self.chunks.lock().unwrap_or_else(PoisonError::into_inner);
+        let want = bytes.min(self.size).div_ceil(self.chunk);
+        core.with_context(self.ctx as *mut c_void, || {
+            while chunks.len() < want {
+                let at = self.base + (chunks.len() * self.chunk) as u64;
+                let prop = pinned_on(self.device);
+                let mut h: AllocHandle = 0;
+                // SAFETY: valid pointers; chunk is a multiple of the granularity.
+                if unsafe { (vmm.create)(&raw mut h, self.chunk, &raw const prop, 0) } != SUCCESS {
+                    return Err(Error::Unsupported("cuMemCreate failed".into()));
+                }
+                let desc = MemAccessDesc {
+                    location: MemLocation {
+                        kind: MEM_LOCATION_TYPE_DEVICE,
+                        id: self.device,
+                    },
+                    flags: MEM_ACCESS_READ_WRITE,
+                };
+                // SAFETY: inside the reserved range, unmapped there so far.
+                if unsafe { (vmm.map)(at, self.chunk, 0, h, 0) } != SUCCESS {
+                    // SAFETY: created above, never mapped.
+                    unsafe { (vmm.release)(h) };
+                    return Err(Error::Unsupported("cuMemMap failed".into()));
+                }
+                // SAFETY: a mapped range and one valid descriptor.
+                if unsafe { (vmm.set_access)(at, self.chunk, &raw const desc, 1) } != SUCCESS {
+                    // SAFETY: mapped above at this size.
+                    unsafe { (vmm.unmap)(at, self.chunk) };
+                    // SAFETY: created above, now unmapped.
+                    unsafe { (vmm.release)(h) };
+                    return Err(Error::Unsupported("cuMemSetAccess failed".into()));
+                }
+                chunks.push(h);
+            }
+            Ok(())
+        })?;
+        self.backed
+            .store(chunks.len() * self.chunk, Ordering::Release); // order: backed
+        Ok(())
     }
 }
 
 impl Drop for DeviceBuffer {
     fn drop(&mut self) {
-        ledger::undone(Held::Copy(self.region.addr), self.region.size);
+        ledger::undone(Held::Copy(self.base), self.size);
+        if sys::fork_gen() != self.born {
+            return;
+        }
+        let Ok((core, vmm)) = vmm() else {
+            return;
+        };
+        let chunks = std::mem::take(
+            self.chunks
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        core.with_context(self.ctx as *mut c_void, || {
+            for (i, h) in chunks.into_iter().enumerate() {
+                let at = self.base + (i * self.chunk) as u64;
+                // SAFETY: mapped by back() at this size.
+                unsafe { (vmm.unmap)(at, self.chunk) };
+                // SAFETY: created by back(), now unmapped, released once.
+                unsafe { (vmm.release)(h) };
+            }
+            // SAFETY: reserved by new() at this size, now unmapped.
+            unsafe { (vmm.address_free)(self.base, self.size) };
+        });
     }
 }
 

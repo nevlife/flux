@@ -231,7 +231,7 @@ fn a_sticky_error_wedges_every_gpu_channel_at_once() {
         MemoryPolicy::default(),
         stream.clone(),
         trace::NO_STAMP,
-        false,
+        None,
     );
     assert!(unsupported(late).contains("700"));
     let ev = trace::drain();

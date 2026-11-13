@@ -272,6 +272,8 @@ fn leave(name: &str, raw: RawFd) {
 /// The returned segment holds the publisher locks for its lifetime and is unlinked on drop.
 /// `device`: the ordinal to allocate the payload on, for the device-handle route. The segment then
 /// holds the control plane only, and the allocation is served before the epoch advertises it.
+/// A host payload gets memory for its first `ready` slots; the rest are holes until `add_slot`.
+#[allow(clippy::too_many_arguments)]
 pub fn open_publisher_segment(
     name: &str,
     slot_size: u32,
@@ -280,6 +282,7 @@ pub fn open_publisher_segment(
     aux_size: u32,
     fingerprint: u64,
     device: Option<i32>,
+    ready: u32,
 ) -> Result<Segment> {
     let layout = checked_layout(slot_size, slot_count, max_subscribers, aux_size)?;
     let device = match device {
@@ -290,10 +293,15 @@ pub fn open_publisher_segment(
         )),
         None => None,
     };
-    let bytes = if device.is_some() {
-        layout.payload_offset()
+    let (bytes, ready) = if device.is_some() {
+        (layout.payload_offset(), layout.slot_count)
     } else {
-        layout.total_bytes()
+        (layout.total_bytes(), ready.clamp(1, layout.slot_count))
+    };
+    let reserved = if device.is_some() {
+        bytes
+    } else {
+        layout.payload_offset() + ready as usize * layout.payload_stride()
     };
     sweep_dead_once();
 
@@ -330,7 +338,7 @@ pub fn open_publisher_segment(
         if !sys::lock_read(raw, PUBLISHER_LOCK_BYTE) || !name_still_bound(&seg_name, raw) {
             continue;
         }
-        if let Err(e) = sys::allocate(raw, bytes) {
+        if let Err(e) = sys::truncate(raw, bytes).and_then(|()| sys::allocate(raw, reserved)) {
             sys::shm_unlink(&seg_name);
             return Err(Error::io("fallocate (/dev/shm too small?)", &seg_name, e));
         }
@@ -341,7 +349,7 @@ pub fn open_publisher_segment(
         #[allow(clippy::cast_sign_loss)]
         let header_device = device.map(|(ordinal, uuid)| (ordinal as u32, uuid));
         // SAFETY: a fresh mapping of `bytes`, not yet advertised to anyone.
-        let header = unsafe { init_header(base, layout, fingerprint, header_device) };
+        let header = unsafe { init_header(base, layout, fingerprint, header_device, ready) };
         let mut seg = Segment::adopt_shm(base, bytes, header, seg_name, id_of(raw));
         seg.publisher = Some(live);
         if let Some((ordinal, _)) = device {
@@ -786,12 +794,13 @@ mod tests {
         let keep = SignpostMap::open(&name).unwrap();
         keep.sp().epoch.store(u32::MAX - 1, Ordering::Release); // order: sp_epoch
         drop(
-            open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None)
+            open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None, 1)
                 .unwrap(),
         );
         assert_eq!(keep.epoch(), u32::MAX);
-        let _p = open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None)
-            .unwrap();
+        let _p =
+            open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None, 1)
+                .unwrap();
         assert_eq!(read_channel_stats(&name).epoch, 1);
     }
 

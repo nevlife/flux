@@ -256,7 +256,7 @@ fn a_frame_names_its_device_run_to_a_subscriber_in_another_process() {
         MemoryPolicy::default(),
         stream.clone(),
         -1,
-        true,
+        Some(0),
     )
     .unwrap();
     assert!(!p.device_backed());

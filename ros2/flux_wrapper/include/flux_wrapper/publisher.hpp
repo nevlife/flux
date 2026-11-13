@@ -26,8 +26,8 @@ struct PublisherOptions
   // memory. Zero takes 8 MiB (FLUX_UNTYPED_SLOT_SIZE). On Host the slot is the type's and the
   // data field goes to the publisher's arena, whatever its size.
   std::uint32_t max_device_data_size = 0;
-  // flux only: messages a subscriber may hold at once, plus one to write into. Zero takes the
-  // flux default (16).
+  // flux only: messages a subscriber may hold at once, plus one to write into. Zero leaves it to
+  // flux (FLUX_DEFAULT_SLOT_COUNT).
   std::uint32_t slot_count = 0;
   // flux only: also publish each message as its ROS message on the same topic while a ROS
   // subscriber (rviz2, ros2 bag) wants it. With Device::Cuda the mirror copies the data field
@@ -56,15 +56,11 @@ public:
 #endif
 #ifdef USE_FLUX_ENABLED
     if (use_flux()) {
-      const std::uint32_t count =
-        options.slot_count != 0 ? options.slot_count : flux::Publisher::kDefaultSlotCount;
       if (cuda) {
-        const std::uint32_t slot =
-          options.max_device_data_size != 0 ? options.max_device_data_size : FLUX_UNTYPED_SLOT_SIZE;
         flux_ = std::make_unique<flux::Publisher>(
-          node, topic, detail::Gpu<MsgT>::kFingerprint, slot, count, flux::Device::Cuda,
-          flux::MemoryPolicy{}, flux::Publisher::kDefaultMaxSubscribers,
-          detail::Gpu<MsgT>::kAuxBytes);
+          node, topic, detail::Gpu<MsgT>::kFingerprint, options.max_device_data_size,
+          options.slot_count, flux::Device::Cuda, flux::MemoryPolicy{},
+          flux::Publisher::kDefaultMaxSubscribers, detail::Gpu<MsgT>::kAuxBytes);
         device_ = true;
         if (options.mirror_to_ros) {
           flux_->mirror_to_ros();
@@ -73,7 +69,7 @@ public:
       }
       flux_ = std::make_unique<flux::Publisher>(
         node, topic, detail::AdapterT<MsgT>::kFingerprint, flux::Publisher::kDefaultSlotSize,
-        count);
+        options.slot_count);
       if (options.mirror_to_ros) {
         flux_->mirror_to_ros();
       }

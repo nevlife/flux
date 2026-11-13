@@ -34,10 +34,13 @@ use crate::discovery::{
 use crate::error::{Error, Result};
 use crate::executor::Control;
 use crate::gpu::{self, FenceStats, FenceWait, Fenced, Route, Seam, Stream, ledger};
-use crate::layout::{DType, FrameMeta, MIN_SLOT_COUNT, TICKET_CLAIMED, reader_lock_byte};
+use crate::layout::{
+    DType, FrameMeta, MIN_SLOT_COUNT, TICKET_CLAIMED, TICKET_EMPTY, reader_lock_byte,
+};
 use crate::qos::{MemoryPolicy, QoS};
 use crate::reader::{self};
 use crate::segment::Segment;
+use crate::sizing;
 use crate::sys::{self};
 use crate::trace::{self, event};
 
@@ -113,7 +116,8 @@ pub struct Refused {
     pub bad_frame: u64,
     /// Views whose release fence failed keep their borrows for good. Once they fill `max_borrow`,
     /// every take is refused, and counted here rather than as `max_borrow`. So is every take
-    /// after the process's GPU is wedged (`gpu::wedged`).
+    /// after the process's GPU is wedged (`gpu::wedged`), and a frame whose device copy the
+    /// device had no memory for.
     pub fence: u64,
 }
 
@@ -131,7 +135,7 @@ impl ClaimOrder {
     fn settle(&mut self, seg: &Segment) {
         let ticket = |s: u32| seg.slot(s).commit_ticket.load(Ordering::Relaxed);
         if !self.built {
-            let mut all: Vec<(u64, u32)> = (0..seg.layout().slot_count)
+            let mut all: Vec<(u64, u32)> = (0..seg.slots_ready())
                 .map(|s| (ticket(s), s))
                 .filter(|&(t, _)| t != TICKET_CLAIMED)
                 .collect();
@@ -201,8 +205,10 @@ fn check_slot_count(slot_count: u32) -> Result<()> {
 }
 
 impl Channel {
-    /// A process-private channel on the heap.
+    /// A process-private channel on the heap. A size or count of 0 is `sizing`'s.
     pub fn new(slot_size: u32, slot_count: u32) -> Result<Channel> {
+        let slot_size = sizing::slot_size(slot_size, None, false);
+        let slot_count = sizing::slot_count(slot_count, slot_size, false);
         check_slot_count(slot_count)?;
         Ok(Channel::from_segment(
             Segment::create_heap(slot_size, slot_count, 0, 0)?,
@@ -234,13 +240,14 @@ impl Channel {
             mem,
             Stream::default(),
             trace::NO_STAMP,
-            false,
+            None,
         )
     }
 
     /// As `create`, with frames produced on `stream`, declared once for the channel's life. On the
-    /// device-handle route the payload is a device allocation, unless `host_slots`: then the slots
-    /// stay in host memory and a frame's device fields go to the GPU arena. `stamp_offset` is
+    /// device-handle route the payload is a device allocation, unless the frames are a generated
+    /// type's (`scalar_bytes`, its scalar block): then the slots stay in host memory and a frame's
+    /// device fields go to the GPU arena. A size or count of 0 is `sizing`'s. `stamp_offset` is
     /// where the type's `header.stamp` sits, for trace events (`trace::NO_STAMP` without one).
     #[allow(clippy::too_many_arguments)]
     pub fn create_on(
@@ -253,15 +260,18 @@ impl Channel {
         mem: MemoryPolicy,
         stream: Stream,
         stamp_offset: i32,
-        host_slots: bool,
+        scalar_bytes: Option<u32>,
     ) -> Result<Channel> {
-        check_slot_count(slot_count)?;
-        let device = if stream.declared() && !host_slots {
+        let device = if stream.declared() && scalar_bytes.is_none() {
             let route = gpu::require_route(stream.device())?.route;
             (route == Route::DeviceHandle).then_some(stream.device())
         } else {
             None
         };
+        let slot_size = sizing::slot_size(slot_size, scalar_bytes, stream.declared());
+        let asked = slot_count;
+        let slot_count = sizing::slot_count(asked, slot_size, device.is_some());
+        check_slot_count(slot_count)?;
         let seg = open_publisher_segment(
             name,
             slot_size,
@@ -270,6 +280,7 @@ impl Channel {
             aux_size,
             fingerprint,
             device,
+            sizing::start_slots(asked, slot_count),
         )?;
         seg.apply(mem)?;
         if seg.host_payload() {
@@ -399,6 +410,7 @@ impl Channel {
             _not_sync: PhantomData,
         };
         ch.position_cursor();
+        ch.announce_depth();
         ch
     }
 
@@ -508,11 +520,17 @@ impl Channel {
         })
     }
 
-    /// The oldest free frame goes first, so the newest are overwritten last. `loan` is for the
-    /// trace event.
+    /// The oldest free frame goes first, so the newest are overwritten last. A slot is added
+    /// instead while that frame is within a subscriber's depth, or when none is free. `loan` is
+    /// for the trace event.
     fn claim(&mut self, loan: i32) -> Option<u32> {
         self.sh.reap_late();
         self.order.settle(&self.sh.seg);
+        if self.oldest_within_depth()
+            && let Some(slot) = self.add_slot(loan)
+        {
+            return Some(slot);
+        }
         for result in [trace::CLAIM_OK, trace::CLAIM_RECLAIMED] {
             let found = self.order.queue.iter().position(|&s| self.sh.try_claim(s));
             if let Some(slot) = found.and_then(|i| self.order.queue.remove(i)) {
@@ -525,6 +543,9 @@ impl Channel {
             }
             break;
         }
+        if let Some(slot) = self.add_slot(loan) {
+            return Some(slot);
+        }
         self.sh.dropped.fetch_add(1, Ordering::Relaxed);
         event!(flux_trace_claim(
             self.trace_handle(),
@@ -533,6 +554,36 @@ impl Channel {
             loan
         ));
         None
+    }
+
+    /// Whether the oldest frame is one a subscriber's depth still reaches: the newest
+    /// `depth_high` frames.
+    fn oldest_within_depth(&self) -> bool {
+        let seg = &self.sh.seg;
+        let Some(&s) = self.order.queue.front() else {
+            return false;
+        };
+        let t = seg.slot(s).commit_ticket.load(Ordering::Relaxed);
+        // order: depth_high
+        let depth = seg.ctrl().depth_high.load(Ordering::Relaxed);
+        let latest = seg.ctrl().latest.load(Ordering::Relaxed); // order: latest
+        t != TICKET_EMPTY && t != TICKET_CLAIMED && latest.saturating_sub(t) < u64::from(depth)
+    }
+
+    /// A slot given its memory just now, claimed. None when the segment cannot add one.
+    fn add_slot(&mut self, loan: i32) -> Option<u32> {
+        let slot = self.sh.seg.add_slot(self.mem)?;
+        // Nothing reads a slot before its first ticket, so this cannot fail.
+        if !self.sh.try_claim(slot) {
+            return None;
+        }
+        event!(flux_trace_claim(
+            self.trace_handle(),
+            slot,
+            trace::CLAIM_OK,
+            loan
+        ));
+        Some(slot)
     }
 
     /// The oldest frame newer than the cursor, within `depth` of the newest.
@@ -572,6 +623,7 @@ impl Channel {
             }
             // SAFETY: borrowed with the ticket unchanged, so the publisher is off this slot.
             let meta = unsafe { *sl.meta.get() };
+            self.sh.seg.cover_slot(s, self.mem);
             if t > self.cursor + 1 {
                 self.lost = self.lost.saturating_add(t - self.cursor - 1);
             }
@@ -584,6 +636,15 @@ impl Channel {
                     trace::REFUSED_BAD_FRAME
                 ));
                 continue;
+            }
+            if !self.sh.reach(s) {
+                counter.fetch_sub(1, Ordering::Release); // order: readers
+                self.refused.fence += 1;
+                event!(flux_trace_refused(
+                    self.sh.trace_handle(),
+                    trace::REFUSED_FENCE
+                ));
+                break;
             }
             if self.sh.gpu.is_some() {
                 ledger::borrowed(self.sh.trace_handle(), s);
@@ -734,6 +795,15 @@ impl Channel {
     }
 
     /// On joining the stream, so volatile means from where this consumer joined.
+    /// So the publisher keeps this consumer's depth of frames, adding slots for them (`claim`).
+    fn announce_depth(&self) {
+        self.sh
+            .seg
+            .ctrl()
+            .depth_high
+            .fetch_max(self.qos.depth(), Ordering::Relaxed); // order: depth_high
+    }
+
     fn position_cursor(&mut self) {
         let newest = self.sh.seg.ctrl().latest.load(Ordering::Acquire); // order: latest
         self.cursor = newest.saturating_sub(u64::from(self.qos.durability().replay));
@@ -809,6 +879,7 @@ impl Channel {
         self.orphaned = false;
         self.attach_error = None;
         self.attach_gen = next_attach_generation();
+        self.announce_depth();
         true
     }
 
@@ -846,6 +917,7 @@ impl Channel {
         if !self.taken {
             self.position_cursor();
         }
+        self.announce_depth();
         Ok(())
     }
 
@@ -909,6 +981,17 @@ impl Channel {
     pub(crate) fn trace_handle(&self) -> *const c_void {
         self.sh.trace_handle()
     }
+    #[cfg(test)]
+    pub(crate) fn device_copy_backed(&self) -> usize {
+        self.sh.device_copy_backed()
+    }
+    #[cfg(test)]
+    pub(crate) fn registered_slots(&self) -> usize {
+        self.sh
+            .seg
+            .registrations()
+            .map_or(0, crate::gpu::SlotRegistrations::registered)
+    }
     pub(crate) fn trace_segment(&self) -> *const c_char {
         self.sh.trace_name.as_ptr()
     }
@@ -925,6 +1008,10 @@ impl Channel {
     }
     pub fn slot_count(&self) -> u32 {
         self.sh.seg.layout().slot_count
+    }
+    /// Slots with payload memory now, at most `slot_count`: a publisher left at count 0 adds them.
+    pub fn slots_ready(&self) -> u32 {
+        self.sh.seg.slots_ready()
     }
     pub fn aux_size(&self) -> u32 {
         self.sh.seg.layout().aux_size
@@ -1078,6 +1165,8 @@ fn attach_subscriber(
     Ok((Arc::new(sh).traced(), epoch))
 }
 
+#[cfg(test)]
+mod grow;
 #[cfg(test)]
 mod header;
 mod loan;

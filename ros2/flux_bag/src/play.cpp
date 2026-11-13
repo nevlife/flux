@@ -339,15 +339,24 @@ private:
       return c.pub.get();
     }
     c.pub.reset();  // one publisher per channel: the old one goes first
-    try {
-      c.pub = std::make_unique<flux::Publisher>(
-        node_, std::string(f.flux_topic), f.fingerprint, meta.slot_size, meta.slot_count,
-        flux::MemoryPolicy{}, flux::Publisher::kDefaultMaxSubscribers, aux_size);
-    } catch (const flux::Error & e) {
+    std::string why;
+    if (meta.slot_size == 0 || meta.slot_count == 0) {
+      // A recorded channel had both; 0 would be flux's default, not the recorded geometry.
+      why = "the bag records no slot size or count";
+    } else {
+      try {
+        c.pub = std::make_unique<flux::Publisher>(
+          node_, std::string(f.flux_topic), f.fingerprint, meta.slot_size, meta.slot_count,
+          flux::MemoryPolicy{}, flux::Publisher::kDefaultMaxSubscribers, aux_size);
+      } catch (const flux::Error & e) {
+        why = e.what();
+      }
+    }
+    if (!c.pub) {
       c.ignored = true;
       RCLCPP_ERROR(
         node_.get_logger(), "Ignoring a flux channel '%s', reason: %s.",
-        std::string(f.flux_topic).c_str(), e.what());
+        std::string(f.flux_topic).c_str(), why.c_str());
       return nullptr;
     }
     c.slot_size = meta.slot_size;

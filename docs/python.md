@@ -35,7 +35,7 @@ if flux.faulted(p):
 ```
 
 ```python
-flux.Publisher(node, topic, fingerprint=flux.NO_SCHEMA, slot_size=0, slot_count=16,
+flux.Publisher(node, topic, fingerprint=flux.NO_SCHEMA, slot_size=0, slot_count=0,
                memory=None, max_subscribers=16, device="cpu", fence_timeout=None,
                mirror_to_ros=False, aux_size=0)
 ```

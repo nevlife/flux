@@ -37,11 +37,11 @@ pub const FLUX_MAX_DRAIN: u32 = 64;
 pub const FLUX_DEFAULT_TICK_NS: i64 = 100_000_000;
 pub const FLUX_DEFAULT_TURN_NS: i64 = 1_000_000;
 pub const FLUX_DEFAULT_MAX_SUBSCRIBERS: u32 = 16;
-/// 0: a generated type's own slot (scalar block, string room, trailer), else the untyped size.
+/// 0: a generated type's own slot, else the untyped size; a count of 0 is bounded by the slot size.
 pub const FLUX_DEFAULT_SLOT_SIZE: u32 = 0;
 pub const FLUX_UNTYPED_SLOT_SIZE: u32 = 8 << 20;
 pub const FLUX_SLOT_STRING_BYTES: u32 = 4096;
-pub const FLUX_DEFAULT_SLOT_COUNT: u32 = 16;
+pub const FLUX_DEFAULT_SLOT_COUNT: u32 = 0;
 pub const FLUX_MAX_SUBSCRIBERS: u32 = 4096;
 pub const FLUX_MAX_AUX_SIZE: u32 = 32 * 1024;
 pub const FLUX_NO_STAMP: i32 = -1;

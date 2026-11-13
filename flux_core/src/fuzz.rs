@@ -340,7 +340,12 @@ mod corpus {
 
     /// A mode byte, then a sound header for `layout`; `full` writes the whole segment, filled.
     fn segment(seed: &mut u64, layout: SegmentLayout, full: Option<u8>) -> Vec<u8> {
-        let header = ControlHeader::new(layout, next(seed), StorageKind::HostInline);
+        let header = ControlHeader::new(
+            layout,
+            next(seed),
+            StorageKind::HostInline,
+            layout.slot_count,
+        );
         let len = full.map_or(size_of::<ControlHeader>(), |_| layout.total_bytes());
         let mut buf = vec![full.unwrap_or(0); 1 + len];
         buf[0] = u8::from(full.is_none());

@@ -29,14 +29,14 @@
 
 #define FLUX_DEFAULT_MAX_SUBSCRIBERS 16
 
-// 0: a generated type's own slot (scalar block, string room, trailer), else the untyped size.
+// 0: a generated type's own slot, else the untyped size; a count of 0 is bounded by the slot size.
 #define FLUX_DEFAULT_SLOT_SIZE 0
 
 #define FLUX_UNTYPED_SLOT_SIZE (8 << 20)
 
 #define FLUX_SLOT_STRING_BYTES 4096
 
-#define FLUX_DEFAULT_SLOT_COUNT 16
+#define FLUX_DEFAULT_SLOT_COUNT 0
 
 #define FLUX_MAX_SUBSCRIBERS 4096
 

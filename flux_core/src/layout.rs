@@ -23,40 +23,13 @@ use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64};
 
 pub const MAGIC: u32 = 0x464C_5832; // 'FLX2'
 pub const SIGNPOST_MAGIC: u32 = 0x464C_5350; // 'FLSP'
-pub const LAYOUT_VERSION: u32 = 8;
+pub const LAYOUT_VERSION: u32 = 9;
 pub const CACHE_LINE: usize = 64;
 // One page, so a subscriber can drop the payload to read-only while the headers it writes stay
 // writable. Fixed rather than read from the kernel: the layout must match across processes.
 pub const PAYLOAD_ALIGN: usize = 4096;
 pub const MAX_DIMS: usize = 8;
 pub const DEFAULT_MAX_SUBSCRIBERS: u32 = 16;
-/// What a binding's publisher takes when the caller gives no size or count. A slot size of 0 is
-/// the type's (`typed_slot_size`) for a registered generated type, else `UNTYPED_SLOT_SIZE`.
-pub const DEFAULT_SLOT_SIZE: u32 = 0;
-/// The slot of a publisher with no generated type (a raw loan, a GPU memory channel) given no
-/// size: its payload is the whole frame.
-pub const UNTYPED_SLOT_SIZE: u32 = 8 << 20;
-/// Room a typed slot keeps after its scalar block for the message's own strings; its arrays go to
-/// the arena.
-pub const SLOT_STRING_BYTES: u32 = 4096;
-
-/// The slot of a generated type with `scalar_bytes` of scalar block: that, the string room and the
-/// arena trailer the Writer keeps clear (GPU one when the channel declares a stream), in pages.
-// The trailers and the page are constants far below u32::MAX.
-#[allow(clippy::cast_possible_truncation)]
-#[must_use]
-pub const fn typed_slot_size(scalar_bytes: u32, gpu: bool) -> u32 {
-    let trailer = if gpu {
-        crate::arena::GPU_TRAILER_BYTES
-    } else {
-        crate::arena::TRAILER_BYTES
-    };
-    // The Writer keeps the trailer on an 8-byte boundary: up to 7 bytes before it.
-    let bytes = scalar_bytes + SLOT_STRING_BYTES + trailer as u32 + 7;
-    let page = PAYLOAD_ALIGN as u32;
-    bytes.div_ceil(page) * page
-}
-pub const DEFAULT_SLOT_COUNT: u32 = 16;
 pub const MAX_SUBSCRIBERS: u32 = 4096;
 
 pub const INIT_UNINIT: u32 = 0;
@@ -217,7 +190,13 @@ pub struct ControlHeader {
     pub latest: AtomicU64,
     /// Futex word, bumped on every publish.
     pub wakeup: AtomicU32,
-    _reserved2: [u8; 52],
+    /// Slots below this have their payload memory; the publisher adds slots up to `slot_count`.
+    /// Read to size what a subscriber commits or locks, never to bound an access.
+    pub slots_ready: AtomicU32,
+    /// The largest depth a subscriber has asked for. The publisher adds a slot rather than reuse
+    /// one whose frame is still within it.
+    pub depth_high: AtomicU32,
+    _reserved2: [u8; 44],
     /// Waits by a process with no subscriber number here: the publisher's own, or a heap
     /// channel's. Others count under their number in the words after this header, one store
     /// each, so a dead number's count is taken back whole. The publisher skips the wake syscall
@@ -228,7 +207,12 @@ pub struct ControlHeader {
 }
 
 impl ControlHeader {
-    pub(crate) const fn new(layout: SegmentLayout, fingerprint: u64, kind: StorageKind) -> Self {
+    pub(crate) const fn new(
+        layout: SegmentLayout,
+        fingerprint: u64,
+        kind: StorageKind,
+        ready: u32,
+    ) -> Self {
         ControlHeader {
             init_state: AtomicU32::new(INIT_UNINIT),
             magic: MAGIC,
@@ -245,7 +229,9 @@ impl ControlHeader {
             aux_size: layout.aux_size,
             latest: AtomicU64::new(0),
             wakeup: AtomicU32::new(0),
-            _reserved2: [0; 52],
+            slots_ready: AtomicU32::new(ready),
+            depth_high: AtomicU32::new(0),
+            _reserved2: [0; 44],
             waiters: AtomicI32::new(0),
             _reserved3: [0; 60],
         }
@@ -460,6 +446,8 @@ const _: () = {
     assert!(offset_of!(ControlHeader, aux_size) == 60);
     assert!(offset_of!(ControlHeader, latest) == 64);
     assert!(offset_of!(ControlHeader, wakeup) == 72);
+    assert!(offset_of!(ControlHeader, slots_ready) == 76);
+    assert!(offset_of!(ControlHeader, depth_high) == 80);
     assert!(offset_of!(ControlHeader, waiters) == 128);
 
     assert!(size_of::<Signpost>() == CACHE_LINE);

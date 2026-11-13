@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 use crate::executor::Control;
 use crate::gpu::arena::{GpuArena, GpuArenaImport, gpu_arena};
 use crate::gpu::{
-    self, DevicePayload, FenceStats, Fenced, HostRegistration, Late, Route, Seam, Stream, ledger,
+    self, DevicePayload, FenceStats, Fenced, Late, Route, Seam, SlotRegistrations, Stream, ledger,
 };
 use crate::layout::{FrameMeta, TICKET_CLAIMED, TICKET_EMPTY, reader_lock_byte};
 use crate::reader::ReaderLease;
@@ -50,6 +50,8 @@ pub(super) struct GpuState {
 /// take makes.
 pub(super) enum Staged {
     InPlace,
+    /// A host payload the device reaches through each slot's registration.
+    Registered,
     /// A host payload copied to the device. `GpuState::base` is this buffer's.
     Device(gpu::DeviceBuffer),
     /// A device payload, imported at `from`, copied to the host on a stream of flux's own. Such a
@@ -302,7 +304,7 @@ impl ChannelShared {
             list,
             src,
             |bytes| {
-                gpu::DeviceBuffer::new(bytes, g.stream.device())
+                gpu::DeviceBuffer::new(bytes, bytes, g.stream.device())
                     .ok()
                     .map(CopyBuf::Device)
             },
@@ -473,39 +475,41 @@ impl ChannelShared {
         let seg = &self.seg;
         let route = gpu::require_route(stream.device())?.route;
         let mut staged = Staged::InPlace;
+        // Slot by slot, as slots get memory (`SlotRegistrations`).
+        let register = || {
+            seg.device_payload(|| {
+                SlotRegistrations::new(
+                    seg.payload(0),
+                    seg.layout().payload_stride(),
+                    seg.layout().slot_count,
+                    seg.slots_ready(),
+                    seg.payload_readonly(),
+                    stream.device(),
+                )
+                .map(DevicePayload::Registered)
+            })
+        };
         let base = if seg.host_payload() {
-            let payload = seg.payload(0);
             match route {
-                Route::ShmDirect => payload as u64,
-                Route::ShmRegistered => seg
-                    .device_payload(|| {
-                        let bytes = seg.layout().payload_bytes();
-                        HostRegistration::new(
-                            payload,
-                            bytes,
-                            seg.payload_readonly(),
-                            stream.device(),
-                        )
-                        .map(DevicePayload::Registered)
-                    })?
-                    .base(),
+                Route::ShmDirect => seg.payload(0) as u64,
+                Route::ShmRegistered => {
+                    register()?;
+                    staged = Staged::Registered;
+                    0
+                }
                 Route::DeviceHandle | Route::None if publisher => 0,
                 // A discrete GPU reads host memory across `PCIe` at every access, so the frame is
                 // copied once. Registering the mapping keeps that copy off the calling thread.
                 Route::DeviceHandle | Route::None => {
                     if !seg.payload_readonly() || gpu::registers_read_only(stream.device()) {
-                        seg.device_payload(|| {
-                            HostRegistration::new(
-                                payload,
-                                seg.layout().payload_bytes(),
-                                seg.payload_readonly(),
-                                stream.device(),
-                            )
-                            .map(DevicePayload::Registered)
-                        })?;
+                        register()?;
                     }
-                    let buf =
-                        gpu::DeviceBuffer::new(seg.layout().payload_bytes(), stream.device())?;
+                    let ready = seg.slots_ready() as usize * seg.layout().payload_stride();
+                    let buf = gpu::DeviceBuffer::new(
+                        seg.layout().payload_bytes(),
+                        ready,
+                        stream.device(),
+                    )?;
                     let base = buf.base();
                     staged = Staged::Device(buf);
                     base
@@ -594,6 +598,9 @@ impl ChannelShared {
     /// 0 also for a publisher's host slots on a discrete GPU, which the device does not read.
     pub(super) fn device_ptr(&self, slot: u32) -> u64 {
         match &self.gpu {
+            Some(g) if matches!(g.staged, Staged::Registered) => {
+                self.seg.registrations().map_or(0, |r| r.device_ptr(slot))
+            }
             Some(g) if g.base != 0 && !matches!(g.staged, Staged::Host { .. }) => {
                 g.base + self.slot_offset(slot) as u64
             }
@@ -626,6 +633,31 @@ impl ChannelShared {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn device_copy_backed(&self) -> usize {
+        match &self.gpu {
+            Some(GpuState {
+                staged: Staged::Device(buf),
+                ..
+            }) => buf.backed(),
+            _ => 0,
+        }
+    }
+
+    /// Whether this subscriber's copy has memory for `slot`, giving it some if not. False when the
+    /// device refused: nothing was copied, so the borrow can go back.
+    pub(super) fn reach(&self, slot: u32) -> bool {
+        match &self.gpu {
+            Some(GpuState {
+                staged: Staged::Device(buf),
+                ..
+            }) => buf
+                .back(self.slot_offset(slot) + self.seg.layout().payload_stride())
+                .is_ok(),
+            _ => true,
+        }
+    }
+
     /// Copies the borrowed `slot` to where this subscriber reads it. A host copy is waited for
     /// here, since the caller reads it once the take returns; a device copy is queued on the
     /// channel's stream, which the caller's work follows. False once the driver refused, when the
@@ -637,7 +669,13 @@ impl ChannelShared {
         let at = self.slot_offset(slot);
         match &g.staged {
             Staged::InPlace => true,
+            Staged::Registered => self.device_ptr(slot) != 0,
             Staged::Device(buf) => {
+                // Pinned, the copy leaves the calling thread; a slot that will not pin is copied
+                // anyway.
+                if let Some(r) = self.seg.registrations() {
+                    let _ = r.slot(slot);
+                }
                 g.stream
                     .copy_to_device(buf.base() + at as u64, self.seg.payload(slot), nbytes)
             }

@@ -55,6 +55,7 @@
 * `flux_bridge`, `flux_bag`, `flux_tools`를 `ros2/` 아래로 이동했다
 * 동시성 프로토콜을 모델로 검사하는 하니스를 저장소 밖으로 이동했다
 * 기본값을 core 한 곳에서 정의하고 C++와 Python이 그 값을 사용한다. 값은 바뀌지 않았다
+* 슬롯 크기와 개수의 기본값과 정하는 규칙을 core 한 곳에 모았다. C ABI, C++, Python, `flux_wrapper`는 0을 그대로 넘긴다
 
 ### 작업 흐름
 
@@ -93,7 +94,7 @@
     사용자가 고쳐야 하는 것마다 번호를 매기고, 고치기 전과 후를 코드로 보인다.
 -->
 
-1. 공유 메모리 배치 버전이 6에서 8로, C ABI 버전이 3에서 4로 올랐다. 슬롯에 aux 영역이 생겼고, arena를 가리키는 위치의 단위가 16 B가 되었기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
+1. 공유 메모리 배치 버전이 6에서 9로, C ABI 버전이 3에서 4로 올랐다. 슬롯에 aux 영역이 생겼고, arena를 가리키는 위치의 단위가 16 B가 되었고, 헤더에 메모리가 있는 슬롯 수와 구독자 depth의 최대값이 생겼기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
 2. C `flux_channel_create`에 `max_subscribers` 다음 인자로 `aux_size`가 생겼다. aux가 필요 없으면 0을 준다. `flux_frame_meta.reserved0[2]`는 `uint16_t aux_len`이 되었다.
 
    ```c
@@ -132,3 +133,5 @@
    // 후: arena 없이 같은 슬롯을 쓰려면
    flux::Publisher pub(*node, "image", Image::kFingerprint, FLUX_UNTYPED_SLOT_SIZE);
    ```
+
+7. 발행자의 `slot_count` 기본값이 16에서 0이 되었다(`FLUX_DEFAULT_SLOT_COUNT`, `kDefaultSlotCount`, `flux.DEFAULT_SLOT_COUNT`). 0이면 슬롯 크기로 상한을 정한다. 호스트 메모리 슬롯은 256 MiB 안에서 최대 256개, GPU 메모리 슬롯은 256 MiB 안에서 최대 32개다. 호스트 메모리 발행자는 9개 슬롯에만 메모리를 잡고 시작해, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 늘린다. 그래서 타입이 없는 8 MiB 발행자는 `/dev/shm`을 72 MiB로 시작해 최대 256 MiB까지 쓴다. GPU 메모리 발행자는 아직 처음부터 상한만큼 잡는다. `slot_count`를 지정하면 전처럼 그 개수를 처음부터 모두 잡고 늘리지 않는다. `play_flux`는 bag에 개수나 크기가 0으로 기록된 채널을 기본값으로 만들지 않고 건너뛴다.

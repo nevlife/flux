@@ -294,13 +294,13 @@ class Publisher:
             fingerprint, aux_size, slot = self._adapter.FINGERPRINT__, 0, _flux.DEFAULT_SLOT_SIZE
             if self._cuda:
                 fingerprint, aux_size = _gpu_fingerprint(msg_type), _GPU_AUX_BYTES
-                slot = max_device_data_size or _flux.UNTYPED_SLOT_SIZE
+                slot = max_device_data_size
             self._flux = _flux.Publisher(
                 node,
                 topic,
                 fingerprint=fingerprint,
                 slot_size=slot,
-                slot_count=slot_count or _flux.DEFAULT_SLOT_COUNT,
+                slot_count=slot_count,
                 mirror_to_ros=mirror_to_ros,
                 device="cuda" if self._cuda else "cpu",
                 aux_size=aux_size,

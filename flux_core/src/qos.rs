@@ -25,10 +25,13 @@ pub struct QoS {
     max_borrow: u32,
 }
 
+/// A consumer's depth when it asks for none.
+pub const DEFAULT_DEPTH: u32 = 8;
+
 impl Default for QoS {
     fn default() -> Self {
         QoS {
-            depth: 8,
+            depth: DEFAULT_DEPTH,
             durability: Durability::volatile(),
             max_borrow: 1,
         }
