@@ -1137,8 +1137,6 @@ auto echo_through_python(
   return got;
 }
 
-// A C++ GPU frame read and written again by the Python flux_wrapper: each side reads the other's
-// aux layout.
 // Warnings this process logged, while a Logs is alive.
 class Logs
 {
@@ -1187,7 +1185,6 @@ private:
   rcutils_logging_output_handler_t previous_;
 };
 
-// Each publisher and subscription that cannot have Cuda says so, with its topic.
 // A header past the aux is logged once per publisher, with its field and the message's stamp, so
 // the aux can be sized by it.
 TEST_F(WrapperTest, AHeaderPastTheAuxIsLoggedOnceWithItsField)
@@ -1258,6 +1255,31 @@ TEST_F(WrapperTest, AStringPastTheSlotIsLoggedOnceWithItsField)
   EXPECT_EQ(*got, msg);
 }
 
+// Data past a Cuda publisher's slot is logged once as too large, not as fields over the aux.
+TEST_F(WrapperTest, CudaDataPastTheSlotIsLoggedAsTooLarge)
+{
+  SKIP_WITHOUT_CUDA();
+  if (!expect_flux()) {
+    GTEST_SKIP() << "the slot is a flux GPU channel's";
+  }
+  const Logs logs;
+  flux_wrapper::PublisherOptions options;
+  options.device = flux_wrapper::Device::Cuda;
+  options.max_device_data_size = 4096;
+  flux_wrapper::Publisher<Image> pub(*node_, "data_over_logged", rclcpp::QoS(4), options);
+  ASSERT_TRUE(pub.uses_device());
+  for (int i = 0; i < 2; ++i) {
+    auto loan = pub.loan();
+    ASSERT_TRUE(loan);
+    EXPECT_FALSE(loan.alloc_buffer(8192));
+    EXPECT_FALSE(pub.publish(std::move(loan)));
+  }
+  EXPECT_FALSE(pub.publish(image(1, std::vector<std::uint8_t>(8192, 1))));
+  EXPECT_EQ(Logs::count("data_over_logged failed: too large"), 1);
+  EXPECT_EQ(Logs::count("over the aux"), 0);
+}
+
+// Each publisher and subscription that cannot have Cuda says so, with its topic.
 TEST_F(WrapperTest, EveryCudaFallbackIsLoggedWithItsTopic)
 {
 #ifdef FLUX_WRAPPER_CUDA
@@ -1279,6 +1301,8 @@ TEST_F(WrapperTest, EveryCudaFallbackIsLoggedWithItsTopic)
   EXPECT_EQ(Logs::count("fallback_sub"), 1);
 }
 
+// A C++ GPU frame read and written again by the Python flux_wrapper: each side reads the other's
+// aux layout.
 TEST_F(WrapperTest, GpuFramesGoThroughPython)
 {
   SKIP_WITHOUT_CUDA();

@@ -58,7 +58,7 @@ def _depth(qos):
 # C++ side writes it (flux_wrapper::detail::Gpu); the payload is the data field. The fingerprint is
 # flux.gpu_fingerprint of the type's.
 _GPU_AUX_BYTES = 4096
-_GPU_OVER = "the fields but data are over the aux's 4096 bytes"
+_GPU_OVER = "a field other than data is over the aux's 4096 bytes"
 
 
 def _gpu_fingerprint(msg_type):
@@ -172,6 +172,7 @@ class Loan:
         # flux.Loan once taken, False when none was free.
         object.__setattr__(self, "_gpu", gpu)
         object.__setattr__(self, "_slot", None)
+        object.__setattr__(self, "_too_large", False)  # the data asked for was past the slot
         # On the flux path: the first string or list that did not fit the slot, and header.stamp,
         # for the publisher's log line.
         object.__setattr__(self, "_over", None)
@@ -251,7 +252,8 @@ class Loan:
     def _take(self, n):
         if self._slot:
             self._slot.abort()
-        slot = self._gpu.loan((n,), "uint8") if n <= self._gpu.slot_size else None
+        object.__setattr__(self, "_too_large", n > self._gpu.slot_size)
+        slot = None if self._too_large else self._gpu.loan((n,), "uint8")
         object.__setattr__(self, "_slot", slot if slot is not None else False)
         return slot
 
@@ -352,7 +354,7 @@ class Publisher:
         slot = loan._slot if loan._slot is not None else loan._take(0)
         object.__setattr__(loan, "_slot", False)
         if not slot:
-            return False
+            return loan._too_large and self._report(_flux.Published.TOO_LARGE)
         aux = _pack(self._type, loan._msg)
         if aux is None:
             slot.abort()

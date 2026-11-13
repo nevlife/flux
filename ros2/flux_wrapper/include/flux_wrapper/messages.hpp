@@ -231,7 +231,7 @@ struct Gpu
   static constexpr std::uint64_t kFingerprint = flux::gpu_fingerprint(AdapterT<MsgT>::kFingerprint);
   // Room for every field but data: the header, encoding or the point fields and their names.
   static constexpr std::uint32_t kAuxBytes = 4096;
-  static constexpr const char * kOverCap = "the fields but data are over the aux's 4096 bytes";
+  static constexpr const char * kOverCap = "a field other than data is over the aux's 4096 bytes";
 };
 
 // The first string or list of a loan that did not fit where it goes (a GPU loan's aux, a host

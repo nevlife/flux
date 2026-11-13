@@ -229,6 +229,8 @@ private:
       loan.slot_.abort();
       if (loan.over_.field != nullptr) {
         overflow(loan.over_, " on Device::Cuda", "aux", detail::Gpu<MsgT>::kAuxBytes);
+      } else if (loan.bad_) {
+        (void)report(flux::Published::TooLarge);  // data past the slot, as publish(msg) logs it
       } else {
         device_error(detail::Gpu<MsgT>::kOverCap);
       }

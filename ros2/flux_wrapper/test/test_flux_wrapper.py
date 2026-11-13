@@ -376,6 +376,22 @@ def test_a_header_past_the_aux_is_logged_once_with_its_field(node, monkeypatch):
     assert sum(want in line for line in logs.lines) == 1, logs.lines
 
 
+@needs_cuda
+def test_cuda_data_past_the_slot_is_logged_as_too_large(node, monkeypatch):
+    """Once, and not as fields over the aux."""
+    logs = _Errors(node.get_logger())
+    monkeypatch.setattr(node, "get_logger", lambda: logs)
+    pub = flux_wrapper.Publisher(
+        node, Image, "data_over_logged", 4, device="cuda", max_device_data_size=4096
+    )
+    for _ in range(2):
+        loan = pub.loan()
+        assert loan.alloc_buffer(8192) is None
+        assert not pub.publish(loan)
+    assert sum("data_over_logged failed" in line for line in logs.lines) == 1, logs.lines
+    assert not any("over the aux" in line for line in logs.lines), logs.lines
+
+
 @pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
 def test_a_string_past_the_slot_is_logged_once_with_its_field(node, monkeypatch):
     """On "cpu" the message's own strings go after its fixed fields in the slot. One past the slot
