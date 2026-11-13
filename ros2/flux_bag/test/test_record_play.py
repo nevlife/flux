@@ -374,7 +374,11 @@ def test_a_typed_channel_converts_to_its_ros_message(node, tmp_path):
     pub = flux.Publisher(node, k, fingerprint=FluxImu.FINGERPRINT__, slot_size=4096, slot_count=4)
     rec = record(bag, k, "/bag_chatter")
     chatter = node.create_publisher(String, "/bag_chatter", 10)
-    time.sleep(0.5)
+    # Until the recorder takes both: a fixed wait lost the ROS topic to a slow discovery once.
+    deadline = time.monotonic() + 10
+    while chatter.get_subscription_count() == 0 or pub.subscriber_count == 0:
+        assert time.monotonic() < deadline, "the recorder did not take both topics within 10 s"
+        time.sleep(0.05)
     for i in range(20):
         b = FluxImu.build__(pub)
         b.header__frame_id = "imu"
