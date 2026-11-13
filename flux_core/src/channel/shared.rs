@@ -417,6 +417,31 @@ impl ChannelShared {
         self.owned_slots.load(Ordering::Relaxed) != 0
     }
 
+    /// An aborted loan of a slot that owns GPU arena blocks: work it queued on the stream may still
+    /// write them, and the next claim of the slot frees them to any channel of the process. So
+    /// the slot stays claimed until the stream passes this point, as a late commit's does, or the
+    /// stream is waited for here when no mark can be had. False: abort now.
+    pub(super) fn hold_aborted(self: &Arc<Self>, slot: u32) -> bool {
+        let Some(g) = &self.gpu else {
+            return false;
+        };
+        let owns_gpu = self.may_own()
+            && self
+                .owned
+                .lock()
+                .get(slot as usize)
+                .is_some_and(|v| v.iter().any(|o| matches!(o, Owned::Gpu(..))));
+        if !owns_gpu || self.inherited() {
+            return false;
+        }
+        if let Some(late) = g.stream.mark(self.waker()) {
+            self.defer(late, slot, 0, Seam::Commit, false);
+            return true;
+        }
+        let _ = g.stream.wait();
+        false
+    }
+
     pub(super) fn owns_any(&self, slot: u32) -> bool {
         self.may_own()
             && self

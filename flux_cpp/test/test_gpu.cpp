@@ -13,12 +13,14 @@
 #include <unistd.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -26,11 +28,14 @@ namespace
 
 using MemsetAsync = int (*)(std::uint64_t, unsigned char, std::size_t, void *);
 using CopyDtoH = int (*)(void *, std::uint64_t, std::size_t);
+using HostFn = void (*)(void *);
+using LaunchHostFunc = int (*)(void *, HostFn, void *);
 
 struct Driver
 {
   MemsetAsync memset = nullptr;
   CopyDtoH copy = nullptr;
+  LaunchHostFunc host_func = nullptr;
 };
 
 auto driver() -> const Driver *
@@ -44,6 +49,7 @@ auto driver() -> const Driver *
     // NOLINTBEGIN(*-reinterpret-cast): dlsym hands back an untyped address.
     out.memset = reinterpret_cast<MemsetAsync>(dlsym(lib, "cuMemsetD8Async"));
     out.copy = reinterpret_cast<CopyDtoH>(dlsym(lib, "cuMemcpyDtoH_v2"));
+    out.host_func = reinterpret_cast<LaunchHostFunc>(dlsym(lib, "cuLaunchHostFunc"));
     // NOLINTEND(*-reinterpret-cast)
     return out;
   }();
@@ -61,6 +67,33 @@ auto read_back(const void * device, std::size_t n) -> std::vector<unsigned char>
   EXPECT_EQ(driver()->copy(out.data(), addr(device), n), 0);
   return out;
 }
+
+// Holds a stream's later work until the Gate goes (or 10 s pass, so a failing test cannot hang).
+class Gate
+{
+public:
+  explicit Gate(const flux::gpu::Stream & s)
+  {
+    EXPECT_EQ(driver()->host_func(s.native(), &Gate::hold, &open_), 0);
+  }
+  ~Gate() { open_ = true; }
+  Gate(const Gate &) = delete;
+  auto operator=(const Gate &) -> Gate & = delete;
+  Gate(Gate &&) = delete;
+  auto operator=(Gate &&) -> Gate & = delete;
+  void open() { open_ = true; }
+
+private:
+  static void hold(void * p)
+  {
+    const auto & open = *static_cast<std::atomic<bool> *>(p);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!open && std::chrono::steady_clock::now() < until) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+  std::atomic<bool> open_{false};
+};
 
 auto all(const std::vector<unsigned char> & v, unsigned char b) -> bool
 {
@@ -350,6 +383,58 @@ TEST_F(Gpu, EveryDeviceBlockOfAFrameReachesACpuReader)
   // A second View of the same frame reads the same copy.
   const Blob::View again(v);
   EXPECT_EQ(again.items(2).ids()[299], static_cast<std::uint16_t>(0x32 * 0x101));
+}
+
+// An aborted loan's queued device work may still run after its block is freed. Another channel,
+// on another stream, that is handed the block next must not have its frame written over by it.
+TEST_F(Gpu, AnAbortedLoansLateWorkDoesNotReachTheNextOwnerOfItsBlock)
+{
+  using Blob = flux_test::flux_msg::Blob;
+  constexpr std::size_t kBytes = 1 << 20;
+  const flux::gpu::Stream first = flux::gpu::Stream::create();
+  const flux::gpu::Stream second = flux::gpu::Stream::create();
+  auto a = flux::detail::Channel::create(
+    unique_name("late_a"), 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS, first);
+  const std::string b_name = unique_name("late_b");
+  auto b = flux::detail::Channel::create(
+    b_name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS, second);
+
+  Gate gate(first);
+  const void * aborted = nullptr;
+  {
+    flux::WriteSlot w = a.loan();
+    ASSERT_TRUE(w);
+    Blob::Builder build(w);
+    const auto d = build.alloc_device__data(kBytes);
+    aborted = d.data();
+    ASSERT_EQ(driver()->memset(addr(d.data()), 0xAA, kBytes, first.native()), 0);
+  }
+  // The next claim of that slot frees its block; an aborted slot waits behind the empty ones.
+  for (int i = 0; i < 4; ++i) {
+    const flux::WriteSlot again = a.loan();
+  }
+
+  flux::WriteSlot w = b.loan();
+  ASSERT_TRUE(w);
+  Blob::Builder build(w);
+  const auto d = build.alloc_device__data(kBytes);
+  EXPECT_NE(static_cast<const void *>(d.data()), aborted)
+    << "the aborted loan's block was handed out while its work was queued";
+  ASSERT_EQ(driver()->memset(addr(d.data()), 0x55, kBytes, second.native()), 0);
+  ASSERT_EQ(build.commit__(), flux::Published::Ok);
+  gate.open();
+  ASSERT_TRUE(first.wait());
+
+  flux::QoS q(4);
+  q.transient_local(4);
+  flux::detail::Watch watch(b_name);
+  auto cpu = flux::detail::Channel::open(watch, Blob::kFingerprint, q);
+  const flux::FrameView v = cpu.take();
+  ASSERT_TRUE(v);
+  const Blob::View m(v);
+  ASSERT_EQ(m.data().size(), kBytes);
+  EXPECT_EQ(m.data()[0], 0x55);
+  EXPECT_EQ(m.data()[kBytes - 1], 0x55);
 }
 
 // A slot's device block is freed when the slot is claimed again: frames that add up to more than

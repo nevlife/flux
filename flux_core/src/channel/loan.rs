@@ -339,7 +339,9 @@ unsafe fn write_list(blocks: &[Owned], dst: *mut u8) {
 impl Drop for WriteSlot {
     fn drop(&mut self) {
         if !self.done {
-            self.sh.abort(self.slot);
+            if !self.sh.hold_aborted(self.slot) {
+                self.sh.abort(self.slot);
+            }
             event!(flux_trace_loan_end(
                 self.sh.trace_handle(),
                 self.slot,
