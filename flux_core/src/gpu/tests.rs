@@ -679,6 +679,53 @@ mod channel {
         assert_eq!(cpu.take().unwrap().data(), &bytes[..]);
     }
 
+    /// A loan of device memory takes host bytes at an offset, and a device subscriber copies a
+    /// part of the frame back to the host; both refuse a range past the slot or the frame.
+    #[test]
+    fn host_bytes_copied_into_a_device_loan_are_copied_back_by_a_device_subscriber() {
+        let Some(_) = gpu() else { return };
+        let Some(_route) = discrete() else { return };
+        let name = topic("dev_copy");
+        let mut p = publisher(&name, Stream::create().unwrap());
+        let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
+        let bytes = pattern();
+        let mut w = p.loan().unwrap();
+        let cap = w.capacity();
+        assert!(!w.copy_from(cap - 1, &bytes[..2]));
+        assert!(!w.copy_from(usize::MAX, &bytes[..1]));
+        assert!(w.copy_from(0, &bytes[..1000]));
+        assert!(w.copy_from(1000, &bytes[1000..]));
+        assert_eq!(w.commit_len(bytes.len()), Published::Ok);
+
+        let v = dev.take().unwrap();
+        assert!(!v.host_addressable());
+        let mut back = vec![0u8; bytes.len()];
+        assert!(v.copy_to(0, &mut back));
+        assert_eq!(back, bytes);
+        let mut part = vec![0u8; 100];
+        assert!(v.copy_to(500, &mut part));
+        assert_eq!(part, &bytes[500..600]);
+        assert!(!v.copy_to(bytes.len() - 50, &mut part));
+    }
+
+    /// On host memory the same calls are plain copies.
+    #[test]
+    fn host_bytes_copied_into_a_host_loan_are_copied_back_by_a_subscriber() {
+        let name = topic("host_copy");
+        let mut p = publisher(&name, Stream::default());
+        let mut sub = subscriber(&name, Stream::default()).unwrap();
+        let bytes = pattern();
+        let mut w = p.loan().unwrap();
+        assert!(w.copy_from(0, &bytes));
+        assert!(!w.copy_from(w.capacity(), &bytes[..1]));
+        assert_eq!(w.commit_len(bytes.len()), Published::Ok);
+        let v = sub.take().unwrap();
+        let mut back = vec![0u8; 16];
+        assert!(!v.copy_to(4090, &mut back));
+        assert!(v.copy_to(4080, &mut back));
+        assert_eq!(back, &bytes[4080..]);
+    }
+
     #[test]
     fn a_host_payload_is_copied_for_a_device_subscriber_on_a_discrete_gpu() {
         let Some((_, copy)) = gpu() else { return };

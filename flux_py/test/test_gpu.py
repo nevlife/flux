@@ -108,6 +108,26 @@ def test_a_frame_written_on_the_device_reaches_host_and_device_subscribers(node)
     assert dev.fence_wait.release_waits == 1 and dev.fence_failed == 0
 
 
+def test_host_bytes_copied_into_a_loan_are_copied_back_to_the_host(node):
+    """Into a slot of device or host memory alike; the frame's copy keeps its dtype and shape and
+    needs no `with` block."""
+    pub = flux.Publisher(node, topic("copy"), device="cuda", **SMALL)
+    dev = flux.Subscription(node, topic("copy"), qos=flux.QoS(depth=4), device="cuda")
+    want = np.arange(256, dtype=np.float32).reshape(16, 16)
+    loan = pub.loan((16, 16), "float32")
+    assert not loan.copy_from(want, at=loan.capacity)
+    assert loan.copy_from(want[:8])
+    assert loan.copy_from(bytes(want[8:]), at=want[:8].nbytes)
+    assert loan.commit() == flux.Published.OK
+    with pytest.raises(RuntimeError, match="already committed"):
+        loan.copy_from(want)
+
+    frame = dev.take()
+    got = frame.copy_to_host()
+    assert got.dtype == np.float32 and got.shape == (16, 16)
+    np.testing.assert_array_equal(got, want)
+
+
 def test_a_callback_is_a_frames_scope(node):
     pub = flux.Publisher(node, topic("cb"), device="cuda", **SMALL)
     seen = []

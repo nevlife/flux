@@ -155,6 +155,34 @@ impl WriteSlot {
         self.sh.stream()
     }
 
+    /// Copies host `src` to byte `at` of the slot: a plain copy into host memory, or a copy
+    /// queued on `stream()` into device memory, which the commit waits for. A pageable `src` is
+    /// read before this returns; a page-locked one must stay unchanged until the commit or abort.
+    /// False past the capacity, or when the copy was not queued.
+    pub fn copy_from(&mut self, at: usize, src: &[u8]) -> bool {
+        if at
+            .checked_add(src.len())
+            .is_none_or(|end| end > self.capacity())
+        {
+            return false;
+        }
+        if src.is_empty() {
+            return true;
+        }
+        if self.sh.seg.host_payload() {
+            // SAFETY: at <= capacity, checked above, so the pointer stays in the slot.
+            let dst = unsafe { self.sh.seg.payload(self.slot).add(at) };
+            // SAFETY: the claim makes this the only access to the slot, and the range is in it.
+            unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len()) };
+            return true;
+        }
+        let dst = self.device_ptr();
+        dst != 0
+            && self
+                .stream()
+                .copy_to_device(dst + at as u64, src.as_ptr(), src.len())
+    }
+
     pub fn host_addressable(&self) -> bool {
         self.sh.seg.host_payload()
     }

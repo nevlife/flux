@@ -213,15 +213,14 @@ def test_gpu_aux_is_a_frame_of_the_type_without_data():
 
 
 def gpu_round_trip(node, msg_type, topic, want, write):
-    """A device="cuda" publisher's message, written by write(loan), read by a "cuda" and a "cpu"
-    subscription: what each got."""
+    """A device="cuda" publisher's message, written by write(loan) or, with write None, published
+    as the ROS message itself, read by a "cuda" and a "cpu" subscription: what each got."""
     got, done = {}, threading.Event()
 
     def on_device(v):
         if v.header.stamp.sec == want.header.stamp.sec:
-            with pytest.raises(RuntimeError):
-                v.to_msg()
             got["device"] = (v.on_device, v.data, from_device(v.device_data), fields(v, msg_type))
+            got["device_msg"] = v.to_msg()
             if "host" in got:
                 done.set()
 
@@ -237,6 +236,9 @@ def gpu_round_trip(node, msg_type, topic, want, write):
     assert pub.uses_device
 
     def publish_once():
+        if write is None:
+            assert pub.publish(want)
+            return
         loan = pub.loan()
         loan.header = want.header
         for name in flux_wrapper._SCALARS[msg_type]:
@@ -271,6 +273,7 @@ def test_cuda_publisher_reaches_cuda_and_cpu_subscriptions(node, msg_type):
     assert on_device and data is None
     assert device_bytes == bytes(want.data)
     assert got_fields == without_data(want)
+    assert got["device_msg"] == want
     assert got["host"] == (False, bytes(want.data), want)
 
 
@@ -308,11 +311,17 @@ def test_cuda_subscription_gets_a_cpu_publishers_data_on_the_device(node):
 
 
 @needs_cuda
-def test_cuda_publish_of_a_ros_message(node):
-    want = cloud(2)
-    pub, got = gpu_round_trip(node, PointCloud2, "gpu_message", want, write_on_device(want))
-    # shortcut: a slot in device memory takes no host bytes from the flux Python module.
-    assert pub.publish(want) == (not pub._flux.device_backed)
+@pytest.mark.parametrize("msg_type", [Image, PointCloud2])
+def test_cuda_publish_of_a_ros_message(node, msg_type):
+    """The message's data is copied into the slot, in device memory or host memory alike."""
+    want = image(2) if msg_type is Image else cloud(2)
+    _, got = gpu_round_trip(node, msg_type, f"gpu_message_{msg_type.__name__}", want, None)
+    on_device, data, device_bytes, got_fields = got["device"]
+    assert on_device and data is None
+    assert device_bytes == bytes(want.data)
+    assert got_fields == without_data(want)
+    assert got["device_msg"] == want
+    assert got["host"] == (False, bytes(want.data), want)
 
 
 @needs_cuda

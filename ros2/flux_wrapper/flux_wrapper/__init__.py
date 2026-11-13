@@ -370,22 +370,13 @@ class Publisher:
         return self._report(slot.commit())
 
     def _publish_gpu(self, msg):
-        if self._flux.device_backed:
-            # shortcut: the flux Python module has no host to device copy into a loan; publish(msg)
-            # works once it has one.
-            self._device_error(
-                "publish(msg) needs a host to device copy, which the flux Python module does not "
-                "give for a slot in device memory; write the data through Loan.alloc_buffer()"
-            )
-            return False
-        if len(msg.data) > self._flux.slot_size:
-            return self._report(_flux.Published.TOO_LARGE)
-        # The loan only reads msg's fields.
+        # The loan only reads msg's fields. Its data goes into the slot in host or device memory.
         loan = Loan(self._type, msg=msg, gpu=self._flux)
-        data = loan.alloc_data(len(msg.data))
-        if data is None:
+        slot = loan._take(len(msg.data))
+        if slot is not None and not slot.copy_from(np.frombuffer(msg.data, np.uint8)):
+            slot.abort()
+            self._device_error("the copy of data into the slot was not queued")
             return False
-        data[:] = np.frombuffer(msg.data, np.uint8)
         return self._commit_gpu(loan)
 
     def _device_error(self, what):
@@ -512,15 +503,11 @@ class View:
         return self._msg if self._frame is None else None
 
     def to_msg(self):
-        """A frame on the device raises RuntimeError: the flux Python module has no device to host
-        copy of a frame."""
+        """The message with its data in host memory: a frame on the device is copied to the host,
+        which waits for its stream."""
         if self._frame is not None:
-            if self.on_device:
-                raise RuntimeError(
-                    "flux_wrapper: to_msg() of a frame in device memory needs a device to host "
-                    "copy, which the flux Python module does not give; read device_data"
-                )
-            self._msg.data = self._frame.tobytes()
+            data = self._frame.copy_to_host() if self.on_device else self._frame
+            self._msg.data = data.tobytes()
             return self._msg
         if self._msg is not None:
             return self._msg

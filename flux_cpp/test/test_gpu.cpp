@@ -208,6 +208,40 @@ TEST_F(Gpu, AFrameWrittenOnTheDeviceReachesHostAndDeviceSubscribers)
   EXPECT_EQ(dev.fence_failed(), 0U);
 }
 
+// Host bytes copied into a loan reach both kinds of subscriber, and a device subscriber copies
+// them back to the host; the host route has a host payload, the device-handle route a device one.
+TEST_F(Gpu, HostBytesCopiedIntoALoanAreCopiedBackByBothKindsOfSubscriber)
+{
+  const std::string name = unique_name("copy");
+  auto pub = flux::detail::Channel::create(
+    name, 1 << 16, 4, flux::kNoSchema, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
+    flux::gpu::Stream::create());
+  std::vector<unsigned char> want(4096);
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    want[i] = static_cast<unsigned char>(i * 7);
+  }
+  flux::WriteSlot w = pub.loan();
+  ASSERT_TRUE(w);
+  EXPECT_FALSE(w.copy_from(w.capacity() - 1, want.data(), 2));
+  ASSERT_TRUE(w.copy_from(0, want.data(), 1000));
+  ASSERT_TRUE(w.copy_from(1000, want.data() + 1000, want.size() - 1000));
+  ASSERT_EQ(w.commit(want.size()), flux::Published::Ok);
+
+  flux::QoS q(4);
+  q.transient_local(4);
+  flux::detail::Watch watch(name);
+  for (const bool device : {false, true}) {
+    auto sub = flux::detail::Channel::open(
+      watch, flux::kNoSchema, q, {}, device ? flux::gpu::Stream::create() : flux::gpu::Stream{});
+    flux::FrameView v = sub.take();
+    ASSERT_TRUE(v);
+    std::vector<unsigned char> got(want.size());
+    ASSERT_TRUE(v.copy_to(0, got.data(), got.size()));
+    EXPECT_EQ(got, want) << "device " << device;
+    EXPECT_FALSE(v.copy_to(want.size() - 1, got.data(), 2));
+  }
+}
+
 // A loan of device memory aborted with work still queued on its stream, its channel dropped at
 // once: that work must not land in device memory that is gone, which leaves a sticky
 // CUDA_ERROR_LAUNCH_FAILED on the process and fails every later CUDA call.

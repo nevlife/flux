@@ -143,14 +143,14 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 - 통합 GPU에서는 슬롯을 넘어 arena에 저장된 `data`에 GPU 주소가 없어 `on_device`가 거짓이다.
 - `"cuda"`를 사용 불가능하면 경고를 한 번 남기고 `"cpu"`로 바뀐다(`uses_device`).
 
-flux Python 모듈에는 호스트 메모리와 GPU 메모리 사이의 복사가 없으므로, 아래 경우가 C++와 다르다.
+- `device="cuda"` 발행자의 `publish(msg)`는 메시지의 `data`를 슬롯으로 복사해 보낸다. GPU 메모리에 있는 프레임의 `to_msg()`는 `data`를 호스트로 복사하고, 그 복사가 끝날 때까지 기다린다.
+
+아래 경우는 C++와 다르다.
 
 | 경우 | Python에서 |
 | --- | --- |
 | ROS 경로의 `device="cuda"` | `"cpu"`로 바뀐다 |
-| 외장 GPU에서 `device="cuda"` 발행자의 `publish(msg)` | `False`를 반환하고 오류 로그를 한 번 남긴다. 데이터는 `loan.alloc_buffer()`로 쓴다. 통합 GPU에서는 슬롯이 호스트 메모리이기도 해서 그대로 보낸다 |
 | GPU 메모리에 있는 프레임의 `data` | `None`이다. 통합 GPU에서도 같다 |
-| GPU 메모리에 있는 프레임의 `to_msg()` | `RuntimeError`다 |
 
 ## flux_bag
 

@@ -520,6 +520,34 @@ public:
     return nb::make_tuple(nb::device::cuda::value, device_);
   }
 
+  // A new host array of the frame's dtype and shape, copied from wherever the payload is; a
+  // device payload is copied on the frame's stream, which this waits for. No memory of the frame
+  // is handed out, so it works outside a `with` block too.
+  [[nodiscard]] auto copy_to_host() const -> nb::object
+  {
+    if (!valid()) {
+      throw std::runtime_error("flux: the frame is already released");
+    }
+    std::vector<npy_intp> shape;
+    for (const std::size_t d : shape_of(meta_)) {
+      shape.push_back(static_cast<npy_intp>(d));
+    }
+    const nb::object descr = descr_of(static_cast<flux::DType>(meta_.dtype));
+    Py_INCREF(descr.ptr());  // PyArray_NewFromDescr steals it
+    nb::object a = nb::steal(PyArray_NewFromDescr(
+      &PyArray_Type, flux_py::as_descr(descr), static_cast<int>(shape.size()), shape.data(),
+      nullptr, nullptr, 0, nullptr));
+    if (!a.is_valid()) {
+      throw nb::python_error();
+    }
+    void * dst = PyArray_DATA(flux_py::as_array(a));
+    const auto n = static_cast<std::size_t>(meta_.nbytes);
+    if (!without_gil([&] { return held_->v.copy_to(0, dst, n); })) {
+      throw std::runtime_error("flux: the frame's copy to the host failed");
+    }
+    return a;
+  }
+
   // Host memory whatever the payload is, so readable outside a `with` block too.
   [[nodiscard]] auto aux() const -> nb::object
   {
@@ -741,6 +769,22 @@ public:
     aux_len_ = n;
   }
 
+  // src's bytes at byte `at` of the payload: a plain copy into host memory, or a copy on the
+  // loan's stream into device memory, which the commit waits for. src is held until the commit or
+  // abort, in case it is page-locked. False past the capacity, or when the copy was not queued.
+  auto copy_from(nb::handle src, std::size_t at) -> bool
+  {
+    if (!w_) {
+      throw std::runtime_error("flux: the loan is already committed or aborted");
+    }
+    const auto a = nb::cast<nb::ndarray<nb::ro, nb::c_contig, nb::device::cpu>>(src);
+    const bool ok = without_gil([&] { return w_.copy_from(at, a.data(), a.nbytes()); });
+    if (ok) {
+      sources_.emplace_back(nb::borrow(src));
+    }
+    return ok;
+  }
+
   // A refused commit ends the loan too, as in C++: commit(nbytes) on a loan that is not 1-D, or
   // with nbytes past it or not a whole number of items, is TOO_LARGE.
   auto commit(std::optional<std::size_t> nbytes) -> flux::Published
@@ -833,6 +877,7 @@ private:
 
   void seal()
   {
+    sources_.clear();
     for (const nb::weakref & ref : issued_) {
       const nb::object a = ref();
       if (!a.is_none()) {
@@ -848,6 +893,7 @@ private:
   int device_;
   std::vector<nb::weakref> issued_;
   std::vector<flux::gpu::Stream> writers_;
+  std::vector<nb::object> sources_;
   std::size_t aux_len_ = 0;
 };
 
@@ -1601,6 +1647,7 @@ NB_MODULE(_flux, m)
     .def("__dlpack__", [](Frame & f, const nb::kwargs & kw) { return f.dlpack(kw); })
     .def("__dlpack_device__", &Frame::dlpack_device)
     .def("_host", &Frame::host)
+    .def("copy_to_host", &Frame::copy_to_host)
     .def(
       "_tensor_dlpack",
       [](Frame & f, const flux_py::TensorAt & at, const nb::kwargs & kw) {
@@ -1616,6 +1663,7 @@ NB_MODULE(_flux, m)
   nb::class_<Loan>(m, "Loan")
     .def_prop_ro("array", [](nb::handle self) { return nb::inst_ptr<Loan>(self)->array(self); })
     .def("commit", &Loan::commit, "nbytes"_a = nb::none())
+    .def("copy_from", &Loan::copy_from, "src"_a, "at"_a = 0)
     .def("abort", &Loan::abort)
     .def_prop_ro("valid", &Loan::valid)
     .def("__bool__", &Loan::valid)

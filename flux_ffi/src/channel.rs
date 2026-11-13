@@ -591,6 +591,31 @@ pub unsafe extern "C" fn flux_loan_device_ptr(l: *const flux_loan) -> u64 {
         .map_or(0, WriteSlot::device_ptr)
 }
 
+// Host bytes into the payload at `at`: a plain copy into host memory, or a copy queued on the
+// loan's stream into device memory, which the commit waits for. Pageable `src` is read before
+// this returns; page-locked `src` must stay unchanged until the commit or abort. False past the
+// capacity, for an ended loan, or when the copy was not queued. Not in flux.h, which is at its
+// comment budget; the C++ `WriteSlot::copy_from` and `FrameView::copy_to` say the same.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_loan_copy_from(
+    l: *mut flux_loan,
+    at: usize,
+    src: *const u8,
+    n: usize,
+) -> bool {
+    // SAFETY: valid loan storage.
+    let Some(w) = unsafe { loan(l) }.slot.get_mut() else {
+        return false;
+    };
+    let src: &[u8] = if n == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller gives n readable bytes at src.
+        unsafe { std::slice::from_raw_parts(src, n) }
+    };
+    w.copy_from(at, src)
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_loan_commit(l: *mut flux_loan) -> flux_published {
     // SAFETY: valid loan storage.
@@ -660,6 +685,28 @@ pub unsafe extern "C" fn flux_view_data(v: *const flux_view, len: *mut usize) ->
     // SAFETY: len is valid for a write.
     unsafe { len.write(fv.data().len()) };
     fv.data().as_ptr()
+}
+
+// The frame's bytes from `at` into host `dst`, as `flux_loan_copy_from` says. False past the
+// frame's bytes, for an empty view, or when the copy or the wait failed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_view_copy_to(
+    v: *const flux_view,
+    at: usize,
+    dst: *mut u8,
+    n: usize,
+) -> bool {
+    // SAFETY: valid view storage.
+    let Some(fv) = (unsafe { view_ref(v) }).get() else {
+        return false;
+    };
+    let dst: &mut [u8] = if n == 0 {
+        &mut []
+    } else {
+        // SAFETY: the caller gives n writable bytes at dst.
+        unsafe { std::slice::from_raw_parts_mut(dst, n) }
+    };
+    fv.copy_to(at, dst)
 }
 
 #[unsafe(no_mangle)]

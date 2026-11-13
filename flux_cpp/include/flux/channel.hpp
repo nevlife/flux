@@ -412,6 +412,12 @@ public:
   }
   // The channel's cudaStream_t: queue the frame's work on it, since the release waits for it.
   [[nodiscard]] auto stream() const noexcept -> void * { return flux_view_stream(raw()); }
+  // Copies n bytes from byte `at` of the frame into host dst. A device payload is copied on
+  // stream(), and this waits for that stream. False past size(), or when the copy failed.
+  [[nodiscard]] auto copy_to(std::size_t at, void * dst, std::size_t n) const noexcept -> bool
+  {
+    return flux_view_copy_to(raw(), at, static_cast<std::uint8_t *>(dst), n);
+  }
   // Orders the channel stream's next work after what s has queued, on the device: a deferred
   // release then covers work that read the frame on s.
   [[nodiscard]] auto after(const gpu::Stream & s) const noexcept -> bool
@@ -509,6 +515,14 @@ public:
   }
   // The channel's cudaStream_t: queue the producing work on it, since the commit waits for it.
   [[nodiscard]] auto stream() const noexcept -> void * { return flux_loan_stream(raw()); }
+  // Copies n host bytes from src to byte `at` of the payload: a plain copy into host memory, or a
+  // copy queued on stream() into device memory, which the commit waits for. Pageable src is read
+  // before this returns; page-locked src must stay unchanged until the commit or abort. False
+  // past capacity(), or when the copy was not queued.
+  [[nodiscard]] auto copy_from(std::size_t at, const void * src, std::size_t n) noexcept -> bool
+  {
+    return flux_loan_copy_from(&l_, at, static_cast<const std::uint8_t *>(src), n);
+  }
   auto capacity() noexcept -> std::size_t
   {
     std::size_t n = 0;

@@ -55,6 +55,7 @@ if (flux::FrameView frame = sub.take()) {
 - 주소는 `device_ptr()`로 얻고, 커널은 `stream()`의 채널 스트림에 올린다. 다른 스트림의 작업은 flux가 기다리지 않는다.
 - `commit()`은 스트림의 작업이 끝난 뒤 발행하므로, 구독자는 받은 프레임을 CPU 채널처럼 바로 읽어도 된다.
 - view를 해제하면 스트림의 작업이 끝난 뒤 슬롯이 반납된다. 구독의 GPU 매핑은 읽기 전용이다(`ShmRegistered`에서는 GPU가 읽기 전용 등록을 지원하는 경우).
+- 호스트 메모리와 오가는 복사는 `WriteSlot::copy_from(at, src, n)`과 `FrameView::copy_to(at, dst, n)`이다(C `flux_loan_copy_from`, `flux_view_copy_to`). 슬롯이 GPU 메모리면 채널 스트림에서 복사하고, 호스트 메모리면 그대로 복사한다. loan의 복사는 commit이 기다리고, view의 복사는 함수 안에서 끝난다. 범위가 슬롯이나 프레임을 넘으면 `false`다. page-locked 메모리에서 복사하는 `src`는 commit이나 abort까지 바꾸지 않는다.
 
 ## Python
 
@@ -85,6 +86,7 @@ if frame is not None:
 - flux는 `__dlpack__(stream=s)`로 받은 소비자 측 스트림(torch의 현재 스트림)도 해제나 commit 전에 상한 없이 기다린다. 그래서 torch가 자기 스트림에서 읽고 쓰는 동안 슬롯이 넘어가지 않는다.
 - 이 대기가 실패하면 view나 loan은 `fence_failed`에 세지 않고 점유를 유지하며, 그 뒤의 take는 `refused.max_borrow`로 거절된다.
 - GPU 배열을 `publish()`에 넘기면 `TypeError`다. GPU 데이터는 loan에 쓴다.
+- 호스트 배열은 `loan.copy_from(array, at=0)`으로 loan에 복사한다. bytes처럼 buffer protocol을 가진 객체도 받는다. 반환값은 C++와 같다. `frame.copy_to_host()`는 프레임의 dtype과 shape를 가진 새 numpy 배열을 반환하고, `with` 블록 밖에서도 호출 가능하다.
 
 `Frame`의 메모리는 범위가 끝나는 시점에 반납하고, 제공한 메모리가 아직 사용 중이면 늦춘다.
 

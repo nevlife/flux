@@ -169,6 +169,32 @@ impl FrameView {
         self.sh.host_slot(self.slot).is_some()
     }
 
+    /// Copies `dst.len()` bytes from byte `at` of the frame into host `dst`. A device payload is
+    /// copied on `stream()`, and this waits for that stream. False past the frame's bytes, or when
+    /// the copy or the wait failed.
+    pub fn copy_to(&self, at: usize, dst: &mut [u8]) -> bool {
+        #[allow(clippy::cast_possible_truncation)]
+        let len = self.meta.nbytes as usize;
+        let Some(end) = at.checked_add(dst.len()).filter(|&end| end <= len) else {
+            return false;
+        };
+        if dst.is_empty() {
+            return true;
+        }
+        if self.host_addressable() {
+            let Some(src) = self.data().get(at..end) else {
+                return false;
+            };
+            dst.copy_from_slice(src);
+            return true;
+        }
+        let src = self.device_ptr();
+        let stream = self.stream();
+        src != 0
+            && stream.copy_to_host(dst.as_mut_ptr(), src + at as u64, dst.len())
+            && stream.wait()
+    }
+
     pub fn meta(&self) -> &FrameMeta {
         &self.meta
     }

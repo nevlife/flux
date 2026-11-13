@@ -433,6 +433,8 @@ void *flux_loan_stream(const struct flux_loan *l);
 // 0 when the channel declared no stream, as for `flux_view_device_ptr`.
 uint64_t flux_loan_device_ptr(const struct flux_loan *l);
 
+bool flux_loan_copy_from(struct flux_loan *l, size_t at, const uint8_t *src, size_t n);
+
 flux_published flux_loan_commit(struct flux_loan *l);
 
 // Shrinks a one-dimensional loan to `nbytes`.
@@ -449,6 +451,8 @@ bool flux_channel_take(struct flux_channel *ch, struct flux_view *out);
 bool flux_channel_take_blocking(struct flux_channel *ch, int64_t timeout_ns, struct flux_view *out);
 
 const uint8_t *flux_view_data(const struct flux_view *v, size_t *len);
+
+bool flux_view_copy_to(const struct flux_view *v, size_t at, uint8_t *dst, size_t n);
 
 const uint8_t *flux_view_aux(const struct flux_view *v, size_t *len);
 

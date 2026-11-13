@@ -35,6 +35,7 @@
 * `flux_tools`의 rviz2 PointCloud2 디스플레이가 점을 arena에 저장한 프레임을 표시한다
 * `flux_bridge`와 ROS 2 mirror가 필드를 arena(GPU arena 포함)에 저장한 프레임을 중계한다. view를 보유한 동안 arena의 필드까지 사본에 복사한 뒤 CDR로 바꾼다
 * `data`를 payload로, `data`를 비운 프레임을 aux로 보내는 GPU 메모리 채널(`flux::gpu_fingerprint`)을 `flux_bridge`, ROS 2 mirror, `convert_flux`, rviz2 디스플레이가 그 메시지 타입으로 읽는다. `flux_wrapper`의 `Cuda` 발행자가 이 형식으로 바뀌어 필드의 상한(`frame_id` 256 B 등)이 aux 4096 B 하나가 되었고, `mirror_to_ros`가 동작한다
+* loan에 호스트 메모리를 복사하고 프레임을 호스트 메모리로 복사한다(C `flux_loan_copy_from`, `flux_view_copy_to`, C++ `WriteSlot::copy_from`, `FrameView::copy_to`, Python `Loan.copy_from`, `Frame.copy_to_host`). GPU 메모리 슬롯이면 채널 스트림에서 복사한다. Python `flux_wrapper`의 `device="cuda"` 발행자가 `publish(msg)`로 보내고, GPU 메모리 프레임의 `to_msg()`가 동작한다. 전에는 각각 외장 GPU에서 `False`, `RuntimeError`였다
 
 ### 버그 수정
 
