@@ -363,7 +363,16 @@ private:
   {
     try {
       while (!stop_) {
-        record_one();
+        record_frame(sub_.take_blocking(kTakeWaitNs));
+      }
+      // What the channel holds when recording stops goes in too. At most a depth of it: older
+      // frames are not taken anyway, and a publisher that keeps going would never let this end.
+      for (std::uint32_t i = 0; i < sub_.qos().depth(); ++i) {
+        flux::FrameView v = sub_.take();
+        if (!v) {
+          break;
+        }
+        record_frame(std::move(v));
       }
     } catch (const flux::Error & e) {
       const std::lock_guard<std::mutex> lock(error_mutex_);
@@ -374,9 +383,8 @@ private:
     }
   }
 
-  void record_one()
+  void record_frame(flux::FrameView v)
   {
-    flux::FrameView v = sub_.take_blocking(kTakeWaitNs);
     if (!v) {
       return;
     }
