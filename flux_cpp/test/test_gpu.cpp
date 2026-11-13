@@ -385,6 +385,51 @@ TEST_F(Gpu, EveryDeviceBlockOfAFrameReachesACpuReader)
   EXPECT_EQ(again.items(2).ids()[299], static_cast<std::uint16_t>(0x32 * 0x101));
 }
 
+// The same frame read on the device: each nested device field is found in place, at its own
+// device address.
+TEST_F(Gpu, EveryDeviceBlockOfAFrameReachesAGpuReader)
+{
+  using Blob = flux_test::flux_msg::Blob;
+  const std::string name = unique_name("arena_blocks_gpu");
+  auto pub = flux::detail::Channel::create(
+    name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
+    flux::gpu::Stream::create());
+  flux::WriteSlot w = pub.loan();
+  ASSERT_TRUE(w);
+  Blob::Builder b(w);
+  const auto data = b.alloc_device__data(5000);
+  ASSERT_EQ(driver()->memset(addr(data.data()), 0x21, 5000, w.stream()), 0);
+  const auto items = b.alloc__items(3);
+  for (std::size_t i = 0; i < items.size(); ++i) {
+    const auto ids = items[i].alloc_device__ids(100 * (i + 1));
+    ASSERT_EQ(ids.size(), 100 * (i + 1));
+    const auto fill = static_cast<unsigned char>(0x30 + i);
+    ASSERT_EQ(driver()->memset(addr(ids.data()), fill, ids.size() * 2, w.stream()), 0);
+  }
+  ASSERT_EQ(b.commit__(), flux::Published::Ok);
+
+  flux::QoS q(4);
+  q.transient_local(4);
+  flux::detail::Watch watch(name);
+  const flux::gpu::Stream stream = flux::gpu::Stream::create();
+  auto gpu = flux::detail::Channel::open(watch, Blob::kFingerprint, q, {}, stream);
+  flux::FrameView v = gpu.take();
+  ASSERT_TRUE(v);
+  const Blob::View m(v);
+  const auto d = m.data__device();
+  ASSERT_EQ(d.size(), 5000u);
+  ASSERT_TRUE(stream.wait());
+  EXPECT_TRUE(all(read_back(d.data(), d.size()), 0x21));
+  ASSERT_EQ(m.items__size(), 3u);
+  for (std::size_t i = 0; i < 3; ++i) {
+    const auto ids = m.items(i).ids__device();
+    ASSERT_EQ(ids.size(), 100 * (i + 1)) << i;
+    EXPECT_TRUE(all(read_back(ids.data(), ids.size() * 2), static_cast<unsigned char>(0x30 + i)))
+      << i;
+  }
+  EXPECT_TRUE(m.ok__());
+}
+
 // An aborted loan's queued device work may still run after its block is freed. Another channel,
 // on another stream, that is handed the block next must not have its frame written over by it.
 TEST_F(Gpu, AnAbortedLoansLateWorkDoesNotReachTheNextOwnerOfItsBlock)
