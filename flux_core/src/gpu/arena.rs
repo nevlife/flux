@@ -322,7 +322,13 @@ impl GpuArena {
         let id = host_arena::random();
         let endpoint = endpoint_of(id);
         let chunks = Arc::new(PiMutex::new(Vec::new()));
-        let server = FdServer::start(&endpoint, Share::Chunks(Arc::clone(&chunks)))?;
+        let server = FdServer::start(
+            &endpoint,
+            Share {
+                list: Arc::clone(&chunks),
+                chunk: CHUNK,
+            },
+        )?;
         let target = Target {
             device,
             ctx: ctx as usize,
@@ -594,7 +600,7 @@ impl GpuArenaImport {
                 self.endpoint, self.size
             )));
         }
-        let fds = fd::fetch_chunks(&self.endpoint, have)?;
+        let fds = fd::fetch_chunks(&self.endpoint, have, CHUNK)?;
         if fds.len() < (chunks - have) as usize {
             return Err(Error::NotReady(format!(
                 "the GPU arena '{}' has fewer chunks than a frame reaches",

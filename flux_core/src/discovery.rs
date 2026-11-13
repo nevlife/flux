@@ -272,7 +272,7 @@ fn leave(name: &str, raw: RawFd) {
 /// The returned segment holds the publisher locks for its lifetime and is unlinked on drop.
 /// `device`: the ordinal to allocate the payload on, for the device-handle route. The segment then
 /// holds the control plane only, and the allocation is served before the epoch advertises it.
-/// A host payload gets memory for its first `ready` slots; the rest are holes until `add_slot`.
+/// The payload has memory for its first `ready` slots, the rest only once `add_slot` adds them.
 #[allow(clippy::too_many_arguments)]
 pub fn open_publisher_segment(
     name: &str,
@@ -293,10 +293,11 @@ pub fn open_publisher_segment(
         )),
         None => None,
     };
-    let (bytes, ready) = if device.is_some() {
-        (layout.payload_offset(), layout.slot_count)
+    let ready = ready.clamp(1, layout.slot_count);
+    let bytes = if device.is_some() {
+        layout.payload_offset()
     } else {
-        (layout.total_bytes(), ready.clamp(1, layout.slot_count))
+        layout.total_bytes()
     };
     let reserved = if device.is_some() {
         bytes
@@ -357,6 +358,8 @@ pub fn open_publisher_segment(
             let alloc = gpu::DeviceAlloc::create(
                 &gpu::endpoint(seg.id()),
                 layout.payload_bytes(),
+                layout.payload_stride(),
+                ready as usize * layout.payload_stride(),
                 ordinal,
             )?;
             seg.device_payload(|| Ok(gpu::DevicePayload::Exported(alloc)))?;

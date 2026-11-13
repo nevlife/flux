@@ -10,7 +10,7 @@ flux는 `libcuda.so.1`을 실행 시점에 로드하고, GPU마다 아래 표에
 | --- | --- | --- | --- |
 | `ShmRegistered` | 통합 GPU이고 호스트 메모리 등록을 지원한다 | Jetson Orin, Thor | 공유 메모리 매핑을 `cuMemHostRegister`로 등록한다 |
 | `ShmDirect` | 통합 GPU이고 pageable memory에 접근한다 | | 공유 메모리 매핑 주소를 그대로 사용한다 |
-| `DeviceHandle` | VMM과 POSIX fd export를 지원한다 | 외장 GPU | GPU 메모리 할당 하나를 fd로 넘긴다 |
+| `DeviceHandle` | VMM과 POSIX fd export를 지원한다 | 외장 GPU | GPU 메모리를 조각으로 잡아 조각마다 fd로 넘긴다 |
 | `None` | 그 밖 | GPU 없음 | GPU 채널 생성이 불가능하다 |
 
 `probe(device = 0)`는 GPU 하나의 경로를 예외 없이 반환한다. 경로가 `None`이면 `reason`에 이유가 담긴다.

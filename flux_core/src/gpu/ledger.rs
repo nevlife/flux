@@ -20,7 +20,6 @@ pub(crate) enum Held {
     Export(u64),
     Import(u64),
     Copy(u64),
-    Fd(i32),
 }
 
 #[derive(Default)]

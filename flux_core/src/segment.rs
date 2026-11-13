@@ -323,6 +323,14 @@ impl Segment {
         &self.header
     }
 
+    /// The import of a device payload, once a channel on this mapping made it.
+    pub(crate) fn imported(&self) -> Option<&crate::gpu::DeviceImport> {
+        match self.device.get()? {
+            DevicePayload::Imported(i) => Some(i),
+            _ => None,
+        }
+    }
+
     /// The slot registrations of a host payload, once a channel on this mapping made them.
     pub(crate) fn registrations(&self) -> Option<&crate::gpu::SlotRegistrations> {
         match self.device.get()? {
@@ -459,22 +467,29 @@ impl Segment {
             .min(self.layout.slot_count)
     }
 
-    /// The publisher of a host shm payload gives the next slot its memory, committed or locked as
-    /// `mem` asks, and returns it. None once every slot has memory, or when `/dev/shm` has no
-    /// room: then nothing changed.
+    /// The publisher of a shm segment gives the next slot its memory, in `/dev/shm` committed or
+    /// locked as `mem` asks, or on the device, and returns it. None once every slot has memory, or
+    /// when there is no room: then nothing changed.
     pub(crate) fn add_slot(&self, mem: MemoryPolicy) -> Option<u32> {
         let fd = self.publisher_fd()?;
         let s = self.ready.load(Ordering::Relaxed);
-        if s >= self.layout.slot_count || !self.host_payload() {
+        if s >= self.layout.slot_count {
             return None;
         }
         let stride = self.layout.payload_stride();
-        sys::allocate_range(
-            fd,
-            self.layout.payload_offset() + s as usize * stride,
-            stride,
-        )
-        .ok()?;
+        if self.host_payload() {
+            sys::allocate_range(
+                fd,
+                self.layout.payload_offset() + s as usize * stride,
+                stride,
+            )
+            .ok()?;
+        } else {
+            let DevicePayload::Exported(alloc) = self.device.get()? else {
+                return None;
+            };
+            alloc.back((s as usize + 1) * stride).ok()?;
+        }
         self.ready.store(s + 1, Ordering::Relaxed);
         self.ctrl().slots_ready.store(s + 1, Ordering::Release); // order: slots_ready
         // Best effort, as a subscriber's: the slot is usable without it.

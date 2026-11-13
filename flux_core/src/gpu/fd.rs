@@ -85,13 +85,8 @@ fn peer_is_us(conn: RawFd) -> bool {
 #[allow(clippy::cast_possible_truncation)]
 const INT_BYTES: u32 = size_of::<c_int>() as u32;
 
-/// The descriptor rides in the control message; one data byte, since a message with no data
-/// carries no control data either.
-fn send_fd(conn: RawFd, fd: RawFd) -> bool {
-    send_fd_with(conn, fd, &[0])
-}
-
-/// `send_fd` with `bytes` as the message's data.
+/// The descriptor rides in the control message, `bytes` in the data: at least one, since a message
+/// with no data carries no control data either.
 fn send_fd_with(conn: RawFd, fd: RawFd, bytes: &[u8]) -> bool {
     let mut iov = libc::iovec {
         iov_base: bytes.as_ptr().cast_mut().cast(),
@@ -124,13 +119,8 @@ fn send_fd_with(conn: RawFd, fd: RawFd, bytes: &[u8]) -> bool {
     usize::try_from(sent).is_ok_and(|n| n == bytes.len())
 }
 
-/// Exactly one descriptor, or why not: none came, or the kernel dropped it, as it does at this
-/// process's open file limit.
-fn recv_fd(conn: RawFd) -> std::result::Result<OwnedFd, &'static str> {
-    recv_fd_with(conn, &mut [0])
-}
-
-/// `recv_fd` of a message whose data fills `bytes` exactly.
+/// Exactly one descriptor, in a message whose data fills `bytes` exactly, or why not: none came,
+/// or the kernel dropped it, as it does at this process's open file limit.
 fn recv_fd_with(conn: RawFd, bytes: &mut [u8]) -> std::result::Result<OwnedFd, &'static str> {
     let want = bytes.len();
     let mut iov = libc::iovec {
@@ -181,17 +171,9 @@ fn take_fd(msg: &libc::msghdr) -> Option<OwnedFd> {
     (fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-/// `NotReady` when nobody answers: the publisher went away after advertising its segment, or is
-/// stopped. Non-blocking, since a stopped publisher's backlog fills and a blocking connect then
-/// never returns.
-pub(super) fn receive(endpoint: &str) -> Result<OwnedFd> {
-    let sock = connected(endpoint)?;
-    wait_readable(sock.as_raw_fd());
-    recv_fd(sock.as_raw_fd())
-        .map_err(|why| Error::NotReady(format!("device endpoint '{endpoint}' {why}")))
-}
-
-/// A connection to `endpoint` served by this user.
+/// A connection to `endpoint` served by this user. `NotReady` when nobody answers: the publisher
+/// went away after advertising its segment, or is stopped. Non-blocking, since a stopped
+/// publisher's backlog fills and a blocking connect then never returns.
 fn connected(endpoint: &str) -> Result<OwnedFd> {
     let sock = socket(libc::SOCK_NONBLOCK).map_err(|e| Error::io("socket", endpoint, e))?;
     if let Err(e) = connect(sock.as_raw_fd(), endpoint)? {
@@ -214,7 +196,7 @@ fn connected(endpoint: &str) -> Result<OwnedFd> {
 }
 
 /// Up to `RECV_TIMEOUT_NS`. `SA_RESTART` never restarts `poll`, so after a signal it is called again
-/// for what is left. Any other failure leaves `recv_fd` to find nothing.
+/// for what is left. Any other failure leaves `recv_fd_with` to find nothing.
 fn wait_readable(sock: RawFd) {
     wait_readable_for(sock, RECV_TIMEOUT_NS);
 }
@@ -249,12 +231,12 @@ pub(crate) struct FdServer {
     ino: u64,
 }
 
-/// What an `FdServer` hands out: one descriptor to every peer, or a growing list of them from the
-/// index each peer asks for (the GPU arena's chunks).
+/// What an `FdServer` hands out: a growing list of chunks of `chunk` bytes (a GPU arena's, a device
+/// payload's), from the index each peer asks for. A peer checks the size against its own.
 #[derive(Clone)]
-pub(crate) enum Share {
-    One(RawFd),
-    Chunks(Arc<PiMutex<Vec<OwnedFd>>>),
+pub(crate) struct Share {
+    pub(crate) list: Arc<PiMutex<Vec<OwnedFd>>>,
+    pub(crate) chunk: usize,
 }
 
 /// The bytes before a chunk list: how many chunks there are and their size in MiB, little endian.
@@ -336,18 +318,13 @@ fn serve(listen: RawFd, stop: RawFd, share: &Share) {
         if !peer_is_us(conn.as_raw_fd()) {
             continue;
         }
-        match share {
-            Share::One(fd) => {
-                send_fd(conn.as_raw_fd(), *fd);
-            }
-            Share::Chunks(list) => send_chunks(conn.as_raw_fd(), list),
-        }
+        send_chunks(conn.as_raw_fd(), &share.list, share.chunk);
     }
 }
 
 /// Reads the index the peer asks from, then sends the header and each chunk from there with its
 /// index. A peer that asks nothing in time gets nothing.
-fn send_chunks(conn: RawFd, list: &PiMutex<Vec<OwnedFd>>) {
+fn send_chunks(conn: RawFd, list: &PiMutex<Vec<OwnedFd>>, chunk: usize) {
     let mut ask = [0u8; 4];
     wait_readable_for(conn, REQUEST_WAIT_NS);
     // SAFETY: ask is 4 writable bytes.
@@ -358,7 +335,7 @@ fn send_chunks(conn: RawFd, list: &PiMutex<Vec<OwnedFd>>) {
     let first = u32::from_le_bytes(ask) as usize;
     let list = list.lock();
     #[allow(clippy::cast_possible_truncation)]
-    let (count, mib) = (list.len() as u32, (super::arena::CHUNK >> 20) as u32);
+    let (count, mib) = (list.len() as u32, (chunk >> 20) as u32);
     let mut header = [0u8; CHUNKS_HEADER];
     header[..4].copy_from_slice(&count.to_le_bytes());
     header[4..].copy_from_slice(&mib.to_le_bytes());
@@ -382,9 +359,9 @@ fn send_chunks(conn: RawFd, list: &PiMutex<Vec<OwnedFd>>) {
     }
 }
 
-/// The chunks of the GPU arena `endpoint` serves, from index `first`, in order. `NotReady` as
-/// `receive` is.
-pub(crate) fn fetch_chunks(endpoint: &str, first: u32) -> Result<Vec<OwnedFd>> {
+/// The chunks `endpoint` serves (a GPU arena or a device payload), `chunk` bytes each, from index
+/// `first`, in order. `NotReady` as `receive` is.
+pub(crate) fn fetch_chunks(endpoint: &str, first: u32, chunk: usize) -> Result<Vec<OwnedFd>> {
     let sock = connected(endpoint)?;
     let conn = sock.as_raw_fd();
     let ask = first.to_le_bytes();
@@ -407,10 +384,10 @@ pub(crate) fn fetch_chunks(endpoint: &str, first: u32) -> Result<Vec<OwnedFd>> {
         u32::from_le_bytes([header[0], header[1], header[2], header[3]]),
         u32::from_le_bytes([header[4], header[5], header[6], header[7]]),
     );
-    if mib as usize != super::arena::CHUNK >> 20 {
+    if mib as usize != chunk >> 20 {
         return Err(Error::Mismatch(format!(
-            "device endpoint '{endpoint}' serves {mib} MiB chunks, this build {} MiB",
-            super::arena::CHUNK >> 20
+            "device endpoint '{endpoint}' serves {mib} MiB chunks, this end expects {} MiB",
+            chunk >> 20
         )));
     }
     let mut out = Vec::new();
@@ -527,8 +504,13 @@ mod tests {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
     use std::time::Duration;
 
-    use super::{bind_listening, receive, recv_fd, send_fd, socket, unlink};
+    use std::sync::Arc;
+
+    use super::{
+        bind_listening, fetch_chunks, recv_fd_with, send_chunks, send_fd_with, socket, unlink,
+    };
     use crate::storm::{caught_so_far, in_storm};
+    use crate::sys::PiMutex;
 
     /// A publisher slow to answer leaves the subscriber in `poll` while signals arrive.
     #[test]
@@ -539,7 +521,8 @@ mod tests {
         let endpoint = format!("/dev/shm/flux.gpu.test.{}", std::process::id());
         let listen = socket(0).unwrap();
         bind_listening(listen.as_raw_fd(), &endpoint).unwrap();
-        let share = std::fs::File::open("/proc/self/exe").unwrap();
+        let share = OwnedFd::from(std::fs::File::open("/proc/self/exe").unwrap());
+        let list = Arc::new(PiMutex::new(vec![share]));
         let l = listen.as_raw_fd();
         let server = crate::sys::spawn_helper(std::thread::Builder::new(), move || {
             // SAFETY: a listening socket; no peer address wanted.
@@ -551,17 +534,17 @@ mod tests {
                     libc::SOCK_CLOEXEC,
                 )
             };
-            // SAFETY: a new descriptor this thread owns, or -1, which send_fd refuses.
+            // SAFETY: a new descriptor this thread owns, or -1, which the send refuses.
             let conn = unsafe { OwnedFd::from_raw_fd(conn) };
             std::thread::sleep(Duration::from_millis(50));
-            send_fd(conn.as_raw_fd(), share.as_raw_fd());
+            send_chunks(conn.as_raw_fd(), &list, 2 << 20);
         })
         .unwrap();
         let before = caught_so_far();
-        let got = receive(&endpoint);
+        let got = fetch_chunks(&endpoint, 0, 2 << 20);
         server.join().unwrap();
         unlink(&endpoint);
-        assert!(got.is_ok(), "{:?}", got.err());
+        assert_eq!(got.map(|v| v.len()).ok(), Some(1));
         assert!(caught_so_far() > before + 10, "no storm");
     }
 
@@ -581,7 +564,7 @@ mod tests {
         };
         assert_eq!(rc, 0);
         let shared = std::fs::File::open("/dev/null").unwrap();
-        assert!(send_fd(pair[0], shared.as_raw_fd()));
+        assert!(send_fd_with(pair[0], shared.as_raw_fd(), &[0; 4]));
         // SAFETY: the child sets its own limit, receives and exits without unwinding.
         let pid = unsafe { libc::fork() };
         if pid == 0 {
@@ -599,7 +582,8 @@ mod tests {
             // SAFETY: a valid rlimit, lowering this process's own.
             let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
             assert_eq!(rc, 0);
-            let named = recv_fd(pair[1]).is_err_and(|why| why.contains("open file limit"));
+            let named = recv_fd_with(pair[1], &mut [0; 4])
+                .is_err_and(|why| why.contains("open file limit"));
             // SAFETY: ends the child without running the parent's destructors.
             unsafe { libc::_exit(i32::from(!named)) };
         }

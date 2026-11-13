@@ -22,7 +22,7 @@ mod vmm;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 
 use driver::{
@@ -819,22 +819,30 @@ pub(crate) fn registers_read_only(device: i32) -> bool {
     found && core.attribute(handle, ATTR_READ_ONLY_HOST_REGISTER_SUPPORTED)
 }
 
-/// Pinned host memory of this process, for a device payload copied to the host.
+/// Pinned host memory of this process, for a device payload copied to the host. Mapped whole and
+/// registered a piece at a time as slots are reached (`back`), so slots a publisher never adds
+/// cost nothing.
 pub(crate) struct HostBuffer {
-    reg: Option<HostRegistration>,
+    regs: Mutex<Vec<HostRegistration>>,
+    registered: AtomicUsize,
+    device: i32,
     base: usize,
     bytes: usize,
 }
 
+/// The least a host copy registers at once.
+const HOST_PIECE: usize = 2 << 20;
+
 impl HostBuffer {
-    pub(crate) fn new(bytes: usize, device: i32) -> Result<HostBuffer> {
+    /// `bytes` of copy, the first `backed` of them registered now.
+    pub(crate) fn new(bytes: usize, backed: usize, device: i32) -> Result<HostBuffer> {
         // SAFETY: a fresh private mapping; no address is asked for.
         let p = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
                 bytes,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
                 -1,
                 0,
             )
@@ -846,23 +854,46 @@ impl HostBuffer {
                 std::io::Error::last_os_error(),
             ));
         }
-        let mut b = HostBuffer {
-            reg: None,
+        let b = HostBuffer {
+            regs: Mutex::new(Vec::new()),
+            registered: AtomicUsize::new(0),
+            device,
             base: p as usize,
             bytes,
         };
-        b.reg = Some(HostRegistration::new(p.cast(), bytes, false, device)?);
+        b.back(backed)?;
         Ok(b)
     }
 
     pub(crate) fn base(&self) -> *mut u8 {
         self.base as *mut u8
     }
+
+    /// Registers the first `bytes`, in pieces of at least `HOST_PIECE`.
+    pub(crate) fn back(&self, bytes: usize) -> Result<()> {
+        // order: host_registered
+        if bytes <= self.registered.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let mut regs = self.regs.lock().unwrap_or_else(PoisonError::into_inner);
+        let from = self.registered.load(Ordering::Relaxed);
+        if bytes <= from {
+            return Ok(());
+        }
+        let to = (from + (bytes - from).max(HOST_PIECE)).min(self.bytes);
+        let at = (self.base + from) as *mut u8;
+        regs.push(HostRegistration::new(at, to - from, false, self.device)?);
+        self.registered.store(to, Ordering::Release); // order: host_registered
+        Ok(())
+    }
 }
 
 impl Drop for HostBuffer {
     fn drop(&mut self) {
-        drop(self.reg.take());
+        self.regs
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
         // SAFETY: mapped in new() at this size, unregistered just above.
         unsafe { libc::munmap(self.base as *mut c_void, self.bytes) };
     }

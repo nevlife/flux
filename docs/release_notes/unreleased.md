@@ -134,4 +134,4 @@
    flux::Publisher pub(*node, "image", Image::kFingerprint, FLUX_UNTYPED_SLOT_SIZE);
    ```
 
-7. 발행자의 `slot_count` 기본값이 16에서 0이 되었다(`FLUX_DEFAULT_SLOT_COUNT`, `kDefaultSlotCount`, `flux.DEFAULT_SLOT_COUNT`). 0이면 슬롯 크기로 상한을 정한다. 호스트 메모리 슬롯은 256 MiB 안에서 최대 256개, GPU 메모리 슬롯은 256 MiB 안에서 최대 32개다. 호스트 메모리 발행자는 9개 슬롯에만 메모리를 잡고 시작해, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 늘린다. 그래서 타입이 없는 8 MiB 발행자는 `/dev/shm`을 72 MiB로 시작해 최대 256 MiB까지 쓴다. GPU 메모리 발행자는 아직 처음부터 상한만큼 잡는다. `slot_count`를 지정하면 전처럼 그 개수를 처음부터 모두 잡고 늘리지 않는다. `play_flux`는 bag에 개수나 크기가 0으로 기록된 채널을 기본값으로 만들지 않고 건너뛴다.
+7. 발행자의 `slot_count` 기본값이 16에서 0이 되었다(`FLUX_DEFAULT_SLOT_COUNT`, `kDefaultSlotCount`, `flux.DEFAULT_SLOT_COUNT`). 0이면 슬롯 크기로 상한을 정한다. 호스트 메모리 슬롯은 256 MiB 안에서 최대 256개, GPU 메모리 슬롯은 256 MiB 안에서 최대 32개다. 발행자는 9개 슬롯에만 메모리를 잡고 시작해, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 늘린다. GPU 메모리 발행자도 같다. 그래서 타입이 없는 8 MiB 발행자는 `/dev/shm`이나 GPU 메모리를 72 MiB로 시작해 최대 256 MiB까지 쓴다. 늘리는 프레임의 loan은 그 슬롯의 메모리를 잡는 만큼 길어진다(호스트 8 MiB 슬롯에서 약 1.4 ms). `slot_count`를 지정하면 전처럼 그 개수를 처음부터 모두 잡고 늘리지 않는다. `play_flux`는 bag에 개수나 크기가 0으로 기록된 채널을 기본값으로 만들지 않고 건너뛴다.

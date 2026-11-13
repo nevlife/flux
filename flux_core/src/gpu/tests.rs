@@ -169,7 +169,14 @@ fn an_undeclared_stream_waits_for_nothing() {
 fn a_stream_is_waited_for_on_a_thread_without_a_context() {
     let Some((memset, _)) = gpu() else { return };
     let stream = Stream::create().unwrap();
-    let alloc = DeviceAlloc::create(&format!("t{}.ctx", std::process::id()), 1 << 20, 0).unwrap();
+    let alloc = DeviceAlloc::create(
+        &format!("t{}.ctx", std::process::id()),
+        1 << 20,
+        1 << 20,
+        1 << 20,
+        0,
+    )
+    .unwrap();
     fill(memset, alloc.base(), 1, 1 << 20, &stream);
     let s = stream.clone();
     let waited = std::thread::spawn(move || {
@@ -249,11 +256,11 @@ fn an_exported_allocation_is_imported_through_its_endpoint() {
     }
     let n = 3 << 20;
     let endpoint = format!("t{}.vmm", std::process::id());
-    let alloc = DeviceAlloc::create(&endpoint, n, 0).unwrap();
+    let alloc = DeviceAlloc::create(&endpoint, n, n, n, 0).unwrap();
     let stream = Stream::create().unwrap();
     fill(memset, alloc.base(), 0x33, n, &stream);
     assert!(stream.wait());
-    let import = DeviceImport::open(&endpoint, n, 0).unwrap();
+    let import = DeviceImport::open(&endpoint, n, n, n, 0).unwrap();
     assert_ne!(import.base(), alloc.base());
     assert!(read_back(copy, import.base(), n).iter().all(|&b| b == 0x33));
     // Read-only for the importer, asked rather than tried: a faulting write would poison the
@@ -306,8 +313,8 @@ fn an_allocation_comes_apart_after_the_context_current_at_its_making_is_destroye
     assert_eq!(unsafe { create(&raw mut ctx, 0, dev) }, SUCCESS);
     let n = 512 << 20;
     let endpoint = format!("t{}.ctx", std::process::id());
-    let alloc = DeviceAlloc::create(&endpoint, n, 0).unwrap();
-    let import = DeviceImport::open(&endpoint, n, 0).unwrap();
+    let alloc = DeviceAlloc::create(&endpoint, n, n, n, 0).unwrap();
+    let import = DeviceImport::open(&endpoint, n, n, n, 0).unwrap();
     // SAFETY: created above; destroying it pops it and leaves the primary context current.
     assert_eq!(unsafe { destroy(ctx) }, SUCCESS);
     drop(import);
@@ -367,7 +374,13 @@ fn an_endpoint_nobody_serves_is_not_ready() {
     if gpu().is_none() {
         return;
     }
-    let r = DeviceImport::open(&format!("t{}.nobody", std::process::id()), 1 << 20, 0);
+    let r = DeviceImport::open(
+        &format!("t{}.nobody", std::process::id()),
+        1 << 20,
+        1 << 20,
+        1 << 20,
+        0,
+    );
     assert!(
         matches!(r, Err(crate::error::Error::NotReady(_))),
         "{:?}",
@@ -688,6 +701,52 @@ mod channel {
         assert!(first.stream().wait());
         assert_eq!(read_back(copy, first.device_ptr(), bytes.len()), bytes);
         assert_eq!(read_back(copy, second.device_ptr(), other.len()), other);
+    }
+
+    /// A device payload left at count 0 has memory for its start slots and adds slots as a deeper
+    /// subscriber needs them; a device and a host subscriber both fetch the chunks added later.
+    #[test]
+    fn a_device_payload_adds_slots_both_kinds_of_subscriber_reach() {
+        let Some((memset, copy)) = gpu() else { return };
+        let Some(_route) = discrete() else { return };
+        let name = topic("devgrow");
+        let slot = 4 << 20;
+        let mut p = Channel::create_on(
+            &name,
+            slot,
+            0,
+            DEFAULT_MAX_SUBSCRIBERS,
+            0,
+            NO_SCHEMA,
+            MemoryPolicy::default(),
+            Stream::create().unwrap(),
+            crate::trace::NO_STAMP,
+            None,
+        )
+        .unwrap();
+        assert!(p.device_backed());
+        assert_eq!(p.slot_count(), 32);
+        assert_eq!(p.slots_ready(), crate::sizing::START_SLOTS);
+        let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
+        let mut cpu = subscriber(&name, Stream::default()).unwrap();
+        for s in [&mut dev, &mut cpu] {
+            s.set_qos(QoS::new(20).unwrap()).unwrap();
+        }
+        for i in 0..15u8 {
+            let w = p.loan().unwrap();
+            fill(memset, w.device_ptr(), i, 4096, &w.stream());
+            assert_eq!(w.commit_len(4096), Published::Ok);
+            let v = dev.take().unwrap();
+            assert_eq!(
+                read_back(copy, v.device_ptr(), 4096),
+                vec![i; 4096],
+                "frame {i}"
+            );
+            drop(v);
+            let c = cpu.take().unwrap();
+            assert!(c.data()[..4096].iter().all(|&b| b == i), "frame {i}");
+        }
+        assert_eq!(p.slots_ready(), 15);
     }
 
     /// The device copy of a host payload left at count 0 has memory for the slots with memory,

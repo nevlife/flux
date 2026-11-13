@@ -251,7 +251,7 @@ impl ChannelShared {
             list,
             src,
             |bytes| {
-                gpu::HostBuffer::new(bytes, m.ordinal())
+                gpu::HostBuffer::new(bytes, bytes, m.ordinal())
                     .ok()
                     .map(CopyBuf::Host)
             },
@@ -504,10 +504,9 @@ impl ChannelShared {
                     if !seg.payload_readonly() || gpu::registers_read_only(stream.device()) {
                         register()?;
                     }
-                    let ready = seg.slots_ready() as usize * seg.layout().payload_stride();
                     let buf = gpu::DeviceBuffer::new(
                         seg.layout().payload_bytes(),
-                        ready,
+                        self.ready_bytes(),
                         stream.device(),
                     )?;
                     let base = buf.base();
@@ -556,7 +555,11 @@ impl ChannelShared {
             )));
         }
         let from = self.import(ordinal)?;
-        let buf = gpu::HostBuffer::new(self.seg.layout().payload_bytes(), ordinal)?;
+        let buf = gpu::HostBuffer::new(
+            self.seg.layout().payload_bytes(),
+            self.ready_bytes(),
+            ordinal,
+        )?;
         self.gpu = Some(GpuState {
             stream: Stream::on_device(ordinal)?,
             base: 0,
@@ -584,11 +587,18 @@ impl ChannelShared {
                 gpu::DeviceImport::open(
                     &gpu::endpoint(seg.id()),
                     seg.layout().payload_bytes(),
+                    seg.layout().payload_stride(),
+                    self.ready_bytes(),
                     ordinal,
                 )
                 .map(DevicePayload::Imported)
             })?
             .base())
+    }
+
+    /// The payload bytes of the slots with memory now.
+    fn ready_bytes(&self) -> usize {
+        self.seg.slots_ready() as usize * self.seg.layout().payload_stride()
     }
 
     pub(super) fn slot_offset(&self, slot: u32) -> usize {
@@ -644,16 +654,25 @@ impl ChannelShared {
         }
     }
 
-    /// Whether this subscriber's copy has memory for `slot`, giving it some if not. False when the
-    /// device refused: nothing was copied, so the borrow can go back.
+    /// Whether this subscriber reaches `slot`: its import of a device payload and its copy have
+    /// memory there, fetched or given now if not. False when the device or the publisher refused:
+    /// nothing was copied, so the borrow can go back.
     pub(super) fn reach(&self, slot: u32) -> bool {
+        let end = self.slot_offset(slot) + self.seg.layout().payload_stride();
+        if let Some(i) = self.seg.imported()
+            && i.reach(end).is_err()
+        {
+            return false;
+        }
         match &self.gpu {
             Some(GpuState {
                 staged: Staged::Device(buf),
                 ..
-            }) => buf
-                .back(self.slot_offset(slot) + self.seg.layout().payload_stride())
-                .is_ok(),
+            }) => buf.back(end).is_ok(),
+            Some(GpuState {
+                staged: Staged::Host { buf, .. },
+                ..
+            }) => buf.back(end).is_ok(),
             _ => true,
         }
     }
