@@ -200,9 +200,17 @@ fn attach(ch: &mut Channel, rng: &mut Rng, stop: &AtomicBool, keeper: bool, st: 
             }
         }
         // A view keeps its segment mapped, nothing else does: the current one and the signpost.
+        // A segment let go on a re-attach is unmapped on the reaper thread, a moment later.
         if keeper && Instant::now() >= next_look {
             next_look += Duration::from_millis(100);
-            let mapped = resources().1.len();
+            let mut mapped = resources().1.len();
+            for _ in 0..50 {
+                if mapped <= 2 + held.len() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+                mapped = resources().1.len();
+            }
             if mapped > 2 + held.len() {
                 violation(&format!(
                     "{mapped} flux objects mapped, {} views",
