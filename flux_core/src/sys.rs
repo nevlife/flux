@@ -662,6 +662,29 @@ fn with_live_fds(f: impl FnOnce(&mut Vec<RawFd>)) {
     f(&mut LIVE.lock());
 }
 
+/// Taken by a test that forks, around the fork, and by one whose own descriptors a child must not
+/// inherit: a forked child keeps an inherited listening socket accepting.
+#[cfg(test)]
+pub(crate) static TEST_FORKS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// `fork()` outside a test holding `TEST_FORKS`.
+///
+/// # Safety
+/// As `libc::fork`.
+#[cfg(test)]
+pub(crate) unsafe fn test_fork() -> libc::pid_t {
+    let held = TEST_FORKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: the caller's.
+    let pid = unsafe { libc::fork() };
+    if pid == 0 {
+        // The child's copy of the lock is never let go: it does not take it again.
+        std::mem::forget(held);
+    }
+    pid
+}
+
 /// Runs `f` with no `fork()` in between. `f` may open and close `LiveFd`s.
 pub(crate) fn fork_safe<R>(f: impl FnOnce() -> R) -> R {
     watch_fork();

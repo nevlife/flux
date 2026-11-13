@@ -269,7 +269,7 @@ fn a_forked_child_makes_no_driver_call() {
     let v = s.take().unwrap();
     let before = fake::calls();
     // SAFETY: the child only drops values and exits; no other thread holds the stand-in's lock.
-    let pid = unsafe { libc::fork() };
+    let pid = unsafe { crate::sys::test_fork() };
     if pid == 0 {
         let refused = matches!(Stream::create(), Err(Error::Unsupported(m)) if m.contains("fork"));
         drop(v);

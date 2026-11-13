@@ -566,7 +566,7 @@ mod tests {
         let shared = std::fs::File::open("/dev/null").unwrap();
         assert!(send_fd_with(pair[0], shared.as_raw_fd(), &[0; 4]));
         // SAFETY: the child sets its own limit, receives and exits without unwinding.
-        let pid = unsafe { libc::fork() };
+        let pid = unsafe { crate::sys::test_fork() };
         if pid == 0 {
             // SAFETY: dup returns the lowest free number, which then becomes the limit.
             let lowest = unsafe { libc::dup(0) };

@@ -819,6 +819,10 @@ mod channel {
     #[test]
     fn a_sweep_removes_only_an_endpoint_nothing_listens_on() {
         use std::os::unix::net::UnixListener;
+        // A child forked while `dead` listens would keep it accepting, and so alive.
+        let _forks = crate::sys::TEST_FORKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let base = format!("/dev/shm/flux.gpu.{}", std::process::id());
         let (dead, live, binding) = (
             format!("{base}.1"),

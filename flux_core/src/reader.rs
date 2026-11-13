@@ -263,7 +263,7 @@ mod tests {
         });
         holding.recv().unwrap();
         // SAFETY: the child calls _exit and only opens a channel before it.
-        let pid = unsafe { libc::fork() };
+        let pid = unsafe { crate::sys::test_fork() };
         if pid == 0 {
             // SAFETY: plain syscall; a hung child dies of SIGALRM.
             unsafe { libc::alarm(5) };
