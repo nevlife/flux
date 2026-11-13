@@ -48,6 +48,14 @@ pub(crate) fn unlock(fd: RawFd, byte: i64) {
     ofd_setlk(fd, libc::F_UNLCK, byte);
 }
 
+/// Every lock of the file description, whatever other descriptors still refer to it.
+fn unlock_all(fd: RawFd) {
+    let mut fl = flock_at(libc::F_UNLCK, 0);
+    fl.l_len = 0;
+    // SAFETY: fl is a valid flock that outlives the call.
+    unsafe { libc::fcntl(fd, libc::F_OFD_SETLK, &raw const fl) };
+}
+
 /// The lock type another description holds on `byte`, or `F_UNLCK`. Takes nothing.
 pub(crate) fn lock_held(fd: RawFd, byte: i64) -> libc::c_int {
     let mut fl = flock_at(libc::F_WRLCK, byte);
@@ -725,8 +733,11 @@ impl Drop for LiveFd {
             return;
         }
         // Closed under the lock, so a fork cannot slip between the two and leave the child a copy.
+        // A child that runs no fork handler (`posix_spawn` before its exec) has a copy anyway:
+        // the locks belong to the description it shares, so they are let go first.
         with_live_fds(|v| {
             v.retain(|&f| f != self.fd);
+            unlock_all(self.fd);
             // SAFETY: this process opened fd and nothing else closes it.
             unsafe { libc::close(self.fd) };
         });

@@ -791,6 +791,40 @@ mod tests {
         }
     }
 
+    /// A child that shares the publisher's open files without running the fork handlers, as
+    /// `posix_spawn`'s does until it execs, does not keep a publisher that is gone alive.
+    #[test]
+    fn a_child_sharing_the_publishers_files_does_not_keep_it_alive() {
+        let name = signpost_name(&format!("/d{}_spawned", std::process::id()), NO_SCHEMA).unwrap();
+        let open =
+            || open_publisher_segment(&name, 64, 2, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None, 2);
+        // A subscriber keeps the signpost, so the next publisher locks the same file.
+        let _keep = SignpostMap::open(&name).unwrap();
+        let p = open().unwrap();
+        // SAFETY: a raw clone runs no fork handler; the child only sleeps and exits, both plain
+        // syscalls.
+        let pid = unsafe { libc::syscall(libc::SYS_clone, libc::SIGCHLD, 0, 0, 0, 0) };
+        if pid == 0 {
+            let nap = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 300_000_000,
+            };
+            // SAFETY: plain syscall.
+            unsafe { libc::nanosleep(&raw const nap, std::ptr::null_mut()) };
+            // SAFETY: ends the child without running the parent's destructors.
+            unsafe { libc::_exit(0) };
+        }
+        drop(p);
+        let again = open();
+        let mut status = 0;
+        // SAFETY: reaps our own child.
+        #[allow(clippy::cast_possible_truncation)]
+        unsafe {
+            libc::waitpid(pid as libc::pid_t, &raw mut status, 0)
+        };
+        assert!(again.is_ok(), "{:?}", again.err());
+    }
+
     #[test]
     fn the_epoch_wraps_past_zero() {
         let name = signpost_name(&format!("/d{}_wrap", std::process::id()), NO_SCHEMA).unwrap();
