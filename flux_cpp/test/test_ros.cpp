@@ -95,6 +95,10 @@ protected:
     }
   }
 
+  // Left to the default context's destructor at exit, the shutdown would use rclcpp's
+  // thread_local `g_contexts_in_shutdown` after it is destroyed, and crash now and then.
+  static void TearDownTestSuite() { rclcpp::shutdown(); }
+
   void SetUp() override
   {
     node_ = std::make_shared<rclcpp::Node>("flux_test");
