@@ -244,3 +244,26 @@ fn a_later_publishers_memory_policy_reaches_the_pages_already_reserved() {
         },
     );
 }
+
+#[test]
+fn a_block_held_past_its_publisher_is_freed_once_its_reader_lets_go() {
+    const RUN: usize = 12 << 20;
+    in_child(
+        "a_block_held_past_its_publisher_is_freed_once_its_reader_lets_go",
+        64 << 20,
+        || {
+            let (mut p, mut s) = channel("orphan", 2);
+            publish(&mut p, 1, RUN);
+            let held = s.take().unwrap();
+            drop(p);
+            drop(held);
+            // 56 MiB of the 64 fits only if the 12 MiB the reader held went back.
+            let (mut q, _t) = channel("orphan_after", 2);
+            let w = q.loan().unwrap();
+            let heap = w.heap().unwrap();
+            // SAFETY: w is live.
+            assert!(unsafe { heap.alloc(56 << 20, 64) }.is_some());
+            drop(w);
+        },
+    );
+}

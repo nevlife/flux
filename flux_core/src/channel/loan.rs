@@ -9,6 +9,7 @@ use crate::layout::{DType, FrameMeta, MAX_DIMS, SegmentLayout};
 use crate::segment::Mapped;
 use crate::trace::{self, event};
 
+use super::shared::sweep_orphans;
 use super::{ChannelShared, Owned, Published};
 
 /// A claimed slot. Dropped without commit, it is aborted, and the frame the slot held before is
@@ -67,7 +68,7 @@ impl Heap {
         let sh = unsafe { &*self.sh };
         let len = u32::try_from(bytes).ok()?;
         let a = sh.gpu_arena()?;
-        let off = a.alloc(bytes, align)?;
+        let off = alloc_or_sweep(|| a.alloc(bytes, align))?;
         sh.own(self.slot, Owned::Gpu(a, off, len));
         Some((a.device_ptr(off), off))
     }
@@ -79,7 +80,7 @@ impl Heap {
     pub unsafe fn alloc(&self, bytes: usize, align: usize) -> Option<(*mut u8, u64)> {
         let len = u32::try_from(bytes).ok()?;
         let a = arena::arena()?;
-        let off = a.alloc(bytes, align)?;
+        let off = alloc_or_sweep(|| a.alloc(bytes, align))?;
         // SAFETY: the live loan holds the channel.
         unsafe { &*self.sh }.own(self.slot, Owned::Block(off, len));
         Some((a.ptr(off), off))
@@ -106,6 +107,12 @@ impl Heap {
         unsafe { &*self.sh }.own(self.slot, Owned::Adopted(release, ctx, off, len));
         Some(off)
     }
+}
+
+/// An arena with no room tries again once the blocks of dropped publishers' slots whose readers
+/// have let go are freed.
+fn alloc_or_sweep(alloc: impl Fn() -> Option<u64>) -> Option<u64> {
+    alloc().or_else(|| if sweep_orphans() { alloc() } else { None })
 }
 
 impl WriteSlot {

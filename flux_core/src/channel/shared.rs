@@ -17,9 +17,9 @@ use crate::gpu::arena::{GpuArena, GpuArenaImport, gpu_arena};
 use crate::gpu::{
     self, DevicePayload, FenceStats, Fenced, Late, Route, Seam, SlotRegistrations, Stream, ledger,
 };
-use crate::layout::{FrameMeta, TICKET_CLAIMED, TICKET_EMPTY, reader_lock_byte};
+use crate::layout::{FrameMeta, SlotHeader, TICKET_CLAIMED, TICKET_EMPTY, reader_lock_byte};
 use crate::reader::ReaderLease;
-use crate::segment::Segment;
+use crate::segment::{ControlArea, Segment};
 use crate::sys::{self, PiMutex};
 use crate::trace::event;
 
@@ -461,19 +461,7 @@ impl ChannelShared {
             _ => return,
         };
         self.owned_slots.fetch_sub(1, Ordering::Relaxed);
-        let a = arena::existing();
-        for o in list.drain(..) {
-            match o {
-                Owned::Block(off, _) => {
-                    if let Some(a) = a {
-                        a.free(off);
-                    }
-                }
-                // SAFETY: the adopter's contract.
-                Owned::Adopted(release, ctx, ..) => unsafe { release(ctx) },
-                Owned::Gpu(a, off, _) => a.free(off),
-            }
-        }
+        free_all(&mut list);
         // Back with its capacity, so the slot's next frame records its blocks without allocating.
         // Nothing owns this slot meanwhile: its claim is this call's.
         if let Some(v) = self.owned.lock().get_mut(slot as usize) {
@@ -896,38 +884,11 @@ impl ChannelShared {
         self.seg.reader(slot, self.index())
     }
 
-    pub(super) fn readers_free(&self, slot: u32, order: Ordering) -> bool {
-        let n = self.seg.readers_in_use(order);
-        self.seg
-            .readers(slot)
-            .iter()
-            .take(n)
-            .all(|r| r.load(order) == 0)
-    }
-
     /// Claims `s` if no reader holds it, and leaves it as it was otherwise.
     pub(super) fn try_claim(&self, s: u32) -> bool {
-        let sl = self.seg.slot(s);
-        let old = sl.commit_ticket.load(Ordering::Relaxed);
-        // order: readers
-        if old == TICKET_CLAIMED || !self.readers_free(s, Ordering::Acquire) {
-            return false;
-        }
-        if sl
-            .commit_ticket
-            // order: ticket
-            .compare_exchange(old, TICKET_CLAIMED, Ordering::SeqCst, Ordering::Relaxed)
-            .is_err()
-        {
-            return false;
-        }
-        // order: readers
-        if !self.readers_free(s, Ordering::SeqCst) {
-            // Borrowed under us before a byte was written: the frame is still whole.
-            sl.commit_ticket.store(old, Ordering::Release); // order: ticket
-            return false;
-        }
-        true
+        try_claim(self.seg.slot(s), self.seg.readers(s), |o| {
+            self.seg.readers_in_use(o)
+        })
     }
 
     /// When starved, and at most once a `SWEEP_NS` while anyone is parked. A number whose byte
@@ -1114,19 +1075,122 @@ impl Drop for ChannelShared {
             ledger::channel_gone(self.trace_handle());
         }
         // A frame left in a slot can still be taken after the publisher is gone, so its arena
-        // memory goes only with a claim, which a borrow refuses.
-        // shortcut: a slot still borrowed now keeps its blocks until this process ends (at most
-        // the subscribers' max_borrow); free them once its last reader leaves, when a process that
-        // makes and drops publishers in a loop runs out of arena.
+        // memory goes only with a claim, which a borrow refuses. A slot still borrowed hands its
+        // blocks to ORPHANS, with the mapping that says when its readers let go.
         if self.may_own() && !self.inherited() {
+            let mut orphans = Vec::new();
             for s in 0..self.seg.layout().slot_count {
-                if self.owns_any(s) && self.try_claim(s) {
+                if !self.owns_any(s) {
+                    continue;
+                }
+                if self.try_claim(s) {
                     self.abort(s);
                     self.free_owned(s);
+                } else if let Some(v) = self.owned.lock().get_mut(s as usize) {
+                    orphans.push(Orphan {
+                        area: self.seg.control_area(),
+                        slot: s,
+                        owned: std::mem::take(v),
+                        born: self.born,
+                    });
                 }
             }
+            if !orphans.is_empty() {
+                ORPHANS.lock().append(&mut orphans);
+            }
+        }
+        sweep_orphans();
+    }
+}
+
+/// A dropped publisher's slot that was borrowed when it went, with the arena memory its frame
+/// points into.
+struct Orphan {
+    area: ControlArea,
+    slot: u32,
+    owned: Vec<Owned>,
+    /// The fork generation of the publisher: a forked child leaves the parent's slots alone.
+    born: u32,
+}
+
+/// The process's orphans, swept when a publisher goes and when an arena has no room. A slot whose
+/// reader died holding it stays here: nothing tells a gone publisher that the reader is dead.
+static ORPHANS: PiMutex<Vec<Orphan>> = PiMutex::new(Vec::new());
+
+/// Claims each orphan no reader holds any more and frees its memory. True if any was freed.
+pub(crate) fn sweep_orphans() -> bool {
+    let mut freed = Vec::new();
+    {
+        let mut orphans = ORPHANS.lock();
+        let born = sys::fork_gen();
+        orphans.retain_mut(|o| {
+            let a = &o.area;
+            if o.born != born
+                || !try_claim(a.slot(o.slot), a.readers(o.slot), |order| {
+                    a.readers_in_use(order)
+                })
+            {
+                return true;
+            }
+            // Nobody publishes to it again; empty, the slot is not taken either.
+            a.slot(o.slot)
+                .commit_ticket
+                .store(TICKET_EMPTY, Ordering::SeqCst); // order: ticket
+            freed.push(std::mem::take(&mut o.owned));
+            false
+        });
+    }
+    // Outside the lock: a release may run a binding's code, which may publish.
+    for list in &mut freed {
+        free_all(list);
+    }
+    !freed.is_empty()
+}
+
+fn free_all(list: &mut Vec<Owned>) {
+    let a = arena::existing();
+    for o in list.drain(..) {
+        match o {
+            Owned::Block(off, _) => {
+                if let Some(a) = a {
+                    a.free(off);
+                }
+            }
+            // SAFETY: the adopter's contract.
+            Owned::Adopted(release, ctx, ..) => unsafe { release(ctx) },
+            Owned::Gpu(a, off, _) => a.free(off),
         }
     }
+}
+
+fn readers_free(readers: &[AtomicU32], in_use: usize, order: Ordering) -> bool {
+    readers.iter().take(in_use).all(|r| r.load(order) == 0)
+}
+
+/// Claims slot `sl` if none of `readers` holds it, and leaves it as it was otherwise.
+/// `in_use(order)` is the segment's `readers_in_use`.
+fn try_claim(sl: &SlotHeader, readers: &[AtomicU32], in_use: impl Fn(Ordering) -> usize) -> bool {
+    let old = sl.commit_ticket.load(Ordering::Relaxed);
+    // order: readers
+    if old == TICKET_CLAIMED || !readers_free(readers, in_use(Ordering::Acquire), Ordering::Acquire)
+    {
+        return false;
+    }
+    if sl
+        .commit_ticket
+        // order: ticket
+        .compare_exchange(old, TICKET_CLAIMED, Ordering::SeqCst, Ordering::Relaxed)
+        .is_err()
+    {
+        return false;
+    }
+    // order: readers
+    if !readers_free(readers, in_use(Ordering::SeqCst), Ordering::SeqCst) {
+        // Borrowed under us before a byte was written: the frame is still whole.
+        sl.commit_ticket.store(old, Ordering::Release); // order: ticket
+        return false;
+    }
+    true
 }
 
 /// Where an `add_waiter` counted: a lease can arrive before the matching remove.

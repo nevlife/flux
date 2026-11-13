@@ -70,6 +70,63 @@ impl Drop for Mapping {
 /// Keeps a segment's memory mapped, nothing more.
 pub struct Mapped(#[allow(dead_code)] Arc<Mapping>);
 
+/// A segment's slot headers and reader counters, apart from the publisher's claim on the name:
+/// what a dropped publisher keeps of a slot still borrowed, to free its arena memory later.
+pub(crate) struct ControlArea {
+    map: Arc<Mapping>,
+    layout: SegmentLayout,
+}
+
+impl ControlArea {
+    fn slot_ptr(&self, i: u32) -> NonNull<u8> {
+        // SAFETY: the mapping is a segment of this layout.
+        unsafe { slot_ptr(self.map.base, &self.layout, i) }
+    }
+
+    pub(crate) fn slot(&self, i: u32) -> &SlotHeader {
+        // SAFETY: an initialized SlotHeader in the mapping, which lives as long as self.
+        unsafe { self.slot_ptr(i).cast::<SlotHeader>().as_ref() }
+    }
+
+    pub(crate) fn readers(&self, i: u32) -> &[AtomicU32] {
+        // SAFETY: the mapping lives as long as self.
+        unsafe { readers_at(self.slot_ptr(i), &self.layout) }
+    }
+
+    pub(crate) fn readers_in_use(&self, order: Ordering) -> usize {
+        // SAFETY: the mapping starts with an initialized ControlHeader and lives as long as self.
+        let ctrl = unsafe { self.map.base.cast::<ControlHeader>().as_ref() };
+        (ctrl.readers_high.load(order) as usize).min(self.layout.max_subscribers as usize)
+    }
+}
+
+/// Slot `i` of a segment of `layout` mapped at `base`.
+///
+/// # Safety
+/// `base` maps such a segment, and `i < slot_count`.
+unsafe fn slot_ptr(base: NonNull<u8>, layout: &SegmentLayout, i: u32) -> NonNull<u8> {
+    debug_assert!(i < layout.slot_count);
+    let off = layout.slots_offset() + i as usize * layout.slot_stride();
+    // SAFETY: i < slot_count keeps the offset inside the mapping.
+    unsafe { base.add(off) }
+}
+
+/// The reader counters that follow the slot header at `slot`.
+///
+/// # Safety
+/// `slot` is a slot of a mapped segment of `layout` that outlives `'a`.
+unsafe fn readers_at<'a>(slot: NonNull<u8>, layout: &SegmentLayout) -> &'a [AtomicU32] {
+    // SAFETY: the counters follow the slot header inside the slot stride.
+    let p = unsafe { slot.add(size_of::<SlotHeader>()) };
+    // SAFETY: max_subscribers zero-initialized u32s, valid as AtomicU32, live for 'a.
+    unsafe {
+        std::slice::from_raw_parts(
+            p.cast::<AtomicU32>().as_ptr(),
+            layout.max_subscribers as usize,
+        )
+    }
+}
+
 pub struct Segment {
     base: NonNull<u8>,
     bytes: usize,
@@ -219,10 +276,8 @@ impl Segment {
     }
 
     fn slot_ptr(&self, i: u32) -> NonNull<u8> {
-        debug_assert!(i < self.layout.slot_count);
-        let off = self.layout.slots_offset() + i as usize * self.layout.slot_stride();
-        // SAFETY: i < slot_count keeps the offset inside the mapping.
-        unsafe { self.base.add(off) }
+        // SAFETY: self.base maps a segment of self.layout.
+        unsafe { slot_ptr(self.base, &self.layout, i) }
     }
 
     pub fn slot(&self, i: u32) -> &SlotHeader {
@@ -244,15 +299,8 @@ impl Segment {
 
     /// Reader counters of slot `i`, one per subscriber number.
     pub fn readers(&self, i: u32) -> &[AtomicU32] {
-        // SAFETY: the counters follow the slot header inside the slot stride.
-        let p = unsafe { self.slot_ptr(i).add(size_of::<SlotHeader>()) };
-        // SAFETY: max_subscribers zero-initialized u32s, valid as AtomicU32, live as long as self.
-        unsafe {
-            std::slice::from_raw_parts(
-                p.cast::<AtomicU32>().as_ptr(),
-                self.layout.max_subscribers as usize,
-            )
-        }
+        // SAFETY: the mapping outlives &self.
+        unsafe { readers_at(self.slot_ptr(i), &self.layout) }
     }
 
     /// How many subscriber numbers have ever been taken, at most `max_subscribers`: the counters a
@@ -418,6 +466,12 @@ impl Segment {
     }
     pub fn mapped(&self) -> Mapped {
         Mapped(Arc::clone(&self.map))
+    }
+    pub(crate) fn control_area(&self) -> ControlArea {
+        ControlArea {
+            map: Arc::clone(&self.map),
+            layout: self.layout,
+        }
     }
     pub fn is_publisher(&self) -> bool {
         self.publisher.is_some()

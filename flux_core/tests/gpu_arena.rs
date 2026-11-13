@@ -349,3 +349,50 @@ fn a_gpu_subscriber_reads_a_cpu_frames_arena_run_on_the_device() {
         );
     }
 }
+
+/// A GPU arena block whose slot a reader still held when its publisher went is freed once the
+/// reader lets go: the next allocation that finds no room frees it and tries again.
+#[test]
+fn a_device_block_held_past_its_publisher_is_freed_once_its_reader_lets_go() {
+    let test = "a_device_block_held_past_its_publisher_is_freed_once_its_reader_lets_go";
+    let Some(_cu) = cuda() else { return };
+    if std::env::var_os(CHILD).is_none() {
+        return in_child(test, &[("FLUX_ARENA_BYTES", (64u64 << 20).to_string())]);
+    }
+    let stream = Stream::create().unwrap();
+    let publisher = |what: &str| {
+        let name = signpost_name(&format!("/g{}_{what}", std::process::id()), FINGERPRINT);
+        let name = name.unwrap();
+        let p = Channel::create_on(
+            &name,
+            4096,
+            2,
+            DEFAULT_MAX_SUBSCRIBERS,
+            0,
+            FINGERPRINT,
+            MemoryPolicy::default(),
+            stream.clone(),
+            -1,
+            Some(0),
+        )
+        .unwrap();
+        let mut s = Channel::open(&name, FINGERPRINT, MemoryPolicy::default()).unwrap();
+        s.set_qos(QoS::new(2).unwrap().transient_local(2)).unwrap();
+        (p, s)
+    };
+    let (mut p, mut s) = publisher("orphan");
+    let mut w = p.loan().unwrap();
+    // SAFETY: w is live.
+    let (_, off) = unsafe { w.heap().unwrap().alloc_device(12 << 20, 256) }.unwrap();
+    w.data_mut()[..8].copy_from_slice(&(GPU_POS + off).to_le_bytes());
+    assert_eq!(w.commit_len(8), Published::Ok);
+    let held = s.take().unwrap();
+    drop(p);
+    let (mut q, _t) = publisher("orphan_after");
+    let w = q.loan().unwrap();
+    // SAFETY: w is live.
+    assert!(unsafe { w.heap().unwrap().alloc_device(56 << 20, 256) }.is_none());
+    drop(held);
+    // SAFETY: w is live.
+    assert!(unsafe { w.heap().unwrap().alloc_device(56 << 20, 256) }.is_some());
+}
