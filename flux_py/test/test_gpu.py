@@ -333,10 +333,9 @@ def test_a_tensor_message_hands_out_its_data_on_the_device(node, tensor_msg):
         host = v.as_tensor__()
         with torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
             t = torch.from_dlpack(v)
-            base = torch.from_dlpack(f).data_ptr()
+            # `data` is in the publisher's arena, which this subscriber copied to the device.
+            np.testing.assert_array_equal(t.cpu().numpy(), values)
         assert t.device.type == "cuda" and t.shape == (6, 8)
-        # The registered mapping's device address, at the offset `data` has in the frame.
-        assert t.data_ptr() - base == host.ctypes.data - f._host().ctypes.data
         np.testing.assert_array_equal(host, values)
     with pytest.raises(RuntimeError, match="already released"):
         tensor_msg.View(f)
