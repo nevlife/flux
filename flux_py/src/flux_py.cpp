@@ -1558,7 +1558,6 @@ NB_MODULE(_flux, m)
     .value("NOT_PUBLISHER", flux::Published::NotPublisher)
     .value("INVALID_ARGUMENT", flux::Published::InvalidArgument)
     .value("IN_USE", flux::Published::InUse)
-    .value("WRONG_DEVICE", flux::Published::WrongDevice)
     .value("FENCE_FAILED", flux::Published::FenceFailed)
     .value("GPU_WEDGED", flux::Published::GpuWedged)
     .def("__bool__", [](flux::Published p) { return p == flux::Published::Ok; });

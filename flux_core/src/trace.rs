@@ -10,7 +10,6 @@ pub const CLAIM_OK: i32 = 0;
 pub const CLAIM_RECLAIMED: i32 = 1;
 pub const CLAIM_BACKPRESSURE: i32 = 2;
 pub const CLAIM_NOT_PUBLISHER: i32 = 3;
-pub const CLAIM_WRONG_DEVICE: i32 = 4;
 pub const CLAIM_TOO_LARGE: i32 = 5;
 pub const CLAIM_FENCE_FAILED: i32 = 6;
 /// The process's GPU is wedged (`gpu::wedged`).

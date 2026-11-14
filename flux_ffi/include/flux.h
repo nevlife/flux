@@ -80,6 +80,7 @@
 
 #define FLUX_RELEASE_DEFERRED 1
 
+// This and `flux_published` gain values without an ABI bump: treat an unknown one as an error.
 enum flux_status
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
   : int32_t
@@ -118,8 +119,6 @@ enum flux_published
   // An unknown dtype, or a commit of an empty loan (already committed or aborted).
   FLUX_PUBLISHED_INVALID_ARGUMENT = 4,
   FLUX_PUBLISHED_IN_USE = 5,
-  // The payload is device memory; loan and write through `flux_loan_device_ptr`.
-  FLUX_PUBLISHED_WRONG_DEVICE = 6,
   // The stream could not be waited for. The slot stays claimed and is never reused.
   FLUX_PUBLISHED_FENCE_FAILED = 7,
   FLUX_PUBLISHED_GPU_WEDGED = 8,

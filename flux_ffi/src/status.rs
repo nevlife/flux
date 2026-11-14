@@ -3,6 +3,7 @@ use std::ffi::{CStr, CString, c_char};
 
 use flux_core::{Error, Result};
 
+/// This and `flux_published` gain values without an ABI bump: treat an unknown one as an error.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum flux_status {

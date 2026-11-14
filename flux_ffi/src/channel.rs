@@ -123,8 +123,6 @@ pub enum flux_published {
     /// An unknown dtype, or a commit of an empty loan (already committed or aborted).
     FLUX_PUBLISHED_INVALID_ARGUMENT = 4,
     FLUX_PUBLISHED_IN_USE = 5,
-    /// The payload is device memory; loan and write through `flux_loan_device_ptr`.
-    FLUX_PUBLISHED_WRONG_DEVICE = 6,
     /// The stream could not be waited for. The slot stays claimed and is never reused.
     FLUX_PUBLISHED_FENCE_FAILED = 7,
     FLUX_PUBLISHED_GPU_WEDGED = 8,
@@ -137,7 +135,6 @@ impl From<Published> for flux_published {
             Published::Backpressure => flux_published::FLUX_PUBLISHED_BACKPRESSURE,
             Published::TooLarge => flux_published::FLUX_PUBLISHED_TOO_LARGE,
             Published::NotPublisher => flux_published::FLUX_PUBLISHED_NOT_PUBLISHER,
-            Published::WrongDevice => flux_published::FLUX_PUBLISHED_WRONG_DEVICE,
             Published::FenceFailed => flux_published::FLUX_PUBLISHED_FENCE_FAILED,
             Published::GpuWedged => flux_published::FLUX_PUBLISHED_GPU_WEDGED,
         }

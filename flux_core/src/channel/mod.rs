@@ -82,9 +82,6 @@ pub enum Published {
     TooLarge,
     /// This channel was opened as a subscriber, or before a `fork()` this process came out of.
     NotPublisher,
-    /// No longer returned: `publish` copies host bytes into a device payload. Kept so the C ABI's
-    /// values do not move.
-    WrongDevice,
     /// The declared stream could not be waited for. The slot stays claimed and is never reused.
     FenceFailed,
     /// The process's GPU is wedged (`gpu::wedged`): nothing GPU works until it restarts.

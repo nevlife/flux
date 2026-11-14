@@ -283,8 +283,6 @@ enum class [[nodiscard]] Published : std::int32_t {
   InvalidArgument = FLUX_PUBLISHED_INVALID_ARGUMENT,
   // Another thread is in a call on the same publisher.
   InUse = FLUX_PUBLISHED_IN_USE,
-  // The payload is device memory: loan, and write through device_ptr().
-  WrongDevice = FLUX_PUBLISHED_WRONG_DEVICE,
   // The declared stream could not be waited for; the slot stays claimed for good.
   FenceFailed = FLUX_PUBLISHED_FENCE_FAILED,
   // A sticky CUDA error wedged this process's GPU (gpu::wedged()); restart the process.
@@ -335,8 +333,6 @@ inline auto to_string(Published p) noexcept -> const char *
       return "invalid argument";
     case Published::InUse:
       return "in use by another thread";
-    case Published::WrongDevice:
-      return "payload is device memory";
     case Published::FenceFailed:
       return "stream wait failed";
     case Published::GpuWedged:
