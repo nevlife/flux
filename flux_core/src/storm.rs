@@ -33,7 +33,7 @@ pub(crate) fn in_storm(test: &str) -> bool {
         if parked {
             child.env("FLUX_DISABLE_FUTEX_WAITV", "1");
         }
-        let out = child.output().unwrap();
+        let out = crate::sys::test_output(&mut child);
         let stdout = String::from_utf8_lossy(&out.stdout);
         assert!(
             out.status.success() && stdout.contains("1 passed"),

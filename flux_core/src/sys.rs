@@ -685,6 +685,22 @@ pub(crate) unsafe fn test_fork() -> libc::pid_t {
     pid
 }
 
+/// Runs `cmd` to its end, spawned outside a test holding `TEST_FORKS`: until its exec the child
+/// holds a copy of every descriptor, close-on-exec ones too.
+#[cfg(test)]
+pub(crate) fn test_output(cmd: &mut std::process::Command) -> std::process::Output {
+    let child = {
+        let _held = TEST_FORKS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    };
+    child.wait_with_output().unwrap()
+}
+
 /// Runs `f` with no `fork()` in between. `f` may open and close `LiveFd`s.
 pub(crate) fn fork_safe<R>(f: impl FnOnce() -> R) -> R {
     watch_fork();
@@ -880,11 +896,11 @@ mod tests {
         const ENV: &str = "FLUX_TEST_REAPER";
         let name = "sys::tests::the_reaper_runs_at_normal_priority_whatever_starts_it";
         if std::env::var_os(ENV).is_none() {
-            let out = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([name, "--exact", "--test-threads=1", "--nocapture"])
-                .env(ENV, "1")
-                .output()
-                .unwrap();
+            let out = super::test_output(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([name, "--exact", "--test-threads=1", "--nocapture"])
+                    .env(ENV, "1"),
+            );
             let stdout = String::from_utf8_lossy(&out.stdout);
             assert!(
                 out.status.success() && stdout.contains("1 passed"),

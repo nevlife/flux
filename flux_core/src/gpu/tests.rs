@@ -404,11 +404,11 @@ fn child(test: &str, env: &str) -> bool {
     if std::env::var_os(env).is_some() {
         return true;
     }
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([test, "--exact", "--include-ignored"])
-        .env(env, "1")
-        .output()
-        .unwrap();
+    let out = crate::sys::test_output(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([test, "--exact", "--include-ignored"])
+            .env(env, "1"),
+    );
     let log = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success() && log.contains("1 passed"),
