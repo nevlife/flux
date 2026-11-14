@@ -668,8 +668,8 @@ impl ChannelShared {
     }
 
     /// Whether this subscriber reaches `slot`: its import of a device payload and its copy have
-    /// memory there, fetched or given now if not. False when the device or the publisher refused:
-    /// nothing was copied, so the borrow can go back.
+    /// memory there, mapped or given now if not. False when the device refused or the publisher's
+    /// chunks have not come: nothing was copied, so the borrow can go back.
     pub(super) fn reach(&self, slot: u32) -> bool {
         let end = self.slot_offset(slot) + self.seg.layout().payload_stride();
         if let Some(i) = self.seg.imported()

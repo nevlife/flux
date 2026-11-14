@@ -107,9 +107,10 @@ impl FrameView {
                         .ok()
                 })
                 .as_ref()?;
-            // shortcut: a frame past the chunks imported fetches the rest here, a round trip on
-            // the reader's thread; fetch them as the publisher grows once an executor is seen to
-            // stall on it.
+            // Chunks made since come on the import's connection as the publisher makes them.
+            // shortcut: the process's first frame of an arena waits here, up to 1 s, for the
+            // chunks made before it asked; ask when the channel attaches once a late reader is
+            // seen to stall on it.
             if m.id() != f.id || m.reach(f.chunks).is_err() {
                 return None;
             }

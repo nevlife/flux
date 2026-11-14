@@ -26,7 +26,7 @@ use super::driver::{
     MEM_GRANULARITY_MINIMUM, MEM_HANDLE_TYPE_POSIX_FD, MEM_LOCATION_TYPE_DEVICE,
     MEM_LOCATION_TYPE_HOST_NUMA, MemAccessDesc, MemAllocationProp, MemLocation, SUCCESS, Vmm,
 };
-use super::fd::{self, ENDPOINT_PREFIX, FdServer, Share};
+use super::fd::{ENDPOINT_PREFIX, FdServer, Mailbox, Share};
 use super::ledger::{self, Held};
 use super::vmm;
 use crate::arena::{self as host_arena, Heap};
@@ -173,7 +173,7 @@ pub struct GpuArena {
     target: Target,
     shadow: NonNull<u8>,
     inner: PiMutex<Inner>,
-    chunks: Arc<PiMutex<Vec<OwnedFd>>>,
+    share: Arc<Share>,
     _server: FdServer,
     born: u32,
 }
@@ -213,7 +213,7 @@ fn grow(
     vmm: &Vmm,
     t: Target,
     handles: &mut Vec<AllocHandle>,
-    chunks: &PiMutex<Vec<OwnedFd>>,
+    share: &Share,
     from: u64,
     to: u64,
 ) -> io::Result<()> {
@@ -261,7 +261,7 @@ fn grow(
         // SAFETY: fcntl on a descriptor this process owns.
         unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
         handles.push(h);
-        chunks.lock().push(fd);
+        share.push(fd);
     }
     Ok(())
 }
@@ -321,14 +321,8 @@ impl GpuArena {
             .ok_or_else(|| Error::Unsupported("cuDeviceGetUuid failed".into()))?;
         let id = host_arena::random();
         let endpoint = endpoint_of(id);
-        let chunks = Arc::new(PiMutex::new(Vec::new()));
-        let server = FdServer::start(
-            &endpoint,
-            Share {
-                list: Arc::clone(&chunks),
-                chunk: CHUNK,
-            },
-        )?;
+        let share = Share::new(CHUNK);
+        let server = FdServer::start(&endpoint, Arc::clone(&share))?;
         let target = Target {
             device,
             ctx: ctx as usize,
@@ -341,7 +335,7 @@ impl GpuArena {
                 shadow,
                 size as u64,
                 CHUNK as u64,
-                Some(&mut |from, to| grow(vmm, target, &mut handles, &chunks, from, to)),
+                Some(&mut |from, to| grow(vmm, target, &mut handles, &share, from, to)),
             )
         });
         let heap = heap.map_err(|e| Error::io("the first GPU arena chunk", &endpoint, e))?;
@@ -354,7 +348,7 @@ impl GpuArena {
             target,
             shadow,
             inner: PiMutex::new(Inner { heap, handles }),
-            chunks,
+            share,
             _server: server,
             born: sys::fork_gen(),
         })
@@ -370,10 +364,10 @@ impl GpuArena {
         let t = self.target;
         let mut inner = self.inner.lock();
         let Inner { heap, handles } = &mut *inner;
-        let chunks = &self.chunks;
+        let share = &self.share;
         core.with_context(t.ctx as *mut c_void, || {
             heap.alloc(bytes as u64, align as u64, &mut |from, to| {
-                grow(vmm, t, handles, chunks, from, to)
+                grow(vmm, t, handles, share, from, to)
             })
         })
     }
@@ -395,9 +389,7 @@ impl GpuArena {
 
     /// Chunks made so far; a frame names how many its blocks reach.
     pub fn chunks(&self) -> u32 {
-        #[allow(clippy::cast_possible_truncation)]
-        let n = self.chunks.lock().len() as u32;
-        n
+        self.share.count()
     }
 
     pub fn endpoint(&self) -> &str {
@@ -522,6 +514,7 @@ pub fn import_for(f: &GpuFrame) -> Result<Arc<GpuArenaImport>> {
 struct ImportInner {
     handles: Vec<AllocHandle>,
     cpu: Cpu,
+    mail: Mailbox,
 }
 
 // SAFETY: the reserved ranges are fixed while it lives and the rest is behind a lock.
@@ -562,6 +555,7 @@ impl GpuArenaImport {
         if rc != SUCCESS {
             return Err(Error::Unsupported("cuMemAddressReserve failed".into()));
         }
+        let mail = Mailbox::new(&endpoint, CHUNK);
         Ok(GpuArenaImport {
             id,
             endpoint,
@@ -574,6 +568,7 @@ impl GpuArenaImport {
             inner: PiMutex::new(ImportInner {
                 handles: Vec::new(),
                 cpu: Cpu::None,
+                mail,
             }),
             mapped: AtomicU32::new(0),
             cpu_base: AtomicUsize::new(0),
@@ -581,8 +576,8 @@ impl GpuArenaImport {
         })
     }
 
-    /// Imports chunks until `chunks` of them are mapped. A round trip to the publisher, so a
-    /// frame asks for this only when it reaches past what is mapped.
+    /// Imports chunks until `chunks` of them are mapped: the ones the publisher sent since. Only the
+    /// first call waits, for the chunks made before it asked.
     pub fn reach(&self, chunks: u32) -> Result<()> {
         // order: arena_mapped
         if self.mapped.load(Ordering::Acquire) >= chunks {
@@ -600,12 +595,9 @@ impl GpuArenaImport {
                 self.endpoint, self.size
             )));
         }
-        let fds = fd::fetch_chunks(&self.endpoint, have, CHUNK)?;
-        if fds.len() < (chunks - have) as usize {
-            return Err(Error::NotReady(format!(
-                "the GPU arena '{}' has fewer chunks than a frame reaches",
-                self.endpoint
-            )));
+        let fds = inner.mail.collect(have, chunks)?;
+        if fds.is_empty() {
+            return Err(self.short());
         }
         let (core, vmm) = vmm::vmm()?;
         let r = core.with_context(self.ctx as *mut c_void, || {
@@ -621,9 +613,21 @@ impl GpuArenaImport {
         };
         self.cpu_base.store(cpu, Ordering::Relaxed);
         #[allow(clippy::cast_possible_truncation)]
-        self.mapped
-            .store(inner.handles.len() as u32, Ordering::Release); // order: arena_mapped
-        r
+        let mapped = inner.handles.len() as u32;
+        self.mapped.store(mapped, Ordering::Release); // order: arena_mapped
+        r?;
+        if mapped < chunks {
+            return Err(self.short());
+        }
+        Ok(())
+    }
+
+    /// A frame reaches chunks that have not come: the publisher has not served this process yet.
+    fn short(&self) -> Error {
+        Error::NotReady(format!(
+            "the GPU arena '{}' has not sent the chunks a frame reaches",
+            self.endpoint
+        ))
     }
 
     fn import(&self, vmm: &Vmm, inner: &mut ImportInner, fd: &OwnedFd) -> Result<()> {

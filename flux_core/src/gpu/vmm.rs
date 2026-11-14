@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 use crate::segment::SegmentId;
 use crate::sys::{self, PiMutex};
 
-use super::fd::{ENDPOINT_PREFIX, FdServer, Share, fetch_chunks};
+use super::fd::{ENDPOINT_PREFIX, FdServer, Mailbox, Share};
 
 /// In /dev/shm, so whoever sees the segment sees its endpoint: an abstract name would follow the
 /// network namespace instead. Derived from the segment object, so a restarted publisher's new
@@ -258,7 +258,7 @@ fn create_on(vmm: &Vmm, device: c_int, bytes: usize) -> Result<AllocHandle> {
 /// hands out in order. The server is dropped first, so no descriptor is handed out once they close.
 pub(crate) struct DeviceAlloc {
     _server: FdServer,
-    fds: Arc<PiMutex<Vec<OwnedFd>>>,
+    share: Arc<Share>,
     range: Range,
 }
 
@@ -275,18 +275,12 @@ impl DeviceAlloc {
         let range = Range::reserve(ordinal, bytes, |vmm, device| {
             slot_chunk(vmm, device, stride)
         })?;
-        let fds = Arc::new(PiMutex::new(Vec::new()));
-        let server = FdServer::start(
-            endpoint,
-            Share {
-                list: Arc::clone(&fds),
-                chunk: range.chunk,
-            },
-        )?;
+        let share = Share::new(range.chunk);
+        let server = FdServer::start(endpoint, Arc::clone(&share))?;
         ledger::made(Held::Export(range.base), range.size);
         let alloc = DeviceAlloc {
             _server: server,
-            fds,
+            share,
             range,
         };
         alloc.back(backed)?;
@@ -320,7 +314,7 @@ impl DeviceAlloc {
             // chunk alive and writable.
             // SAFETY: fcntl on a descriptor this process owns.
             unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
-            self.fds.lock().push(fd);
+            self.share.push(fd);
             Ok(h)
         })
     }
@@ -374,9 +368,9 @@ impl Drop for DeviceBuffer {
 }
 
 /// A subscriber's mapping of the publisher's payload, readable only: a consuming kernel cannot
-/// write the slot. Chunks are fetched from the endpoint as frames reach them (`reach`).
+/// write the slot. Chunks come on the endpoint's connection as the publisher adds them (`reach`).
 pub(crate) struct DeviceImport {
-    endpoint: String,
+    mail: PiMutex<Mailbox>,
     range: Range,
 }
 
@@ -394,7 +388,7 @@ impl DeviceImport {
         })?;
         ledger::made(Held::Import(range.base), range.size);
         let import = DeviceImport {
-            endpoint: endpoint.to_owned(),
+            mail: PiMutex::new(Mailbox::new(endpoint, range.chunk)),
             range,
         };
         import.reach(backed)?;
@@ -405,22 +399,20 @@ impl DeviceImport {
         self.range.base
     }
 
-    /// Maps the publisher's chunks until the first `bytes` are mapped: a round trip to the
-    /// publisher, so a frame asks for this only when it reaches past what is mapped.
+    /// Maps the publisher's chunks until the first `bytes` are mapped: the ones it sent since. Only
+    /// the first call (`open`'s) waits, for the chunks made before it asked.
     pub(crate) fn reach(&self, bytes: usize) -> Result<()> {
         if self.range.covers(bytes) {
             return Ok(());
         }
-        let have = self.range.backed.load(Ordering::Acquire) / self.range.chunk; // order: backed
+        let mut mail = self.mail.lock();
+        let chunk = self.range.chunk;
+        let have = self.range.backed.load(Ordering::Acquire) / chunk; // order: backed
         #[allow(clippy::cast_possible_truncation)]
-        let fds = fetch_chunks(&self.endpoint, have as u32, self.range.chunk)?;
-        if have + fds.len() < bytes.div_ceil(self.range.chunk) {
-            return Err(Error::NotReady(format!(
-                "device endpoint '{}' has fewer chunks than a frame reaches",
-                self.endpoint
-            )));
-        }
-        self.range.extend(bytes, MEM_ACCESS_READ, |vmm, i| {
+        let fds = mail.collect(have as u32, bytes.div_ceil(chunk) as u32)?;
+        // All that came, past `bytes` too: the publisher does not send a chunk twice.
+        let reached = ((have + fds.len()) * chunk).min(self.range.size);
+        self.range.extend(reached, MEM_ACCESS_READ, |vmm, i| {
             let fd = fds
                 .get(i - have)
                 .ok_or_else(|| Error::NotReady("a chunk was imported meanwhile".into()))?;
@@ -440,7 +432,13 @@ impl DeviceImport {
                 ));
             }
             Ok(h)
-        })
+        })?;
+        if !self.range.covers(bytes) {
+            return Err(Error::NotReady(
+                "the publisher has not sent the device chunks a frame reaches".into(),
+            ));
+        }
+        Ok(())
     }
 }
 

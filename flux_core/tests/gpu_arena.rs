@@ -396,3 +396,67 @@ fn a_device_block_held_past_its_publisher_is_freed_once_its_reader_lets_go() {
     // SAFETY: w is live.
     assert!(unsafe { w.heap().unwrap().alloc_device(56 << 20, 256) }.is_some());
 }
+
+/// A reader that has its publisher's chunks gets the ones the publisher adds later without asking:
+/// the publisher sends each as it makes it, before any frame names it. So a publisher that stops
+/// right after growing (a debugger, a CPU taken by real-time threads) costs the reader no wait,
+/// and a frame past what was ever made is refused at once, frame after frame. In a child process,
+/// stopped with SIGSTOP once it has grown.
+#[test]
+fn a_reader_does_not_wait_for_a_publisher_that_stopped_after_growing() {
+    use std::io::{BufRead, Write};
+    let test = "a_reader_does_not_wait_for_a_publisher_that_stopped_after_growing";
+    if std::env::var_os(CHILD).is_some() {
+        let Some(_cu) = cuda() else { return };
+        let a = GpuArena::create(0, 256 << 20, Some(Place::Device)).unwrap();
+        println!("\nENDPOINT {} {}", a.endpoint(), a.size());
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).unwrap();
+        let _ = a.alloc(CHUNK + 4096, 64).unwrap();
+        assert_eq!(a.chunks(), 2);
+        // SAFETY: stops this process until the parent kills it.
+        unsafe { libc::raise(libc::SIGSTOP) };
+        return;
+    }
+    let Some(_cu) = cuda() else { return };
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([test, "--exact", "--nocapture"])
+        .env(CHILD, "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let (endpoint, size) = loop {
+        let line = lines.next().expect("the child's endpoint").unwrap();
+        if let Some((e, s)) = line
+            .strip_prefix("ENDPOINT ")
+            .and_then(|r| r.split_once(' '))
+        {
+            break (e.to_owned(), s.parse().unwrap());
+        }
+    };
+    let m = GpuArenaImport::open(&endpoint, size, Place::Device, 0).unwrap();
+    m.reach(1).unwrap();
+    child.stdin.take().unwrap().write_all(b"grow\n").unwrap();
+    let stat = format!("/proc/{}/stat", child.id());
+    while !std::fs::read_to_string(&stat).unwrap().contains(") T ") {
+        std::thread::yield_now();
+    }
+    let quick = std::time::Duration::from_millis(100);
+    let t = std::time::Instant::now();
+    let grown = m.reach(2);
+    let took = t.elapsed();
+    let mut past = Vec::new();
+    for _ in 0..3 {
+        let t = std::time::Instant::now();
+        past.push((m.reach(3).is_err(), t.elapsed()));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(grown.is_ok() && took < quick, "{grown:?} after {took:?}");
+    assert!(
+        past.iter().all(|&(refused, took)| refused && took < quick),
+        "{past:?}"
+    );
+}
