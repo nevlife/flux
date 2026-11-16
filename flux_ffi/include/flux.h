@@ -517,7 +517,7 @@ uint64_t flux_channel_cursor(const struct flux_channel *ch);
 
 uint32_t flux_channel_attach_generation(const struct flux_channel *ch);
 
-// Why a restarted publisher refused this subscriber; takes find nothing until it restarts again.
+// Why takes find nothing until the publisher restarts: it refused us, or a slot missed our policy.
 flux_status flux_channel_attach_status(struct flux_channel *ch);
 
 bool flux_channel_orphaned(const struct flux_channel *ch);

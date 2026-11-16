@@ -793,7 +793,8 @@ public:
     return ch_ ? flux_channel_attach_generation(ch_) : 0;
   }
   [[nodiscard]] auto orphaned() const noexcept -> bool { return ch_ && flux_channel_orphaned(ch_); }
-  // Throws why a restarted publisher refused this subscriber; takes find nothing until it restarts.
+  // Throws why takes find nothing until the publisher restarts: the restarted publisher refused
+  // this subscriber, or a slot it added would not commit or lock as the memory policy asks.
   void check_attach()
   {
     if (ch_) {

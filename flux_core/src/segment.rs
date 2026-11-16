@@ -144,6 +144,8 @@ pub struct Segment {
     payload_readonly: bool,
     /// The publisher's slots with payload memory (`ControlHeader::slots_ready`), its own count.
     ready: AtomicU32,
+    /// A slot would not commit or lock as the publisher asked: it adds no more.
+    grown_out: AtomicBool,
     /// The union of what the subscriptions sharing the mapping asked for, and the slots it covers.
     pages_committed: AtomicBool,
     pages_locked: AtomicBool,
@@ -260,6 +262,7 @@ impl Segment {
             id,
             payload_readonly: false,
             ready: AtomicU32::new(ready),
+            grown_out: AtomicBool::new(false),
             pages_committed: AtomicBool::new(false),
             pages_locked: AtomicBool::new(false),
             committed_to: AtomicUsize::new(0),
@@ -442,6 +445,7 @@ impl Segment {
             id: self.id,
             payload_readonly: self.payload_readonly,
             ready: AtomicU32::new(self.ready.load(Ordering::Relaxed)),
+            grown_out: AtomicBool::new(false),
             pages_committed: AtomicBool::new(false),
             pages_locked: AtomicBool::new(false),
             committed_to: AtomicUsize::new(0),
@@ -522,12 +526,13 @@ impl Segment {
     }
 
     /// The publisher of a shm segment gives the next slot its memory, in `/dev/shm` committed or
-    /// locked as `mem` asks, or on the device, and returns it. None once every slot has memory, or
-    /// when there is no room: then nothing changed.
+    /// locked as `mem` asks, or on the device, and returns it. None once every slot has memory,
+    /// when there is no room, and from the first slot that would not commit or lock: a slot short
+    /// of what `mem` asks is not used.
     pub(crate) fn add_slot(&self, mem: MemoryPolicy) -> Option<u32> {
         let fd = self.publisher_fd()?;
         let s = self.ready.load(Ordering::Relaxed);
-        if s >= self.layout.slot_count {
+        if s >= self.layout.slot_count || self.grown_out.load(Ordering::Relaxed) {
             return None;
         }
         let stride = self.layout.payload_stride();
@@ -544,10 +549,12 @@ impl Segment {
             };
             alloc.back((s as usize + 1) * stride).ok()?;
         }
+        if self.cover_to(s + 1, mem).is_err() {
+            self.grown_out.store(true, Ordering::Relaxed);
+            return None;
+        }
         self.ready.store(s + 1, Ordering::Relaxed);
         self.ctrl().slots_ready.store(s + 1, Ordering::Release); // order: slots_ready
-        // Best effort, as a subscriber's: the slot is usable without it.
-        let _ = self.cover_to(s + 1, mem);
         Some(s)
     }
 
@@ -561,18 +568,18 @@ impl Segment {
 
     /// Before a subscriber reads slot `s`: covers the slots added since, as `mem` asks. A check of
     /// one word unless `mem` commits or locks and `s` is past what is covered.
-    pub(crate) fn cover_slot(&self, s: u32, mem: MemoryPolicy) {
+    pub(crate) fn cover_slot(&self, s: u32, mem: MemoryPolicy) -> Result<()> {
         let covered = if mem.lock {
             self.locked_to.load(Ordering::Relaxed)
         } else if mem.precommit {
             self.committed_to.load(Ordering::Relaxed)
         } else {
-            return;
+            return Ok(());
         };
         if self.cover_end(s + 1) > covered {
-            // Best effort here: the take has the frame either way.
-            let _ = self.cover_to(self.slots_ready().max(s + 1), mem);
+            return self.cover_to(self.slots_ready().max(s + 1), mem);
         }
+        Ok(())
     }
 
     #[cfg(test)]

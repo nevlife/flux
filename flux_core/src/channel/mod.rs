@@ -176,8 +176,8 @@ pub struct Channel {
     /// Set by the first frame taken, so `set_qos` no longer moves the cursor.
     taken: bool,
     refused: Refused,
-    /// Why the publisher of this signpost epoch refused a re-attach. Not retried until the epoch
-    /// moves again.
+    /// Why the publisher of this signpost epoch refused a re-attach, or the slot of it that would
+    /// not lock. Not retried until the epoch moves again.
     attach_error: Option<(u32, Error)>,
     order: ClaimOrder,
     /// Declared at construction and kept across attaches, with the fence statistics.
@@ -620,7 +620,11 @@ impl Channel {
             }
             // SAFETY: borrowed with the ticket unchanged, so the publisher is off this slot.
             let meta = unsafe { *sl.meta.get() };
-            self.sh.seg.cover_slot(s, self.mem);
+            if let Err(e) = self.sh.seg.cover_slot(s, self.mem) {
+                counter.fetch_sub(1, Ordering::Release); // order: readers
+                self.attach_error = Some((self.signpost_epoch, e));
+                break;
+            }
             if t > self.cursor + 1 {
                 self.lost = self.lost.saturating_add(t - self.cursor - 1);
             }
@@ -757,6 +761,9 @@ impl Channel {
             return false;
         }
         self.maybe_reattach();
+        if self.attach_error.is_some() {
+            return false;
+        }
         if self.sh.lease.get().is_none() {
             let Ok(l) = reader::lease_for(&self.sh.seg) else {
                 self.refused.no_reader += 1;
@@ -957,8 +964,9 @@ impl Channel {
     pub fn attach_generation(&self) -> u32 {
         self.attach_gen
     }
-    /// Why the restarted publisher refused this consumer, until it restarts again. Takes find
-    /// nothing meanwhile.
+    /// Why this consumer cannot read the publisher's frames, until it restarts: the restarted
+    /// publisher refused it, or a slot the publisher added would not commit or lock as the
+    /// consumer's `MemoryPolicy` asks. Takes find nothing meanwhile.
     pub fn attach_error(&self) -> Option<&Error> {
         self.attach_error.as_ref().map(|(_, e)| e)
     }

@@ -126,3 +126,105 @@ fn a_subscriber_that_commits_its_pages_commits_the_added_slots_it_reads() {
         l.payload_offset() + ready * l.payload_stride()
     );
 }
+
+const CHILD_ENV: &str = "FLUX_GROW_CHILD";
+
+/// Runs `test` of this file in a child process, which lowers its own `RLIMIT_MEMLOCK`.
+fn in_child(test: &str) {
+    let out = crate::sys::test_output(
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([&format!("channel::grow::{test}"), "--exact", "--nocapture"])
+            .env(CHILD_ENV, "1"),
+    );
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Lowers `RLIMIT_MEMLOCK` to what this process has locked, so its next `mlock` fails. False where
+/// the limit does not bind.
+fn lock_no_more() -> bool {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let kib: libc::rlim_t = status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmLck:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+        .unwrap();
+    let lim = libc::rlimit {
+        rlim_cur: kib * 1024,
+        rlim_max: kib * 1024,
+    };
+    // SAFETY: a valid rlimit, lowering this process's own.
+    let set = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &raw const lim) };
+    assert_eq!(set, 0);
+    // SAFETY: plain syscall. Root locks past the limit.
+    unsafe { libc::geteuid() != 0 }
+}
+
+const LOCKED: MemoryPolicy = MemoryPolicy {
+    precommit: true,
+    lock: true,
+};
+
+#[test]
+fn a_subscriber_that_cannot_lock_an_added_slot_takes_nothing_more() {
+    in_child("child_subscriber_short_of_locked_memory");
+}
+
+#[test]
+fn child_subscriber_short_of_locked_memory() {
+    if std::env::var_os(CHILD_ENV).is_none() {
+        return;
+    }
+    let n = name("sublock");
+    let mut p = publisher(&n, 0);
+    let mut s = Channel::open(&n, NO_SCHEMA, LOCKED).unwrap();
+    s.set_qos(QoS::new(20).unwrap()).unwrap();
+    if !lock_no_more() {
+        println!("skipped: the memlock limit does not bind");
+        return;
+    }
+    for i in 0..30u8 {
+        assert_eq!(p.publish(&[i]), Published::Ok);
+    }
+    assert!(p.slots_ready() > START_SLOTS);
+    let took = std::iter::from_fn(|| s.take()).count();
+    assert!(took < 20, "took {took} frames from slots it could not lock");
+    assert!(s.attach_error().is_some());
+    assert_eq!(p.publish(&[30]), Published::Ok);
+    assert!(s.take().is_none());
+}
+
+#[test]
+fn a_publisher_does_not_add_a_slot_it_cannot_lock() {
+    in_child("child_publisher_short_of_locked_memory");
+}
+
+#[test]
+fn child_publisher_short_of_locked_memory() {
+    if std::env::var_os(CHILD_ENV).is_none() {
+        return;
+    }
+    let n = name("publock");
+    let mut p =
+        Channel::create(&n, SLOT, 0, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, LOCKED).unwrap();
+    let mut s = subscriber(&n, QoS::new(1).unwrap().max_borrow(12).unwrap());
+    if !lock_no_more() {
+        println!("skipped: the memlock limit does not bind");
+        return;
+    }
+    let mut held = Vec::new();
+    for i in 0..START_SLOTS {
+        #[allow(clippy::cast_possible_truncation)]
+        let b = i as u8;
+        assert_eq!(p.publish(&[b]), Published::Ok);
+        held.push(s.take().unwrap());
+    }
+    for _ in 0..2 {
+        assert_eq!(p.publish(&[0]), Published::Backpressure);
+        assert_eq!(p.slots_ready(), START_SLOTS);
+    }
+}

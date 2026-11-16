@@ -934,7 +934,7 @@ pub unsafe extern "C" fn flux_channel_attach_generation(ch: *const flux_channel)
     unsafe { chan_ref(ch) }.attach_generation()
 }
 
-/// Why a restarted publisher refused this subscriber; takes find nothing until it restarts again.
+/// Why takes find nothing until the publisher restarts: it refused us, or a slot missed our policy.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_channel_attach_status(ch: *mut flux_channel) -> flux_status {
     // SAFETY: valid handle.

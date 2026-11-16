@@ -398,7 +398,8 @@ private:
   }
 
   // A publisher that died leaves this mapping behind, and a restarted one that refused this
-  // subscriber leaves nothing to take. Either way the mapping goes; a refusal is thrown.
+  // subscriber, or a slot that would not lock, leaves nothing to take. Either way the mapping
+  // goes; a refusal is thrown.
   void drop_if_gone()
   {
     if (ch_->orphaned()) {
