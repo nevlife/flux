@@ -94,6 +94,9 @@ pub struct ChannelShared {
     /// Deferred releases and timed-out fences, given back by the channel's next take, claim or
     /// executor pass once the waiter saw their work done.
     pub(super) late: PiMutex<Vec<Deferred>>,
+    /// What a reap took out of `late`, empty between reaps. Swapped with `late` so both keep their
+    /// room and a reap allocates nothing.
+    reaping: PiMutex<Vec<Deferred>>,
     pub(super) late_count: AtomicU32,
     /// Set when the `Channel` goes: deferred work from views still out is handed to the waiter
     /// instead, since nobody is left to reap it.
@@ -208,6 +211,7 @@ impl ChannelShared {
             leases_leaked: AtomicU32::new(0),
             misreleased: AtomicU64::new(0),
             late: PiMutex::new(Vec::new()),
+            reaping: PiMutex::new(Vec::new()),
             late_count: AtomicU32::new(0),
             orphaned_late: AtomicBool::new(false),
             gpu_waker: PiMutex::new(Weak::new()),
@@ -794,14 +798,15 @@ impl ChannelShared {
         // Asked with the lock let go: `done` may call into the driver, and a release on another
         // thread takes this lock to defer. Only this channel's thread reaps, so what it took out
         // is its alone.
-        let all = std::mem::take(&mut *self.late.lock());
-        let (ended, wait): (Vec<Deferred>, Vec<Deferred>) = all
-            .into_iter()
-            .partition(|d| d.late.done() || d.late.failed());
-        self.late.lock().extend(wait);
-        #[allow(clippy::cast_possible_truncation)]
-        let n = ended.len() as u32;
-        for d in ended {
+        let mut work = self.reaping.lock();
+        std::mem::swap(&mut *self.late.lock(), &mut *work);
+        let mut n = 0u32;
+        for d in work.drain(..) {
+            if !d.late.done() && !d.late.failed() {
+                self.late.lock().push(d);
+                continue;
+            }
+            n += 1;
             if d.late.failed() {
                 if d.seam == Seam::Release {
                     ledger::kept(self.trace_handle(), d.slot);
