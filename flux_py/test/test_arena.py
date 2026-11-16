@@ -183,6 +183,47 @@ def test_a_frame_larger_than_its_slot_goes_through_the_arena(node, mod):
     check(mod.View(frame), "from python")
 
 
+ONCE = """
+import sys
+
+import rclpy
+from rclpy.node import Node
+
+import flux
+
+sys.path.insert(0, {py!r})
+import flux_test_flux.blob as mod
+
+
+def mapped():
+    with open("/proc/self/maps") as f:
+        return sum(1 for line in f if "arena-" in line and line.split()[1] == "r--s")
+
+
+rclpy.init()
+node = Node("flux_arena_once")
+pub = flux.Publisher(node, {topic!r}, fingerprint=mod.FINGERPRINT__, slot_size=4096, slot_count=4)
+sub = flux.Subscription(node, {topic!r}, fingerprint=mod.FINGERPRINT__)
+seen = []
+for _ in range(3):
+    b = mod.build__(pub)
+    b.alloc__data({run})[:] = 5
+    assert b.commit__() == flux.Published.OK
+    v = mod.View(sub.take())
+    assert v.data[-1] == 5
+    del v
+    seen.append(mapped())
+print(*seen, flush=True)
+"""
+
+
+def test_a_subscription_maps_the_arena_once_not_per_message(mod):
+    # A process of its own, so no other channel of this module holds the mapping.
+    code = textwrap.dedent(ONCE.format(py=mod.py, topic=topic("once"), run=RUN))
+    out = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
+    assert out.stdout.split() == ["1", "1", "1"], "mapped while the subscription lives"
+
+
 @needs_cxx
 def test_cpp_reads_what_python_put_in_the_arena(node, mod, driver):
     t = topic("tocpp")

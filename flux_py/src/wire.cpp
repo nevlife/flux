@@ -150,14 +150,18 @@ class Reader
 public:
   explicit Reader(nb::handle buf) : buf_(buf, false)
   {
-    const std::uint8_t * base = nullptr;
-    std::size_t n = 0;
-    arena_ = flux_arena_acquire(
-      reinterpret_cast<const std::uint8_t *>(buf_.data()), buf_.size(), &base, &n);  // NOLINT
-    heap_ = {reinterpret_cast<const std::byte *>(base), arena_ != nullptr ? n : 0};  // NOLINT
-    // A take result reaches across PCIe too: its device fields, or a GPU reader's copies.
+    // A take result reaches its arena through its channel, which maps it once, and across PCIe
+    // too: its device fields, or a GPU reader's copies.
     if (const flux::FrameView * v = flux_py::frame_of(buf, &device_)) {
+      heap_ = v->heap();
       gpu_ = v->gpu_heap();
+    }
+    if (heap_.empty()) {
+      const std::uint8_t * base = nullptr;
+      std::size_t n = 0;
+      arena_ = flux_arena_acquire(
+        reinterpret_cast<const std::uint8_t *>(buf_.data()), buf_.size(), &base, &n);  // NOLINT
+      heap_ = {reinterpret_cast<const std::byte *>(base), arena_ != nullptr ? n : 0};  // NOLINT
     }
   }
   ~Reader() { flux_arena_release(arena_); }
@@ -183,7 +187,8 @@ public:
 
 private:
   Buffer buf_;
-  // The arena the frame's trailer names, mapped while this reader and its views live.
+  // The arena the trailer of bytes that are no take result names, mapped while this reader and
+  // its views live.
   const void * arena_ = nullptr;
   flux::wire::Span<const std::byte> heap_;
   flux::wire::GpuHeap gpu_;
