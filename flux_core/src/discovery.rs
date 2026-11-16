@@ -375,16 +375,15 @@ pub fn open_publisher_segment(
     )))
 }
 
-/// Neither 0 nor `last`, which subscribers would not see as a restart.
+/// Neither 0 nor `last`, which subscribers would not see as a restart. From the clock where
+/// `getrandom` fails, and the caller's tries are bounded.
 fn random_epoch(last: u32) -> u32 {
-    loop {
-        let mut b = [0u8; 4];
-        // SAFETY: b is a valid 4-byte buffer.
-        let n = unsafe { libc::getrandom(b.as_mut_ptr().cast(), b.len(), 0) };
-        let e = u32::from_ne_bytes(b);
-        if n == 4 && e != 0 && e != last {
-            return e;
-        }
+    #[allow(clippy::cast_possible_truncation)]
+    let e = arena::random() as u32;
+    if e == 0 || e == last {
+        last.wrapping_add(2).max(1)
+    } else {
+        e
     }
 }
 
@@ -668,6 +667,7 @@ pub fn sweep_dead_once() {
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::AsRawFd;
     use std::sync::atomic::Ordering;
 
     use super::{
@@ -839,6 +839,25 @@ mod tests {
             open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None, 1)
                 .unwrap();
         assert_eq!(read_channel_stats(&name).epoch, 1);
+    }
+
+    /// A live object under the next epoch's name sends the publisher to a random one. It opens
+    /// even where `getrandom` fails: a seccomp filter, an old kernel.
+    #[test]
+    fn a_publisher_opens_past_a_live_object_under_its_next_name() {
+        let name = signpost_name(&format!("/d{}_squat", std::process::id()), NO_SCHEMA).unwrap();
+        let next = super::segment_name(&name, 1);
+        let planted = crate::sys::shm_open(&next, libc::O_CREAT | libc::O_RDWR).unwrap();
+        assert!(crate::sys::lock_read(
+            planted.as_raw_fd(),
+            crate::layout::PUBLISHER_LOCK_BYTE
+        ));
+        let p =
+            open_publisher_segment(&name, 64, 1, DEFAULT_MAX_SUBSCRIBERS, 0, NO_SCHEMA, None, 1);
+        crate::sys::shm_unlink(&next);
+        let epoch = read_channel_stats(&name).epoch;
+        assert!(p.is_ok(), "{:?}", p.err());
+        assert!(epoch != 0 && epoch != 1, "epoch {epoch}");
     }
 
     /// An object of another user is left alone, dead or not: root would otherwise remove it, and
