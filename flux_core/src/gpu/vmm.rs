@@ -162,12 +162,14 @@ impl Range {
     }
 
     /// Backs the first `bytes`: maps `make(i)` at each missing chunk `i`, with `access` for the
-    /// device. A chunk that fails is released and ends the call; the ones before it stay.
-    fn extend(
+    /// device, and hands what `make` gave beside the handle to `mapped` once the chunk is mapped.
+    /// A chunk that fails is released and ends the call; the ones before it stay.
+    fn extend<T>(
         &self,
         bytes: usize,
         access: c_int,
-        mut make: impl FnMut(&Vmm, usize) -> Result<AllocHandle>,
+        mut make: impl FnMut(&Vmm, usize) -> Result<(AllocHandle, T)>,
+        mut mapped: impl FnMut(T),
     ) -> Result<()> {
         if self.covers(bytes) {
             return Ok(());
@@ -185,9 +187,13 @@ impl Range {
             while handles.len() < want {
                 let i = handles.len();
                 let at = self.base + (i * self.chunk) as u64;
-                let h = make(vmm, i)?;
+                let (h, made) = make(vmm, i)?;
+                #[cfg(test)]
+                let refused = super::tests::FAIL_MAP.replace(false);
+                #[cfg(not(test))]
+                let refused = false;
                 // SAFETY: inside the reserved range, unmapped there so far.
-                if unsafe { (vmm.map)(at, self.chunk, 0, h, 0) } != SUCCESS {
+                if refused || unsafe { (vmm.map)(at, self.chunk, 0, h, 0) } != SUCCESS {
                     // SAFETY: made above, never mapped.
                     unsafe { (vmm.release)(h) };
                     return Err(Error::Unsupported("cuMemMap failed".into()));
@@ -207,6 +213,7 @@ impl Range {
                     unsafe { (vmm.release)(h) };
                     return Err(Error::Unsupported("cuMemSetAccess failed".into()));
                 }
+                mapped(made);
                 handles.push(h);
             }
             Ok(())
@@ -291,32 +298,39 @@ impl DeviceAlloc {
         self.range.base
     }
 
-    /// Gives the first `bytes` of the payload memory, exporting each chunk it adds.
+    /// Gives the first `bytes` of the payload memory, exporting each chunk it adds. A chunk is
+    /// sent to subscribers only once it is mapped here: one that fails is not sent, so their
+    /// chunks stay at the publisher's offsets.
     pub(crate) fn back(&self, bytes: usize) -> Result<()> {
         let device = self.range.device;
         let chunk = self.range.chunk;
-        self.range.extend(bytes, MEM_ACCESS_READ_WRITE, |vmm, _| {
-            let h = create_on(vmm, device, chunk)?;
-            let mut raw: c_int = -1;
-            // SAFETY: a POSIX fd handle is written as an int.
-            if unsafe { (vmm.export)((&raw mut raw).cast(), h, MEM_HANDLE_TYPE_POSIX_FD, 0) }
-                != SUCCESS
-            {
-                // SAFETY: created above, never mapped.
-                unsafe { (vmm.release)(h) };
-                return Err(Error::Unsupported(
-                    "cuMemExportToShareableHandle failed".into(),
-                ));
-            }
-            // SAFETY: the export handed this process a new descriptor.
-            let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-            // The driver sets it today without saying so; an exec'd child holding it keeps the
-            // chunk alive and writable.
-            // SAFETY: fcntl on a descriptor this process owns.
-            unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
-            self.share.push(fd);
-            Ok(h)
-        })
+        let send = |fd| self.share.push(fd);
+        self.range.extend(
+            bytes,
+            MEM_ACCESS_READ_WRITE,
+            |vmm, _| {
+                let h = create_on(vmm, device, chunk)?;
+                let mut raw: c_int = -1;
+                // SAFETY: a POSIX fd handle is written as an int.
+                if unsafe { (vmm.export)((&raw mut raw).cast(), h, MEM_HANDLE_TYPE_POSIX_FD, 0) }
+                    != SUCCESS
+                {
+                    // SAFETY: created above, never mapped.
+                    unsafe { (vmm.release)(h) };
+                    return Err(Error::Unsupported(
+                        "cuMemExportToShareableHandle failed".into(),
+                    ));
+                }
+                // SAFETY: the export handed this process a new descriptor.
+                let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+                // The driver sets it today without saying so; an exec'd child holding it keeps the
+                // chunk alive and writable.
+                // SAFETY: fcntl on a descriptor this process owns.
+                unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) };
+                Ok((h, fd))
+            },
+            send,
+        )
     }
 }
 
@@ -355,9 +369,12 @@ impl DeviceBuffer {
     /// Gives the first `bytes` of the range memory, if they have none yet.
     pub(crate) fn back(&self, bytes: usize) -> Result<()> {
         let (device, chunk) = (self.range.device, self.range.chunk);
-        self.range.extend(bytes, MEM_ACCESS_READ_WRITE, |vmm, _| {
-            create_on(vmm, device, chunk)
-        })
+        self.range.extend(
+            bytes,
+            MEM_ACCESS_READ_WRITE,
+            |vmm, _| Ok((create_on(vmm, device, chunk)?, ())),
+            |()| {},
+        )
     }
 }
 
@@ -412,27 +429,32 @@ impl DeviceImport {
         let fds = mail.collect(have as u32, bytes.div_ceil(chunk) as u32)?;
         // All that came, past `bytes` too: the publisher does not send a chunk twice.
         let reached = ((have + fds.len()) * chunk).min(self.range.size);
-        self.range.extend(reached, MEM_ACCESS_READ, |vmm, i| {
-            let fd = fds
-                .get(i - have)
-                .ok_or_else(|| Error::NotReady("a chunk was imported meanwhile".into()))?;
-            let mut h: AllocHandle = 0;
-            // SAFETY: the handle is the descriptor, passed as a pointer-sized integer. The import
-            // takes its own reference, so the descriptor is closed by this process either way.
-            let rc = unsafe {
-                (vmm.import)(
-                    &raw mut h,
-                    fd.as_raw_fd() as isize as *mut c_void,
-                    MEM_HANDLE_TYPE_POSIX_FD,
-                )
-            };
-            if rc != SUCCESS {
-                return Err(Error::Unsupported(
-                    "cuMemImportFromShareableHandle failed".into(),
-                ));
-            }
-            Ok(h)
-        })?;
+        self.range.extend(
+            reached,
+            MEM_ACCESS_READ,
+            |vmm, i| {
+                let fd = fds
+                    .get(i - have)
+                    .ok_or_else(|| Error::NotReady("a chunk was imported meanwhile".into()))?;
+                let mut h: AllocHandle = 0;
+                // SAFETY: the handle is the descriptor, passed as a pointer-sized integer. The import
+                // takes its own reference, so the descriptor is closed by this process either way.
+                let rc = unsafe {
+                    (vmm.import)(
+                        &raw mut h,
+                        fd.as_raw_fd() as isize as *mut c_void,
+                        MEM_HANDLE_TYPE_POSIX_FD,
+                    )
+                };
+                if rc != SUCCESS {
+                    return Err(Error::Unsupported(
+                        "cuMemImportFromShareableHandle failed".into(),
+                    ));
+                }
+                Ok((h, ()))
+            },
+            |()| {},
+        )?;
         if !self.range.covers(bytes) {
             return Err(Error::NotReady(
                 "the publisher has not sent the device chunks a frame reaches".into(),

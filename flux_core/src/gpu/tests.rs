@@ -424,6 +424,8 @@ thread_local! {
     pub(super) static UNMAPPED_UNREGISTERS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// The route `probe` reports on this thread, in place of the host's.
     pub(super) static ROUTE: std::cell::Cell<Option<Route>> = const { std::cell::Cell::new(None) };
+    /// The next chunk this thread maps into a device range fails as `cuMemMap` would.
+    pub(super) static FAIL_MAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Every stream wait on this thread fails.
     pub(super) static FAIL_FENCES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The ordinal `device_for_uuid` finds on this thread, in place of the host's.
@@ -434,7 +436,7 @@ thread_local! {
 mod channel {
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use super::{FAIL_FENCES, Gate, ROUTE, UUID_DEVICE, fill, gpu, read_back};
+    use super::{FAIL_FENCES, FAIL_MAP, Gate, ROUTE, UUID_DEVICE, fill, gpu, read_back};
     use crate::gpu::{Stream, probe};
     use crate::layout::{DEFAULT_MAX_SUBSCRIBERS, NO_SCHEMA};
     use crate::qos::{MemoryPolicy, QoS};
@@ -794,6 +796,46 @@ mod channel {
             assert!(c.data()[..4096].iter().all(|&b| b == i), "frame {i}");
         }
         assert_eq!(p.slots_ready(), 15);
+    }
+
+    /// A chunk the publisher fails to map is not sent: the subscribers' chunks stay where the
+    /// publisher's are, so a slot added after the failure is read as written.
+    #[test]
+    fn a_chunk_that_fails_to_map_does_not_shift_the_subscribers_chunks() {
+        let Some((memset, copy)) = gpu() else { return };
+        let Some(_route) = discrete() else { return };
+        let name = topic("devfail");
+        let mut p = Channel::create_on(
+            &name,
+            4 << 20,
+            0,
+            DEFAULT_MAX_SUBSCRIBERS,
+            0,
+            NO_SCHEMA,
+            MemoryPolicy::default(),
+            Stream::create().unwrap(),
+            crate::trace::NO_STAMP,
+            None,
+        )
+        .unwrap();
+        let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
+        dev.set_qos(QoS::new(20).unwrap()).unwrap();
+        let start = p.slots_ready();
+        FAIL_MAP.set(true);
+        for i in 0..15u8 {
+            let w = p.loan().unwrap();
+            // Armed for the publisher's growth only, not the subscriber's import.
+            let armed = FAIL_MAP.replace(false);
+            fill(memset, w.device_ptr(), i, 4096, &w.stream());
+            assert_eq!(w.commit_len(4096), Published::Ok);
+            let v = dev.take().unwrap();
+            let got = read_back(copy, v.device_ptr(), 4096);
+            assert!(got.iter().all(|&b| b == i), "frame {i} reads {}", got[0]);
+            drop(v);
+            FAIL_MAP.set(armed);
+        }
+        assert!(!FAIL_MAP.get(), "the publisher grew past a chunk");
+        assert!(p.slots_ready() > start);
     }
 
     /// The device copy of a host payload left at count 0 has memory for the slots with memory,
