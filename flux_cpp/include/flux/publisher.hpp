@@ -16,7 +16,7 @@ namespace flux
 {
 
 // Fields as rclcpp::PublisherOptions. A declared `stream` takes precedence over `device`. A size or
-// count of 0 is flux's default for `alloc`; the maxima bound an Alloc::Slot publisher's growth.
+// count of 0 is flux's default; the maxima bound an Alloc::Slot or device-payload publisher.
 struct PublisherOptions
 {
   Alloc alloc = Alloc::Arena;

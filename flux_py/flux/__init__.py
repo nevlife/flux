@@ -196,8 +196,8 @@ class Publisher(_flux._Publisher):
     ):
         """alloc="slot" keeps every variable-length field of a frame in its slot, where an
         integrated GPU reads it in place; a frame that does not fit is refused. "arena" puts them
-        in the process's arena. With "slot", a size or count of 0 takes flux's default and the
-        maxima bound how far the slots grow. fence_timeout, in seconds, bounds each commit's
+        in the process's arena. With "slot", or a "cuda" publisher with no type, a size or count
+        of 0 takes flux's fixed-slot default and the maxima bound the slots. fence_timeout, in seconds, bounds each commit's
         wait for the stream; None waits as long as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
         work is done. mirror_to_ros also publishes every frame as its ROS 2 message on the same
         topic while a ROS 2 subscriber wants it (depth 1, best effort, volatile). aux_size gives

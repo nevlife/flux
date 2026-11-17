@@ -1391,7 +1391,7 @@ TEST_F(WrapperTest, CudaDataPastTheSlotIsLoggedAsTooLarge)
   const Logs logs;
   flux_wrapper::PublisherOptions options;
   options.device = flux_wrapper::Device::Cuda;
-  options.max_device_data_size = 4096;
+  options.slot_size = 4096;
   flux_wrapper::Publisher<Image> pub(*node_, "data_over_logged", rclcpp::QoS(4), options);
   ASSERT_TRUE(pub.uses_device());
   for (int i = 0; i < 2; ++i) {

@@ -89,7 +89,7 @@
 * aux: C++ `Publisher`의 `aux_size` 인자와 `aux_size()`, `WriteSlot::aux`, `WriteSlot::set_aux_len`, `FrameView::aux`. Python `Publisher(aux_size=...)`, `Loan.aux`, `Loan.aux_len`, `flux.aux`. C `flux_loan_aux`, `flux_loan_set_aux_len`, `flux_view_aux`, `flux_channel_aux_size`, `FLUX_MAX_AUX_SIZE`
 * `flux_wrapper`: `Device`, `PublisherOptions::device`, `SubscriptionOptions::device`, `Buffer`, `Loan<Image>`와 `Loan<PointCloud2>`의 `alloc_buffer`, `View<Image>`와 `View<PointCloud2>`의 `on_device`·`device_ptr`·`size`·`stream`, `Publisher::uses_device`, `Subscription::rejected`. Python `Publisher(device=...)`, `Publisher.uses_device`, `Subscription(device=...)`, `Subscription.rejected`, `Loan.alloc_buffer`, `View.on_device`, `View.device_data`, `View.stream`
 * `flux::Subscription::require_publisher_slots`
-* 기본 슬롯 크기: C `FLUX_UNTYPED_SLOT_SIZE`, `FLUX_SLOT_STRING_BYTES`. Python `flux.UNTYPED_SLOT_SIZE`, `flux.SLOT_STRING_BYTES`. `flux_wrapper`: `PublisherOptions::max_device_data_size`, Python `Publisher(max_device_data_size=...)`
+* 기본 슬롯 크기: C `FLUX_UNTYPED_SLOT_SIZE`, `FLUX_SLOT_STRING_BYTES`. Python `flux.UNTYPED_SLOT_SIZE`, `flux.SLOT_STRING_BYTES`. `flux_wrapper`: `PublisherOptions`의 `slot_size`, `max_slot_size`, `max_slot_count`, Python `Publisher(slot_size=...)`
 * GPU 메모리 채널: C++ `flux::gpu_fingerprint`, `Schemas::contains_gpu`, `Schemas::at_gpu`, `Schemas::Type::with_data`. Python `flux.gpu_fingerprint`. C `flux_gpu_fingerprint`, `flux_schemas_find_gpu`, `flux_schema_with_data`
 * `flux_wrapper`: `SubscriptionOptions::max_borrow`, `Subscription::HeldCallback`, `View::after`
 * Python `Loan.resize`. `str(flux.Published)`이 C++ `flux::to_string`과 같은 문자열이다(전에는 `Published.TOO_LARGE` 같은 enum 이름)
@@ -156,3 +156,12 @@
    ```
 
 10. trace 값 `FLUX_TRACE_RECORD_CACHE_FULL`을 지웠다. 9의 큐가 없어져 `record_drop`이 이 값을 내는 곳이 없다. 다른 `RECORD_*` 값의 번호는 그대로이고 0은 비워 둔다. 이 값을 다루던 `switch`와 비교는 지운다. 이전 `record_flux`가 기록한 trace에는 0이 남아 있을 수 있다
+
+11. GPU 메모리 채널(C++ `Device::Cuda`나 stream을 준 타입 없는 발행자, `flux_wrapper`의 `Device::Cuda`)의 기본 슬롯이 8 MiB, 최대 32개에서 4 MiB 12개(최대 16개)가 되었다. `flux_wrapper`의 `max_device_data_size`(기본 10 MiB)는 `slot_size`가 되었다. 4 MiB보다 큰 `data`는 `slot_size`를 준다(최대 16 MiB, 더 크면 `max_slot_size`도 준다).
+
+   ```cpp
+   // 전
+   options.max_device_data_size = 10 << 20;
+   // 후
+   options.slot_size = 10 << 20;
+   ```

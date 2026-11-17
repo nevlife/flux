@@ -19,7 +19,7 @@ pub const DEFAULT_SLOT_COUNT: u32 = 0;
 /// read, and adds slots up to its count (`Channel::claim`).
 pub const START_SLOTS: u32 = 1 + DEFAULT_DEPTH;
 
-/// What the slots of one publisher may take, by where their payload lives.
+/// What the slots of one publisher may take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bound {
     pub budget_bytes: u64,
@@ -29,11 +29,6 @@ pub struct Bound {
 pub const HOST_BOUND: Bound = Bound {
     budget_bytes: 256 << 20,
     max_slots: 256,
-};
-/// Device memory is scarcer and its frames are mostly large.
-pub const DEVICE_BOUND: Bound = Bound {
-    budget_bytes: 256 << 20,
-    max_slots: 32,
 };
 
 /// The slot of a generated type with `scalar_bytes` of scalar block: that, the string room and the
@@ -99,9 +94,10 @@ pub struct Plan {
     pub start: u32,
 }
 
-/// The slots of a publisher. `Arena` as `slot_size`, `slot_count` and `start_slots`. `Slot` takes
-/// the `SLOT_ALLOC_*` value for each 0 and reserves `max_count` slots, `count` of them at start.
-#[allow(clippy::too_many_arguments)]
+/// The slots of a publisher. `Arena` as `slot_size`, `slot_count` and `start_slots`. `Slot`, and a
+/// GPU memory channel (a stream, no generated type: its payload is the frame's data), take the
+/// `SLOT_ALLOC_*` value for each 0 and reserve `max_count` slots, `count` of them at start; a
+/// `count` given alone is all the slots.
 pub fn plan(
     alloc: Alloc,
     size: u32,
@@ -110,11 +106,11 @@ pub fn plan(
     max_count: u32,
     scalar_bytes: Option<u32>,
     gpu_stream: bool,
-    device_payload: bool,
 ) -> Result<Plan> {
-    if alloc == Alloc::Arena {
+    let fixed = alloc == Alloc::Slot || (gpu_stream && scalar_bytes.is_none());
+    if !fixed {
         let slot_size = slot_size(size, scalar_bytes, gpu_stream);
-        let slot_count = slot_count(count, slot_size, device_payload);
+        let slot_count = slot_count(count, slot_size);
         return Ok(Plan {
             slot_size,
             slot_count,
@@ -126,6 +122,12 @@ pub fn plan(
         or(size, SLOT_ALLOC_SLOT_SIZE),
         or(max_size, SLOT_ALLOC_MAX_SLOT_SIZE),
     );
+    // A count given without a maximum is the count, as an Arena publisher's.
+    let reserve = match (count, max_count) {
+        (_, m) if m != 0 => m,
+        (c, _) if c != 0 => c,
+        _ => SLOT_ALLOC_MAX_SLOTS,
+    };
     let (count, max_count) = (
         or(count, SLOT_ALLOC_START_SLOTS),
         or(max_count, SLOT_ALLOC_MAX_SLOTS),
@@ -142,37 +144,32 @@ pub fn plan(
     }
     Ok(Plan {
         slot_size: size,
-        slot_count: max_count,
+        slot_count: reserve,
         start: count,
     })
 }
 
-/// `asked`, or for 0 the slots a publisher of `slot_size` gets, its payload on the device or not.
+/// `asked`, or for 0 the slots a publisher of `slot_size` gets.
 #[must_use]
-pub fn slot_count(asked: u32, slot_size: u32, device_payload: bool) -> u32 {
+pub fn slot_count(asked: u32, slot_size: u32) -> u32 {
     if asked != 0 {
         return asked;
     }
-    let bound = if device_payload {
-        DEVICE_BOUND
-    } else {
-        HOST_BOUND
-    };
-    max_slots(slot_size, bound)
+    max_slots(slot_size, HOST_BOUND)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DEVICE_BOUND, HOST_BOUND, Plan, SLOT_ALLOC_MAX_SLOTS, SLOT_ALLOC_SLOT_SIZE,
-        SLOT_ALLOC_START_SLOTS, START_SLOTS, UNTYPED_SLOT_SIZE, max_slots, plan, slot_count,
-        slot_size, start_slots, typed_slot_size,
+        HOST_BOUND, Plan, SLOT_ALLOC_MAX_SLOTS, SLOT_ALLOC_SLOT_SIZE, SLOT_ALLOC_START_SLOTS,
+        START_SLOTS, UNTYPED_SLOT_SIZE, max_slots, plan, slot_count, slot_size, start_slots,
+        typed_slot_size,
     };
     use crate::channel::Alloc;
 
     #[test]
     fn a_slot_plan_takes_its_defaults_and_keeps_within_its_maxima() {
-        let defaults = plan(Alloc::Slot, 0, 0, 0, 0, Some(100), false, false).unwrap();
+        let defaults = plan(Alloc::Slot, 0, 0, 0, 0, Some(100), false).unwrap();
         assert_eq!(
             defaults,
             Plan {
@@ -181,15 +178,22 @@ mod tests {
                 start: SLOT_ALLOC_START_SLOTS,
             }
         );
-        let asked = plan(Alloc::Slot, 32 << 20, 20, 64 << 20, 24, None, false, false).unwrap();
+        let asked = plan(Alloc::Slot, 32 << 20, 20, 64 << 20, 24, None, false).unwrap();
         assert_eq!(
             (asked.slot_size, asked.slot_count, asked.start),
             (32 << 20, 24, 20)
         );
-        assert!(plan(Alloc::Slot, 17 << 20, 0, 0, 0, None, false, false).is_err());
-        assert!(plan(Alloc::Slot, 0, 17, 0, 0, None, false, false).is_err());
+        let fixed = plan(Alloc::Slot, 0, 4, 0, 0, None, false).unwrap();
+        assert_eq!((fixed.slot_count, fixed.start), (4, 4));
+        assert!(plan(Alloc::Slot, 17 << 20, 0, 0, 0, None, false).is_err());
+        assert!(plan(Alloc::Slot, 0, 17, 0, 0, None, false).is_err());
+        // A GPU memory channel's payload is its data: it takes the same defaults.
+        assert_eq!(
+            plan(Alloc::Arena, 0, 0, 0, 0, None, true).unwrap(),
+            defaults
+        );
         // Arena keeps the type's slot and the budgeted count.
-        let arena = plan(Alloc::Arena, 0, 0, 0, 0, Some(100), false, false).unwrap();
+        let arena = plan(Alloc::Arena, 0, 0, 0, 0, Some(100), false).unwrap();
         assert_eq!(arena.slot_size, slot_size(0, Some(100), false));
         assert_eq!(arena.start, START_SLOTS);
     }
@@ -207,17 +211,14 @@ mod tests {
         assert_eq!(max_slots(8192, HOST_BOUND), 256);
         assert_eq!(max_slots(6_912_000, HOST_BOUND), 38);
         assert_eq!(max_slots(UNTYPED_SLOT_SIZE, HOST_BOUND), 32);
-        assert_eq!(max_slots(UNTYPED_SLOT_SIZE, DEVICE_BOUND), 32);
-        assert_eq!(max_slots(1 << 20, DEVICE_BOUND), 32);
         assert_eq!(max_slots(u32::MAX, HOST_BOUND), 2);
     }
 
     #[test]
-    fn a_count_of_zero_is_the_bound_of_where_the_payload_lives() {
-        assert_eq!(slot_count(0, 8192, false), 256);
-        assert_eq!(slot_count(0, 8192, true), 32);
-        assert_eq!(slot_count(0, 200 << 20, true), 2);
-        assert_eq!(slot_count(5, 8192, false), 5);
+    fn a_count_of_zero_is_the_bound_over_the_slot() {
+        assert_eq!(slot_count(0, 8192), 256);
+        assert_eq!(slot_count(0, 200 << 20), 2);
+        assert_eq!(slot_count(5, 8192), 5);
     }
 
     #[test]

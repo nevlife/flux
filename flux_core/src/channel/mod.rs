@@ -245,7 +245,7 @@ impl Channel {
     /// A process-private channel on the heap. A size or count of 0 is `sizing`'s.
     pub fn new(slot_size: u32, slot_count: u32) -> Result<Channel> {
         let slot_size = sizing::slot_size(slot_size, None, false);
-        let slot_count = sizing::slot_count(slot_count, slot_size, false);
+        let slot_count = sizing::slot_count(slot_count, slot_size);
         check_slot_count(slot_count)?;
         Ok(Channel::from_segment(
             Segment::create_heap(slot_size, slot_count, 0, 0)?,
@@ -341,7 +341,6 @@ impl Channel {
             config.max_slot_count,
             scalar_bytes,
             stream.declared(),
-            device.is_some(),
         )?;
         check_slot_count(plan.slot_count)?;
         let seg = open_publisher_segment(

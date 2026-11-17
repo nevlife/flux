@@ -310,10 +310,10 @@ class Loan:
 
 
 class Publisher:
-    """One topic over flux or ROS. On the flux path `slot_count` is how many messages are in flight
-    (0: the flux default), and with device="cuda" `max_device_data_size` bounds the data field
-    (default 10 MiB, 0: 8 MiB); on "cpu" the data field goes to the publisher's arena, whatever
-    its size. `mirror_to_ros` also publishes each one as its ROS message while a ROS subscriber
+    """One topic over flux or ROS. On the flux path `slot_size`, `slot_count`, `max_slot_size` and
+    `max_slot_count` are as flux.Publisher's, 0 being flux's default: with device="cuda" the slot
+    holds the data field (4 MiB by default); with alloc="arena" on "cpu" the data field goes to the
+    publisher's arena, whatever its size. `mirror_to_ros` also publishes each one as its ROS message while a ROS subscriber
     wants it. A type other than Image and PointCloud2 needs its flux adapter on the flux path.
 
     device="cuda" puts the root data field in GPU memory (Loan.alloc_buffer()), on a flux GPU
@@ -332,8 +332,10 @@ class Publisher:
         topic,
         qos,
         *,
-        max_device_data_size=10 << 20,
+        slot_size=0,
         slot_count=0,
+        max_slot_size=0,
+        max_slot_count=0,
         mirror_to_ros=False,
         device="cpu",
         alloc="arena",
@@ -348,17 +350,17 @@ class Publisher:
         self._cuda = _cuda_usable(self._logger, topic, device, msg_type)
         if use_flux():
             self._adapter = _adapter(msg_type)[0]
-            fingerprint, aux_size, slot = self._adapter.FINGERPRINT__, 0, _flux.DEFAULT_SLOT_SIZE
+            fingerprint, aux_size = self._adapter.FINGERPRINT__, 0
             if self._cuda:
                 fingerprint, aux_size = _gpu_fingerprint(msg_type), _GPU_AUX_BYTES
-                slot = max_device_data_size
-                alloc = "arena"  # a GPU channel's data is in its slot already
             self._flux = _flux.Publisher(
                 node,
                 topic,
                 fingerprint=fingerprint,
-                slot_size=slot,
+                slot_size=slot_size,
                 slot_count=slot_count,
+                max_slot_size=max_slot_size,
+                max_slot_count=max_slot_count,
                 mirror_to_ros=mirror_to_ros,
                 device="cuda" if self._cuda else "cpu",
                 aux_size=aux_size,

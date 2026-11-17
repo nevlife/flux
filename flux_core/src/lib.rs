@@ -40,8 +40,8 @@ pub use partitioned::PartitionedExecutor;
 pub use qos::{Durability, MemoryPolicy, QoS};
 pub use segment::Mapped;
 pub use sizing::{
-    Bound, DEFAULT_SLOT_COUNT, DEFAULT_SLOT_SIZE, DEVICE_BOUND, HOST_BOUND, Plan,
-    SLOT_ALLOC_MAX_SLOT_SIZE, SLOT_ALLOC_MAX_SLOTS, SLOT_ALLOC_SLOT_SIZE, SLOT_ALLOC_START_SLOTS,
-    SLOT_STRING_BYTES, START_SLOTS, UNTYPED_SLOT_SIZE, max_slots, plan, slot_count, slot_size,
-    start_slots, typed_slot_size,
+    Bound, DEFAULT_SLOT_COUNT, DEFAULT_SLOT_SIZE, HOST_BOUND, Plan, SLOT_ALLOC_MAX_SLOT_SIZE,
+    SLOT_ALLOC_MAX_SLOTS, SLOT_ALLOC_SLOT_SIZE, SLOT_ALLOC_START_SLOTS, SLOT_STRING_BYTES,
+    START_SLOTS, UNTYPED_SLOT_SIZE, max_slots, plan, slot_count, slot_size, start_slots,
+    typed_slot_size,
 };

@@ -23,13 +23,14 @@ namespace flux_wrapper
 struct PublisherOptions
 {
   Alloc alloc = Alloc::Arena;
-  // flux with Device::Cuda only: the largest data field in bytes, which is the slot of device
-  // memory, 10 MiB by default. Zero takes 8 MiB (FLUX_UNTYPED_SLOT_SIZE). On Host the slot is
-  // the type's and the data field goes to the publisher's arena, whatever its size.
-  std::uint32_t max_device_data_size = std::uint32_t{10} << 20;
-  // flux only: messages a subscriber may hold at once, plus one to write into. Zero leaves it to
-  // flux (FLUX_DEFAULT_SLOT_COUNT).
+  // flux only, as flux::PublisherOptions: the slot in bytes, the slots a subscriber may hold at
+  // once plus one to write into, and the most an Alloc::Slot or Device::Cuda publisher may be
+  // given of each. Zero is flux's default. A Device::Cuda slot holds the data field, 4 MiB by
+  // default; an Arena slot is the type's and its data field goes to the publisher's arena.
+  std::uint32_t slot_size = 0;
   std::uint32_t slot_count = 0;
+  std::uint32_t max_slot_size = 0;
+  std::uint32_t max_slot_count = 0;
   // flux only: also publish each message as its ROS message on the same topic while a ROS
   // subscriber (rviz2, ros2 bag) wants it. With Device::Cuda the mirror copies the data field
   // from the device for each of those messages.
@@ -59,12 +60,18 @@ public:
 #endif
 #ifdef USE_FLUX_ENABLED
     if (use_flux()) {
+      flux::PublisherOptions o;
+      o.alloc = options.alloc == Alloc::Slot ? flux::Alloc::Slot : flux::Alloc::Arena;
+      o.slot_size = options.slot_size;
+      o.slot_count = options.slot_count;
+      o.max_slot_size = options.max_slot_size;
+      o.max_slot_count = options.max_slot_count;
       if constexpr (detail::kRootData<MsgT>) {
         if (cuda) {
-          flux_ = std::make_unique<flux::Publisher>(
-            node, topic, detail::Gpu<MsgT>::kFingerprint, options.max_device_data_size,
-            options.slot_count, flux::Device::Cuda, flux::MemoryPolicy{},
-            flux::Publisher::kDefaultMaxSubscribers, detail::Gpu<MsgT>::kAuxBytes);
+          o.device = flux::Device::Cuda;
+          o.aux_size = detail::Gpu<MsgT>::kAuxBytes;
+          flux_ =
+            std::make_unique<flux::Publisher>(node, topic, o, detail::Gpu<MsgT>::kFingerprint);
           device_ = true;
           if (options.mirror_to_ros) {
             flux_->mirror_to_ros();
@@ -72,9 +79,6 @@ public:
           return;
         }
       }
-      flux::PublisherOptions o;
-      o.alloc = options.alloc == Alloc::Slot ? flux::Alloc::Slot : flux::Alloc::Arena;
-      o.slot_count = options.slot_count;
       flux_ =
         std::make_unique<flux::Publisher>(node, topic, o, detail::AdapterT<MsgT>::kFingerprint);
       if (options.mirror_to_ros) {

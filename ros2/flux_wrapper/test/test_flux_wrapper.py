@@ -427,9 +427,7 @@ def test_cuda_data_past_the_slot_is_logged_as_too_large(node, monkeypatch):
     """Once, and not as fields over the aux."""
     logs = _Errors(node.get_logger())
     monkeypatch.setattr(node, "get_logger", lambda: logs)
-    pub = flux_wrapper.Publisher(
-        node, Image, "data_over_logged", 4, device="cuda", max_device_data_size=4096
-    )
+    pub = flux_wrapper.Publisher(node, Image, "data_over_logged", 4, device="cuda", slot_size=4096)
     for _ in range(2):
         loan = pub.loan()
         assert loan.alloc_buffer(8192) is None

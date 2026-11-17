@@ -248,10 +248,13 @@ TEST_F(Gpu, HostBytesCopiedIntoALoanAreCopiedBackByBothKindsOfSubscriber)
 TEST_F(Gpu, AnAbortedLoanWithWorkQueuedDoesNotOutliveItsMemory)
 {
   constexpr std::size_t kBytes = std::size_t{64} << 20;
+  flux_publisher_config c = flux_publisher_config_default();
+  c.slot_size = c.max_slot_size = kBytes;
+  c.slot_count = 2;
   for (int i = 0; i < 10; ++i) {
-    auto pub = flux::detail::Channel::create(
-      unique_name("abort") + std::to_string(i), kBytes, 2, flux::kNoSchema, {},
-      FLUX_DEFAULT_MAX_SUBSCRIBERS, flux::gpu::Stream::create());
+    auto pub = flux::detail::Channel::create_config(
+      unique_name("abort") + std::to_string(i), c, flux::kNoSchema, {},
+      flux::gpu::Stream::create());
     flux::WriteSlot w = pub.loan();
     ASSERT_TRUE(w);
     ASSERT_NE(w.device_ptr(), nullptr);

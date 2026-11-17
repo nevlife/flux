@@ -593,7 +593,10 @@ mod channel {
             None,
         )
         .unwrap();
-        assert_eq!(p.registered_slots(), crate::sizing::START_SLOTS as usize);
+        assert_eq!(
+            p.registered_slots(),
+            crate::sizing::SLOT_ALLOC_START_SLOTS as usize
+        );
         let mut cpu = subscriber(&name, Stream::default()).unwrap();
         cpu.set_qos(QoS::new(20).unwrap()).unwrap();
         for i in 0..15u8 {
@@ -803,8 +806,8 @@ mod channel {
         )
         .unwrap();
         assert!(p.device_backed());
-        assert_eq!(p.slot_count(), 32);
-        assert_eq!(p.slots_ready(), crate::sizing::START_SLOTS);
+        assert_eq!(p.slot_count(), crate::sizing::SLOT_ALLOC_MAX_SLOTS);
+        assert_eq!(p.slots_ready(), crate::sizing::SLOT_ALLOC_START_SLOTS);
         let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
         let mut cpu = subscriber(&name, Stream::default()).unwrap();
         for s in [&mut dev, &mut cpu] {
