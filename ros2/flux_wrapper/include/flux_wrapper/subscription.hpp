@@ -376,6 +376,16 @@ private:
   typename rclcpp::Subscription<MsgT>::SharedPtr ros_;
 };
 
+// As rclcpp::create_subscription. The callback takes a View or a shared_ptr to one to hold.
+template <class MsgT, class NodeT, class CallbackT>
+auto create_subscription(
+  NodeT & node, const std::string & topic, const rclcpp::QoS & qos, CallbackT && callback,
+  const SubscriptionOptions & options = {}) -> std::shared_ptr<Subscription<MsgT>>
+{
+  return std::make_shared<Subscription<MsgT>>(
+    node, topic, qos, std::forward<CallbackT>(callback), options);
+}
+
 }  // namespace flux_wrapper
 
 #endif  // FLUX_WRAPPER_SUBSCRIPTION_HPP

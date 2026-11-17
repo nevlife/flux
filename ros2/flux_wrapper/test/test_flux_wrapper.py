@@ -330,6 +330,24 @@ def test_cuda_subscription_gets_a_cpu_publishers_data_on_the_device(node):
 
 
 @needs_cuda
+@pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
+def test_cuda_subscription_gets_a_slot_publishers_data_on_the_device(node):
+    """alloc="slot" keeps the data in the slot, which an integrated GPU reads in place."""
+    want = image(5)
+    got, done = {}, threading.Event()
+
+    def on_image(v):
+        if v.header.stamp.sec == 5 and not got:
+            got["v"] = (v.on_device, from_view(v), v.to_msg())
+            done.set()
+
+    sub = flux_wrapper.Subscription(node, Image, "slot_to_cuda", on_image, 4, device="cuda")
+    pub = flux_wrapper.Publisher(node, Image, "slot_to_cuda", 4, alloc="slot")
+    run_until(node, sub, done, lambda: pub.publish(want))
+    assert got["v"] == (True, bytes(want.data), want)
+
+
+@needs_cuda
 @pytest.mark.parametrize("msg_type", [Image, PointCloud2])
 def test_cuda_publish_of_a_ros_message(node, msg_type):
     """The message's data is copied into the slot, in device memory or host memory alike."""

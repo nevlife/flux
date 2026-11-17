@@ -320,6 +320,9 @@ class Publisher:
     channel that the C++ flux_wrapper shares. Where that cannot be had (a type without a root data,
     no flux GPU route, the ROS path) the publisher is "cpu", with a warning; uses_device says which.
     mirror_to_ros is ignored then.
+
+    alloc="slot" keeps every variable-length field of a "cpu" message in its flux slot, where an
+    integrated GPU subscriber reads it in place; a message past the slot is refused.
     """
 
     def __init__(
@@ -333,6 +336,7 @@ class Publisher:
         slot_count=0,
         mirror_to_ros=False,
         device="cpu",
+        alloc="arena",
     ):
         self._type = msg_type
         self._flux = None
@@ -348,6 +352,7 @@ class Publisher:
             if self._cuda:
                 fingerprint, aux_size = _gpu_fingerprint(msg_type), _GPU_AUX_BYTES
                 slot = max_device_data_size
+                alloc = "arena"  # a GPU channel's data is in its slot already
             self._flux = _flux.Publisher(
                 node,
                 topic,
@@ -357,6 +362,7 @@ class Publisher:
                 mirror_to_ros=mirror_to_ros,
                 device="cuda" if self._cuda else "cpu",
                 aux_size=aux_size,
+                alloc=alloc,
             )
         else:
             self._ros = node.create_publisher(msg_type, topic, qos)

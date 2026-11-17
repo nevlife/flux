@@ -22,6 +22,7 @@ namespace flux_wrapper
 
 struct PublisherOptions
 {
+  Alloc alloc = Alloc::Arena;
   // flux with Device::Cuda only: the largest data field in bytes, which is the slot of device
   // memory, 10 MiB by default. Zero takes 8 MiB (FLUX_UNTYPED_SLOT_SIZE). On Host the slot is
   // the type's and the data field goes to the publisher's arena, whatever its size.
@@ -71,9 +72,11 @@ public:
           return;
         }
       }
-      flux_ = std::make_unique<flux::Publisher>(
-        node, topic, detail::AdapterT<MsgT>::kFingerprint, flux::Publisher::kDefaultSlotSize,
-        options.slot_count);
+      flux::PublisherOptions o;
+      o.alloc = options.alloc == Alloc::Slot ? flux::Alloc::Slot : flux::Alloc::Arena;
+      o.slot_count = options.slot_count;
+      flux_ =
+        std::make_unique<flux::Publisher>(node, topic, o, detail::AdapterT<MsgT>::kFingerprint);
       if (options.mirror_to_ros) {
         flux_->mirror_to_ros();
       }
@@ -339,6 +342,15 @@ private:
   rclcpp::Logger logger_;
   typename rclcpp::Publisher<MsgT>::SharedPtr ros_;
 };
+
+// As rclcpp::create_publisher.
+template <class MsgT, class NodeT>
+auto create_publisher(
+  NodeT & node, const std::string & topic, const rclcpp::QoS & qos,
+  const PublisherOptions & options = {}) -> std::shared_ptr<Publisher<MsgT>>
+{
+  return std::make_shared<Publisher<MsgT>>(node, topic, qos, options);
+}
 
 }  // namespace flux_wrapper
 

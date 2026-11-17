@@ -851,6 +851,38 @@ TEST_F(WrapperTest, CudaSubscriptionGetsAHostImageOnTheDevice)
 #endif
 }
 
+// Alloc::Slot keeps the data in the slot, which an integrated GPU reads in place.
+TEST_F(WrapperTest, CudaSubscriptionGetsASlotHostImageOnTheDevice)
+{
+  SKIP_WITHOUT_CUDA();
+#ifdef FLUX_WRAPPER_CUDA
+  std::optional<OnDevice<Image>> got;
+  std::atomic<bool> done{false};
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.device = flux_wrapper::Device::Cuda;
+  auto sub = flux_wrapper::create_subscription<Image>(
+    *node_, "slot_host_image", rclcpp::QoS(4),
+    [&](const flux_wrapper::View<Image> & v) {
+      got = read_device(v);
+      done = true;
+    },
+    sub_options);
+  flux_wrapper::PublisherOptions options;
+  options.alloc = flux_wrapper::Alloc::Slot;
+  auto pub =
+    flux_wrapper::create_publisher<Image>(*node_, "slot_host_image", rclcpp::QoS(4), options);
+  ASSERT_FALSE(pub->uses_device());
+
+  const Image want = image(4, {11, 22, 33, 44, 55, 66});
+  run_until(done, [&] { EXPECT_TRUE(pub->publish(want)); });
+
+  ASSERT_TRUE(got);
+  EXPECT_TRUE(got->on_device);
+  EXPECT_EQ(got->device_bytes, want.data);
+  EXPECT_EQ(got->msg, want);
+#endif
+}
+
 TEST_F(WrapperTest, CudaSubscriptionGetsAHostPointCloudOnTheDevice)
 {
   SKIP_WITHOUT_CUDA();

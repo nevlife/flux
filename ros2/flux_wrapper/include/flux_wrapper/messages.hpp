@@ -74,6 +74,11 @@ private:
 // otherwise Host, with a warning.
 enum class Device { Host, Cuda };
 
+// flux only: where a publisher puts a message's variable-length fields, as flux::Alloc. Slot keeps
+// them all in the slot, where an integrated GPU subscriber reads them in place; a message past the
+// slot is refused.
+enum class Alloc { Arena, Slot };
+
 namespace detail
 {
 template <class MsgT>

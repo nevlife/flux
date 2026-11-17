@@ -141,6 +141,8 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
 
 - `publish(std::unique_ptr<Msg>)`와 `publish(const Msg &)`는 이미 만든 ROS 메시지를 보낸다. flux 경로에서는 슬롯과 arena로 한 번 복사한다. 메시지를 계속 사용하는 쪽은 `const Msg &`를 사용한다. ROS 경로에서 복사본을 만들지 않는다.
 - `get_subscription_count()`는 ROS 경로에서 rclcpp 값을, flux 경로에서 `subscriber_count()`를 반환한다.
+- `PublisherOptions::alloc`(Python `alloc="arena"|"slot"`)은 flux 경로의 `Host` 발행자에만 적용된다. 기본 `Arena`는 `data`를 발행 프로세스의 arena에 저장한다. `Slot`은 `data`까지 모두 슬롯 안에 두고, 슬롯(기본 4 MiB)에 들어가지 않는 메시지는 보내지 않는다. Jetson 같은 통합 GPU에서 `Device::Cuda` 구독은 `Slot` 발행자의 `data`를 복사 없이 GPU에서 읽는다. `Arena` 발행자의 `data`는 통합 GPU에서 GPU 구독에 도달하지 않는다.
+- `flux_wrapper::create_publisher<Msg>(node, topic, qos, options)`와 `flux_wrapper::create_subscription<Msg>(node, topic, qos, callback, options)`는 `rclcpp`처럼 `shared_ptr`를 반환한다. 생성자도 그대로 쓸 수 있다.
 - `PublisherOptions`의 `slot_count`, `mirror_to_ros`, `max_device_data_size`는 flux 경로에만 적용된다. 슬롯 크기는 타입에서 정하고, `data`는 크기와 상관없이 발행 프로세스의 arena에 저장한다. `max_device_data_size`(기본 10 MiB)는 `Cuda` 발행자의 `data` 최대 크기이고, 그 크기가 GPU 슬롯 크기다. 메시지 자신의 문자열(`header.frame_id`, `encoding`)이 슬롯을 넘으면 publish가 `false`를 반환하고, 발행자마다 처음 한 번 그 필드와 크기를 오류 로그로 남긴다. `Image`와 `PointCloud2`가 아닌 타입은 `set_from()`이 필드를 한 번에 쓰므로 필드 이름은 남기지 않고, 슬롯(`Cuda`면 aux)의 크기와 그 앞까지 쓴 크기를 남긴다. mirror는 기본 비활성화이고, 그 상태에서는 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
 
 ### 구독
