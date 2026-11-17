@@ -220,7 +220,7 @@ impl WriteSlot {
             return (Published::NotPublisher, trace::LOAN_NOT_PUBLISHER);
         }
         if !fits(&self.meta, self.sh.seg.layout()) {
-            self.sh.abort(self.slot);
+            self.refuse();
             return (Published::TooLarge, trace::LOAN_TOO_LARGE);
         }
         match self.sh.fence(Seam::Commit) {
@@ -241,6 +241,13 @@ impl WriteSlot {
         (Published::Ok, trace::LOAN_COMMITTED)
     }
 
+    /// Gives the slot back unpublished, once the work queued for its GPU blocks has passed.
+    fn refuse(&self) {
+        if !self.sh.hold_aborted(self.slot) {
+            self.sh.abort(self.slot);
+        }
+    }
+
     pub(super) fn end(&mut self, result: i32) {
         self.done = true;
         event!(flux_trace_loan_end(
@@ -256,7 +263,7 @@ impl WriteSlot {
         // Claiming the slot freed what its last frame owned, so anything owned now is this one's.
         if self.sh.may_own() {
             let Some(n) = self.write_trailer(nbytes) else {
-                self.sh.abort(self.slot);
+                self.refuse();
                 self.end(trace::LOAN_TOO_LARGE);
                 return Published::TooLarge;
             };
@@ -269,7 +276,7 @@ impl WriteSlot {
             || n > m.nbytes
             || !n.is_multiple_of(u64::from(m.itemsize))
         {
-            self.sh.abort(self.slot);
+            self.refuse();
             self.end(trace::LOAN_TOO_LARGE);
             return Published::TooLarge;
         }
@@ -374,9 +381,7 @@ unsafe fn write_list(blocks: &[Owned], dst: *mut u8) {
 impl Drop for WriteSlot {
     fn drop(&mut self) {
         if !self.done {
-            if !self.sh.hold_aborted(self.slot) {
-                self.sh.abort(self.slot);
-            }
+            self.refuse();
             event!(flux_trace_loan_end(
                 self.sh.trace_handle(),
                 self.slot,

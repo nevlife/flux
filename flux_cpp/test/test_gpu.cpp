@@ -466,7 +466,8 @@ TEST_F(Gpu, EveryDeviceBlockOfAFrameReachesAGpuReader)
 
 // An aborted loan's queued device work may still run after its block is freed. Another channel,
 // on another stream, that is handed the block next must not have its frame written over by it.
-TEST_F(Gpu, AnAbortedLoansLateWorkDoesNotReachTheNextOwnerOfItsBlock)
+// `refused`: the loan ends in a commit it refuses, not in its destructor.
+void late_work_does_not_reach_the_next_owner(bool refused)
 {
   using Blob = flux_test::flux_msg::Blob;
   constexpr std::size_t kBytes = 1 << 20;
@@ -487,6 +488,9 @@ TEST_F(Gpu, AnAbortedLoansLateWorkDoesNotReachTheNextOwnerOfItsBlock)
     const auto d = build.alloc_device__data(kBytes);
     aborted = d.data();
     ASSERT_EQ(driver()->memset(addr(d.data()), 0xAA, kBytes, first.native()), 0);
+    if (refused) {
+      ASSERT_EQ(w.commit(std::size_t{1} << 40), flux::Published::TooLarge);
+    }
   }
   // The next claim of that slot frees its block; an aborted slot waits behind the empty ones.
   for (int i = 0; i < 4; ++i) {
@@ -514,6 +518,16 @@ TEST_F(Gpu, AnAbortedLoansLateWorkDoesNotReachTheNextOwnerOfItsBlock)
   ASSERT_EQ(m.data().size(), kBytes);
   EXPECT_EQ(m.data()[0], 0x55);
   EXPECT_EQ(m.data()[kBytes - 1], 0x55);
+}
+
+TEST_F(Gpu, AnAbortedLoansLateWorkDoesNotReachTheNextOwnerOfItsBlock)
+{
+  late_work_does_not_reach_the_next_owner(false);
+}
+
+TEST_F(Gpu, ARefusedCommitsLateWorkDoesNotReachTheNextOwnerOfItsBlock)
+{
+  late_work_does_not_reach_the_next_owner(true);
 }
 
 // A slot's device block is freed when the slot is claimed again: frames that add up to more than
