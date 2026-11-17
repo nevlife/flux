@@ -37,7 +37,6 @@ pub const REFUSED_BAD_FRAME: i32 = 3;
 pub const REFUSED_FENCE: i32 = 4;
 pub const REFUSED_GPU_WEDGED: i32 = 5;
 
-pub const RECORD_CACHE_FULL: i32 = 0;
 pub const RECORD_WRITE_FAILED: i32 = 1;
 pub const RECORD_OVERRUN: i32 = 2;
 

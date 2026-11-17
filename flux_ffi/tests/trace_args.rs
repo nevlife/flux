@@ -146,7 +146,7 @@ fn check(ev: &[(String, Vec<String>)], how: &str) {
         ("claim", 2, trace::CLAIM_FENCE_FAILED),
         ("loan_end", 2, trace::LOAN_NOT_PUBLISHER),
         ("wake", 1, trace::WAKE_SIGNAL),
-        ("record_drop", 3, trace::RECORD_WRITE_FAILED),
+        ("record_drop", 3, trace::RECORD_OVERRUN),
     ];
     for (name, at, max) in ranges {
         for a in of(name) {

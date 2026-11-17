@@ -90,7 +90,7 @@ int main(void)
     &endpoint, "/ns/node", "/key", name, 0xF00D, FLUX_TRACE_ROLE_SUBSCRIPTION, FLUX_TRACE_LANG_CPP);
   flux_trace_py_gil(0);
   flux_trace_py_gil(1);
-  flux_trace_record_drop(id, 0, 3, FLUX_TRACE_RECORD_CACHE_FULL);
+  flux_trace_record_drop(id, 0, 3, FLUX_TRACE_RECORD_OVERRUN);
   flux_trace_gpu_wedged(700);
   flux_trace_contract_2();
 

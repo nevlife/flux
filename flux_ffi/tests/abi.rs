@@ -287,7 +287,6 @@ fn trace_constants_match_the_core() {
         ("REFUSED_BAD_FRAME", t::REFUSED_BAD_FRAME),
         ("REFUSED_FENCE", t::REFUSED_FENCE),
         ("REFUSED_GPU_WEDGED", t::REFUSED_GPU_WEDGED),
-        ("RECORD_CACHE_FULL", t::RECORD_CACHE_FULL),
         ("RECORD_WRITE_FAILED", t::RECORD_WRITE_FAILED),
         ("RECORD_OVERRUN", t::RECORD_OVERRUN),
         ("ROLE_PUBLISHER", t::ROLE_PUBLISHER),
