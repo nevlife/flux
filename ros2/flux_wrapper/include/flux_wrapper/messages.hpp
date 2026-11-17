@@ -1,6 +1,7 @@
 #ifndef FLUX_WRAPPER_MESSAGES_HPP
 #define FLUX_WRAPPER_MESSAGES_HPP
 
+#include "flux_wrapper/detail/copy_but_data.hpp"
 #include "flux_wrapper/runtime.hpp"
 
 #include <builtin_interfaces/msg/time.hpp>
@@ -14,11 +15,10 @@
 
 #ifdef USE_FLUX_ENABLED
 #include <flux/channel.hpp>
+#include <flux/ros_adapter.hpp>
 
-#include <sensor_msgs/flux/image.hpp>
-#include <sensor_msgs/flux/image_ros.hpp>
-#include <sensor_msgs/flux/point_cloud2.hpp>
-#include <sensor_msgs/flux/point_cloud2_ros.hpp>
+// The bridges of the standard types, so that a driver of one needs no flux include of its own.
+#include <flux_std_adapters/ros.hpp>
 #endif
 
 #ifdef FLUX_WRAPPER_CUDA
@@ -33,6 +33,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -42,8 +43,9 @@ namespace flux_wrapper
 template <class MsgT>
 class Publisher;
 
-// Write side (Loan) and read side (View) of each carried type. Both have the fields of the ROS
-// message, so a driver writes one piece of code for the ROS path and the flux path.
+// Write side (Loan) and read side (View) of a carried type. Image and PointCloud2 have a setter
+// and an accessor per field; any other type is set from and read as its ROS message, its root
+// `data` written and read in place. One piece of driver code serves the ROS path and the flux path.
 template <class MsgT>
 class Loan;
 template <class MsgT>
@@ -170,11 +172,52 @@ struct Field
 namespace detail
 {
 
+template <class V>
+struct IsByteVector : std::false_type
+{
+};
+template <class A>
+struct IsByteVector<std::vector<std::uint8_t, A>> : std::true_type
+{
+};
+
+// A root `data` of bytes (uint8[], byte[] or char[]): written and read in place, and carried in
+// device memory with Device::Cuda.
+template <class MsgT, class = void>
+struct HasRootData : std::false_type
+{
+};
+template <class MsgT>
+struct HasRootData<MsgT, std::void_t<decltype(MsgT::data)>> : IsByteVector<decltype(MsgT::data)>
+{
+};
+template <class MsgT>
+inline constexpr bool kRootData = HasRootData<MsgT>::value;
+
+// A root `std_msgs/Header header`: stamp() and frame_id() read it.
+template <class MsgT, class = void>
+struct HasRootHeader : std::false_type
+{
+};
+template <class MsgT>
+struct HasRootHeader<MsgT, std::void_t<decltype(MsgT::header)>>
+: std::is_same<decltype(MsgT::header), std_msgs::msg::Header>
+{
+};
+template <class MsgT>
+inline constexpr bool kRootHeader = HasRootHeader<MsgT>::value;
+
 // Never throws: a Cuda that cannot be had is Host, with the reason logged for this topic.
-inline auto cuda_usable(const rclcpp::Logger & logger, const std::string & topic, Device requested)
-  -> bool
+template <class MsgT>
+auto cuda_usable(const rclcpp::Logger & logger, const std::string & topic, Device requested) -> bool
 {
   if (requested == Device::Host) {
+    return false;
+  }
+  if constexpr (!kRootData<MsgT>) {
+    RCLCPP_WARN(
+      logger, "%s: Device::Cuda, but the type has no root uint8[] data to put there; using Host",
+      topic.c_str());
     return false;
   }
 #ifndef FLUX_WRAPPER_CUDA
@@ -207,17 +250,24 @@ inline auto cuda_usable(const rclcpp::Logger & logger, const std::string & topic
 }
 
 #ifdef USE_FLUX_ENABLED
-template <class MsgT>
-struct Adapter;
-template <>
-struct Adapter<sensor_msgs::msg::Image>
+template <class MsgT, class = void>
+struct HasAdapter : std::false_type
 {
-  using type = sensor_msgs::flux_msg::Image;
 };
-template <>
-struct Adapter<sensor_msgs::msg::PointCloud2>
+template <class MsgT>
+struct HasAdapter<MsgT, std::void_t<typename flux::RosAdapter<MsgT>::type>> : std::true_type
 {
-  using type = sensor_msgs::flux_msg::PointCloud2;
+};
+
+template <class MsgT>
+struct Adapter
+{
+  static_assert(
+    HasAdapter<MsgT>::value,
+    "flux_wrapper: no flux adapter for this message type. Include its <pkg>/flux/<snake>_ros.hpp, "
+    "which flux_generate_adapters() in the message package generates, before flux_wrapper uses "
+    "the type, under #ifdef USE_FLUX_ENABLED so that a build without flux does not need it");
+  using type = typename flux::RosAdapter<MsgT>::type;
 };
 template <class MsgT>
 using AdapterT = typename Adapter<MsgT>::type;
@@ -228,6 +278,8 @@ using AdapterT = typename Adapter<MsgT>::type;
 template <class MsgT>
 struct Gpu
 {
+  // Tools read the channel as the type (flux::Schemas) only for such a type.
+  static_assert(AdapterT<MsgT>::kGpuData);
   static constexpr std::uint64_t kFingerprint = flux::gpu_fingerprint(AdapterT<MsgT>::kFingerprint);
   // Room for every field but data: the header, encoding or the point fields and their names.
   static constexpr std::uint32_t kAuxBytes = 4096;
@@ -238,7 +290,7 @@ struct Gpu
 // loan's slot), for the publisher's log line.
 struct AuxOverflow
 {
-  const char * field = nullptr;  // null: every field fit
+  const char * field = nullptr;  // null: every field fit; empty: a field set by set_from()
   std::size_t bytes = 0;         // its string bytes, or its entries' name bytes
   std::size_t entries = 0;       // its entries (PointCloud2 fields), 0 for a string
   std::size_t used = 0;          // aux bytes written before it
@@ -254,7 +306,7 @@ auto gpu_fields(const flux::FrameView & f) -> std::optional<typename AdapterT<Ms
   const auto aux = f.aux();
   typename AdapterT<MsgT>::View v(aux.data(), aux.size());
   try {
-    (void)sensor_msgs::flux_msg::frame_to_msg(v);
+    (void)frame_to_msg(v);
   } catch (const std::exception &) {
     return std::nullopt;
   }
@@ -340,6 +392,7 @@ private:
 
 // On a publisher with Device::Cuda the flux path writes the fields other than data to the frame's
 // aux bytes, through a Builder there; fields over Gpu<MsgT>::kAuxBytes make the Loan false.
+// set_header() needs a root header, alloc_data() and alloc_buffer() a root data.
 template <class MsgT>
 class LoanBase
 {
@@ -358,6 +411,7 @@ public:
     return msg_ != nullptr;
   }
 
+  template <class M = MsgT, std::enable_if_t<kRootHeader<M>, int> = 0>
   void set_header(const std_msgs::msg::Header & h)
   {
 #ifdef USE_FLUX_ENABLED
@@ -374,10 +428,15 @@ public:
     msg_->header = h;
   }
 
-  // `n` bytes of the data field to write in place. Empty when they do not fit the flux slot, and
-  // on a slot in device memory: use alloc_buffer().
+  // `n` bytes of the data field to write in place. Empty when the Loan is false (publish() would
+  // send nothing), when they do not fit the flux slot, and on a slot in device memory: use
+  // alloc_buffer().
+  template <class M = MsgT, std::enable_if_t<kRootData<M>, int> = 0>
   auto alloc_data(std::size_t n) -> Span<std::uint8_t>
   {
+    if (!*this) {
+      return {};
+    }
 #ifdef USE_FLUX_ENABLED
     if (gpu_) {
       auto * p = static_cast<std::uint8_t *>(slot_.data());
@@ -404,14 +463,16 @@ public:
   }
 
   // `n` bytes of the data field: on the device when the publisher uses Cuda, else as alloc_data.
-  // On the ROS path with Cuda every loan of the publisher gets the same device buffer.
+  // False when the Loan is false or the bytes do not fit the flux slot. On the ROS path with Cuda
+  // every loan of the publisher gets the same device buffer.
+  template <class M = MsgT, std::enable_if_t<kRootData<M>, int> = 0>
   auto alloc_buffer(std::size_t n) -> Buffer
   {
+    if (!*this) {
+      return {};
+    }
 #ifdef USE_FLUX_ENABLED
     if (gpu_) {
-      if (!slot_) {
-        return {};
-      }
       if (n > slot_.capacity()) {
         bad_ = true;
         return {};
@@ -451,12 +512,11 @@ protected:
 #ifdef USE_FLUX_ENABLED
   using Builder = typename AdapterT<MsgT>::Builder;
   explicit LoanBase(Builder && b) : builder_(std::move(b)) {}
-  // The fields but data go to a Builder over the slot's aux, the data field to its payload.
+  // The fields but data go to a Builder over the slot's aux, the data field to its payload. With no
+  // free slot the Builder has no buffer, so the fields set go nowhere, as on a host loan.
   explicit LoanBase(flux::WriteSlot && slot) noexcept : slot_(std::move(slot)), gpu_(true)
   {
-    if (slot_) {
-      builder_.emplace(slot_.aux().data(), slot_.aux().size());
-    }
+    builder_.emplace(slot_ ? slot_.aux().data() : nullptr, slot_ ? slot_.aux().size() : 0);
   }
 
   // Runs put(), which writes `field`; notes it when it is the first that does not fit.
@@ -498,7 +558,8 @@ protected:
 
 // A flux View aliases the slot: valid only during the callback it was passed to, or with a
 // HeldCallback while its pointer lives. The data field is in host memory (data()), in device
-// memory (on_device()), or in both.
+// memory (on_device()), or in both. stamp() and frame_id() need a root header, the data
+// accessors a root data.
 template <class MsgT>
 class ViewBase
 {
@@ -516,6 +577,7 @@ public:
   }
 #endif
 
+  template <class M = MsgT, std::enable_if_t<kRootHeader<M>, int> = 0>
   [[nodiscard]] auto stamp() const noexcept -> builtin_interfaces::msg::Time
   {
 #ifdef USE_FLUX_ENABLED
@@ -528,6 +590,7 @@ public:
 #endif
     return msg_->header.stamp;
   }
+  template <class M = MsgT, std::enable_if_t<kRootHeader<M>, int> = 0>
   [[nodiscard]] auto frame_id() const noexcept -> std::string_view
   {
 #ifdef USE_FLUX_ENABLED
@@ -538,6 +601,7 @@ public:
     return msg_->header.frame_id;
   }
   // Empty when the frame is in device memory only.
+  template <class M = MsgT, std::enable_if_t<kRootData<M>, int> = 0>
   [[nodiscard]] auto data() const noexcept -> Span<const std::uint8_t>
   {
 #ifdef USE_FLUX_ENABLED
@@ -551,10 +615,19 @@ public:
 #endif
     return {msg_->data.data(), msg_->data.size()};
   }
-  [[nodiscard]] auto on_device() const noexcept -> bool { return device_ != nullptr; }
+  template <class M = MsgT, std::enable_if_t<kRootData<M>, int> = 0>
+  [[nodiscard]] auto on_device() const noexcept -> bool
+  {
+    return device_ != nullptr;
+  }
   // Read-only device memory, null when the frame is not on the device.
-  [[nodiscard]] auto device_ptr() const noexcept -> const void * { return device_; }
+  template <class M = MsgT, std::enable_if_t<kRootData<M>, int> = 0>
+  [[nodiscard]] auto device_ptr() const noexcept -> const void *
+  {
+    return device_;
+  }
   // The data field's size in bytes, wherever it is.
+  template <class M = MsgT, std::enable_if_t<kRootData<M>, int> = 0>
   [[nodiscard]] auto size() const noexcept -> std::size_t
   {
 #ifdef USE_FLUX_ENABLED
@@ -567,6 +640,7 @@ public:
 #ifdef FLUX_WRAPPER_CUDA
   // Queue the frame's work here: the slot goes back, or the subscription's device buffer is
   // written again, only after it. Null when not on_device().
+  template <class M = MsgT, std::enable_if_t<kRootData<M>, int> = 0>
   [[nodiscard]] auto stream() const noexcept -> cudaStream_t
   {
     return on_device() ? static_cast<cudaStream_t>(stream_) : nullptr;
@@ -574,6 +648,7 @@ public:
   // Orders stream() after the work queued on s so far, on the device: the slot or device buffer
   // then goes back only after that work too. For a frame read on another stream than stream().
   // True when not on_device().
+  template <class M = MsgT, std::enable_if_t<kRootData<M>, int> = 0>
   [[nodiscard]] auto after(cudaStream_t s) const noexcept -> bool
   {
     if (!on_device()) {
@@ -594,19 +669,41 @@ public:
   // The message itself on the ROS path, for code that keeps it; null on the flux path.
   [[nodiscard]] auto ros_message() const noexcept -> const MsgT * { return msg_; }
 
-  // A copy that outlives the callback.
+  // A copy that outlives the callback; a frame on the device only is copied to the host and
+  // waited for, and its data is empty when that copy failed. On the flux path a frame that does
+  // not match its schema throws std::runtime_error.
   [[nodiscard]] auto to_msg() const -> MsgT
   {
 #ifdef USE_FLUX_ENABLED
     if (flux_) {
-      MsgT m = sensor_msgs::flux_msg::frame_to_msg(*flux_);
-      if (gpu_) {
-        gpu_data_to_msg(m);
+      MsgT m = frame_to_msg(*flux_);
+      if constexpr (kRootData<MsgT>) {
+        if (gpu_) {
+          gpu_data_to_msg(m);
+        }
       }
       return m;
     }
 #endif
     return *msg_;
+  }
+
+  // As to_msg(), but data is left empty and not read, on either path: the other fields of a large
+  // message, which data() reads in place. Of a type without a root data, to_msg().
+  [[nodiscard]] auto without_data() const -> MsgT
+  {
+    if constexpr (kRootData<MsgT>) {
+#ifdef USE_FLUX_ENABLED
+      if (flux_) {
+        return frame_to_msg_without_data(*flux_);
+      }
+#endif
+      MsgT m;
+      copy_but_data(*msg_, m);
+      return m;
+    } else {
+      return to_msg();
+    }
   }
 
 protected:
@@ -659,6 +756,66 @@ protected:
 
 }  // namespace detail
 
+// Any type with a flux adapter: set_from() writes every field but data, alloc_data() and
+// alloc_buffer() the root data in place, set_header() a root header.
+template <class MsgT>
+class Loan : public detail::LoanBase<MsgT>
+{
+public:
+  Loan() = default;
+
+  // Every field but data (every field, without a root data), copied once. On the flux path a
+  // field that does not fit the slot, or a Device::Cuda frame's aux, makes the Loan false.
+  void set_from(const MsgT & m)
+  {
+#ifdef USE_FLUX_ENABLED
+    if (this->builder_) {
+      const bool fit = this->builder_->ok__();
+      const std::size_t used = this->builder_->size__();
+      if constexpr (detail::kRootData<MsgT>) {
+        msg_to_frame_without_data(m, *this->builder_);
+      } else {
+        msg_to_frame(m, *this->builder_);
+      }
+      if constexpr (detail::kRootHeader<MsgT>) {
+        this->over_.sec = m.header.stamp.sec;
+        this->over_.nanosec = m.header.stamp.nanosec;
+      }
+      if (fit && !this->builder_->ok__()) {
+        this->over_.field = "";
+        this->over_.used = used;
+      }
+      return;
+    }
+#endif
+    if constexpr (detail::kRootData<MsgT>) {
+      detail::copy_but_data(m, *this->msg_);
+    } else {
+      *this->msg_ = m;
+    }
+  }
+
+private:
+  using detail::LoanBase<MsgT>::LoanBase;
+
+  friend class Publisher<MsgT>;
+};
+
+// Any type with a flux adapter: without_data() reads every field but data, data() and the device
+// accessors the root data in place, stamp() and frame_id() a root header.
+template <class MsgT>
+class View : public detail::ViewBase<MsgT>
+{
+public:
+  using detail::ViewBase<MsgT>::ViewBase;
+#ifdef USE_FLUX_ENABLED
+  View(const flux::FrameView & f, const typename detail::AdapterT<MsgT>::View & fields) noexcept
+  : detail::ViewBase<MsgT>(f, fields)
+  {
+  }
+#endif
+};
+
 #ifdef USE_FLUX_ENABLED
 #define FLUX_WRAPPER_SET(field, value) \
   if (builder_) {                      \
@@ -693,10 +850,7 @@ public:
   void set_is_bigendian(std::uint8_t v) { FLUX_WRAPPER_SET(is_bigendian, v) }
   void set_step(std::uint32_t v) { FLUX_WRAPPER_SET(step, v) }
 
-private:
-  using LoanBase::LoanBase;
-
-  // Every field but data.
+  // Every field but data, through the setters, so that one that does not fit is logged by name.
   void set_from(const sensor_msgs::msg::Image & m)
   {
     set_header(m.header);
@@ -706,6 +860,9 @@ private:
     set_is_bigendian(m.is_bigendian);
     set_step(m.step);
   }
+
+private:
+  using LoanBase::LoanBase;
 
   friend class Publisher<sensor_msgs::msg::Image>;
 };
@@ -746,10 +903,7 @@ public:
     msg_->fields = fields;
   }
 
-private:
-  using LoanBase::LoanBase;
-
-  // Every field but data.
+  // As Loan<Image>::set_from().
   void set_from(const sensor_msgs::msg::PointCloud2 & m)
   {
     set_header(m.header);
@@ -761,6 +915,9 @@ private:
     set_row_step(m.row_step);
     set_is_dense(m.is_dense);
   }
+
+private:
+  using LoanBase::LoanBase;
 
   friend class Publisher<sensor_msgs::msg::PointCloud2>;
 };

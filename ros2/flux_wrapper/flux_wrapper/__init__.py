@@ -7,6 +7,8 @@ ENABLE_FLUX once for every node.
 
 import array
 import functools
+import importlib
+import keyword
 import os
 
 import numpy as np
@@ -18,10 +20,6 @@ from std_msgs.msg import Header
 
 try:
     import flux as _flux
-    from sensor_msgs_flux import image as _image
-    from sensor_msgs_flux import image_ros as _image_ros
-    from sensor_msgs_flux import point_cloud2 as _point_cloud2
-    from sensor_msgs_flux import point_cloud2_ros as _point_cloud2_ros
 except ImportError:
     _flux = None
 
@@ -37,13 +35,61 @@ def use_flux():
     return requested and _flux is not None
 
 
-def _adapters():
-    return {
-        Image: (_image, _image_ros),
-        PointCloud2: (_point_cloud2, _point_cloud2_ros),
-    }
+@functools.cache
+def _adapter(msg_type):
+    """The flux adapter of msg_type and its ROS bridge, named from the rosidl module (pkg.msg._snake)
+    as flux_generate_adapters() names them: pkg_flux.snake and pkg_flux.snake_ros."""
+    pkg = msg_type.__module__.split(".")[0]
+    snake = msg_type.__module__.rsplit(".", 1)[1].removeprefix("_")
+    base = f"{pkg}_flux.{snake}_" if keyword.iskeyword(snake) else f"{pkg}_flux.{snake}"
+    ros = f"{pkg}_flux.{snake}_ros"
+    try:
+        adapter, bridge = importlib.import_module(base), importlib.import_module(ros)
+    except ModuleNotFoundError as e:
+        raise TypeError(
+            f"flux_wrapper: no flux adapter for {pkg}/{msg_type.__name__}: {ros} does not import "
+            f"({e}); flux_generate_adapters() in {pkg} generates it"
+        ) from e
+    if bridge.MESSAGE is not msg_type:
+        raise TypeError(f"flux_wrapper: {ros} is the adapter of {bridge.MESSAGE}, not {msg_type}")
+    return adapter, bridge
 
 
+@functools.cache
+def _root_data(msg_type):
+    """Whether msg_type has a root data of bytes (uint8[] or byte[]), which the wrapper writes and
+    reads in place and device="cuda" puts in GPU memory."""
+    kind = msg_type.get_fields_and_field_types().get("data")
+    return kind in ("sequence<uint8>", "sequence<octet>")
+
+
+@functools.cache
+def _root_header(msg_type):
+    return msg_type.get_fields_and_field_types().get("header") == "std_msgs/Header"
+
+
+def _copy_but_data(m):
+    """A message with every field of m but data, which stays empty. The fields are m's own
+    objects: rclpy's setters keep what they are given."""
+    out = type(m)()
+    for name in m.get_fields_and_field_types():
+        if name != "data":
+            setattr(out, name, getattr(m, name))
+    return out
+
+
+def _data_bytes(data):
+    """A data field as a buffer. rclpy holds a byte[] it received as a list of one-byte bytes."""
+    return b"".join(data) if isinstance(data, list) else data
+
+
+def _set_data(m, buf):
+    """buf (bytes) as m's data, in the form rclpy itself gives that field."""
+    octets = m.get_fields_and_field_types()["data"] == "sequence<octet>"
+    m.data = [bytes((x,)) for x in buf] if octets else buf
+
+
+# The types with an accessor per field; any other is set from and read as its ROS message.
 _SCALARS = {
     Image: ("height", "width", "encoding", "is_bigendian", "step"),
     PointCloud2: ("height", "width", "is_bigendian", "point_step", "row_step", "is_dense"),
@@ -62,81 +108,31 @@ _GPU_OVER = "a field other than data is over the aux's 4096 bytes"
 
 
 def _gpu_fingerprint(msg_type):
-    return _flux.gpu_fingerprint(_adapters()[msg_type][0].FINGERPRINT__)
-
-
-def _pack(msg_type, m):
-    """The aux bytes of m's fields but data, or None when they are over the aux."""
-    adapter, ros_adapter = _adapters()[msg_type]
-    buf = np.zeros(_GPU_AUX_BYTES, np.uint8)
-    b = adapter.Builder(buf)
-    data, m.data = m.data, []
-    try:
-        ros_adapter.msg_to_frame(m, b)
-    except _flux.wire.WireError:
-        return None
-    finally:
-        m.data = data
-    if not b:
-        return None
-    return bytes(buf[: b.size__])
-
-
-def _first_over(msg_type, m):
-    """The first field but data of m that does not fit the aux, as (field, bytes, entries, bytes
-    used before it), in the order the C++ Loan writes them; None when all fit. For the log line
-    only: it writes the fields again."""
-    adapter, _ = _adapters()[msg_type]
-    b = adapter.Builder(np.zeros(_GPU_AUX_BYTES, np.uint8))
-    b.set__header__stamp(m.header.stamp.sec, m.header.stamp.nanosec)
-
-    def fields():
-        out = b.alloc__fields(len(m.fields))
-        for i, f in enumerate(m.fields):
-            out[i].name, out[i].offset = f.name, f.offset
-            out[i].datatype, out[i].count = f.datatype, f.count
-
-    steps = [
-        (
-            "header.frame_id",
-            len(m.header.frame_id.encode()),
-            0,
-            lambda: setattr(b, "header__frame_id", m.header.frame_id),
-        )
-    ]
-    if msg_type is Image:
-        steps.append(
-            ("encoding", len(m.encoding.encode()), 0, lambda: setattr(b, "encoding", m.encoding))
-        )
-    else:
-        steps.append(("fields", sum(len(f.name.encode()) for f in m.fields), len(m.fields), fields))
-    for field, nbytes, entries, put in steps:
-        used = b.size__
-        try:
-            put()
-        except _flux.wire.WireError:
-            return field, nbytes, entries, used
-        if not b:
-            return field, nbytes, entries, used
-    return None
+    return _flux.gpu_fingerprint(_adapter(msg_type)[0].FINGERPRINT__)
 
 
 def _unpack(msg_type, aux):
     """The fields but data of a GPU frame, or None when its aux bytes, another process's, do not
     parse."""
-    adapter, ros_adapter = _adapters()[msg_type]
+    adapter, bridge = _adapter(msg_type)
     try:
-        return ros_adapter.frame_to_msg(adapter.View(bytes(aux)))
+        return bridge.frame_to_msg(adapter.View(bytes(aux)))
     except (_flux.wire.WireError, ValueError, IndexError):
         return None
 
 
-def _cuda_usable(logger, topic, device):
+def _cuda_usable(logger, topic, device, msg_type):
     """Never raises for a "cuda" that cannot be had: it is "cpu", with the reason logged for this
     topic."""
     if device not in ("cpu", "cuda"):
         raise ValueError(f'flux_wrapper: device is "cpu" or "cuda", not {device!r}')
     if device == "cpu":
+        return False
+    if not _root_data(msg_type):
+        logger.warning(
+            f'{topic}: device="cuda", but the type has no root uint8[] data to put there; '
+            'using "cpu"'
+        )
         return False
     if not use_flux():
         # shortcut: the ROS path needs a device buffer and copies to and from it, which the flux
@@ -155,39 +151,62 @@ def _cuda_usable(logger, topic, device):
 class Loan:
     """A message being written: set the fields of the ROS message, then Publisher.publish(loan).
 
-    `fields` (PointCloud2) and `header` are set by assignment; `alloc_data(n)` returns a writable
-    uint8 array over the message's data. A false Loan had no free flux slot.
+    Image and PointCloud2 set each field by assignment; any other type, as in C++, all but data at
+    once with set_from(m) and `header` alone when it has a root header. `alloc_data(n)` returns a
+    writable uint8 array over the message's root data, written in place. A loan starts from a new
+    message, so a field not set has the type's default. A false Loan had no free flux slot.
 
-    On a publisher with device="cuda" the fields go to the frame's aux bytes as in C++; fields over
-    its 4096 bytes make the Loan false. The slot
-    is taken by alloc_buffer(n) or alloc_data(n), so the Loan is true until they found none free.
+    On the flux path each field goes to the slot as it is set, so one that does not fit makes the
+    Loan false at once. On a publisher with device="cuda" they go to the slot's aux bytes, as in
+    C++, and fields over its 4096 bytes make the Loan false.
     """
 
     def __init__(self, msg_type, msg=None, builder=None, gpu=None):
+        """gpu, of a device="cuda" flux publisher's loan: its flux.Loan (None when no slot was free),
+        which builder writes the aux of, and whether that slot is in device memory."""
         object.__setattr__(self, "_type", msg_type)
-        object.__setattr__(self, "_names", _SCALARS[msg_type])
+        object.__setattr__(self, "_names", _SCALARS.get(msg_type))
         object.__setattr__(self, "_msg", msg)
         object.__setattr__(self, "_builder", builder)
-        # A device="cuda" flux publisher's loan keeps the fields in _msg and the data in _slot: a
-        # flux.Loan once taken, False when none was free.
-        object.__setattr__(self, "_gpu", gpu)
-        object.__setattr__(self, "_slot", None)
-        object.__setattr__(self, "_too_large", False)  # the data asked for was past the slot
+        object.__setattr__(self, "_gpu", gpu is not None)
+        object.__setattr__(self, "_slot", gpu[0] if gpu else None)
+        object.__setattr__(self, "_device_backed", bool(gpu and gpu[1]))
+        # The data asked for of the slot, and whether some asked for was past it.
+        object.__setattr__(self, "_len", 0)
+        object.__setattr__(self, "_too_large", False)
         # On the flux path: the first string or list that did not fit the slot, and header.stamp,
         # for the publisher's log line.
         object.__setattr__(self, "_over", None)
         object.__setattr__(self, "_stamp", (0, 0))
 
     def __bool__(self):
-        if self._gpu is not None:
-            return self._slot is not False and _pack(self._type, self._msg) is not None
-        return self._msg is not None or bool(self._builder)
+        if self._gpu:
+            return bool(self._slot) and not self._too_large and bool(self._builder)
+        if self._builder is not None:
+            return bool(self._builder)
+        return self._msg is not None
 
     def __setattr__(self, name, value):
+        names = self._names or ()
+        if not names and (name != "header" or not _root_header(self._type)):
+            raise AttributeError(
+                f"{self._type.__name__}: set {name} with set_from(m), as in C++; only a root header "
+                "is set alone"
+            )
+        if (
+            names
+            and name not in names
+            and name != "header"
+            and (name != "fields" or self._type is not PointCloud2)
+        ):
+            raise AttributeError(
+                f"{self._type.__name__}: no setter for {name}, as in C++; data is written with "
+                "alloc_data(n) or alloc_buffer(n)"
+            )
         b = self._builder
         if b is None:
             setattr(self._msg, name, value)
-        elif not b and (name in self._names or name in ("header", "fields")):
+        elif not b:
             pass  # a field did not fit or no slot was free: the frame will not go out, as in C++
         elif name == "header":
             b.set__header__stamp(value.stamp.sec, value.stamp.nanosec)
@@ -210,12 +229,31 @@ class Loan:
                     )
 
             self._put("fields", sum(len(f.name.encode()) for f in value), len(value), fields)
-        elif name in self._names and isinstance(value, str):
+        elif isinstance(value, str):
             self._put(name, len(value.encode()), 0, lambda: setattr(b, name, value))
-        elif name in self._names:
-            setattr(b, name, value)
         else:
-            raise AttributeError(name)
+            setattr(b, name, value)
+
+    def set_from(self, m):
+        """Every field of the ROS message m but data (every field, without a root data)."""
+        root = _root_data(self._type)
+        names = [n for n in m.get_fields_and_field_types() if n != "data" or not root]
+        if self._names is not None:
+            for name in names:
+                setattr(self, name, getattr(m, name))
+            return
+        b = self._builder
+        if b is None:
+            for name in names:
+                setattr(self._msg, name, getattr(m, name))
+            return
+        # As the C++ Loan: the fields go to the slot in one call, so which one did not fit is not
+        # known.
+        bridge = _adapter(self._type)[1]
+        write = bridge.msg_to_frame_without_data if root else bridge.msg_to_frame
+        if _root_header(self._type):
+            object.__setattr__(self, "_stamp", (m.header.stamp.sec, m.header.stamp.nanosec))
+        self._put("", 0, 0, lambda: write(m, b))
 
     def _put(self, field, nbytes, entries, put):
         """Runs put(), which writes `field`; notes it when it is the first that does not fit. The
@@ -230,32 +268,45 @@ class Loan:
             object.__setattr__(self, "_over", (field, nbytes, entries, used))
 
     def alloc_data(self, n):
-        """On a device="cuda" publisher, None when n bytes do not fit the slot or the slot is device
-        memory: use alloc_buffer(n)."""
-        if self._gpu is not None:
-            slot = None if self._gpu.device_backed else self._take(n)
-            return slot.array if slot else None
+        """None, as C++'s empty span, when the Loan is false (publish() would send nothing), when n
+        bytes do not fit the flux slot, and on a slot in device memory: use alloc_buffer(n)."""
+        if not _root_data(self._type):
+            raise AttributeError(f"{self._type.__name__} has no root uint8[] data")
+        if not self:
+            return None
+        if self._gpu:
+            if not self._device_backed:
+                slot = self._data(n)
+                return None if slot is None else slot.array
+            if n > self._slot.capacity:
+                object.__setattr__(self, "_too_large", True)  # as _data(): the Loan is false
+            return None
         if self._builder is not None:
-            return self._builder.alloc__data(n)
-        # The setter copies what it is given, so the array returned is over the copy it kept.
+            try:
+                return self._builder.alloc__data(n)
+            except _flux.wire.WireError:
+                return None  # past the slot: the Builder is bad now
+        # The setter keeps the array it is given, and rclpy serializes a byte[] from a buffer too.
         self._msg.data = array.array("B", bytes(n))
         return np.frombuffer(self._msg.data, np.uint8)
 
     def alloc_buffer(self, n):
         """n bytes of the data field. On a device="cuda" publisher a flux.Loan of uint8[n], written
         on the device through __dlpack__ or __cuda_array_interface__ (the publish waits for its
-        stream), or None when no slot was free or n does not fit one; else as alloc_data(n)."""
-        if self._gpu is not None:
-            return self._take(n) or None
-        return self.alloc_data(n)
+        stream), or None when the Loan is false or n does not fit the slot; else as alloc_data(n)."""
+        if not self._gpu:
+            return self.alloc_data(n)
+        return self._data(n) if self else None
 
-    def _take(self, n):
-        if self._slot:
-            self._slot.abort()
-        object.__setattr__(self, "_too_large", n > self._gpu.slot_size)
-        slot = None if self._too_large else self._gpu.loan((n,), "uint8")
-        object.__setattr__(self, "_slot", slot if slot is not None else False)
-        return slot
+    def _data(self, n):
+        """The slot of a true Loan as uint8[n], or None when n is past it. Past it, the Loan is
+        false from then on, as in C++."""
+        if n > self._slot.capacity:
+            object.__setattr__(self, "_too_large", True)
+            return None
+        self._slot.resize(n)
+        object.__setattr__(self, "_len", n)
+        return self._slot
 
 
 class Publisher:
@@ -263,11 +314,12 @@ class Publisher:
     (0: the flux default), and with device="cuda" `max_device_data_size` bounds the data field
     (default 10 MiB, 0: 8 MiB); on "cpu" the data field goes to the publisher's arena, whatever
     its size. `mirror_to_ros` also publishes each one as its ROS message while a ROS subscriber
-    wants it.
+    wants it. A type other than Image and PointCloud2 needs its flux adapter on the flux path.
 
-    device="cuda" puts the data field in GPU memory (Loan.alloc_buffer()), on a flux GPU channel
-    that the C++ flux_wrapper shares. Where that cannot be had (no flux GPU route, the ROS path)
-    the publisher is "cpu", with a warning; uses_device says which. mirror_to_ros is ignored then.
+    device="cuda" puts the root data field in GPU memory (Loan.alloc_buffer()), on a flux GPU
+    channel that the C++ flux_wrapper shares. Where that cannot be had (a type without a root data,
+    no flux GPU route, the ROS path) the publisher is "cpu", with a warning; uses_device says which.
+    mirror_to_ros is ignored then.
     """
 
     def __init__(
@@ -289,9 +341,9 @@ class Publisher:
         self._fault_logged = False
         self._device_logged = False
         self._over_logged = False
-        self._cuda = _cuda_usable(self._logger, topic, device)
+        self._cuda = _cuda_usable(self._logger, topic, device, msg_type)
         if use_flux():
-            self._adapter = _adapters()[msg_type][0]
+            self._adapter = _adapter(msg_type)[0]
             fingerprint, aux_size, slot = self._adapter.FINGERPRINT__, 0, _flux.DEFAULT_SLOT_SIZE
             if self._cuda:
                 fingerprint, aux_size = _gpu_fingerprint(msg_type), _GPU_AUX_BYTES
@@ -320,7 +372,9 @@ class Publisher:
 
     def loan(self):
         if self._cuda:
-            return Loan(self._type, msg=self._type(), gpu=self._flux)
+            slot = self._flux.loan()
+            b = self._adapter.Builder(None if slot is None else slot.aux)
+            return Loan(self._type, builder=b, gpu=(slot, self._flux.device_backed))
         if self._flux is not None:
             return Loan(self._type, builder=self._adapter.build__(self._flux))
         return Loan(self._type, msg=self._type())
@@ -329,15 +383,17 @@ class Publisher:
         """Publish a Loan or a ROS message (the flux path copies it into a slot once). False when
         nothing went out."""
         if isinstance(msg, Loan):
-            if msg._gpu is not None:
-                return self._commit_gpu(msg)
-            if msg._builder is not None:
-                if not msg._builder and msg._over is not None:
-                    msg._builder.commit__()  # refused
-                    self._overflow("", "slot", self._flux.slot_size, msg._over, msg._stamp)
+            loan = msg
+            if loan._gpu:
+                return self._commit_gpu(loan)
+            if loan._builder is not None:
+                if not loan._builder and loan._over is not None:
+                    loan._builder.commit__()  # refused
+                    self._overflow("", "slot", self._flux.slot_size, loan)
                     return False
-                return self._report(msg._builder.commit__())
-            msg = msg._msg
+                return self._report(loan._builder.commit__())
+            self._ros.publish(loan._msg)
+            return True
         if self._cuda:
             return self._publish_gpu(msg)
         if self._flux is not None:
@@ -352,31 +408,32 @@ class Publisher:
         return self._ros.get_subscription_count()
 
     def _commit_gpu(self, loan):
-        slot = loan._slot if loan._slot is not None else loan._take(0)
-        object.__setattr__(loan, "_slot", False)
+        slot = loan._slot
         if not slot:
-            return loan._too_large and self._report(_flux.Published.TOO_LARGE)
-        aux = _pack(self._type, loan._msg)
-        if aux is None:
-            slot.abort()
-            over = _first_over(self._type, loan._msg)
-            if over is None:
-                self._device_error(_GPU_OVER)
-            else:
-                stamp = (loan._msg.header.stamp.sec, loan._msg.header.stamp.nanosec)
-                self._overflow(' on device="cuda"', "aux", _GPU_AUX_BYTES, over, stamp)
             return False
-        slot.aux[: len(aux)] = np.frombuffer(aux, np.uint8)
-        slot.aux_len = len(aux)
-        return self._report(slot.commit())
+        # The slot is the subscribers' after the commit, and the slot of nobody after an abort.
+        if loan._too_large or not loan._builder:
+            slot.abort()
+            if loan._over is not None:
+                self._overflow(' on device="cuda"', "aux", _GPU_AUX_BYTES, loan)
+            elif loan._too_large:
+                self._report(_flux.Published.TOO_LARGE)  # data past the slot, as publish(msg)
+            else:
+                self._device_error(_GPU_OVER)
+            return False
+        slot.aux_len = loan._builder.size__
+        return self._report(slot.commit(nbytes=loan._len))
 
     def _publish_gpu(self, msg):
-        # The loan only reads msg's fields. Its data goes into the slot in host or device memory.
-        loan = Loan(self._type, msg=msg, gpu=self._flux)
-        slot = loan._take(len(msg.data))
-        if slot is not None and not slot.copy_from(np.frombuffer(msg.data, np.uint8)):
-            slot.abort()
-            self._device_error("the copy of data into the slot was not queued")
+        loan = self.loan()
+        loan.set_from(msg)
+        data = _data_bytes(msg.data)
+        # A false Loan, data past the slot among its causes, gives no buffer; _commit_gpu() logs
+        # why.
+        buf = loan.alloc_buffer(len(data))
+        if buf is not None and not buf.copy_from(np.frombuffer(data, np.uint8)):
+            buf.abort()
+            self._device_error("the host to device copy failed")
             return False
         return self._commit_gpu(loan)
 
@@ -387,19 +444,29 @@ class Publisher:
                 f'device="cuda" publish failed: {what}; later failures are not logged'
             )
 
-    def _overflow(self, on, where, size, over, stamp):
+    def _overflow(self, on, where, size, loan):
         """Once per publisher: which field of which message did not fit, to size the aux or slot
-        by."""
+        by. Of fields set with set_from() only the size: they are written at once."""
         if self._over_logged:
             return
         self._over_logged = True
-        field, nbytes, entries, used = over
-        what = (
-            f"{field} ({entries} entries, names {nbytes} B" if entries else f"{field} ({nbytes} B"
-        )
+        field, nbytes, entries, used = loan._over
+        sec, nanosec = loan._stamp
+        stamp = f"; header.stamp {sec}.{nanosec:09d}" if _root_header(self._type) else ""
+        if not field:
+            what = (
+                f"the fields set from it did not fit the {where} ({size} B, {used} B used before "
+            )
+            what += "them)"
+        else:
+            what = (
+                f"{field} ({entries} entries, names {nbytes} B"
+                if entries
+                else f"{field} ({nbytes} B"
+            )
+            what += f") did not fit the {where} ({size} B, {used} B used before it)"
         self._logger.error(
-            f"{self._flux.topic_name}: a message did not go out{on}: {what}) did not fit the "
-            f"{where} ({size} B, {used} B used before it); header.stamp {stamp[0]}.{stamp[1]:09d}. "
+            f"{self._flux.topic_name}: a message did not go out{on}: {what}{stamp}. "
             "Later ones are not logged"
         )
 
@@ -408,23 +475,21 @@ class Publisher:
         loan = self.loan()
         if not loan:
             return False
-        loan.header = msg.header
-        for name in loan._names:
-            setattr(loan, name, getattr(msg, name))
-        if self._type is PointCloud2:
-            loan.fields = msg.fields
-        n = len(msg.data)
-        if loan and n:
-            data = loan.alloc_data(n)
-            if data is not None and len(data) == n:
-                data[:] = msg.data
+        loan.set_from(msg)
+        if _root_data(self._type):
+            data = _data_bytes(msg.data)
+            if loan and len(data):
+                out = loan.alloc_data(len(data))
+                if out is not None and len(out) == len(data):
+                    out[:] = np.frombuffer(data, np.uint8)
         return self.publish(loan)
 
     def _report(self, p):
         if _flux.faulted(p) and not self._fault_logged:
             self._fault_logged = True
             self._logger.error(
-                f"flux publish on {self._flux.topic_name} failed: {p}; later failures are not logged"
+                f"flux publish on {self._flux.topic_name} failed: {p} (slot "
+                f"{self._flux.slot_size} bytes); later failures are not logged"
             )
         return p == _flux.Published.OK
 
@@ -432,6 +497,10 @@ class Publisher:
 class View:
     """The fields of a received message. On the flux path `data` and the View alias the slot and
     are valid only during the callback; copy out (to_msg()) what is kept longer.
+
+    A field is read as an attribute of its ROS name. Image and PointCloud2 read each from the
+    frame; any other type reads its fields from without_data(), made once per View, so that its
+    root data stays in place.
 
     A device="cuda" subscription has `data` on the device too (on_device): device_data then has
     __dlpack__, __cuda_array_interface__ and nbytes, and stream is the stream to queue its work on.
@@ -447,36 +516,41 @@ class View:
         # A "cpu" publisher's data on the device, for a device="cuda" subscription.
         self._device = device
         self._stream = stream
+        self._fields = None
 
     def __getattr__(self, name):
-        if name not in _SCALARS[self._type]:
+        if name.startswith("_"):
             raise AttributeError(name)
-        return getattr(self._msg if self._msg is not None else self._v, name)
-
-    @property
-    def header(self):
         if self._msg is not None:
-            return self._msg.header
-        sec, nanosec = self._v.header__stamp
-        h = Header(frame_id=self._v.header__frame_id)
-        h.stamp.sec, h.stamp.nanosec = sec, nanosec
-        return h
-
-    @property
-    def fields(self):
-        if self._msg is not None:
-            return self._msg.fields
-        return [
-            PointField(name=f.name, offset=f.offset, datatype=f.datatype, count=f.count)
-            for f in self._v.fields
-        ]
+            return getattr(self._msg, name)
+        names = _SCALARS.get(self._type)
+        if names is None:
+            if self._fields is None:
+                self._fields = self.without_data()
+            return getattr(self._fields, name)
+        if name in names:
+            return getattr(self._v, name)
+        if name == "header":
+            sec, nanosec = self._v.header__stamp
+            h = Header(frame_id=self._v.header__frame_id)
+            h.stamp.sec, h.stamp.nanosec = sec, nanosec
+            return h
+        if name == "fields" and self._type is PointCloud2:
+            return [
+                PointField(name=f.name, offset=f.offset, datatype=f.datatype, count=f.count)
+                for f in self._v.fields
+            ]
+        raise AttributeError(name)
 
     @property
     def data(self):
+        """The root data in place: a uint8 array. Of a type without a root data, its field data."""
+        if not _root_data(self._type):
+            return self.__getattr__("data")
         if self._frame is not None:
             return None if self.on_device else self._frame
         if self._msg is not None:
-            return np.frombuffer(self._msg.data, np.uint8)
+            return np.frombuffer(_data_bytes(self._msg.data), np.uint8)
         return self._v.data
 
     @property
@@ -508,20 +582,32 @@ class View:
         which waits for its stream."""
         if self._frame is not None:
             data = self._frame.copy_to_host() if self.on_device else self._frame
-            self._msg.data = data.tobytes()
-            return self._msg
+            m = _copy_but_data(self._msg)
+            _set_data(m, data.tobytes())
+            return m
         if self._msg is not None:
             return self._msg
-        return _adapters()[self._type][1].frame_to_msg(self._v)
+        return _adapter(self._type)[1].frame_to_msg(self._v)
+
+    def without_data(self):
+        """As to_msg(), but data is left empty and not read, on either path: the other fields of a
+        large message, whose data is read in place. Of a type without a root data, to_msg()."""
+        if not _root_data(self._type):
+            return self.to_msg()
+        if self._msg is not None:
+            return _copy_but_data(self._msg)
+        return _adapter(self._type)[1].frame_to_msg_without_data(self._v)
 
 
 class Subscription:
     """One topic over flux or ROS; the callback gets a View. Add it to a flux_wrapper.Executor.
-    On the flux path it also takes the frames of a device="cuda" publisher, whose fields come in
-    the frame's aux bytes; a frame whose aux bytes do not parse is skipped and counted in rejected.
+    On the flux path it also takes the frames of a device="cuda" publisher of a type with a root
+    data, whose fields come in the frame's aux bytes; a frame whose aux bytes do not parse is
+    skipped and counted in rejected.
 
     device="cuda" has every frame's data on the device (View.on_device): a device="cuda"
     publisher's in its slot, a "cpu" publisher's as this subscription's copy beside its host bytes.
+    A type without a root data is "cpu", with a warning.
     """
 
     def __init__(self, node, msg_type, topic, callback, qos, *, callback_group=None, device="cpu"):
@@ -530,9 +616,9 @@ class Subscription:
         self._gpu = None
         self._rejects = [0]
         logger = node.get_logger()
-        cuda = _cuda_usable(logger, topic, device)
+        cuda = _cuda_usable(logger, topic, device, msg_type)
         if use_flux():
-            adapter = _adapters()[msg_type][0]
+            adapter = _adapter(msg_type)[0]
             q = _flux.QoS(depth=_depth(qos))
 
             def on_typed(f):
@@ -550,16 +636,20 @@ class Subscription:
                 qos=q,
                 device="cuda" if cuda else "cpu",
             )
+            if not _root_data(msg_type):
+                return
             rejects = self._rejects
 
             def on_gpu(frame):
-                m = _unpack(msg_type, _flux.aux(frame))
+                aux = _flux.aux(frame)
+                m = _unpack(msg_type, aux)
                 if m is None:
                     rejects[0] += 1
                     if rejects[0] == 1:
                         logger.error(
-                            f"{topic}: skipped a GPU frame with a bad aux header; later ones are "
-                            "counted in rejected, not logged"
+                            f"{topic}: skipped a GPU frame with a bad aux header "
+                            f"({len(aux)} bytes); later ones are counted in "
+                            "rejected, not logged"
                         )
                     return
                 callback(View(msg_type, msg=m, frame=frame))
@@ -601,6 +691,7 @@ class Executor:
     def add(self, subscription):
         if subscription._flux is not None:
             self._ex.add(subscription._flux)
+        if subscription._gpu is not None:
             self._ex.add(subscription._gpu)
 
     def add_node(self, node):

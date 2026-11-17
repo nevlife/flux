@@ -25,14 +25,33 @@ flux_generate_adapters(msg/Cloud.msg)
 | --- | --- |
 | `include/<pkg>/flux/<snake>.hpp` | `<pkg>::flux_msg::<Msg>` |
 | `<pkg>_flux/<snake>.py` | `<pkg>_flux.<snake>.<Msg>`, `<pkg>_flux.<Msg>` |
-| `include/<pkg>/flux/<snake>_ros.hpp` | ROS 메시지 객체와 변환하는 `msg_to_frame()`, `frame_to_msg()` |
-| `<pkg>_flux/<snake>_ros.py` | 같은 함수의 Python 판 |
+| `include/<pkg>/flux/<snake>_ros.hpp` | ROS 메시지 객체와 변환하는 `msg_to_frame()`, `frame_to_msg()`, `flux::RosAdapter<<pkg>::msg::<Msg>>` |
+| `<pkg>_flux/<snake>_ros.py` | 같은 함수의 Python 판과 `MESSAGE`(rclpy 메시지 클래스) |
 
 - ROS 쪽 두 파일은 같은 패키지가 그 메시지를 `rosidl_generate_interfaces()`에 먼저 넘긴 경우에만 생긴다. rosidl 메시지 타입을 include하거나 import하는 것은 이 두 파일뿐이다.
+- 최상위에 1바이트 원소의 `data` 배열(`uint8[]`, `byte[]`, `int8[]`)이 있는 메시지는 ROS 쪽 파일에 `msg_to_frame_without_data()`와 `frame_to_msg_without_data()`도 생긴다. `data`를 빼고 복사하며, `frame_to_msg_without_data()`는 받은 메시지의 `data`를 그대로 둔다.
+- `flux::RosAdapter<<pkg>::msg::<Msg>>::type`은 `<pkg>::flux_msg::<Msg>`다(`flux/ros_adapter.hpp`). ROS 타입만 아는 코드(flux_wrapper)가 이것으로 어댑터를 찾는다. ROS 쪽 헤더를 include하지 않은 타입에는 `type`이 없다.
 - 생성된 C++ 헤더는 `flux/channel.hpp`를 include하므로, 어댑터를 사용하는 쪽이 `flux_cpp`를 링크한다. 메시지 패키지 자신은 `flux_cpp`에 빌드 의존하지 않는다.
 - 같은 패키지의 target이 어댑터를 include하려면 `${PROJECT_NAME}_flux_adapters`를 링크한다. 다른 패키지에서는 메시지 패키지의 `${<pkg>_TARGETS}`를 링크한다. 어댑터 헤더가 rosidl 헤더와 같은 include 경로에 설치되기 때문이다.
 - fingerprint에는 중첩된 타입을 펼친 모양까지 반영되고, 중첩된 `.msg`를 고치면 그것을 사용하는 어댑터가 다시 생성된다.
 - 발행 쪽과 구독 쪽 어댑터가 다른 `.msg`에서 생성되면 fingerprint가 달라 다른 채널이 된다. 오류는 발생하지 않는다.
+
+### flux 없이도 빌드되는 메시지 패키지
+
+flux_wrapper를 쓰는 드라이버의 메시지 패키지처럼 flux 없이도 빌드되어야 하면, 어댑터 생성을 flux_wrapper와 같은 조건(빌드 시 `ENABLE_FLUX=1`)으로 둔다. 조건이 거짓이면 flux를 찾지 않고 일반 메시지 패키지가 된다.
+
+```cmake
+rosidl_generate_interfaces(${PROJECT_NAME} "msg/Cloud.msg" DEPENDENCIES std_msgs)
+if("$ENV{ENABLE_FLUX}" STREQUAL "1")
+  find_package(flux_gen REQUIRED)
+  flux_generate_adapters(msg/Cloud.msg)
+endif()
+```
+
+```xml
+<buildtool_depend condition="$ENABLE_FLUX == 1">flux_gen</buildtool_depend>
+<exec_depend condition="$ENABLE_FLUX == 1">flux_py</exec_depend>
+```
 
 ## 표준 메시지
 
@@ -47,6 +66,7 @@ flux_generate_adapters(msg/Cloud.msg)
 ```cpp
 #include "sensor_msgs/flux/image.hpp"      // sensor_msgs::flux_msg::Image
 #include "sensor_msgs/flux/image_ros.hpp"  // msg_to_frame, frame_to_msg
+#include "flux_std_adapters/ros.hpp"       // 위 모든 타입의 ROS 쪽 헤더
 ```
 
 ```python
@@ -60,6 +80,7 @@ from sensor_msgs_flux.image_ros import frame_to_msg, msg_to_frame
 | --- | --- | --- |
 | `kFingerprint` | `FINGERPRINT__` | Publisher와 Subscription에 넘기는 fingerprint |
 | `kTypeName` | `TYPE_NAME__` | `pkg/Name` |
+| `kGpuData` | `GPU_DATA__` | 최상위에 1바이트 원소의 `data` 배열이 있다. 그 타입은 `data`를 payload로, 나머지 필드를 aux로 보내는 GPU 메모리 채널([gpu.md](gpu.md))로도 다니고, 도구가 그 채널을 이 타입으로 읽는다 |
 | `View` | `View` | 받은 프레임을 복사 없이 읽는다 |
 | `Builder` | `Builder` | loan한 슬롯에 복사 없이 쓴다 |
 | `build__(pub)` | `build__(pub)` | 슬롯을 loan해 `Builder`를 반환한다 |

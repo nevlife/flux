@@ -1,5 +1,17 @@
 #include "flux_wrapper/flux_wrapper.hpp"
 
+#include <flux_wrapper_test_msgs/msg/bar.hpp>
+#include <flux_wrapper_test_msgs/msg/blob.hpp>
+#include <flux_wrapper_test_msgs/msg/foo.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+
+// A message package's own adapters, as a driver includes them: only in a build with flux.
+#ifdef USE_FLUX_ENABLED
+#include <flux_wrapper_test_msgs/flux/bar_ros.hpp>
+#include <flux_wrapper_test_msgs/flux/blob_ros.hpp>
+#include <flux_wrapper_test_msgs/flux/foo_ros.hpp>
+#endif
+
 #include <gtest/gtest.h>
 #include <rcutils/logging.h>
 #include <signal.h>
@@ -21,6 +33,7 @@
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <new>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -28,10 +41,45 @@
 #include <utility>
 #include <vector>
 
+// A replacement operator new is malloc and free by definition.
+// NOLINTBEGIN(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory)
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
+namespace
+{
+// The largest allocation of this thread while it watches, so that a test sees a payload copy.
+thread_local bool watching = false;
+thread_local std::size_t largest = 0;
+}  // namespace
+
+auto operator new(std::size_t n) -> void *
+{
+  if (watching && n > largest) {
+    largest = n;
+  }
+  if (void * p = std::malloc(n != 0 ? n : 1)) {
+    return p;
+  }
+  throw std::bad_alloc();
+}
+void operator delete(void * p) noexcept
+{
+  std::free(p);
+}
+void operator delete(void * p, std::size_t) noexcept
+{
+  std::free(p);
+}
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+// NOLINTEND(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory)
+
 namespace
 {
 
+using flux_wrapper_test_msgs::msg::Bar;
+using flux_wrapper_test_msgs::msg::Blob;
+using flux_wrapper_test_msgs::msg::Foo;
 using sensor_msgs::msg::Image;
+using sensor_msgs::msg::Imu;
 using sensor_msgs::msg::PointCloud2;
 using sensor_msgs::msg::PointField;
 
@@ -190,6 +238,52 @@ auto cloud(
   }
   c.is_dense = true;
   return c;
+}
+
+// A custom type with every kind of field the wrapper carries besides its root data.
+auto foo(std::int32_t sec, std::vector<std::uint8_t> data) -> Foo
+{
+  Foo m;
+  m.header = header(sec, "foo_frame");
+  m.width = 3;
+  m.scale = 0.5;
+  m.valid = true;
+  m.label = "label";
+  m.tags = {"a", "bc"};
+  m.values = {1.5F, -2.0F};
+  m.origin.x = 1.0;
+  m.origin.y = 2.0;
+  m.origin.z = 3.0;
+  m.corners.resize(2);
+  m.corners[1].x = 4.0;
+  m.data = std::move(data);
+  return m;
+}
+
+auto without(Foo m) -> Foo
+{
+  m.data.clear();
+  return m;
+}
+
+auto bar(std::int32_t sec) -> Bar
+{
+  Bar m;
+  m.header = header(sec, "bar_frame");
+  m.value = -4;
+  m.name = "bar";
+  m.samples = {0.25, 0.5};
+  return m;
+}
+
+auto imu(std::int32_t sec) -> Imu
+{
+  Imu m;
+  m.header = header(sec, "imu");
+  m.orientation.w = 1.0;
+  m.angular_velocity.z = 0.5;
+  m.linear_acceleration_covariance[4] = 2.0;
+  return m;
 }
 
 #ifdef FLUX_WRAPPER_CUDA
@@ -1091,52 +1185,6 @@ TEST_F(WrapperTest, CudaThatCannotBeHadIsHost)
   EXPECT_EQ(got_on_device, cuda);
 }
 
-#if defined(FLUX_WRAPPER_CUDA) && defined(USE_FLUX_ENABLED)
-// Sends `want` from a Cuda publisher through test_flux_wrapper.py's echo(), which reads it in
-// Python and publishes it again with the Python flux_wrapper, and reads that with a Cuda
-// subscription.
-template <class MsgT>
-auto echo_through_python(
-  WrapperTest & t, const rclcpp::Node & node, const char * script, const char * type,
-  const MsgT & want) -> std::optional<OnDevice<MsgT>>
-{
-  const std::string in = std::string(node.get_namespace()) + "/py_in_" + type;
-  const std::string out = std::string(node.get_namespace()) + "/py_out_" + type;
-  std::optional<OnDevice<MsgT>> got;
-  std::atomic<bool> done{false};
-  flux_wrapper::SubscriptionOptions sub_options;
-  sub_options.device = flux_wrapper::Device::Cuda;
-  flux_wrapper::Subscription<MsgT> sub(
-    t.node(), out, rclcpp::QoS(4),
-    [&](const flux_wrapper::View<MsgT> & v) {
-      got = read_device(v);
-      done = true;
-    },
-    sub_options);
-  flux_wrapper::PublisherOptions options;
-  options.device = flux_wrapper::Device::Cuda;
-  flux_wrapper::Publisher<MsgT> pub(t.node(), in, rclcpp::QoS(4), options);
-
-  std::vector<std::string> args = {"python3", script, type, in, out};
-  std::vector<char *> argv;
-  for (std::string & a : args) {
-    argv.push_back(a.data());
-  }
-  argv.push_back(nullptr);
-  pid_t pid = 0;
-  const int spawned = posix_spawnp(&pid, "python3", nullptr, nullptr, argv.data(), environ);
-  EXPECT_EQ(spawned, 0);
-  // Without a child, pid 0 would signal this process group.
-  if (spawned != 0) {
-    return got;
-  }
-  t.run_until(done, [&] { (void)pub.publish(want); });
-  EXPECT_EQ(::kill(pid, SIGINT), 0);
-  int status = 0;
-  EXPECT_EQ(::waitpid(pid, &status, 0), pid);
-  return got;
-}
-
 // Warnings this process logged, while a Logs is alive.
 class Logs
 {
@@ -1184,6 +1232,52 @@ private:
 
   rcutils_logging_output_handler_t previous_;
 };
+
+#if defined(FLUX_WRAPPER_CUDA) && defined(USE_FLUX_ENABLED)
+// Sends `want` from a Cuda publisher through test_flux_wrapper.py's echo(), which reads it in
+// Python and publishes it again with the Python flux_wrapper, and reads that with a Cuda
+// subscription.
+template <class MsgT>
+auto echo_through_python(
+  WrapperTest & t, const rclcpp::Node & node, const char * script, const char * type,
+  const MsgT & want) -> std::optional<OnDevice<MsgT>>
+{
+  const std::string in = std::string(node.get_namespace()) + "/py_in_" + type;
+  const std::string out = std::string(node.get_namespace()) + "/py_out_" + type;
+  std::optional<OnDevice<MsgT>> got;
+  std::atomic<bool> done{false};
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.device = flux_wrapper::Device::Cuda;
+  flux_wrapper::Subscription<MsgT> sub(
+    t.node(), out, rclcpp::QoS(4),
+    [&](const flux_wrapper::View<MsgT> & v) {
+      got = read_device(v);
+      done = true;
+    },
+    sub_options);
+  flux_wrapper::PublisherOptions options;
+  options.device = flux_wrapper::Device::Cuda;
+  flux_wrapper::Publisher<MsgT> pub(t.node(), in, rclcpp::QoS(4), options);
+
+  std::vector<std::string> args = {"python3", script, type, in, out};
+  std::vector<char *> argv;
+  for (std::string & a : args) {
+    argv.push_back(a.data());
+  }
+  argv.push_back(nullptr);
+  pid_t pid = 0;
+  const int spawned = posix_spawnp(&pid, "python3", nullptr, nullptr, argv.data(), environ);
+  EXPECT_EQ(spawned, 0);
+  // Without a child, pid 0 would signal this process group.
+  if (spawned != 0) {
+    return got;
+  }
+  t.run_until(done, [&] { (void)pub.publish(want); });
+  EXPECT_EQ(::kill(pid, SIGINT), 0);
+  int status = 0;
+  EXPECT_EQ(::waitpid(pid, &status, 0), pid);
+  return got;
+}
 
 // A header past the aux is logged once per publisher, with its field and the message's stamp, so
 // the aux can be sized by it.
@@ -1302,7 +1396,7 @@ TEST_F(WrapperTest, EveryCudaFallbackIsLoggedWithItsTopic)
 }
 
 // A C++ GPU frame read and written again by the Python flux_wrapper: each side reads the other's
-// aux layout.
+// aux layout, of the standard types and of a custom one.
 TEST_F(WrapperTest, GpuFramesGoThroughPython)
 {
   SKIP_WITHOUT_CUDA();
@@ -1323,6 +1417,13 @@ TEST_F(WrapperTest, GpuFramesGoThroughPython)
   EXPECT_TRUE(cloud_got->on_device);
   EXPECT_EQ(cloud_got->device_bytes, cloud_want.data);
   EXPECT_EQ(cloud_got->msg, cloud_want);
+
+  const Foo foo_want = foo(5, {7, 7, 8});
+  const auto foo_got = echo_through_python(*this, *node_, script, "Foo", foo_want);
+  ASSERT_TRUE(foo_got);
+  EXPECT_TRUE(foo_got->on_device);
+  EXPECT_EQ(foo_got->device_bytes, foo_want.data);
+  EXPECT_EQ(foo_got->msg, foo_want);
 }
 #endif
 
@@ -1391,5 +1492,504 @@ TEST(GpuChannel, FingerprintsAreTheTypesGpuFingerprint)
     flux_gpu_fingerprint(sensor_msgs::flux_msg::PointCloud2::kFingerprint));
 }
 #endif
+
+// A type without accessors of its own is set from its ROS message and read as one, and its root
+// data is written and read in place, on either path.
+TEST_F(WrapperTest, AnyTypeThroughALoanWithItsDataInPlace)
+{
+  static_assert(flux_wrapper::detail::kRootData<Foo> && flux_wrapper::detail::kRootHeader<Foo>);
+  struct Got
+  {
+    std::int32_t sec;
+    std::string frame;
+    Foo fields;
+    std::vector<std::uint8_t> data;
+    std::size_t size;
+    Foo msg;
+  };
+  std::optional<Got> got;
+  std::atomic<bool> done{false};
+  flux_wrapper::Subscription<Foo> sub(
+    *node_, "foo", rclcpp::QoS(4), [&](const flux_wrapper::View<Foo> & v) {
+      got = Got{v.stamp().sec,    std::string(v.frame_id()),
+                v.without_data(), {v.data().begin(), v.data().end()},
+                v.size(),         v.to_msg()};
+      done = true;
+    });
+  flux_wrapper::Publisher<Foo> pub(*node_, "foo", rclcpp::QoS(4));
+  EXPECT_EQ(pub.uses_flux(), expect_flux());
+
+  // set_from() leaves data alone: what alloc_data() wrote goes out, not the message's data.
+  const Foo fields = foo(8, {1, 2, 3});
+  run_until(done, [&] {
+    auto loan = pub.loan();
+    ASSERT_TRUE(loan);
+    const auto data = loan.alloc_data(4);
+    ASSERT_EQ(data.size(), 4u);
+    std::fill(data.begin(), data.end(), std::uint8_t{9});
+    loan.set_from(fields);
+    EXPECT_TRUE(pub.publish(std::move(loan)));
+  });
+
+  ASSERT_TRUE(got);
+  EXPECT_EQ(got->sec, 8);
+  EXPECT_EQ(got->frame, "foo_frame");
+  EXPECT_EQ(got->fields, without(fields));
+  EXPECT_EQ(got->data, (std::vector<std::uint8_t>{9, 9, 9, 9}));
+  EXPECT_EQ(got->size, 4u);
+  Foo whole = fields;
+  whole.data = {9, 9, 9, 9};
+  EXPECT_EQ(got->msg, whole);
+}
+
+TEST_F(WrapperTest, AnyTypeFromARosMessage)
+{
+  std::atomic<std::int32_t> want_sec{1};
+  std::optional<Foo> got;
+  std::atomic<bool> done{false};
+  flux_wrapper::Subscription<Foo> sub(
+    *node_, "foo_message", rclcpp::QoS(4), [&](const flux_wrapper::View<Foo> & v) {
+      if (v.stamp().sec == want_sec) {
+        got = v.to_msg();
+        done = true;
+      }
+    });
+  flux_wrapper::Publisher<Foo> pub(*node_, "foo_message", rclcpp::QoS(4));
+  const Foo kept = foo(1, {4, 5, 6});
+  run_until(done, [&] { EXPECT_TRUE(pub.publish(kept)); });
+  ASSERT_TRUE(got);
+  EXPECT_EQ(*got, kept);
+
+  got.reset();
+  done = false;
+  want_sec = 2;
+  const Foo owned = foo(2, {});
+  run_until(done, [&] { EXPECT_TRUE(pub.publish(std::make_unique<Foo>(owned))); });
+  ASSERT_TRUE(got);
+  EXPECT_EQ(*got, owned);
+}
+
+// Without a root data the loan sets and the view reads every field; a root header still has
+// set_header(), stamp() and frame_id().
+TEST_F(WrapperTest, ATypeWithoutDataIsSetAndReadWhole)
+{
+  static_assert(!flux_wrapper::detail::kRootData<Bar>);
+  std::optional<Bar> got;
+  std::optional<Bar> fields;
+  std::string frame;
+  std::atomic<bool> done{false};
+  flux_wrapper::Subscription<Bar> sub(
+    *node_, "bar", rclcpp::QoS(4), [&](const flux_wrapper::View<Bar> & v) {
+      got = v.to_msg();
+      fields = v.without_data();
+      frame = std::string(v.frame_id());
+      done = v.stamp().sec == 9;
+    });
+  flux_wrapper::Publisher<Bar> pub(*node_, "bar", rclcpp::QoS(4));
+  Bar want = bar(3);
+  run_until(done, [&] {
+    auto loan = pub.loan();
+    ASSERT_TRUE(loan);
+    loan.set_from(want);
+    loan.set_header(header(9, "late"));
+    EXPECT_TRUE(pub.publish(std::move(loan)));
+  });
+  ASSERT_TRUE(got);
+  want.header = header(9, "late");
+  EXPECT_EQ(*got, want);
+  EXPECT_EQ(*fields, want);
+  EXPECT_EQ(frame, "late");
+}
+
+// A field the loan does not set is the type's default, not the last loan's. The Python test of the
+// same name checks the same.
+TEST_F(WrapperTest, ALoanStartsFromAnEmptyMessage)
+{
+  for (const flux_wrapper::Device device :
+       {flux_wrapper::Device::Host, flux_wrapper::Device::Cuda}) {
+    const bool cuda = device == flux_wrapper::Device::Cuda;
+    const std::string topic = cuda ? "foo_fresh_cuda" : "foo_fresh_host";
+    std::optional<Foo> got;
+    std::atomic<bool> done{false};
+    flux_wrapper::Subscription<Foo> sub(
+      *node_, topic, rclcpp::QoS(4), [&](const flux_wrapper::View<Foo> & v) {
+        if (v.stamp().sec == 2) {
+          got = v.without_data();
+          done = true;
+        }
+      });
+    flux_wrapper::PublisherOptions options;
+    options.device = device;
+    flux_wrapper::Publisher<Foo> pub(*node_, topic, rclcpp::QoS(4), options);
+    run_until(done, [&] {
+      auto whole = pub.loan();
+      whole.set_from(foo(1, {}));
+      EXPECT_TRUE(pub.publish(std::move(whole)));
+      auto header_only = pub.loan();
+      header_only.set_header(header(2, "only_header"));
+      EXPECT_TRUE(pub.publish(std::move(header_only)));
+    });
+    ASSERT_TRUE(got) << topic;
+    Foo want;
+    want.header = header(2, "only_header");
+    EXPECT_EQ(*got, want) << topic;
+  }
+}
+
+// A standard type flux_std_adapters generates needs no include of the driver's.
+TEST_F(WrapperTest, AStandardTypeIsCarried)
+{
+  std::optional<Imu> got;
+  std::atomic<bool> done{false};
+  flux_wrapper::Subscription<Imu> sub(
+    *node_, "imu", rclcpp::QoS(4), [&](const flux_wrapper::View<Imu> & v) {
+      got = v.to_msg();
+      done = true;
+    });
+  flux_wrapper::Publisher<Imu> pub(*node_, "imu", rclcpp::QoS(4));
+  EXPECT_EQ(pub.uses_flux(), expect_flux());
+  const Imu want = imu(4);
+  run_until(done, [&] { EXPECT_TRUE(pub.publish(want)); });
+  ASSERT_TRUE(got);
+  EXPECT_EQ(*got, want);
+}
+
+// A root data of byte[] is written in place as uint8[] is; a type without a header has no stamp().
+TEST_F(WrapperTest, AByteDataWithoutAHeader)
+{
+  static_assert(flux_wrapper::detail::kRootData<Blob> && !flux_wrapper::detail::kRootHeader<Blob>);
+  std::optional<Blob> got;
+  std::atomic<bool> done{false};
+  flux_wrapper::Subscription<Blob> sub(
+    *node_, "blob", rclcpp::QoS(4), [&](const flux_wrapper::View<Blob> & v) {
+      got = v.to_msg();
+      done = v.size() == 3;
+    });
+  flux_wrapper::Publisher<Blob> pub(*node_, "blob", rclcpp::QoS(4));
+  Blob want;
+  want.seq = 11;
+  run_until(done, [&] {
+    auto loan = pub.loan();
+    ASSERT_TRUE(loan);
+    loan.set_from(want);
+    const auto data = loan.alloc_data(3);
+    ASSERT_EQ(data.size(), 3u);
+    data[0] = 1;
+    data[1] = 2;
+    data[2] = 3;
+    EXPECT_TRUE(pub.publish(std::move(loan)));
+  });
+  ASSERT_TRUE(got);
+  want.data = {1, 2, 3};
+  EXPECT_EQ(*got, want);
+}
+
+// set_from() and without_data() copy the other fields and never the payload: no allocation the
+// size of data, on either path, where to_msg() makes one.
+TEST_F(WrapperTest, WithoutDataAndSetFromDoNotCopyThePayload)
+{
+  const std::size_t payload = std::size_t{4} << 20;
+  const Foo big = foo(6, std::vector<std::uint8_t>(payload, 7));
+  flux_wrapper::Publisher<Foo> pub(*node_, "foo_big", rclcpp::QoS(4));
+  {
+    auto loan = pub.loan();
+    ASSERT_TRUE(loan);
+    largest = 0;
+    watching = true;
+    loan.set_from(big);
+    watching = false;
+    EXPECT_LT(largest, payload / 4);
+  }
+
+  struct Got
+  {
+    Foo fields;
+    std::size_t fields_alloc = 0;
+    Foo msg;
+    std::size_t msg_alloc = 0;
+  };
+  std::optional<Got> got;
+  std::atomic<bool> done{false};
+  flux_wrapper::Subscription<Foo> sub(
+    *node_, "foo_big", rclcpp::QoS(4), [&](const flux_wrapper::View<Foo> & v) {
+      Got g;
+      largest = 0;
+      watching = true;
+      g.fields = v.without_data();
+      g.fields_alloc = largest;
+      largest = 0;
+      g.msg = v.to_msg();
+      g.msg_alloc = largest;
+      watching = false;
+      got = std::move(g);
+      done = true;
+    });
+  run_until(done, [&] { EXPECT_TRUE(pub.publish(big)); });
+  ASSERT_TRUE(got);
+  EXPECT_EQ(got->fields, without(big));
+  EXPECT_LT(got->fields_alloc, payload / 4);
+  EXPECT_EQ(got->msg, big);
+  EXPECT_GE(got->msg_alloc, payload);
+}
+
+// Device::Cuda needs a root data: without one the publisher and the subscription are Host, each
+// saying so with its topic.
+TEST_F(WrapperTest, CudaOnATypeWithoutDataIsHost)
+{
+  const Logs logs;
+  std::optional<Bar> got;
+  std::atomic<bool> done{false};
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.device = flux_wrapper::Device::Cuda;
+  flux_wrapper::Subscription<Bar> sub(
+    *node_, "bar_cuda", rclcpp::QoS(4),
+    [&](const flux_wrapper::View<Bar> & v) {
+      got = v.to_msg();
+      done = true;
+    },
+    sub_options);
+  flux_wrapper::PublisherOptions options;
+  options.device = flux_wrapper::Device::Cuda;
+  flux_wrapper::Publisher<Bar> pub(*node_, "bar_cuda", rclcpp::QoS(4), options);
+  EXPECT_FALSE(pub.uses_device());
+  const Bar want = bar(2);
+  run_until(done, [&] { EXPECT_TRUE(pub.publish(want)); });
+  ASSERT_TRUE(got);
+  EXPECT_EQ(*got, want);
+  EXPECT_EQ(Logs::count("bar_cuda: Device::Cuda, but the type has no root uint8[] data"), 2);
+}
+
+#ifdef FLUX_WRAPPER_CUDA
+// What a subscription of a Foo got: as read_device(), and the host bytes and the other fields.
+struct FooGot
+{
+  OnDevice<Foo> device;
+  std::vector<std::uint8_t> host;
+  Foo fields;
+};
+#endif
+
+// A custom type's data in each pairing of publisher and subscription devices: a Cuda subscription
+// has it in device memory, a Host one in host memory (of a Cuda publisher on a discrete GPU, the
+// copy flux makes at take).
+TEST_F(WrapperTest, CudaAnyTypeInEveryDevicePairing)
+{
+  SKIP_WITHOUT_CUDA();
+#ifdef FLUX_WRAPPER_CUDA
+  using flux_wrapper::Device;
+  std::int32_t sec = 0;
+  for (const Device pub_device : {Device::Host, Device::Cuda}) {
+    for (const Device sub_device : {Device::Host, Device::Cuda}) {
+      ++sec;
+      const std::string topic = "foo_pair" + std::to_string(sec);
+      const Foo want = foo(sec, {3, 1, 4, 1, 5, static_cast<std::uint8_t>(sec)});
+      std::optional<FooGot> got;
+      std::atomic<bool> done{false};
+      flux_wrapper::SubscriptionOptions sub_options;
+      sub_options.device = sub_device;
+      flux_wrapper::Subscription<Foo> sub(
+        *node_, topic, rclcpp::QoS(4),
+        [&](const flux_wrapper::View<Foo> & v) {
+          got = FooGot{read_device(v), {v.data().begin(), v.data().end()}, v.without_data()};
+          done = true;
+        },
+        sub_options);
+      flux_wrapper::PublisherOptions options;
+      options.device = pub_device;
+      flux_wrapper::Publisher<Foo> pub(*node_, topic, rclcpp::QoS(4), options);
+      const bool cuda_pub = pub_device == Device::Cuda;
+      ASSERT_EQ(pub.uses_device(), cuda_pub);
+      const DeviceBytes source(want.data);
+      run_until(done, [&] {
+        auto loan = pub.loan();
+        ASSERT_TRUE(loan);
+        loan.set_from(want);
+        const flux_wrapper::Buffer buf = loan.alloc_buffer(want.data.size());
+        ASSERT_TRUE(buf);
+        EXPECT_EQ(buf.on_device(), cuda_pub);
+        ASSERT_TRUE(buf.copy_from(cuda_pub ? source.get() : want.data.data(), want.data.size()));
+        EXPECT_TRUE(pub.publish(std::move(loan)));
+      });
+      const std::string pairing = (cuda_pub ? "Cuda->" : "Host->") +
+                                  std::string(sub_device == Device::Cuda ? "Cuda" : "Host");
+      ASSERT_TRUE(got) << pairing;
+      if (sub_device == Device::Cuda) {
+        EXPECT_TRUE(got->device.on_device) << pairing;
+        EXPECT_EQ(got->device.device_bytes, want.data) << pairing;
+      } else {
+        EXPECT_FALSE(got->device.on_device) << pairing;
+        EXPECT_EQ(got->host, want.data) << pairing;
+      }
+      EXPECT_EQ(got->device.msg, want) << pairing;
+      EXPECT_EQ(got->fields, without(want)) << pairing;
+    }
+  }
+#endif
+}
+
+// Of a type without accessors the log cannot name the field that did not fit, only the size.
+TEST_F(WrapperTest, AnyTypePastTheSlotIsLoggedOnceWithItsSize)
+{
+  if (!expect_flux()) {
+    GTEST_SKIP() << "the slot is a flux one";
+  }
+  const Logs logs;
+  flux_wrapper::Publisher<Foo> pub(*node_, "foo_over_logged", rclcpp::QoS(4));
+  Foo m = foo(5, {1});
+  m.label = std::string(9000, 'l');
+  for (int i = 0; i < 2; ++i) {
+    auto loan = pub.loan();
+    ASSERT_TRUE(loan);
+    loan.set_from(m);
+    EXPECT_FALSE(loan);
+    EXPECT_FALSE(pub.publish(std::move(loan)));
+  }
+  EXPECT_FALSE(pub.publish(m));
+  EXPECT_EQ(
+    Logs::count("foo_over_logged: a message did not go out: the fields set from it did not fit "
+                "the slot ("),
+    1);
+  EXPECT_EQ(Logs::count("B used before them); header.stamp 5.000000007. Later ones"), 1);
+#ifdef FLUX_WRAPPER_CUDA
+  if (!no_cuda().empty()) {
+    return;
+  }
+  flux_wrapper::PublisherOptions options;
+  options.device = flux_wrapper::Device::Cuda;
+  flux_wrapper::Publisher<Foo> gpu(*node_, "foo_over_aux", rclcpp::QoS(4), options);
+  ASSERT_TRUE(gpu.uses_device());
+  m.label = std::string(5000, 'l');
+  EXPECT_FALSE(gpu.publish(m));
+  EXPECT_EQ(
+    Logs::count("foo_over_aux: a message did not go out on Device::Cuda: the fields set from it "
+                "did not fit the aux (4096 B, "),
+    1);
+#ifdef USE_FLUX_ENABLED
+  // The header set alone is named; the Python test checks the same line.
+  flux_wrapper::Publisher<Foo> header_gpu(*node_, "foo_header_aux", rclcpp::QoS(4), options);
+  auto loan = header_gpu.loan();
+  loan.set_header(header(5, std::string(5000, 'f')));
+  EXPECT_FALSE(loan);
+  EXPECT_FALSE(header_gpu.publish(std::move(loan)));
+  const std::string used = std::to_string(flux_wrapper_test_msgs::flux_msg::Foo::kScalarBytes);
+  EXPECT_EQ(
+    Logs::count(
+      "foo_header_aux: a message did not go out on Device::Cuda: header.frame_id (5000 B) did not "
+      "fit the aux (4096 B, " +
+      used + " B used before it); header.stamp 5.000000007. Later ones are not logged"),
+    1);
+#endif
+#endif
+}
+
+// A Loan that found no free slot is false, and filling it anyway is harmless: publish() sends
+// nothing. On Device::Cuda it has no aux to write the fields to.
+TEST_F(WrapperTest, ALoanWithNoFreeSlotIsHarmlessToFill)
+{
+  if (!expect_flux()) {
+    GTEST_SKIP() << "the slots are flux's";
+  }
+  for (const flux_wrapper::Device device :
+       {flux_wrapper::Device::Host, flux_wrapper::Device::Cuda}) {
+    flux_wrapper::PublisherOptions options;
+    options.device = device;
+    options.slot_count = 2;
+    const std::string suffix = device == flux_wrapper::Device::Cuda ? "_cuda" : "_host";
+    flux_wrapper::Publisher<Image> images(*node_, "full_image" + suffix, rclcpp::QoS(1), options);
+    flux_wrapper::Publisher<Foo> foos(*node_, "full_foo" + suffix, rclcpp::QoS(1), options);
+    std::vector<flux_wrapper::Loan<Image>> held_images;
+    std::vector<flux_wrapper::Loan<Foo>> held_foos;
+    for (int i = 0; i < 2; ++i) {
+      held_images.push_back(images.loan());
+      held_foos.push_back(foos.loan());
+    }
+    auto image_loan = images.loan();
+    image_loan.set_from(image(1, {1}));
+    EXPECT_FALSE(image_loan.alloc_buffer(1));
+    EXPECT_FALSE(image_loan);
+    EXPECT_FALSE(images.publish(std::move(image_loan)));
+    auto foo_loan = foos.loan();
+    foo_loan.set_from(foo(1, {1}));
+    EXPECT_FALSE(foo_loan.alloc_buffer(1));
+    EXPECT_FALSE(foo_loan);
+    EXPECT_FALSE(foos.publish(std::move(foo_loan)));
+  }
+}
+
+// A false Loan hands out no data to write, as Python's None: publish() would drop it.
+template <class MsgT>
+void expect_no_data(flux_wrapper::Loan<MsgT> & loan, const std::string & what)
+{
+  EXPECT_FALSE(loan) << what;
+  EXPECT_TRUE(loan.alloc_data(64).empty()) << what;
+  EXPECT_FALSE(loan.alloc_buffer(64)) << what;
+  EXPECT_FALSE(loan) << what;
+}
+
+// A Loan made without a publisher has no message: false on every path.
+TEST_F(WrapperTest, ALoanWithoutAMessageHandsOutNoData)
+{
+  flux_wrapper::Loan<Image> image_loan;
+  expect_no_data(image_loan, "Image");
+  flux_wrapper::Loan<PointCloud2> cloud_loan;
+  expect_no_data(cloud_loan, "PointCloud2");
+  flux_wrapper::Loan<Foo> foo_loan;
+  expect_no_data(foo_loan, "Foo");
+}
+
+// After a field past the slot (Host) or the aux (Cuda), or data past where it goes, the Loan is
+// false and the data asked of it after is empty.
+TEST_F(WrapperTest, AFalseLoanHandsOutNoData)
+{
+  if (!expect_flux()) {
+    GTEST_SKIP() << "the slots are flux's";
+  }
+  std::vector<flux_wrapper::Device> devices{flux_wrapper::Device::Host};
+#ifdef FLUX_WRAPPER_CUDA
+  if (no_cuda().empty()) {
+    devices.push_back(flux_wrapper::Device::Cuda);
+  }
+#endif
+  for (const flux_wrapper::Device device : devices) {
+    flux_wrapper::PublisherOptions options;
+    options.device = device;
+    const bool cuda = device == flux_wrapper::Device::Cuda;
+    const std::string suffix = cuda ? "_cuda" : "_host";
+    // Past the 8192-byte slot of a Host publisher and the 4096-byte aux of a Cuda one.
+    const std::size_t over = 9000;
+    flux_wrapper::Publisher<Image> images(*node_, "false_image" + suffix, rclcpp::QoS(1), options);
+    flux_wrapper::Publisher<PointCloud2> clouds(
+      *node_, "false_cloud" + suffix, rclcpp::QoS(1), options);
+    flux_wrapper::Publisher<Foo> foos(*node_, "false_foo" + suffix, rclcpp::QoS(1), options);
+    ASSERT_EQ(images.uses_device(), cuda);
+
+    auto image_loan = images.loan();
+    ASSERT_TRUE(image_loan);
+    image_loan.set_header(header(1, std::string(over, 'f')));
+    expect_no_data(image_loan, "Image header" + suffix);
+    EXPECT_FALSE(images.publish(std::move(image_loan)));
+
+    auto cloud_loan = clouds.loan();
+    ASSERT_TRUE(cloud_loan);
+    cloud_loan.set_header(header(1, std::string(over, 'f')));
+    expect_no_data(cloud_loan, "PointCloud2 header" + suffix);
+    EXPECT_FALSE(clouds.publish(std::move(cloud_loan)));
+
+    Foo m = foo(1, {1});
+    m.label = std::string(over, 'l');
+    auto foo_loan = foos.loan();
+    ASSERT_TRUE(foo_loan);
+    foo_loan.set_from(m);
+    expect_no_data(foo_loan, "Foo set_from" + suffix);
+    EXPECT_FALSE(foos.publish(std::move(foo_loan)));
+
+    // Data past the arena (Host) or the slot (Cuda) fails the Loan; smaller data after is empty.
+    auto too_large = images.loan();
+    ASSERT_TRUE(too_large);
+    EXPECT_FALSE(too_large.alloc_buffer(std::size_t{1} << 40));
+    expect_no_data(too_large, "Image data" + suffix);
+    EXPECT_FALSE(images.publish(std::move(too_large)));
+  }
+}
 
 }  // namespace

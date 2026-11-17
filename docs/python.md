@@ -55,7 +55,7 @@ flux.Publisher(node, topic, fingerprint=flux.NO_SCHEMA, slot_size=0, slot_count=
 | GPU 배열 | `TypeError`. loan을 사용한다([gpu.md](gpu.md)) |
 | `bfloat16` | `loan(shape, "bfloat16")`로 loan한다. ml_dtypes가 필요하다 |
 
-`publish()`의 결과는 `flux.Published`다. `bool(p)`는 `OK`인 경우에만 참이고, `flux.faulted(p)`는 `OK`도 `BACKPRESSURE`도 아닌 경우에 참이다. 값의 뜻은 C++와 같다([cpp.md](cpp.md#발행)).
+`publish()`의 결과는 `flux.Published`다. `bool(p)`는 `OK`인 경우에만 참이고, `flux.faulted(p)`는 `OK`도 `BACKPRESSURE`도 아닌 경우에 참이다. 값의 뜻은 C++와 같다([cpp.md](cpp.md#발행)). `str(p)`는 C++ `flux::to_string(p)`와 같은 문자열이다(`"too large"` 등).
 
 ## loan으로 슬롯에 직접 쓰기
 
@@ -69,6 +69,7 @@ if loan is not None:
 - `loan(shape=None, dtype="uint8")`은 빈 슬롯이 없으면 `None`을 반환한다. shape를 생략하면 슬롯 전체를 `uint8`로 loan한다. 슬롯보다 큰 shape는 `ValueError`다.
 - `loan.array`는 슬롯을 가리키는 쓰기 가능한 numpy 배열이고, commit이나 abort 후에는 읽기 전용이 된다.
 - `commit(nbytes=None)`은 `flux.Published`를 반환한다. 1차원 loan은 `nbytes`로 줄여 발행 가능하다. 실패한 commit(`TOO_LARGE`)도 loan을 끝낸다.
+- `resize(nbytes)`는 1차원 loan의 길이를 loan한 길이 안에서 `nbytes`로 바꾼다. 그 뒤에 건네는 `array`, `__cuda_array_interface__`, `__dlpack__`과 `commit()`이 그 길이를 쓴다. 이미 건넨 배열의 길이는 그대로다. loan한 길이를 넘거나 원소 크기의 배수가 아니면 `ValueError`다.
 - commit하지 않은 `Loan`이 사라지거나 `abort()`를 호출하면 프레임은 발행되지 않는다.
 - `capacity`는 loan한 크기(bytes)다.
 

@@ -103,7 +103,7 @@ if(BUILD_TESTING)
     DEPENDS ${sensor_msgs_DIR}/../msg/Image.msg "${FLUX_GEN_EXECUTABLE}"
     VERBATIM)
   add_custom_target(flux_cpp_test_adapters DEPENDS ${_outs} ${_image})
-  foreach(t test_message_filters test_arena test_gpu)
+  foreach(t test_message_filters test_arena test_gpu test_ros)
     add_dependencies(${t} flux_cpp_test_adapters)
     target_include_directories(${t} PRIVATE ${_adapters})
   endforeach()

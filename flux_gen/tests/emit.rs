@@ -177,3 +177,67 @@ fn a_tensor_message_is_matched_by_its_fields_alone() {
     assert!(!flux_gen::emit_py::emit(&plain, "T.msg").contains("tensor"));
     assert!(!flux_gen::emit_cpp::emit(&plain, "T.msg").contains("Tensor"));
 }
+
+#[test]
+fn only_a_root_data_of_bytes_gets_the_bridge_without_data_and_the_gpu_flag() {
+    // The pair leaves the root `data` to the caller (written in place, or a GPU memory channel's
+    // payload); a `data` nested deeper or of wider elements is an ordinary field.
+    let emitted = |text: &str| {
+        let msg = parse_msg(text, "Carried", None, Some("p")).unwrap();
+        let layout = build_layout(&flatten_message(&msg, &test_registry()).unwrap()).unwrap();
+        (
+            flux_gen::emit_cpp::emit(&layout, "p/msg/Carried.msg"),
+            flux_gen::emit_py::emit(&layout, "p/msg/Carried.msg"),
+            emit_cpp(&layout, "p/msg/Carried.msg"),
+            emit_py(&layout, "p/msg/Carried.msg"),
+        )
+    };
+    let without = |ros: &str, tail: &str| {
+        let at = ros.find(tail).expect("the pair is emitted");
+        ros[at..].to_owned()
+    };
+    for data in ["uint8[] data\n", "byte[] data\n", "int8[] data\n"] {
+        let (cpp, py, cpp_ros, py_ros) = emitted(&format!("uint32 seq\nstring name\n{data}"));
+        assert!(
+            cpp.contains("static constexpr bool kGpuData = true;"),
+            "{data}"
+        );
+        assert!(py.contains("GPU_DATA__ = True"), "{data}");
+        let cpp_pair = without(&cpp_ros, "inline void msg_to_frame_without_data(");
+        assert!(
+            cpp_pair.contains("set__name") && !cpp_pair.contains("m.data"),
+            "{data}"
+        );
+        assert!(cpp_pair.contains("inline p::msg::Carried frame_to_msg_without_data("));
+        let py_pair = without(&py_ros, "def msg_to_frame_without_data(");
+        assert!(
+            py_pair.contains("b.name = m.name") && !py_pair.contains("m.data"),
+            "{data}"
+        );
+        assert!(py_pair.contains("def frame_to_msg_without_data(v, m=None):"));
+    }
+    for text in ["float32[] data\n", "uint8[4] data\n", "Vec3 data\n"] {
+        let (cpp, py, cpp_ros, py_ros) = emitted(text);
+        assert!(
+            cpp.contains("static constexpr bool kGpuData = false;"),
+            "{text}"
+        );
+        assert!(py.contains("GPU_DATA__ = False"), "{text}");
+        assert!(!cpp_ros.contains("without_data") && !py_ros.contains("without_data"));
+    }
+    // A message of data alone still compiles warning-free: its pair names what it does not use.
+    let (_, _, cpp_ros, py_ros) = emitted("uint8[] data\n");
+    assert!(cpp_ros.contains("(void)m;\n  (void)b;"));
+    assert!(without(&py_ros, "def msg_to_frame_without_data(").contains("    pass\n"));
+}
+
+#[test]
+fn the_cpp_bridge_names_the_adapter_of_its_ros_type() {
+    let msg = parse_msg("uint8 x\n", "Carried", None, Some("p")).unwrap();
+    let layout = build_layout(&flatten_message(&msg, &test_registry()).unwrap()).unwrap();
+    let cpp = emit_cpp(&layout, "p/msg/Carried.msg");
+    assert!(cpp.contains("#include \"flux/ros_adapter.hpp\""));
+    assert!(cpp.contains(
+        "struct RosAdapter<::p::msg::Carried>\n{\n  using type = ::p::flux_msg::Carried;\n};"
+    ));
+}

@@ -34,7 +34,7 @@ struct SubscriptionOptions
   // publisher's device. Where the GPU cannot read a host publisher's frame in place, flux copies it
   // to the device at take; on the ROS path each message is copied to one of max_borrow device
   // buffers of the subscription's. With Host, frames of a Device::Cuda publisher on a discrete GPU
-  // are copied to host memory at take.
+  // are copied to host memory at take. A type without a root data is Host, with a warning.
   Device device = Device::Host;
   // Views alive at once: the one in a callback and those a HeldCallback keeps. Over flux a frame
   // past it waits in the publisher's ring, and a publisher of max_borrow slots or fewer is refused,
@@ -182,7 +182,8 @@ struct StagedMessage
 // slot and is valid only during the call; a HeldCallback's View keeps its frame or message, and on
 // the flux path its slot, as long as a copy of the pointer lives (SubscriptionOptions::max_borrow).
 // Keep the Subscription alive as long as the executor that serves it, as a member of the node. On
-// the flux path it also takes the frames of a publisher with Device::Cuda.
+// the flux path it also takes the frames of a publisher with Device::Cuda, for a type with a root
+// data. A build with flux needs the adapter of MsgT (detail::Adapter).
 template <class MsgT>
 class Subscription
 {
@@ -239,7 +240,7 @@ private:
       throw std::invalid_argument("flux_wrapper: max_borrow must be >= 1");
     }
     [[maybe_unused]] const bool cuda =
-      detail::cuda_usable(node.get_logger(), topic, options.device);
+      detail::cuda_usable<MsgT>(node.get_logger(), topic, options.device);
 #ifdef USE_FLUX_ENABLED
     if (use_flux()) {
       flux::QoS q(static_cast<std::uint32_t>(qos.depth()));
@@ -249,17 +250,20 @@ private:
       q.max_borrow(options.max_borrow);
       using Adapter = detail::AdapterT<MsgT>;
       const flux::Device device = cuda ? flux::Device::Cuda : flux::Device::Cpu;
-      if (cuda) {
-        flux_ = std::make_unique<flux::Subscription>(
-          node, topic, Adapter::kFingerprint, q,
-          [sink](flux::FrameView && f) {
-            (*sink)(std::move(f), [](const flux::FrameView & g) {
-              const typename Adapter::View v(g);
-              return View<MsgT>(v, v.data__device().data(), g.stream());
-            });
-          },
-          device);
-      } else {
+      if constexpr (detail::kRootData<MsgT>) {
+        if (cuda) {
+          flux_ = std::make_unique<flux::Subscription>(
+            node, topic, Adapter::kFingerprint, q,
+            [sink](flux::FrameView && f) {
+              (*sink)(std::move(f), [](const flux::FrameView & g) {
+                const typename Adapter::View v(g);
+                return View<MsgT>(v, v.data__device().data(), g.stream());
+              });
+            },
+            device);
+        }
+      }
+      if (!flux_) {
         flux_ = std::make_unique<flux::Subscription>(
           node, topic, Adapter::kFingerprint, q, [sink](flux::FrameView && f) {
             (*sink)(std::move(f), [](const flux::FrameView & g) {
@@ -270,7 +274,10 @@ private:
       // Views kept past the callback hold slots, and the publisher needs one to write into.
       flux_->require_publisher_slots(options.max_borrow + 1);
       flux_->add_to_callback_group(node, options.callback_group);
-      open_gpu(node, topic, q, std::move(sink), options, device);
+      // Only a type with a root data has frames of a Device::Cuda publisher.
+      if constexpr (detail::kRootData<MsgT>) {
+        open_gpu(node, topic, q, std::move(sink), options, device);
+      }
       return;
     }
 #else
@@ -282,37 +289,39 @@ private:
     rclcpp::SubscriptionOptions ros_options;
     ros_options.callback_group = options.callback_group;
 #ifdef FLUX_WRAPPER_CUDA
-    if (cuda) {
-      std::shared_ptr<detail::StagingPool> pool = detail::StagingPool::create(options.max_borrow);
-      if (pool) {
-        ros_ = rclcpp::create_subscription<MsgT>(
-          node, topic, qos,
-          [sink, pool, logger = node.get_logger(), topic,
-           logged =
-             std::make_shared<std::atomic<bool>>(false)](const typename MsgT::ConstSharedPtr & m) {
-            detail::StagingPool::Lease lease = pool->upload(m->data.data(), m->data.size());
-            if (!lease) {
-              if (!logged->exchange(true, std::memory_order_relaxed)) {
-                RCLCPP_ERROR(
-                  logger,
-                  "%s: Device::Cuda: a message could not be copied to the device, its max_borrow "
-                  "buffers held or the copy failed, and was skipped; later ones are not logged",
-                  topic.c_str());
+    if constexpr (detail::kRootData<MsgT>) {
+      if (cuda) {
+        std::shared_ptr<detail::StagingPool> pool = detail::StagingPool::create(options.max_borrow);
+        if (pool) {
+          ros_ = rclcpp::create_subscription<MsgT>(
+            node, topic, qos,
+            [sink, pool, logger = node.get_logger(), topic,
+             logged = std::make_shared<std::atomic<bool>>(false)](
+              const typename MsgT::ConstSharedPtr & m) {
+              detail::StagingPool::Lease lease = pool->upload(m->data.data(), m->data.size());
+              if (!lease) {
+                if (!logged->exchange(true, std::memory_order_relaxed)) {
+                  RCLCPP_ERROR(
+                    logger,
+                    "%s: Device::Cuda: a message could not be copied to the device, its max_borrow "
+                    "buffers held or the copy failed, and was skipped; later ones are not logged",
+                    topic.c_str());
+                }
+                return;
               }
-              return;
-            }
-            (*sink)(
-              detail::StagedMessage<MsgT>{m, std::move(lease)},
-              [](const detail::StagedMessage<MsgT> & s) {
-                return View<MsgT>(*s.msg, s.lease.device(), s.lease.stream());
-              });
-          },
-          ros_options);
-        return;
+              (*sink)(
+                detail::StagedMessage<MsgT>{m, std::move(lease)},
+                [](const detail::StagedMessage<MsgT> & s) {
+                  return View<MsgT>(*s.msg, s.lease.device(), s.lease.stream());
+                });
+            },
+            ros_options);
+          return;
+        }
+        RCLCPP_WARN(
+          node.get_logger(), "%s: Device::Cuda: no CUDA stream could be created; using Host",
+          topic.c_str());
       }
-      RCLCPP_WARN(
-        node.get_logger(), "%s: Device::Cuda: no CUDA stream could be created; using Host",
-        topic.c_str());
     }
 #endif
     ros_ = rclcpp::create_subscription<MsgT>(
