@@ -146,6 +146,24 @@ TEST_F(Ros, AFrameReachesTheCallback)
   EXPECT_TRUE(eventually([&] { return got == 1; }));
 }
 
+TEST_F(Ros, CreateFunctionsTakeTheirOptions)
+{
+  constexpr std::uint64_t kFp = 0x51a7;
+  flux::PublisherOptions po;
+  po.slot_size = kSlot;
+  po.slot_count = kSlots;
+  auto pub = flux::create_publisher(*node_, topic("create"), po, kFp);
+  EXPECT_EQ(pub->slot_size(), kSlot);
+  std::atomic<int> got{0};
+  auto sub = flux::create_subscription(
+    *node_, topic("create"), 4, [&](const flux::FrameView & v) { got += text(v) == "frame"; },
+    flux::SubscriptionOptions(), kFp);
+  ex_->add(*sub);
+  const Spinning spin{*ex_};
+  ASSERT_EQ(pub->publish("frame", 5), flux::Published::Ok);
+  EXPECT_TRUE(eventually([&] { return got == 1; }));
+}
+
 // Seven frames after the kept one go through a ring of four around its slot.
 TEST_F(Ros, AFrameMovedOutOfTheCallbackKeepsItsSlot)
 {

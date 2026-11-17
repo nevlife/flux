@@ -614,6 +614,30 @@ TEST_F(Gpu, AnUnregisteredFingerprintKeepsTheDevicePayload)
   EXPECT_TRUE(pub.device_backed());
 }
 
+// The options' device declares the stream, as the Device constructor does.
+TEST_F(Gpu, PublisherOptionsDeclareTheStreamOfTheirDevice)
+{
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto node = std::make_shared<rclcpp::Node>("flux_gpu_options");
+  const std::string topic = "/gpu" + std::to_string(getpid()) + "_options";
+  flux::PublisherOptions o;
+  o.slot_size = 1 << 16;
+  o.slot_count = 4;
+  o.device = flux::Device::Cuda;
+  auto cuda = flux::create_publisher(*node, topic + "_cuda", o);
+  flux::WriteSlot w = cuda->loan();
+  ASSERT_TRUE(w);
+  EXPECT_NE(w.device_ptr(), nullptr);
+  w.abort();
+  o.device = flux::Device::Cpu;
+  auto host = flux::create_publisher(*node, topic + "_host", o);
+  flux::WriteSlot h = host->loan();
+  ASSERT_TRUE(h);
+  EXPECT_EQ(h.device_ptr(), nullptr);
+}
+
 TEST_F(Gpu, ABoundedFenceWaitsForWorkThatEndsInTime)
 {
   if (!rclcpp::ok()) {

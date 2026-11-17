@@ -15,12 +15,27 @@
 namespace flux
 {
 
+// Fields as rclcpp::PublisherOptions. A declared `stream` takes precedence over `device`.
+struct PublisherOptions
+{
+  std::uint32_t slot_size = FLUX_DEFAULT_SLOT_SIZE;
+  std::uint32_t slot_count = FLUX_DEFAULT_SLOT_COUNT;
+  Device device = Device::Cpu;
+  gpu::Stream stream;
+  MemoryPolicy memory = {};
+  std::uint32_t max_subscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS;
+  std::uint32_t aux_size = 0;
+};
+
 // One per topic on the host: Error with FLUX_PUBLISHER_EXISTS while another is live. One call at
 // a time: a publish or loan that meets another thread's call gives Published::InUse or an empty
 // WriteSlot.
 class Publisher
 {
 public:
+  Publisher(
+    const NodeRef & node, const std::string & topic, const PublisherOptions & options,
+    std::uint64_t fingerprint = kNoSchema);
   static constexpr std::uint32_t kDefaultSlotSize = FLUX_DEFAULT_SLOT_SIZE;
   static constexpr std::uint32_t kDefaultSlotCount = FLUX_DEFAULT_SLOT_COUNT;
   static constexpr std::uint32_t kDefaultMaxSubscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS;
@@ -111,6 +126,15 @@ private:
   // Last, so its thread stops before the channel goes.
   std::unique_ptr<RosMirror> mirror_;
 };
+
+// As rclcpp::create_publisher, with flux's own arguments after rclcpp's.
+inline auto create_publisher(
+  const NodeRef & node, const std::string & topic,
+  const PublisherOptions & options = PublisherOptions(),
+  std::uint64_t fingerprint = kNoSchema) -> std::shared_ptr<Publisher>
+{
+  return std::make_shared<Publisher>(node, topic, options, fingerprint);
+}
 
 }  // namespace flux
 

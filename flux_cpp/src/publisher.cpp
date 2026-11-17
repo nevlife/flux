@@ -88,6 +88,16 @@ private:
 };
 
 Publisher::Publisher(
+  const NodeRef & node, const std::string & topic, const PublisherOptions & options,
+  std::uint64_t fingerprint)
+: Publisher(
+    node, topic, fingerprint, options.slot_size, options.slot_count,
+    options.stream.declared() ? options.stream : gpu::stream_for(options.device), options.memory,
+    options.max_subscribers, options.aux_size)
+{
+}
+
+Publisher::Publisher(
   const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
   std::uint32_t slot_size, std::uint32_t slot_count, MemoryPolicy mem,
   std::uint32_t max_subscribers, std::uint32_t aux_size)

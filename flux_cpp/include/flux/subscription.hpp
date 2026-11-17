@@ -12,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace rclcpp
 {
@@ -36,10 +37,22 @@ class GroupMember;
 // many subscribing processes as its publisher allows (16 unless set); the subscriptions of one
 // process share one place. Under an executor, a subscription refused when it attaches is logged
 // once and left out until its publisher restarts; the other sources keep running.
+// Fields as rclcpp::SubscriptionOptions. A declared `stream` takes precedence over `device`.
+struct SubscriptionOptions
+{
+  Device device = Device::Cpu;
+  gpu::Stream stream;
+  MemoryPolicy memory = {};
+};
+
 class Subscription : public detail::Source
 {
 public:
   using Callback = std::function<void(FrameView &&)>;
+
+  Subscription(
+    const NodeRef & node, const std::string & topic, const QoS & qos, Callback cb,
+    const SubscriptionOptions & options, std::uint64_t fingerprint = kNoSchema);
 
   // Throws on a QoS the channel would refuse, before anything is announced.
   Subscription(
@@ -109,6 +122,15 @@ private:
   // Last, so it leaves the group first.
   std::shared_ptr<detail::GroupMember> member_;
 };
+
+// As rclcpp::create_subscription, with flux's own arguments after rclcpp's.
+inline auto create_subscription(
+  const NodeRef & node, const std::string & topic, const QoS & qos, Subscription::Callback cb,
+  const SubscriptionOptions & options = SubscriptionOptions(),
+  std::uint64_t fingerprint = kNoSchema) -> std::shared_ptr<Subscription>
+{
+  return std::make_shared<Subscription>(node, topic, qos, std::move(cb), options, fingerprint);
+}
 
 }  // namespace flux
 
