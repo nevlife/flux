@@ -491,6 +491,12 @@ def test_every_cpu_field_of_a_slot_frame_reaches_a_gpu_reader(node, blob):
     )
 
 
+def test_a_slot_publisher_takes_the_slot_defaults(node):
+    assert flux.Publisher(node, topic("slot_defaults"), alloc="slot").slot_size == 4 << 20
+    with pytest.raises(Exception, match="max_slot_size"):
+        flux.Publisher(node, topic("slot_past_max"), alloc="slot", slot_size=32 << 20)
+
+
 def test_an_alloc_other_than_arena_or_slot_is_refused(node):
     with pytest.raises(ValueError, match="alloc"):
         flux.Publisher(node, topic("bad_alloc"), alloc="heap", **SMALL)

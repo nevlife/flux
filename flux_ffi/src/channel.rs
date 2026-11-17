@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use flux_core::{
     Alloc, Channel, DType, Error, FrameMeta, FrameView, Mapped, MemoryPolicy, Published,
-    PublisherWatch, QoS, ReleaseMode, WriteSlot, signpost_name,
+    PublisherConfig, PublisherWatch, QoS, ReleaseMode, WriteSlot, signpost_name,
 };
 
 use crate::gpu::{flux_stream, stream_of};
@@ -323,6 +323,84 @@ pub unsafe extern "C" fn flux_channel_create(
             slot_count,
             max_subscribers,
             aux_size,
+            fingerprint,
+            mem.into(),
+            stream,
+            stamp_offset,
+            scalar_bytes_of(fingerprint),
+        )
+    });
+    status(r.map(|ch| {
+        // SAFETY: out is valid for a write.
+        unsafe { out.write(boxed(ch)) };
+    }))
+}
+
+/// A publisher's settings. A size or count of 0 is the default for `alloc` (`FLUX_ALLOC_*`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct flux_publisher_config {
+    pub alloc: i32,
+    pub slot_size: u32,
+    pub slot_count: u32,
+    pub max_slot_size: u32,
+    pub max_slot_count: u32,
+    pub max_subscribers: u32,
+    pub aux_size: u32,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn flux_publisher_config_default() -> flux_publisher_config {
+    let d = PublisherConfig::default();
+    flux_publisher_config {
+        alloc: d.alloc as i32,
+        slot_size: d.slot_size,
+        slot_count: d.slot_count,
+        max_slot_size: d.max_slot_size,
+        max_slot_count: d.max_slot_count,
+        max_subscribers: d.max_subscribers,
+        aux_size: d.aux_size,
+    }
+}
+
+/// As `flux_channel_create`, with the publisher's settings in `config`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_channel_create_config(
+    name: *const c_char,
+    config: *const flux_publisher_config,
+    fingerprint: u64,
+    mem: flux_memory_policy,
+    stream: *const flux_stream,
+    stamp_offset: i32,
+    out: *mut *mut flux_channel,
+) -> flux_status {
+    // SAFETY: config is valid for a read.
+    let c = unsafe { *config };
+    let alloc = match c.alloc {
+        FLUX_ALLOC_ARENA => Alloc::Arena,
+        FLUX_ALLOC_SLOT => Alloc::Slot,
+        a => {
+            return status(Err(Error::InvalidArgument(format!(
+                "alloc {a} is neither FLUX_ALLOC_ARENA nor FLUX_ALLOC_SLOT"
+            ))));
+        }
+    };
+    let config = PublisherConfig {
+        alloc,
+        slot_size: c.slot_size,
+        slot_count: c.slot_count,
+        max_slot_size: c.max_slot_size,
+        max_slot_count: c.max_slot_count,
+        max_subscribers: c.max_subscribers,
+        aux_size: c.aux_size,
+    };
+    // SAFETY: stream is NULL or a live handle.
+    let stream = unsafe { stream_of(stream) };
+    // SAFETY: name is a valid string.
+    let r = unsafe { text(name) }.and_then(|n| {
+        Channel::create_config(
+            n,
+            &config,
             fingerprint,
             mem.into(),
             stream,
@@ -869,26 +947,6 @@ pub unsafe extern "C" fn flux_channel_set_release_mode(
 
 pub const FLUX_ALLOC_ARENA: i32 = 0;
 pub const FLUX_ALLOC_SLOT: i32 = 1;
-
-/// Where later loans put variable-length fields; `FLUX_ALLOC_SLOT` refuses a frame past the slot.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_set_alloc(
-    ch: *const flux_channel,
-    alloc: i32,
-) -> flux_status {
-    let alloc = match alloc {
-        FLUX_ALLOC_ARENA => Alloc::Arena,
-        FLUX_ALLOC_SLOT => Alloc::Slot,
-        _ => {
-            return status(Err(Error::InvalidArgument(format!(
-                "alloc {alloc} is neither FLUX_ALLOC_ARENA nor FLUX_ALLOC_SLOT"
-            ))));
-        }
-    };
-    // SAFETY: valid handle.
-    unsafe { chan_ref(ch) }.set_alloc(alloc);
-    flux_status::FLUX_OK
-}
 
 /// Orders the view's channel stream after what `s` queued so far, on the device, not the host.
 #[unsafe(no_mangle)]

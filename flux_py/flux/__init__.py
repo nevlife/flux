@@ -191,11 +191,14 @@ class Publisher(_flux._Publisher):
         mirror_to_ros=False,
         aux_size=0,
         alloc="arena",
+        max_slot_size=0,
+        max_slot_count=0,
     ):
         """alloc="slot" keeps every variable-length field of a frame in its slot, where an
         integrated GPU reads it in place; a frame that does not fit is refused. "arena" puts them
-        in the process's arena. fence_timeout, in seconds, bounds each commit's wait for the
-        stream; None waits as long as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
+        in the process's arena. With "slot", a size or count of 0 takes flux's default and the
+        maxima bound how far the slots grow. fence_timeout, in seconds, bounds each commit's
+        wait for the stream; None waits as long as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
         work is done. mirror_to_ros also publishes every frame as its ROS 2 message on the same
         topic while a ROS 2 subscriber wants it (depth 1, best effort, volatile). aux_size gives
         each slot that many bytes of host memory beside its payload: a loan writes them through
@@ -216,9 +219,11 @@ class Publisher(_flux._Publisher):
             max_subscribers,
             _cuda(device),
             aux_size,
+            slot,
+            max_slot_size,
+            max_slot_count,
         )
         self._set_fence_timeout(bound)
-        self._set_alloc(slot)
         if mirror_to_ros:
             _start_mirror(self, node)
 

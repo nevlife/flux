@@ -626,6 +626,19 @@ public:
     return Channel(ch);
   }
 
+  // As create, with every publisher setting in `config` (from flux_publisher_config_default()).
+  static auto create_config(
+    const std::string & name, const flux_publisher_config & config,
+    std::uint64_t fingerprint = kNoSchema, MemoryPolicy mem = {},
+    const gpu::Stream & stream = {}) -> Channel
+  {
+    require_abi();
+    flux_channel * ch = nullptr;
+    detail::check(flux_channel_create_config(
+      name.c_str(), &config, fingerprint, mem, stream.raw(), flux_stamp_offset(fingerprint), &ch));
+    return Channel(ch);
+  }
+
   // Error with FLUX_NOT_READY until a publisher is up.
   static auto open(
     const std::string & name, std::uint64_t fingerprint = kNoSchema, MemoryPolicy mem = {},
@@ -772,12 +785,6 @@ public:
   {
     if (ch_) {
       flux_channel_set_release_mode(ch_, static_cast<std::int32_t>(m));
-    }
-  }
-  void set_alloc(Alloc a) const noexcept
-  {
-    if (ch_) {
-      flux_channel_set_alloc(ch_, static_cast<std::int32_t>(a));
     }
   }
   [[nodiscard]] auto device_backed() const noexcept -> bool

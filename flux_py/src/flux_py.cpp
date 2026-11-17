@@ -924,16 +924,35 @@ private:
   std::size_t aux_len_ = 0;
 };
 
+auto config(
+  bool slot, std::uint32_t slot_size, std::uint32_t slot_count, std::uint32_t max_slot_size,
+  std::uint32_t max_slot_count, std::uint32_t max_subscribers,
+  std::uint32_t aux_size) -> flux_publisher_config
+{
+  flux_publisher_config c = flux_publisher_config_default();
+  c.alloc = slot ? FLUX_ALLOC_SLOT : FLUX_ALLOC_ARENA;
+  c.slot_size = slot_size;
+  c.slot_count = slot_count;
+  c.max_slot_size = max_slot_size;
+  c.max_slot_count = max_slot_count;
+  c.max_subscribers = max_subscribers;
+  c.aux_size = aux_size;
+  return c;
+}
+
 class Publisher
 {
 public:
   Publisher(
     const std::string & signpost, const std::string & topic, const std::string & label,
     std::uint64_t fingerprint, std::uint32_t slot_size, std::uint32_t slot_count,
-    flux::MemoryPolicy mem, std::uint32_t max_subscribers, bool cuda, std::uint32_t aux_size)
+    flux::MemoryPolicy mem, std::uint32_t max_subscribers, bool cuda, std::uint32_t aux_size,
+    bool slot, std::uint32_t max_slot_size, std::uint32_t max_slot_count)
   : stream_(flux::gpu::stream_for(cuda ? flux::Device::Cuda : flux::Device::Cpu)),
-    ch_(flux::detail::Channel::create(
-      signpost, slot_size, slot_count, fingerprint, mem, max_subscribers, stream_, aux_size)),
+    ch_(flux::detail::Channel::create_config(
+      signpost,
+      config(slot, slot_size, slot_count, max_slot_size, max_slot_count, max_subscribers, aux_size),
+      fingerprint, mem, stream_)),
     announced_(signpost, topic, label, true)
   {
     flux_trace_endpoint_init(
@@ -1712,10 +1731,11 @@ NB_MODULE(_flux, m)
     .def(
       nb::init<
         const std::string &, const std::string &, const std::string &, std::uint64_t, std::uint32_t,
-        std::uint32_t, flux::MemoryPolicy, std::uint32_t, bool, std::uint32_t>(),
+        std::uint32_t, flux::MemoryPolicy, std::uint32_t, bool, std::uint32_t, bool, std::uint32_t,
+        std::uint32_t>(),
       "signpost"_a, "topic"_a, "label"_a, "fingerprint"_a, "slot_size"_a, "slot_count"_a,
       "memory"_a, "max_subscribers"_a = FLUX_DEFAULT_MAX_SUBSCRIBERS, "cuda"_a = false,
-      "aux_size"_a = 0)
+      "aux_size"_a = 0, "slot"_a = false, "max_slot_size"_a = 0, "max_slot_count"_a = 0)
     .def("publish", &Publisher::publish, "array"_a)
     .def("loan", &Publisher::loan, "shape"_a = nb::none(), "dtype"_a = "uint8")
     .def_prop_ro("dropped", &Publisher::dropped)
@@ -1729,11 +1749,6 @@ NB_MODULE(_flux, m)
       "_set_fence_timeout",
       [](Publisher & p, std::int64_t ns) {
         p.channel().set_fence_timeout(std::chrono::nanoseconds(ns));
-      })
-    .def(
-      "_set_alloc",
-      [](Publisher & p, bool slot) {
-        p.channel().set_alloc(slot ? flux::Alloc::Slot : flux::Alloc::Arena);
       })
     .def_prop_ro("stream", [](Publisher & p) { return addr_of(p.stream().native()); });
 

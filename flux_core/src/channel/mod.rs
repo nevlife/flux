@@ -35,7 +35,8 @@ use crate::error::{Error, Result};
 use crate::executor::Control;
 use crate::gpu::{self, FenceStats, FenceWait, Fenced, Route, Seam, Stream, ledger};
 use crate::layout::{
-    DType, FrameMeta, MIN_SLOT_COUNT, TICKET_CLAIMED, TICKET_EMPTY, reader_lock_byte,
+    DEFAULT_MAX_SUBSCRIBERS, DType, FrameMeta, MIN_SLOT_COUNT, TICKET_CLAIMED, TICKET_EMPTY,
+    reader_lock_byte,
 };
 use crate::qos::{MemoryPolicy, QoS};
 use crate::reader::{self};
@@ -71,6 +72,33 @@ pub enum Alloc {
     /// All in the slot. A frame that does not fit is refused. The slot's GPU registration covers
     /// every field, so an integrated GPU reads them without a copy.
     Slot = 1,
+}
+
+/// A publisher's settings. A size or count of 0 is `sizing`'s for its `alloc`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublisherConfig {
+    pub alloc: Alloc,
+    pub slot_size: u32,
+    pub slot_count: u32,
+    /// `Alloc::Slot` only: the largest slot and the most slots it may grow to.
+    pub max_slot_size: u32,
+    pub max_slot_count: u32,
+    pub max_subscribers: u32,
+    pub aux_size: u32,
+}
+
+impl Default for PublisherConfig {
+    fn default() -> Self {
+        PublisherConfig {
+            alloc: Alloc::Arena,
+            slot_size: 0,
+            slot_count: 0,
+            max_slot_size: 0,
+            max_slot_count: 0,
+            max_subscribers: DEFAULT_MAX_SUBSCRIBERS,
+            aux_size: 0,
+        }
+    }
 }
 
 /// When a view of a channel with a stream gives its slot back.
@@ -271,25 +299,60 @@ impl Channel {
         stamp_offset: i32,
         scalar_bytes: Option<u32>,
     ) -> Result<Channel> {
+        let config = PublisherConfig {
+            slot_size,
+            slot_count,
+            max_subscribers,
+            aux_size,
+            ..PublisherConfig::default()
+        };
+        Channel::create_config(
+            name,
+            &config,
+            fingerprint,
+            mem,
+            stream,
+            stamp_offset,
+            scalar_bytes,
+        )
+    }
+
+    /// As `create_on`, with every publisher setting in `config`.
+    pub fn create_config(
+        name: &str,
+        config: &PublisherConfig,
+        fingerprint: u64,
+        mem: MemoryPolicy,
+        stream: Stream,
+        stamp_offset: i32,
+        scalar_bytes: Option<u32>,
+    ) -> Result<Channel> {
         let device = if stream.declared() && scalar_bytes.is_none() {
             let route = gpu::require_route(stream.device())?.route;
             (route == Route::DeviceHandle).then_some(stream.device())
         } else {
             None
         };
-        let slot_size = sizing::slot_size(slot_size, scalar_bytes, stream.declared());
-        let asked = slot_count;
-        let slot_count = sizing::slot_count(asked, slot_size, device.is_some());
-        check_slot_count(slot_count)?;
+        let plan = sizing::plan(
+            config.alloc,
+            config.slot_size,
+            config.slot_count,
+            config.max_slot_size,
+            config.max_slot_count,
+            scalar_bytes,
+            stream.declared(),
+            device.is_some(),
+        )?;
+        check_slot_count(plan.slot_count)?;
         let seg = open_publisher_segment(
             name,
-            slot_size,
-            slot_count,
-            max_subscribers,
-            aux_size,
+            plan.slot_size,
+            plan.slot_count,
+            config.max_subscribers,
+            config.aux_size,
             fingerprint,
             device,
-            sizing::start_slots(asked, slot_count),
+            plan.start,
         )?;
         seg.apply(mem)?;
         if seg.host_payload() {
@@ -301,6 +364,9 @@ impl Channel {
         let mut ch = Channel::with_shared(Arc::new(sh).traced(), mem);
         ch.stream = stream;
         ch.fence = fence;
+        ch.sh
+            .slot_only
+            .store(config.alloc == Alloc::Slot, Ordering::Relaxed);
         Ok(ch)
     }
 
@@ -1068,13 +1134,6 @@ impl Channel {
         if timeout_ns > 0 {
             self.stream.prepare_waiter();
         }
-    }
-
-    /// For the loans made after it. A publisher setting.
-    pub fn set_alloc(&self, alloc: Alloc) {
-        self.sh
-            .slot_only
-            .store(alloc == Alloc::Slot, Ordering::Relaxed);
     }
 
     pub fn alloc(&self) -> Alloc {

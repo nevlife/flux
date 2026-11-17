@@ -620,9 +620,11 @@ TEST_F(Gpu, EveryCpuFieldOfASlotFrameReachesAGpuReader)
 {
   using Blob = flux_test::flux_msg::Blob;
   const std::string name = unique_name("cpu_slot_fields");
-  auto pub = flux::detail::Channel::create(
-    name, 4 << 20, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS);
-  pub.set_alloc(flux::Alloc::Slot);
+  flux_publisher_config c = flux_publisher_config_default();
+  c.alloc = FLUX_ALLOC_SLOT;
+  c.slot_count = 4;
+  auto pub = flux::detail::Channel::create_config(name, c, Blob::kFingerprint);
+  EXPECT_EQ(pub.slot_size(), std::uint32_t{4} << 20);
   expect_cpu_fields_on_device(pub, name, true);
 }
 

@@ -1,6 +1,8 @@
 use flux_core::arena::{BLOCK_BYTES, HEAP_BASE, TRAILER_BYTES};
+use flux_core::gpu::Stream;
 use flux_core::{
-    Alloc, Channel, DEFAULT_MAX_SUBSCRIBERS, MemoryPolicy, NO_SCHEMA, Published, signpost_name,
+    Alloc, Channel, DEFAULT_MAX_SUBSCRIBERS, MemoryPolicy, NO_SCHEMA, Published, PublisherConfig,
+    SLOT_ALLOC_MAX_SLOTS, SLOT_ALLOC_SLOT_SIZE, SLOT_ALLOC_START_SLOTS, signpost_name,
 };
 
 fn pair(test: &str, slots: u32) -> (Channel, Channel) {
@@ -193,16 +195,31 @@ fn arena_pages_follow_the_publishers_memory_policy() {
 }
 
 #[test]
-fn a_slot_publisher_loans_no_arena() {
-    let (mut p, _s) = pair("slot_alloc", 2);
-    assert_eq!(p.alloc(), Alloc::Arena);
-    p.set_alloc(Alloc::Slot);
+fn a_slot_publisher_loans_no_arena_and_starts_with_the_slot_defaults() {
+    let (mut arena_pub, _s) = pair("arena_alloc", 2);
+    assert_eq!(arena_pub.alloc(), Alloc::Arena);
+    assert!(arena_pub.loan().unwrap().heap().is_some());
+
+    let name = signpost_name(&format!("/a{}_slot_alloc", std::process::id()), NO_SCHEMA).unwrap();
+    let config = PublisherConfig {
+        alloc: Alloc::Slot,
+        ..PublisherConfig::default()
+    };
+    let mut p = Channel::create_config(
+        &name,
+        &config,
+        NO_SCHEMA,
+        MemoryPolicy::default(),
+        Stream::default(),
+        -1,
+        None,
+    )
+    .unwrap();
     assert_eq!(p.alloc(), Alloc::Slot);
-    let w = p.loan().unwrap();
-    assert!(w.heap().is_none());
-    drop(w);
-    p.set_alloc(Alloc::Arena);
-    assert!(p.loan().unwrap().heap().is_some());
+    assert_eq!(p.slot_size(), SLOT_ALLOC_SLOT_SIZE);
+    assert_eq!(p.slot_count(), SLOT_ALLOC_MAX_SLOTS);
+    assert_eq!(p.slots_ready(), SLOT_ALLOC_START_SLOTS);
+    assert!(p.loan().unwrap().heap().is_none());
 }
 
 #[test]

@@ -15,12 +15,15 @@
 namespace flux
 {
 
-// Fields as rclcpp::PublisherOptions. A declared `stream` takes precedence over `device`.
+// Fields as rclcpp::PublisherOptions. A declared `stream` takes precedence over `device`. A size or
+// count of 0 is flux's default for `alloc`; the maxima bound an Alloc::Slot publisher's growth.
 struct PublisherOptions
 {
   Alloc alloc = Alloc::Arena;
   std::uint32_t slot_size = FLUX_DEFAULT_SLOT_SIZE;
   std::uint32_t slot_count = FLUX_DEFAULT_SLOT_COUNT;
+  std::uint32_t max_slot_size = 0;
+  std::uint32_t max_slot_count = 0;
   Device device = Device::Cpu;
   gpu::Stream stream;
   MemoryPolicy memory = {};

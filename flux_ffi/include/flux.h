@@ -222,6 +222,17 @@ typedef struct flux_memory_policy {
   bool lock;
 } flux_memory_policy;
 
+// A publisher's settings. A size or count of 0 is the default for `alloc` (`FLUX_ALLOC_*`).
+typedef struct flux_publisher_config {
+  int32_t alloc;
+  uint32_t slot_size;
+  uint32_t slot_count;
+  uint32_t max_slot_size;
+  uint32_t max_slot_count;
+  uint32_t max_subscribers;
+  uint32_t aux_size;
+} flux_publisher_config;
+
 // `replay` 0 is volatile, N is `transient_local(N)`.
 typedef struct flux_qos {
   uint32_t depth;
@@ -374,6 +385,17 @@ flux_status flux_channel_create(const char *name,
                                 int32_t stamp_offset,
                                 struct flux_channel **out);
 
+struct flux_publisher_config flux_publisher_config_default(void);
+
+// As `flux_channel_create`, with the publisher's settings in `config`.
+flux_status flux_channel_create_config(const char *name,
+                                       const struct flux_publisher_config *config,
+                                       uint64_t fingerprint,
+                                       struct flux_memory_policy mem,
+                                       const struct flux_stream *stream,
+                                       int32_t stamp_offset,
+                                       struct flux_channel **out);
+
 flux_status flux_watch_open(const char *name, struct flux_watch **out);
 
 void flux_watch_free(struct flux_watch *w);
@@ -497,9 +519,6 @@ void flux_channel_set_fence_timeout(const struct flux_channel *ch, uint64_t ns);
 
 // `FLUX_RELEASE_DEFERRED`: a release returns at once; its slot goes back once the device is done.
 flux_status flux_channel_set_release_mode(const struct flux_channel *ch, int32_t mode);
-
-// Where later loans put variable-length fields; `FLUX_ALLOC_SLOT` refuses a frame past the slot.
-flux_status flux_channel_set_alloc(const struct flux_channel *ch, int32_t alloc);
 
 // Orders the view's channel stream after what `s` queued so far, on the device, not the host.
 bool flux_view_after(const struct flux_view *v, const struct flux_stream *s);
