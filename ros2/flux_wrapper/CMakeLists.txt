@@ -71,7 +71,12 @@ if(BUILD_TESTING)
       ENV ENABLE_FLUX=${run} FLUX_WRAPPER_EXPECT_FLUX=${run} TIMEOUT 60)
   endforeach()
   if(FLUX_WRAPPER_WITH_FLUX)
-    ament_add_gtest_test(test_flux_wrapper TEST_NAME test_flux_wrapper_unset
+    # env -u: the run must not inherit ENABLE_FLUX from the shell that started the tests.
+    set(result "${AMENT_TEST_RESULTS_DIR}/${PROJECT_NAME}/test_flux_wrapper_unset.gtest.xml")
+    ament_add_test(test_flux_wrapper_unset
+      COMMAND env -u ENABLE_FLUX $<TARGET_FILE:test_flux_wrapper> --gtest_output=xml:${result}
+      OUTPUT_FILE "${CMAKE_BINARY_DIR}/ament_cmake_gtest/test_flux_wrapper_unset.txt"
+      RESULT_FILE "${result}"
       ENV FLUX_WRAPPER_EXPECT_FLUX=0 TIMEOUT 60)
     # A type without an adapter stops a build with flux at the static_assert that says what to
     # include. The test builds the target and passes on that message, not on the exit code.
