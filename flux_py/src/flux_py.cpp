@@ -718,7 +718,11 @@ class Loan
 {
 public:
   Loan(flux::WriteSlot && w, flux::DType dtype, const std::vector<std::size_t> & shape, int device)
-  : w_(std::move(w)), dtype_(dtype), shape_(shape.begin(), shape.end()), device_(device)
+  : w_(std::move(w)),
+    dtype_(dtype),
+    shape_(shape.begin(), shape.end()),
+    loaned_(shape.size() == 1 ? shape[0] : 0),
+    device_(device)
   {
   }
   // A loan dropped unfinished is aborted only once its tensors' writes are done.
@@ -785,10 +789,31 @@ public:
     return ok;
   }
 
+  // A one-dimensional loan's length set to nbytes, up to the length it was loaned with: the arrays
+  // and device views handed out from now on, and commit(), cover that many. Those handed out
+  // before keep their length.
+  void resize(std::size_t nbytes)
+  {
+    if (!w_) {
+      throw std::runtime_error("flux: the loan is already committed or aborted");
+    }
+    const std::size_t item = flux::dtype_size(dtype_);
+    if (shape_.size() != 1 || nbytes % item != 0 || nbytes / item > loaned_) {
+      throw nb::value_error(("flux: resize(" + std::to_string(nbytes) +
+                             ") needs a 1-D loan of at least that many bytes, whole items")
+                              .c_str());
+    }
+    shape_[0] = static_cast<npy_intp>(nbytes / item);
+    resized_ = true;
+  }
+
   // A refused commit ends the loan too, as in C++: commit(nbytes) on a loan that is not 1-D, or
   // with nbytes past it or not a whole number of items, is TOO_LARGE.
   auto commit(std::optional<std::size_t> nbytes) -> flux::Published
   {
+    if (!nbytes && resized_) {
+      nbytes = static_cast<std::size_t>(shape_[0]) * flux::dtype_size(dtype_);
+    }
     const std::optional<flux::Published> p = without_gil([&]() -> std::optional<flux::Published> {
       if (!writers_done()) {
         return std::nullopt;
@@ -890,6 +915,8 @@ private:
   flux::WriteSlot w_;
   flux::DType dtype_;
   std::vector<npy_intp> shape_;
+  std::size_t loaned_;  // a 1-D loan's items as loaned, the most resize() takes
+  bool resized_ = false;
   int device_;
   std::vector<nb::weakref> issued_;
   std::vector<flux::gpu::Stream> writers_;
@@ -1560,7 +1587,8 @@ NB_MODULE(_flux, m)
     .value("IN_USE", flux::Published::InUse)
     .value("FENCE_FAILED", flux::Published::FenceFailed)
     .value("GPU_WEDGED", flux::Published::GpuWedged)
-    .def("__bool__", [](flux::Published p) { return p == flux::Published::Ok; });
+    .def("__bool__", [](flux::Published p) { return p == flux::Published::Ok; })
+    .def("__str__", [](flux::Published p) { return flux::to_string(p); });
   m.def("faulted", &flux::faulted, "published"_a);
 
   nb::class_<flux::QoS>(m, "QoS")
@@ -1662,6 +1690,7 @@ NB_MODULE(_flux, m)
   nb::class_<Loan>(m, "Loan")
     .def_prop_ro("array", [](nb::handle self) { return nb::inst_ptr<Loan>(self)->array(self); })
     .def("commit", &Loan::commit, "nbytes"_a = nb::none())
+    .def("resize", &Loan::resize, "nbytes"_a)
     .def("copy_from", &Loan::copy_from, "src"_a, "at"_a = 0)
     .def("abort", &Loan::abort)
     .def_prop_ro("valid", &Loan::valid)

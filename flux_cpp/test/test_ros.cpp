@@ -7,6 +7,7 @@
 #include <rclcpp/experimental/executors/events_executor/events_executor.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include "sensor_msgs/flux/image_ros.hpp"
 #include <std_msgs/msg/string.hpp>
 
 #include <gtest/gtest.h>
@@ -29,6 +30,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 // Each endpoint_init call, recorded in place of libflux_ffi's (an executable's definition comes
@@ -693,5 +695,18 @@ TEST_F(Ros, ANodeMovedToAnotherExecutorKeepsItsHooks)
   other.cancel();
   t.join();
 }
+
+// A generated bridge names its adapter for its ROS type; a type without one has no `type`.
+template <class T, class = void>
+struct HasAdapter : std::false_type
+{
+};
+template <class T>
+struct HasAdapter<T, std::void_t<typename flux::RosAdapter<T>::type>> : std::true_type
+{
+};
+static_assert(
+  std::is_same_v<flux::RosAdapter<sensor_msgs::msg::Image>::type, sensor_msgs::flux_msg::Image>);
+static_assert(!HasAdapter<std_msgs::msg::String>::value);
 
 }  // namespace

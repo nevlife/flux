@@ -99,12 +99,49 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
   });
 ```
 
+### 메시지 타입
+
+flux 어댑터가 있는 메시지 타입은 모두 사용 가능하다. 표준 타입([messages.md](messages.md#표준-메시지))의 어댑터는 wrapper가 include한다. 다른 패키지의 메시지는 그 패키지가 `flux_generate_adapters()`로 어댑터를 생성하고([messages.md](messages.md#flux-없이도-빌드되는-메시지-패키지)), 드라이버가 그 ROS bridge 헤더를 include한다. flux 없이 빌드하면 이 헤더가 없으므로 `USE_FLUX_ENABLED` 아래에 둔다.
+
+```cpp
+#include <flux_wrapper/flux_wrapper.hpp>
+#include <my_msgs/msg/foo.hpp>
+#ifdef USE_FLUX_ENABLED
+#include <my_msgs/flux/foo_ros.hpp>
+#endif
+
+flux_wrapper::Publisher<my_msgs::msg::Foo> pub(*node, "foo", rclcpp::QoS(1));
+auto loan = pub.loan();
+loan.set_from(fields);           // data를 뺀 필드를 쓴다
+auto data = loan.alloc_data(n);  // data는 flux 슬롯이나 ROS 메시지에 바로 쓴다
+pub.publish(std::move(loan));
+
+flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
+  *node, "foo", rclcpp::QoS(1), [](const flux_wrapper::View<my_msgs::msg::Foo> & v) {
+    const my_msgs::msg::Foo f = v.without_data();  // data를 읽지 않고 나머지 필드를 복사한다
+    // v.data()는 flux 경로에서 슬롯을 가리킨다
+  });
+```
+
+| 타입 | Loan | View |
+| --- | --- | --- |
+| `sensor_msgs/Image`, `sensor_msgs/PointCloud2` | 필드마다 setter, `set_from(msg)` | 필드마다 접근자, `without_data()`, `to_msg()` |
+| 그 밖의 타입 | `set_from(msg)` | `without_data()`, `to_msg()` |
+| 최상위에 `std_msgs/Header header`가 있는 타입 | `set_header(h)` | `stamp()`, `frame_id()` |
+| 최상위에 `uint8[] data`나 `byte[] data`가 있는 타입 | `alloc_data(n)`, `alloc_buffer(n)` | `data()`, `size()`, `on_device()`, `device_ptr()`, `stream()`, `after()` |
+
+- 이 문서에서 `data`는 최상위의 `uint8[] data`나 `byte[] data`다. 다른 이름이나 다른 원소 타입의 배열, 중첩된 메시지 안의 `data`는 다른 필드와 같다.
+- `set_from(msg)`는 `data`를 뺀 필드를 한 번에 쓰고 `data`는 그대로 둔다. `data`가 없는 타입은 모든 필드를 쓴다. flux 경로에서는 바로 슬롯에 쓰므로, 슬롯에 들어가지 않는 필드가 있으면 loan이 `false`가 된다. `alloc_data(n)`과 호출 순서는 상관없다.
+- loan이 `false`면 `alloc_data(n)`은 빈 span을, `alloc_buffer(n)`은 `false`인 `Buffer`를 반환한다. 빈 슬롯이 없을 때, 앞서 쓴 필드나 `data`가 슬롯이나 aux에 들어가지 않았을 때, 발행자 없이 만든 loan일 때다. publish가 보내지 않을 `data`를 쓰지 않게 하기 위해서다. Python은 둘 다 `None`이다.
+- `without_data()`는 `data`를 비운 메시지를 반환한다. 두 경로 모두 `data`를 읽거나 복사하지 않는다. ROS 경로에서는 메시지의 introspection type support로 필드를 복사한다. `data`가 없는 타입은 `to_msg()`와 같다.
+- 타입에 해당 필드가 없으면 그 멤버는 컴파일되지 않는다. 예로 `data`가 없는 타입의 `alloc_data()`와 header가 없는 타입의 `stamp()`다.
+- flux로 빌드한 wrapper에서 어댑터를 include하지 않은 타입을 쓰면, `static_assert`가 include할 헤더(`<pkg>/flux/<snake>_ros.hpp`)를 알려 준다.
+
 ### 발행
 
-- 타입은 `sensor_msgs/Image`와 `sensor_msgs/PointCloud2`다.
 - `publish(std::unique_ptr<Msg>)`와 `publish(const Msg &)`는 이미 만든 ROS 메시지를 보낸다. flux 경로에서는 슬롯과 arena로 한 번 복사한다. 메시지를 계속 사용하는 쪽은 `const Msg &`를 사용한다. ROS 경로에서 복사본을 만들지 않는다.
 - `get_subscription_count()`는 ROS 경로에서 rclcpp 값을, flux 경로에서 `subscriber_count()`를 반환한다.
-- `PublisherOptions`의 `slot_count`, `mirror_to_ros`, `max_device_data_size`는 flux 경로에만 적용된다. 슬롯 크기는 타입에서 정하고, `data`는 크기와 상관없이 발행 프로세스의 arena에 저장한다. `max_device_data_size`(기본 10 MiB)는 `Cuda` 발행자의 `data` 최대 크기이고, 그 크기가 GPU 슬롯 크기다. 메시지 자신의 문자열(`header.frame_id`, `encoding`)이 슬롯을 넘으면 publish가 `false`를 반환하고, 발행자마다 처음 한 번 그 필드와 크기를 오류 로그로 남긴다. mirror는 기본 비활성화이고, 그 상태에서는 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
+- `PublisherOptions`의 `slot_count`, `mirror_to_ros`, `max_device_data_size`는 flux 경로에만 적용된다. 슬롯 크기는 타입에서 정하고, `data`는 크기와 상관없이 발행 프로세스의 arena에 저장한다. `max_device_data_size`(기본 10 MiB)는 `Cuda` 발행자의 `data` 최대 크기이고, 그 크기가 GPU 슬롯 크기다. 메시지 자신의 문자열(`header.frame_id`, `encoding`)이 슬롯을 넘으면 publish가 `false`를 반환하고, 발행자마다 처음 한 번 그 필드와 크기를 오류 로그로 남긴다. `Image`와 `PointCloud2`가 아닌 타입은 `set_from()`이 필드를 한 번에 쓰므로 필드 이름은 남기지 않고, 슬롯(`Cuda`면 aux)의 크기와 그 앞까지 쓴 크기를 남긴다. mirror는 기본 비활성화이고, 그 상태에서는 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
 
 ### 구독
 
@@ -117,7 +154,7 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 
 ### GPU(C++)
 
-- `PublisherOptions::device = flux_wrapper::Device::Cuda`면 메시지의 `data`를 GPU 메모리째 보낸다. 두 타입 모두 지원한다. `loan.alloc_buffer(n)`이 데이터 자리를 할당하고, `on_device()`가 GPU 메모리인지 알려 준다. `copy_from(src, n)`은 원본이 호스트 메모리든 GPU 메모리든 받는다. 커널이 직접 쓰는 경우에는 `device_ptr()`와 `stream()`을 사용하고, publish가 그 스트림의 작업이 완료된 뒤 발행한다.
+- `PublisherOptions::device = flux_wrapper::Device::Cuda`면 메시지의 `data`를 GPU 메모리째 보낸다. `data`가 있는 타입만 지원한다. 없는 타입은 발행자와 구독 모두 토픽 이름과 함께 경고를 남기고 `Host`가 된다. `loan.alloc_buffer(n)`이 데이터 자리를 할당하고, `on_device()`가 GPU 메모리인지 알려 준다. `copy_from(src, n)`은 원본이 호스트 메모리든 GPU 메모리든 받는다. 커널이 직접 쓰는 경우에는 `device_ptr()`와 `stream()`을 사용하고, publish가 그 스트림의 작업이 완료된 뒤 발행한다.
 - flux 경로에서는 `data`를 payload로, 나머지 필드를 aux로 보내는 GPU 메모리 채널([gpu.md](gpu.md#gpu-메모리-채널devicehandle))로 보낸다. ROS 경로에서는 wrapper가 GPU 버퍼를 하나 생성하고, publish 시 호스트로 복사해 ROS 메시지로 보낸다.
 - `data` 밖의 필드는 aux 4096 B에 들어가야 한다. 넘으면 loan이 `false`가 되고 publish가 `false`를 반환한다. 발행자마다 처음 한 번, 들어가지 않은 첫 필드와 그 크기, 그 앞까지 쓴 크기, 메시지의 `header.stamp`를 오류 로그로 남긴다.
 
@@ -131,8 +168,14 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 ### Python
 
 - Python 모듈 `flux_wrapper`도 같은 구조다. 다만 `max_borrow`와 `HeldCallback`은 없다. `flux`를 import 가능하고 `ENABLE_FLUX=1`이면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`한다.
+- flux 경로에서는 메시지 타입의 rosidl 모듈 이름(`my_msgs.msg._foo`)으로 어댑터 모듈 `my_msgs_flux.foo`와 `my_msgs_flux.foo_ros`를 찾고, `foo_ros.MESSAGE`가 그 타입인지 확인한다. 찾지 못하면 찾은 모듈 이름과 함께 `TypeError`를 던진다. include는 필요 없다.
+- loan에 쓰는 방법은 C++와 같다. `Image`와 `PointCloud2`는 필드를 ROS 메시지의 이름으로 대입하고, `loan.set_from(msg)`로 `data`를 뺀 필드를 한 번에 쓴다. 그 밖의 타입은 `loan.set_from(msg)`로 쓰고, 최상위 header가 있으면 `loan.header`만 따로 대입한다(C++ `set_header()`). 다른 필드를 대입하면 `AttributeError`다.
+- flux 경로에서는 쓰는 즉시 슬롯에 쓰므로, 슬롯에 들어가지 않는 필드가 있으면 그 자리에서 loan이 `False`가 되고 `publish()`가 `False`를 반환한다.
+- loan마다 새 메시지에서 시작하므로, 쓰지 않은 필드는 직전 loan의 값이 아니다. ROS 경로에서는 새 메시지의 값이고, flux 경로에서는 0, 빈 문자열, 빈 배열이다. C++도 같다.
+- View에서는 필드를 ROS 메시지의 이름의 속성으로 읽는다. `Image`와 `PointCloud2`가 아닌 타입의 View는 필드를 읽을 때 View마다 한 번 `without_data()`를 만든다. `view.without_data()`는 C++와 같다.
+- ROS 경로의 `byte[] data`는 rclpy가 1바이트 `bytes`의 list로 받으므로 `View.data`가 복사본이다.
 - `Publisher`와 `Subscription`은 `device="cpu"|"cuda"`를 받는다. GPU 메모리 채널의 형식이 C++와 같아서, C++ 발행자의 프레임을 Python 구독이 받고 그 반대도 된다.
-- `loan.alloc_buffer(n)`은 `uint8[n]`의 `flux.Loan`을 반환하고, 그 loan은 `__dlpack__`이나 `__cuda_array_interface__`로 GPU에서 쓴다. `device="cuda"` 발행자의 loan은 `alloc_buffer()`나 `alloc_data()` 호출 시 슬롯을 할당한다. 빈 슬롯이 없으면 그 결과가 `None`이고, 그 전까지 loan은 참이다.
+- `loan.alloc_buffer(n)`은 `uint8[n]`의 `flux.Loan`을 반환하고, 그 loan은 `__dlpack__`이나 `__cuda_array_interface__`로 GPU에서 쓴다. C++와 같이 `device="cuda"` 발행자도 `loan()`에서 슬롯을 할당한다. 빈 슬롯이 없으면 loan이 그 자리에서 `False`다. loan이 `False`면 이유와 상관없이 `alloc_buffer()`와 `alloc_data()`는 `None`을 반환한다.
 - 받은 `View`는 `on_device`가 참이고 `device_data`로 읽는다. GPU 작업은 `View.stream`에 올린다.
 
   | 발행자 | `device_data` |

@@ -348,6 +348,7 @@ fn tensor(layout: &Layout) -> (String, String, String) {
 }
 
 /// The Python module text for a layout.
+#[allow(clippy::too_many_lines)]
 pub fn emit(layout: &Layout, source: &str) -> String {
     let mut elems = String::new();
     elem_classes(&layout.root, &mut elems, &[]);
@@ -371,6 +372,11 @@ pub fn emit(layout: &Layout, source: &str) -> String {
     let fp = layout.fingerprint;
     let scalar = layout.scalar_bytes();
     let stamp = layout.stamp_offset();
+    let gpu = if crate::inline::has_gpu_data(layout) {
+        "True"
+    } else {
+        "False"
+    };
     // The first lets a publisher of this type that declares a device keep host slots, for
     // alloc_device__; the second lets a channel of it report header.stamp to trace collectors.
     let register = if stamp < 0 {
@@ -399,7 +405,10 @@ _property = property
 TYPE_NAME__ = "{type_name}"
 FINGERPRINT__ = 0x{fp:016X}
 SCALAR_BYTES__ = {scalar}
-STAMP_OFFSET__ = {stamp}{register}{tensor_at}
+STAMP_OFFSET__ = {stamp}
+# The root has a `data` array of bytes, so the type rides a GPU memory channel too
+# (flux.gpu_fingerprint): `data` as its payload, the other fields as its aux.
+GPU_DATA__ = {gpu}{register}{tensor_at}
 {consts}{elems}
 
 
@@ -462,6 +471,7 @@ class {name}:
     FINGERPRINT__ = FINGERPRINT__
     SCALAR_BYTES__ = SCALAR_BYTES__
     STAMP_OFFSET__ = STAMP_OFFSET__
+    GPU_DATA__ = GPU_DATA__
     View = View
     Builder = Builder
     build__ = staticmethod(build__)

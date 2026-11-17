@@ -16,6 +16,7 @@
 
   <depend>builtin_interfaces</depend>
   <depend>rclcpp</depend>
+  <depend>rosidl_typesupport_introspection_cpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend condition="$ENABLE_FLUX == 1">flux_cpp</depend>
@@ -27,6 +28,7 @@
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>flux_wrapper_test_msgs</test_depend>
   <test_depend>python3-pytest</test_depend>
 
   <export>

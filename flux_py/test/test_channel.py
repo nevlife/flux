@@ -99,6 +99,35 @@ def test_a_loan_publishes_only_on_commit_and_seals_its_arrays(node):
     np.testing.assert_array_equal(sub.take(), [1, 2, 3])
 
 
+def test_a_resized_loan_hands_out_and_commits_its_new_length(node):
+    pub = flux.Publisher(node, topic("resize"), slot_size=64, slot_count=2)
+    sub = flux.Subscription(node, topic("resize"), qos=flux.QoS(depth=2))
+    loan = pub.loan()
+    loan.resize(8)
+    loan.resize(4)
+    assert loan.array.shape == (4,) and loan.capacity == 64
+    loan.array[:] = [4, 3, 2, 1]
+    assert loan.commit()
+    np.testing.assert_array_equal(sub.take(), [4, 3, 2, 1])
+    with pytest.raises(RuntimeError, match="already committed"):
+        loan.resize(1)
+    floats = pub.loan((8,), "f4")
+    for bad in (33, 6):  # past the loan, not whole items
+        with pytest.raises(ValueError, match="resize"):
+            floats.resize(bad)
+    floats.resize(8)
+    assert floats.array.shape == (2,)
+    floats.abort()
+    with pytest.raises(ValueError, match="1-D"):
+        pub.loan((2, 2), "f4").resize(8)
+
+
+def test_a_published_reads_as_in_cpp():
+    """str() is flux::to_string() of C++."""
+    assert str(flux.Published.TOO_LARGE) == "too large"
+    assert f"{flux.Published.IN_USE}" == "in use by another thread"
+
+
 def test_a_loans_aux_bytes_arrive_with_its_frame(node):
     pub = flux.Publisher(node, topic("aux"), slot_size=64, slot_count=2, aux_size=32)
     sub = flux.Subscription(node, topic("aux"), qos=flux.QoS(depth=2))

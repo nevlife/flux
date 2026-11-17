@@ -11,6 +11,7 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
@@ -26,8 +27,10 @@ add_library(flux_wrapper INTERFACE)
 target_include_directories(flux_wrapper INTERFACE
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
+# The introspection type support copies a message but its data (detail/copy_but_data.hpp).
 target_link_libraries(flux_wrapper INTERFACE
-  rclcpp::rclcpp ${builtin_interfaces_TARGETS} ${sensor_msgs_TARGETS} ${std_msgs_TARGETS})
+  rclcpp::rclcpp rosidl_typesupport_introspection_cpp::rosidl_typesupport_introspection_cpp
+  ${builtin_interfaces_TARGETS} ${sensor_msgs_TARGETS} ${std_msgs_TARGETS})
 set(flux_dependencies)
 if(FLUX_WRAPPER_WITH_FLUX)
   find_package(flux_cpp REQUIRED)
@@ -51,8 +54,9 @@ endif()
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
+  find_package(flux_wrapper_test_msgs REQUIRED)
   ament_add_gtest_executable(test_flux_wrapper test/test_flux_wrapper.cpp)
-  target_link_libraries(test_flux_wrapper flux_wrapper)
+  target_link_libraries(test_flux_wrapper flux_wrapper ${flux_wrapper_test_msgs_TARGETS})
   target_compile_options(test_flux_wrapper PRIVATE -Wall -Wextra -Wpedantic -Werror)
   # Each run switch the build can take; a build without flux takes only the ROS path.
   set(runs 0)
@@ -69,13 +73,23 @@ if(BUILD_TESTING)
   if(FLUX_WRAPPER_WITH_FLUX)
     ament_add_gtest_test(test_flux_wrapper TEST_NAME test_flux_wrapper_unset
       ENV FLUX_WRAPPER_EXPECT_FLUX=0 TIMEOUT 60)
+    # A type without an adapter stops a build with flux at the static_assert that says what to
+    # include. The test builds the target and passes on that message, not on the exit code.
+    add_executable(test_no_adapter EXCLUDE_FROM_ALL test/no_adapter.cpp)
+    target_link_libraries(test_no_adapter flux_wrapper)
+    add_test(NAME test_no_adapter
+      COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_no_adapter)
+    set_tests_properties(test_no_adapter PROPERTIES
+      PASS_REGULAR_EXPRESSION "no flux adapter for this message type" TIMEOUT 120)
   endif()
 endif()
 
 install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 install(TARGETS flux_wrapper EXPORT export_flux_wrapper)
 ament_export_targets(export_flux_wrapper)
-ament_export_dependencies(builtin_interfaces rclcpp sensor_msgs std_msgs ${flux_dependencies})
+ament_export_dependencies(
+  builtin_interfaces rclcpp rosidl_typesupport_introspection_cpp sensor_msgs std_msgs
+  ${flux_dependencies})
 
 ament_python_install_package(${PROJECT_NAME})
 

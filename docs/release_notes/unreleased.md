@@ -22,14 +22,16 @@
 * `record_flux --image-codec jpeg`가 `sensor_msgs/Image`(`rgb8`, `bgr8`, `mono8`)의 픽셀을 JPEG로 저장한다. `play_flux`는 디코딩해 원래 채널에 발행하고, `convert_flux`는 `sensor_msgs/CompressedImage`로 바꾼다
 * 발행자가 같은 이름의 ROS 2 토픽도 발행 가능하다(C++ `mirror_to_ros()`, Python `mirror_to_ros=True`). ROS 2 구독자가 있는 동안만 변환한다. `flux_bridge`는 다른 ROS 2 발행자가 있는 토픽을 중계하지 않고, `echo_flux`·`hz_flux`는 mirror만 있어도 동작한다
 * 발행자가 지금 구독하는 프로세스 수를 센다(C++ `subscriber_count()`, Python `subscriber_count`, C `flux_channel_subscriber_count`). 죽은 구독 프로세스는 세지 않는다
-* `ros2/flux_wrapper`: flux가 있든 없든 빌드되는 발행·구독 API. 빌드 시와 실행 시 `ENABLE_FLUX=1`이면 flux로, 아니면 ROS 2로 보낸다. `sensor_msgs/Image`와 `PointCloud2`를 다룬다
+* `ros2/flux_wrapper`: flux가 있든 없든 빌드되는 발행·구독 API. 빌드 시와 실행 시 `ENABLE_FLUX=1`이면 flux로, 아니면 ROS 2로 보낸다. flux 어댑터가 있는 모든 메시지 타입(직접 만든 메시지 포함)을 다룬다. `sensor_msgs/Image`와 `PointCloud2`는 필드마다 setter와 접근자가 있고, 다른 타입은 `Loan::set_from(msg)`로 쓰고 `View::without_data()`로 읽는다. 최상위 `uint8[]`·`byte[]` `data`는 두 경로 모두 그 자리에서 쓰고 읽는다
 * 슬롯마다 프레임과 함께 commit되는 호스트 메모리(aux)를 사용 가능하다. GPU 메모리 채널에서도 aux는 호스트 메모리라서 GPU 프레임과 stamp 같은 헤더를 한 채널로 보낸다
-* `flux_wrapper`가 `sensor_msgs/Image`와 `PointCloud2`를 GPU 메모리째 보내고 받는다(C++ `Device::Cuda`, Python `device="cuda"`). flux가 없으면 호스트로 복사해 ROS 메시지로 보낸다. `Cuda` 구독(Python `device="cuda"`)은 CPU 발행자의 메시지도 GPU 메모리로 받는다. ROS 경로의 메시지는 C++ 구독만 GPU 메모리로 받는다
+* `flux_wrapper`가 최상위 `uint8[]`·`byte[]` `data`가 있는 타입을 GPU 메모리째 보내고 받는다(C++ `Device::Cuda`, Python `device="cuda"`). flux가 없으면 호스트로 복사해 ROS 메시지로 보낸다. `Cuda` 구독(Python `device="cuda"`)은 CPU 발행자의 메시지도 GPU 메모리로 받는다. ROS 경로의 메시지는 C++ 구독만 GPU 메모리로 받는다
+* `flux_wrapper`의 loan이 `false`면 C++ `alloc_data(n)`은 빈 span을, `alloc_buffer(n)`은 `false`인 `Buffer`를 반환한다. Python은 둘 다 `None`이다. 빈 슬롯이 없거나 앞서 쓴 필드나 `data`가 슬롯이나 aux에 들어가지 않은 loan이 그렇다. publish가 보내지 않을 `data`를 쓰지 않게 하기 위해서다
 * `record_flux`가 프레임의 aux와 채널의 `aux_size`를 `FluxFrame.meta` 끝에 담고, `play_flux`가 같은 `aux_size`로 발행자를 만들어 aux와 함께 발행한다. `flux_wrapper`의 GPU 이미지 채널도 헤더와 함께 녹화하고 재생한다. aux를 담은 bag은 이전 `flux_bag`이 읽지 못한다
 * 구독이 콜백 뒤에도 프레임을 복사 없이 보유 가능하다. C++ `flux::Subscription`의 콜백은 `FrameView`를 move해서 보유하고, `flux_wrapper`의 콜백은 `std::shared_ptr<const View<Msg>>`를 받아 보유한다. 보유 가능한 수는 `max_borrow`이고, 슬롯이 그보다 적은 발행자는 거절한다
 * 생성된 어댑터의 배열과 메시지 배열은 발행 프로세스의 공유 메모리 arena에 저장된다. 메시지 자신의 문자열은 슬롯의 고정 필드 뒤에 저장된다. `slot_size`를 메시지의 최대 크기에 맞출 필요가 없다. 크기는 `FLUX_ARENA_BYTES`(기본값이자 최대값 16 GiB, 페이지는 사용하는 만큼 예약한다)로 정한다. 프로세스의 모든 발행자가 나눠 쓴다
 * 생성된 어댑터 메시지의 숫자 배열 필드를 GPU에서 쓰고 GPU에서 읽는다(C++ `alloc_device__<name>`, `<name>__device()`). 나머지 필드는 호스트 슬롯에 남는다. 외장 GPU에서도 그 발행자의 슬롯은 호스트 메모리이고, 필드는 프로세스마다 GPU마다 하나인 GPU arena에 저장한다. 외장 GPU의 CPU 구독자는 그 프레임을 처음 읽는 시점에 GPU 필드를 복사한다. 반대로 CPU 발행자가 쓴 필드도 GPU 구독자가 `__device()`로 읽고, 외장 GPU에서 arena에 저장된 필드는 그 구독자가 처음 읽는 시점에 복사한다(통합 GPU에서는 슬롯 안의 필드만). Python에서도 같다(생성된 `alloc_device__<name>`, `<name>__device`, DLPack)
 * 라이브러리가 만든 버퍼를 복사 없이 필드로 넘긴다(`LD_PRELOAD=libflux_heaphook.so`, C++ `flux::ArenaScope`, Python `flux.arena_scope()`, 생성된 `adopt__<name>`)
+* 생성된 ROS 쪽 헤더가 `flux::RosAdapter<pkg::msg::Foo>`로 ROS 타입에서 어댑터를 찾게 하고, 최상위 1바이트 `data` 배열이 있는 메시지에 `data`를 빼고 복사하는 `msg_to_frame_without_data()`, `frame_to_msg_without_data()`를 더한다(Python도 같다). 어댑터에 `kGpuData`(Python `GPU_DATA__`)가 있다. fingerprint는 바뀌지 않는다. `flux_std_adapters/ros.hpp`는 표준 타입의 ROS 쪽 헤더를 모두 include한다
 
 * `record_flux`가 필드를 arena에 저장한 프레임을 녹화한다. arena의 필드를 프레임 안으로 복사한 사본을 bag에 담으므로 `play_flux`와 `convert_flux`는 다른 프레임과 똑같이 읽는다. 그 타입이 설치되어 있어야 한다. GPU arena의 필드는 녹화기가 받은 호스트 사본에서 복사한다
 * `flux_tools`의 rviz2 PointCloud2 디스플레이가 점을 arena에 저장한 프레임을 표시한다
@@ -78,6 +80,7 @@
 * `flux::NodeRef`
 * `flux::Subscription::add_to_callback_group`, `flux::message_filters::Subscriber::add_to_callback_group`
 * `flux::PartitionedExecutor::remove_node`, `flux::PartitionedExecutor::on_thread_start(ThreadStart)`
+* `flux::RosAdapter`, `flux_wrapper::View::without_data`, Python `flux_wrapper.View.without_data`, `flux_wrapper.Loan.set_from`. `Loan<Image>::set_from`, `Loan<PointCloud2>::set_from`이 공개되었다
 * `flux::ComponentManager`, `flux::run_component_container`
 * `flux::Publisher::mirror_to_ros`, Python `Publisher(mirror_to_ros=...)`
 * aux: C++ `Publisher`의 `aux_size` 인자와 `aux_size()`, `WriteSlot::aux`, `WriteSlot::set_aux_len`, `FrameView::aux`. Python `Publisher(aux_size=...)`, `Loan.aux`, `Loan.aux_len`, `flux.aux`. C `flux_loan_aux`, `flux_loan_set_aux_len`, `flux_view_aux`, `flux_channel_aux_size`, `FLUX_MAX_AUX_SIZE`
@@ -86,6 +89,7 @@
 * 기본 슬롯 크기: C `FLUX_UNTYPED_SLOT_SIZE`, `FLUX_SLOT_STRING_BYTES`. Python `flux.UNTYPED_SLOT_SIZE`, `flux.SLOT_STRING_BYTES`. `flux_wrapper`: `PublisherOptions::max_device_data_size`, Python `Publisher(max_device_data_size=...)`
 * GPU 메모리 채널: C++ `flux::gpu_fingerprint`, `Schemas::contains_gpu`, `Schemas::at_gpu`, `Schemas::Type::with_data`. Python `flux.gpu_fingerprint`. C `flux_gpu_fingerprint`, `flux_schemas_find_gpu`, `flux_schema_with_data`
 * `flux_wrapper`: `SubscriptionOptions::max_borrow`, `Subscription::HeldCallback`, `View::after`
+* Python `Loan.resize`. `str(flux.Published)`이 C++ `flux::to_string`과 같은 문자열이다(전에는 `Published.TOO_LARGE` 같은 enum 이름)
 * arena: C++ `flux::ArenaScope`, `WriteSlot::heap`, `FrameView::heap`, `wire::Heap`, 생성된 `adopt__<name>`, `View::budget__`. Python `flux.arena_scope`, 생성된 `adopt__<name>`, `flux.wire.Reader.budget`. C `flux_heap`, `flux_loan_heap`, `flux_heap_alloc`, `flux_heap_adopt`, `flux_view_heap`, `flux_arena_acquire`, `flux_arena_release`, `flux_arena_scope_enter`, `flux_arena_scope_leave`, `FLUX_HEAP_BASE`. 라이브러리 `libflux_heaphook.so`
 * GPU arena: C++ `wire::DeviceSpan`, `wire::GpuHeap`, `wire::GpuBlock`, `Writer::alloc_device`, `Reader::device`, `FrameView::gpu_heap`, 생성된 `alloc_device__<name>`와 `<name>__device`. C `flux_heap.gpu`, `flux_heap_alloc_device`, `flux_gpu_heap`, `flux_gpu_block`, `flux_view_gpu_heap`, `flux_layout_register`, `FLUX_GPU_HEAP_BASE`, `FLUX_ARENA_UNIT`, `FLUX_GPU_HEAP_POS`. C++ `wire::Ref`, `wire::position`, `wire::wire`. arena 필드를 프레임 안으로 복사: C `flux_schema_inline_arena`, C++ `Schemas::Type::inline_arena`, `flux::in_arena`. Python 생성된 `alloc_device__<name>`와 `<name>__device`, `flux.wire.DeviceSpan`, `flux.wire.Reader.device`, `flux.wire.Writer.alloc_device`
 

@@ -34,12 +34,14 @@ struct PublisherOptions
   // from the device for each of those messages.
   bool mirror_to_ros = false;
   // Cuda: Loan::alloc_buffer() hands out device memory (see Device). On the flux path a slot of a
-  // discrete GPU is device memory; on the ROS path publish() copies the buffer to the message.
+  // discrete GPU is device memory; on the ROS path publish() copies the buffer to the message. A
+  // type without a root data is Host, with a warning.
   Device device = Device::Host;
 };
 
 // One topic over flux or over ROS, chosen once per process by use_flux(). Writing a message is
-// the same on both paths: loan(), fill the Loan, publish(). One thread at a time.
+// the same on both paths: loan(), fill the Loan, publish(). One thread at a time. A build with
+// flux needs the adapter of MsgT (detail::Adapter).
 template <class MsgT>
 class Publisher
 {
@@ -50,22 +52,24 @@ public:
     const PublisherOptions & options = {})
   : logger_(node.get_logger())
   {
-    [[maybe_unused]] const bool cuda = detail::cuda_usable(logger_, topic, options.device);
+    [[maybe_unused]] const bool cuda = detail::cuda_usable<MsgT>(logger_, topic, options.device);
 #ifdef FLUX_WRAPPER_CUDA
     requested_cuda_ = options.device == Device::Cuda;
 #endif
 #ifdef USE_FLUX_ENABLED
     if (use_flux()) {
-      if (cuda) {
-        flux_ = std::make_unique<flux::Publisher>(
-          node, topic, detail::Gpu<MsgT>::kFingerprint, options.max_device_data_size,
-          options.slot_count, flux::Device::Cuda, flux::MemoryPolicy{},
-          flux::Publisher::kDefaultMaxSubscribers, detail::Gpu<MsgT>::kAuxBytes);
-        device_ = true;
-        if (options.mirror_to_ros) {
-          flux_->mirror_to_ros();
+      if constexpr (detail::kRootData<MsgT>) {
+        if (cuda) {
+          flux_ = std::make_unique<flux::Publisher>(
+            node, topic, detail::Gpu<MsgT>::kFingerprint, options.max_device_data_size,
+            options.slot_count, flux::Device::Cuda, flux::MemoryPolicy{},
+            flux::Publisher::kDefaultMaxSubscribers, detail::Gpu<MsgT>::kAuxBytes);
+          device_ = true;
+          if (options.mirror_to_ros) {
+            flux_->mirror_to_ros();
+          }
+          return;
         }
-        return;
       }
       flux_ = std::make_unique<flux::Publisher>(
         node, topic, detail::AdapterT<MsgT>::kFingerprint, flux::Publisher::kDefaultSlotSize,
@@ -124,8 +128,10 @@ public:
   auto publish(Loan<MsgT> && loan) -> bool
   {
 #ifdef USE_FLUX_ENABLED
-    if (loan.gpu_) {
-      return commit_gpu(loan);
+    if constexpr (detail::kRootData<MsgT>) {
+      if (loan.gpu_) {
+        return commit_gpu(loan);
+      }
     }
     if (loan.builder_) {
       if (!loan.builder_->ok__() && loan.over_.field != nullptr) {
@@ -140,9 +146,11 @@ public:
       return false;
     }
 #ifdef FLUX_WRAPPER_CUDA
-    if (loan.staged_ && !staging_->download(loan.msg_->data.data(), loan.msg_->data.size())) {
-      device_error("the device to host copy failed");
-      return false;
+    if constexpr (detail::kRootData<MsgT>) {
+      if (loan.staged_ && !staging_->download(loan.msg_->data.data(), loan.msg_->data.size())) {
+        device_error("the device to host copy failed");
+        return false;
+      }
     }
 #endif
     ros_->publish(std::move(loan.msg_));
@@ -153,8 +161,10 @@ public:
   auto publish(std::unique_ptr<MsgT> msg) -> bool
   {
 #ifdef USE_FLUX_ENABLED
-    if (flux_ && device_) {
-      return publish_gpu(*msg);
+    if constexpr (detail::kRootData<MsgT>) {
+      if (flux_ && device_) {
+        return publish_gpu(*msg);
+      }
     }
     if (flux_) {
       return publish_host(*msg);
@@ -168,8 +178,10 @@ public:
   auto publish(const MsgT & msg) -> bool
   {
 #ifdef USE_FLUX_ENABLED
-    if (flux_ && device_) {
-      return publish_gpu(msg);
+    if constexpr (detail::kRootData<MsgT>) {
+      if (flux_ && device_) {
+        return publish_gpu(msg);
+      }
     }
     if (flux_) {
       return publish_host(msg);
@@ -244,6 +256,21 @@ private:
       return;
     }
     over_logged_ = true;
+    std::string stamp;
+    if constexpr (detail::kRootHeader<MsgT>) {
+      const std::string ns = std::to_string(o.nanosec);
+      stamp = "; header.stamp " + std::to_string(o.sec) + "." +
+              std::string(ns.size() < 9 ? 9 - ns.size() : 0, '0') + ns;
+    }
+    if (*o.field == '\0') {
+      // set_from() writes the fields in one call, so which one did not fit is not known.
+      RCLCPP_ERROR(
+        logger_,
+        "%s: a message did not go out%s: the fields set from it did not fit the %s (%u B, %zu B "
+        "used before them)%s. Later ones are not logged",
+        flux_->topic_name().c_str(), on, where, size, o.used, stamp.c_str());
+      return;
+    }
     std::string what = std::string(o.field) + " (" + std::to_string(o.bytes) + " B";
     if (o.entries != 0) {
       what = std::string(o.field) + " (" + std::to_string(o.entries) + " entries, names " +
@@ -251,9 +278,9 @@ private:
     }
     RCLCPP_ERROR(
       logger_,
-      "%s: a message did not go out%s: %s) did not fit the %s (%u B, %zu B used before it); "
-      "header.stamp %d.%09u. Later ones are not logged",
-      flux_->topic_name().c_str(), on, what.c_str(), where, size, o.used, o.sec, o.nanosec);
+      "%s: a message did not go out%s: %s) did not fit the %s (%u B, %zu B used before it)%s. "
+      "Later ones are not logged",
+      flux_->topic_name().c_str(), on, what.c_str(), where, size, o.used, stamp.c_str());
   }
 
   // As a Loan filled from msg, so a field that does not fit is logged as one set by hand is.
@@ -264,9 +291,11 @@ private:
       return false;
     }
     l.set_from(msg);
-    const auto d = l.alloc_data(msg.data.size());
-    if (d.size() == msg.data.size() && !msg.data.empty()) {
-      std::memcpy(d.data(), msg.data.data(), msg.data.size());
+    if constexpr (detail::kRootData<MsgT>) {
+      const auto d = l.alloc_data(msg.data.size());
+      if (d.size() == msg.data.size() && !msg.data.empty()) {
+        std::memcpy(d.data(), msg.data.data(), msg.data.size());
+      }
     }
     return publish(std::move(l));
   }
@@ -275,10 +304,8 @@ private:
   {
     Loan<MsgT> l = loan();
     l.set_from(msg);
+    // A false Loan, data past the slot among its causes, gives no buffer; commit_gpu() logs why.
     const Buffer b = l.alloc_buffer(msg.data.size());
-    if (l.slot_ && !b) {
-      return report(flux::Published::TooLarge);
-    }
     if (b && !b.copy_from(msg.data.data(), msg.data.size())) {
       device_error("the host to device copy failed");
       return false;
