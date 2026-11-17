@@ -329,6 +329,18 @@ def test_cuda_subscription_gets_a_cpu_publishers_data_on_the_device(node):
         assert got[m.header.stamp.sec] == (True, True, bytes(m.data), bytes(m.data), m)
 
 
+def test_a_slot_publisher_that_allocs_on_subscriber_publishes_once_one_attaches(node):
+    """On the flux path it sends nothing before a subscriber attaches."""
+    pub = flux_wrapper.Publisher(node, Image, "on_sub", 4, alloc="slot", alloc_on_subscriber=True)
+    want = image(6)
+    if EXPECT_FLUX:
+        assert not pub.publish(want)
+    done = threading.Event()
+    sub = flux_wrapper.Subscription(node, Image, "on_sub", lambda v: done.set(), 4)
+    run_until(node, sub, done, lambda: pub.publish(want))
+    assert done.is_set()
+
+
 @needs_cuda
 @pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
 def test_cuda_subscription_gets_a_slot_publishers_data_on_the_device(node):

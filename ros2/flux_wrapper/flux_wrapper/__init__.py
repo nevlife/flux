@@ -323,6 +323,8 @@ class Publisher:
 
     alloc="slot" keeps every variable-length field of a "cpu" message in its flux slot, where an
     integrated GPU subscriber reads it in place; a message past the slot is refused.
+    alloc_on_subscriber, with alloc="slot" or device="cuda", gives the slots memory once a
+    subscriber attaches; publish() is False until then.
     """
 
     def __init__(
@@ -339,6 +341,7 @@ class Publisher:
         mirror_to_ros=False,
         device="cpu",
         alloc="arena",
+        alloc_on_subscriber=False,
     ):
         self._type = msg_type
         self._flux = None
@@ -365,6 +368,7 @@ class Publisher:
                 device="cuda" if self._cuda else "cpu",
                 aux_size=aux_size,
                 alloc=alloc,
+                alloc_on_subscriber=alloc_on_subscriber,
             )
         else:
             self._ros = node.create_publisher(msg_type, topic, qos)

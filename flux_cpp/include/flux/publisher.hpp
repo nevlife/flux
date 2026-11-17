@@ -29,6 +29,9 @@ struct PublisherOptions
   MemoryPolicy memory = {};
   std::uint32_t max_subscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS;
   std::uint32_t aux_size = 0;
+  // Alloc::Slot and device-payload publishers: slots get memory once a subscriber attaches, and
+  // publish fails until then. For topics nobody may subscribe to.
+  bool alloc_on_subscriber = false;
 };
 
 // One per topic on the host: Error with FLUX_PUBLISHER_EXISTS while another is live. One call at

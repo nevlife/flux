@@ -272,7 +272,8 @@ fn leave(name: &str, raw: RawFd) {
 /// The returned segment holds the publisher locks for its lifetime and is unlinked on drop.
 /// `device`: the ordinal to allocate the payload on, for the device-handle route. The segment then
 /// holds the control plane only, and the allocation is served before the epoch advertises it.
-/// The payload has memory for its first `ready` slots, the rest only once `add_slot` adds them.
+/// The payload has memory for its first `ready` slots (at least one on a device), the rest only
+/// once `add_slot` adds them.
 #[allow(clippy::too_many_arguments)]
 pub fn open_publisher_segment(
     name: &str,
@@ -293,7 +294,9 @@ pub fn open_publisher_segment(
         )),
         None => None,
     };
-    let ready = ready.clamp(1, layout.slot_count);
+    // A host payload may start with none (`channel::filler`). A device one keeps one: its first
+    // chunk is made with the allocation.
+    let ready = ready.clamp(u32::from(device.is_some()), layout.slot_count);
     let bytes = if device.is_some() {
         layout.payload_offset()
     } else {

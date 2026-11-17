@@ -114,6 +114,7 @@ auto config_of(const PublisherOptions & o) -> flux_publisher_config
   c.max_slot_count = o.max_slot_count;
   c.max_subscribers = o.max_subscribers;
   c.aux_size = o.aux_size;
+  c.alloc_on_subscriber = o.alloc_on_subscriber;
   return c;
 }
 

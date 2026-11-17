@@ -40,6 +40,7 @@
 * loan에 호스트 메모리를 복사하고 프레임을 호스트 메모리로 복사한다(C `flux_loan_copy_from`, `flux_view_copy_to`, C++ `WriteSlot::copy_from`, `FrameView::copy_to`, Python `Loan.copy_from`, `Frame.copy_to_host`). GPU 메모리 슬롯이면 채널 스트림에서 복사한다. Python `flux_wrapper`의 `device="cuda"` 발행자가 `publish(msg)`로 보내고, GPU 메모리 프레임의 `to_msg()`가 동작한다. 전에는 각각 외장 GPU에서 `False`, `RuntimeError`였다
 * C++ `PublisherOptions`, `SubscriptionOptions`와 `flux::create_publisher`, `flux::create_subscription`. 옵션은 rclcpp처럼 구조체 필드로 채운다. 인자 순서는 rclcpp를 따르고 flux에만 있는 `fingerprint`는 맨 뒤에 둔다. 인자를 순서대로 받는 기존 생성자도 그대로 있다
 * 발행자가 가변 길이 필드를 둘 곳을 고른다(C++ `PublisherOptions::alloc`, Python `alloc="arena"|"slot"`, C `flux_publisher_config`와 `flux_channel_create_config`). 기본은 지금처럼 arena다. `Slot`은 모든 필드를 슬롯 안에 두고, 슬롯에 들어가지 않는 프레임은 거절한다. Jetson 같은 통합 GPU에서 CPU 발행자의 배열을 GPU 구독자가 복사 없이 읽는다. `Slot` 발행자는 크기와 개수를 주지 않으면 4 MiB 슬롯 12개로 시작하고, `max_slot_size`(기본 16 MiB)와 `max_slot_count`(기본 16)를 넘는 설정은 생성에서 거절한다
+* `Alloc::Slot` 발행자와 GPU 메모리 채널이 첫 구독자가 붙을 때 슬롯을 잡도록 고른다(C++·`flux_wrapper` `PublisherOptions::alloc_on_subscriber`, Python `alloc_on_subscriber=True`, C `flux_publisher_config::alloc_on_subscriber`). 구독자 없는 토픽에 메모리를 쓰지 않고, 그 전의 publish는 실패한다
 * `flux_wrapper`의 발행자가 `alloc`을 받는다(C++ `PublisherOptions::alloc`, Python `alloc="slot"`). `flux_wrapper::create_publisher`, `flux_wrapper::create_subscription`을 더했다
 
 ### 버그 수정
@@ -157,7 +158,7 @@
 
 10. trace 값 `FLUX_TRACE_RECORD_CACHE_FULL`을 지웠다. 9의 큐가 없어져 `record_drop`이 이 값을 내는 곳이 없다. 다른 `RECORD_*` 값의 번호는 그대로이고 0은 비워 둔다. 이 값을 다루던 `switch`와 비교는 지운다. 이전 `record_flux`가 기록한 trace에는 0이 남아 있을 수 있다
 
-11. GPU 메모리 채널(C++ `Device::Cuda`나 stream을 준 타입 없는 발행자, `flux_wrapper`의 `Device::Cuda`)의 기본 슬롯이 8 MiB, 최대 32개에서 4 MiB 12개(최대 16개)가 되었다. `flux_wrapper`의 `max_device_data_size`(기본 10 MiB)는 `slot_size`가 되었다. 4 MiB보다 큰 `data`는 `slot_size`를 준다(최대 16 MiB, 더 크면 `max_slot_size`도 준다).
+11. GPU 메모리 채널(C++ `Device::Cuda`나 stream을 준 타입 없는 발행자, `flux_wrapper`의 `Device::Cuda`)의 기본 슬롯이 8 MiB, 최대 32개에서 4 MiB 12개(최대 16개)가 되었다. `flux_wrapper`의 `max_device_data_size`(기본 10 MiB)는 `slot_size`가 되었다. 4 MiB보다 큰 `data`는 `slot_size`를 준다(최대 16 MiB, 더 크면 `max_slot_size`도 준다). 이 채널과 `Alloc::Slot` 발행자는 모든 슬롯이 쓰이고 있으면 슬롯을 더할 때까지 loan이 실패한다. 슬롯은 별도 스레드가 더한다.
 
    ```cpp
    // 전

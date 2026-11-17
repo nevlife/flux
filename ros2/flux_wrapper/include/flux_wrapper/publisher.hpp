@@ -31,6 +31,9 @@ struct PublisherOptions
   std::uint32_t slot_count = 0;
   std::uint32_t max_slot_size = 0;
   std::uint32_t max_slot_count = 0;
+  // flux with Alloc::Slot or Device::Cuda only: the slots get memory once a subscriber attaches,
+  // and publish() is false until then. For topics nobody may subscribe to.
+  bool alloc_on_subscriber = false;
   // flux only: also publish each message as its ROS message on the same topic while a ROS
   // subscriber (rviz2, ros2 bag) wants it. With Device::Cuda the mirror copies the data field
   // from the device for each of those messages.
@@ -66,6 +69,7 @@ public:
       o.slot_count = options.slot_count;
       o.max_slot_size = options.max_slot_size;
       o.max_slot_count = options.max_slot_count;
+      o.alloc_on_subscriber = options.alloc_on_subscriber;
       if constexpr (detail::kRootData<MsgT>) {
         if (cuda) {
           o.device = flux::Device::Cuda;

@@ -80,11 +80,16 @@ pub struct PublisherConfig {
     pub alloc: Alloc,
     pub slot_size: u32,
     pub slot_count: u32,
-    /// `Alloc::Slot` only: the largest slot and the most slots it may grow to.
+    /// `Alloc::Slot` and GPU memory channels only: the largest slot and the most slots it may
+    /// grow to.
     pub max_slot_size: u32,
     pub max_slot_count: u32,
     pub max_subscribers: u32,
     pub aux_size: u32,
+    /// `Alloc::Slot` and GPU memory channels only: the slots get memory once a subscriber
+    /// attaches, not at creation, and loans fail until then. For a program that makes publishers
+    /// for topics nobody may subscribe to.
+    pub alloc_on_subscriber: bool,
 }
 
 impl Default for PublisherConfig {
@@ -97,6 +102,7 @@ impl Default for PublisherConfig {
             max_slot_count: 0,
             max_subscribers: DEFAULT_MAX_SUBSCRIBERS,
             aux_size: 0,
+            alloc_on_subscriber: false,
         }
     }
 }
@@ -166,6 +172,8 @@ struct ClaimOrder {
     /// Claimed for a loan; back in `queue` once committed or aborted.
     loaned: Vec<u32>,
     built: bool,
+    /// The slots with memory this order knows; ones `filler` added since go first, unwritten.
+    known: u32,
 }
 
 impl ClaimOrder {
@@ -179,7 +187,13 @@ impl ClaimOrder {
             all.sort_unstable();
             self.queue = all.into_iter().map(|(_, s)| s).collect();
             self.built = true;
+            self.known = seg.slots_ready();
         }
+        let ready = seg.slots_ready();
+        for s in self.known..ready {
+            self.queue.push_front(s);
+        }
+        self.known = self.known.max(ready);
         let ClaimOrder { queue, loaned, .. } = self;
         loaned.retain(|&s| {
             let t = ticket(s);
@@ -343,6 +357,8 @@ impl Channel {
             stream.declared(),
         )?;
         check_slot_count(plan.slot_count)?;
+        let filled = plan.fixed && filler::available();
+        let later = filled && config.alloc_on_subscriber;
         let seg = open_publisher_segment(
             name,
             plan.slot_size,
@@ -351,7 +367,7 @@ impl Channel {
             config.aux_size,
             fingerprint,
             device,
-            plan.start,
+            if later { 0 } else { plan.start },
         )?;
         seg.apply(mem)?;
         if seg.host_payload() {
@@ -360,12 +376,21 @@ impl Channel {
         let fence = Arc::new(FenceStats::default());
         let mut sh = ChannelShared::new(Arc::new(seg), stamp_offset);
         sh.attach_device(&stream, &fence, true)?;
+        sh.filled = filled;
+        if later {
+            sh.fill_start.store(plan.start, Ordering::Relaxed);
+        }
         let mut ch = Channel::with_shared(Arc::new(sh).traced(), mem);
         ch.stream = stream;
         ch.fence = fence;
         ch.sh
             .slot_only
             .store(config.alloc == Alloc::Slot, Ordering::Relaxed);
+        if filled && !filler::watch(&ch.sh, mem) {
+            return Err(Error::Unsupported(
+                "the thread that gives fixed slots their memory stopped".into(),
+            ));
+        }
         Ok(ch)
     }
 
@@ -600,7 +625,11 @@ impl Channel {
     fn claim(&mut self, loan: i32) -> Option<u32> {
         self.sh.reap_late();
         self.order.settle(&self.sh.seg);
-        if self.oldest_within_depth()
+        // A fixed-slot channel asks `filler` once per claim, here or below.
+        let asked = self.sh.filled && self.oldest_within_depth();
+        if asked {
+            filler::ask(&self.sh);
+        } else if self.oldest_within_depth()
             && let Some(slot) = self.add_slot(loan)
         {
             return Some(slot);
@@ -617,7 +646,7 @@ impl Channel {
             }
             break;
         }
-        if let Some(slot) = self.add_slot(loan) {
+        if !asked && let Some(slot) = self.add_slot(loan) {
             return Some(slot);
         }
         self.sh.dropped.fetch_add(1, Ordering::Relaxed);
@@ -644,9 +673,15 @@ impl Channel {
         t != TICKET_EMPTY && t != TICKET_CLAIMED && latest.saturating_sub(t) < u64::from(depth)
     }
 
-    /// A slot given its memory just now, claimed. None when the segment cannot add one.
+    /// A slot given its memory just now, claimed. None when the segment cannot add one, and for a
+    /// fixed-slot channel, whose claim asks `filler` instead and takes the slot once it is there.
     fn add_slot(&mut self, loan: i32) -> Option<u32> {
+        if self.sh.filled {
+            filler::ask(&self.sh);
+            return None;
+        }
         let slot = self.sh.seg.add_slot(self.mem)?;
+        self.order.known = slot + 1;
         // Nothing reads a slot before its first ticket, so this cannot fail.
         if !self.sh.try_claim(slot) {
             return None;
@@ -1255,6 +1290,9 @@ fn attach_subscriber(
     Ok((Arc::new(sh).traced(), epoch))
 }
 
+mod filler;
+#[cfg(test)]
+pub(crate) use filler::{loan_soon, soon};
 #[cfg(test)]
 mod grow;
 #[cfg(test)]

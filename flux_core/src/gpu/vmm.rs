@@ -189,7 +189,7 @@ impl Range {
                 let at = self.base + (i * self.chunk) as u64;
                 let (h, made) = make(vmm, i)?;
                 #[cfg(test)]
-                let refused = super::tests::FAIL_MAP.replace(false);
+                let refused = super::tests::fail_map_here();
                 #[cfg(not(test))]
                 let refused = false;
                 // SAFETY: inside the reserved range, unmapped there so far.

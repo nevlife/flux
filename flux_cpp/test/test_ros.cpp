@@ -164,6 +164,22 @@ TEST_F(Ros, CreateFunctionsTakeTheirOptions)
   EXPECT_TRUE(eventually([&] { return got == 1; }));
 }
 
+TEST_F(Ros, ASlotPublisherThatAllocsOnSubscriberPublishesOnceOneAttaches)
+{
+  flux::PublisherOptions po;
+  po.alloc = flux::Alloc::Slot;
+  po.alloc_on_subscriber = true;
+  auto pub = flux::create_publisher(*node_, topic("on_sub"), po);
+  EXPECT_NE(pub->publish("frame", 5), flux::Published::Ok);
+  std::atomic<int> got{0};
+  auto sub = flux::create_subscription(
+    *node_, topic("on_sub"), 4, [&](const flux::FrameView & v) { got += text(v) == "frame"; });
+  ex_->add(*sub);
+  const Spinning spin{*ex_};
+  EXPECT_TRUE(eventually([&] { return pub->publish("frame", 5) == flux::Published::Ok; }));
+  EXPECT_TRUE(eventually([&] { return got >= 1; }));
+}
+
 // Seven frames after the kept one go through a ring of four around its slot.
 TEST_F(Ros, AFrameMovedOutOfTheCallbackKeepsItsSlot)
 {

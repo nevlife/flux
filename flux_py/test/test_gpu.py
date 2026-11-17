@@ -497,6 +497,18 @@ def test_a_slot_publisher_takes_the_slot_defaults(node):
         flux.Publisher(node, topic("slot_past_max"), alloc="slot", slot_size=32 << 20)
 
 
+def test_a_slot_publisher_that_allocs_on_subscriber_publishes_once_one_attaches(node):
+    pub = flux.Publisher(node, topic("on_sub"), alloc="slot", alloc_on_subscriber=True)
+    frame = np.arange(8, dtype=np.uint8)
+    assert pub.publish(frame) != flux.Published.OK
+    sub = flux.Subscription(node, topic("on_sub"))
+    until = time.monotonic() + 2
+    while pub.publish(frame) != flux.Published.OK:
+        assert time.monotonic() < until, "no slot came after the subscriber"
+        time.sleep(0.001)
+    np.testing.assert_array_equal(sub.take(), frame)
+
+
 def test_an_alloc_other_than_arena_or_slot_is_refused(node):
     with pytest.raises(ValueError, match="alloc"):
         flux.Publisher(node, topic("bad_alloc"), alloc="heap", **SMALL)

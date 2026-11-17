@@ -852,6 +852,24 @@ TEST_F(WrapperTest, CudaSubscriptionGetsAHostImageOnTheDevice)
 }
 
 // Alloc::Slot keeps the data in the slot, which an integrated GPU reads in place.
+// On the flux path a publisher that allocs on subscriber sends nothing before one attaches.
+TEST_F(WrapperTest, ASlotPublisherThatAllocsOnSubscriberPublishesOnceOneAttaches)
+{
+  flux_wrapper::PublisherOptions options;
+  options.alloc = flux_wrapper::Alloc::Slot;
+  options.alloc_on_subscriber = true;
+  auto pub = flux_wrapper::create_publisher<Image>(*node_, "on_sub", rclcpp::QoS(4), options);
+  const Image want = image(4, {1, 2, 3});
+  if (expect_flux()) {
+    EXPECT_FALSE(pub->publish(want));
+  }
+  std::atomic<bool> done{false};
+  auto sub = flux_wrapper::create_subscription<Image>(
+    *node_, "on_sub", rclcpp::QoS(4), [&](const flux_wrapper::View<Image> &) { done = true; });
+  run_until(done, [&] { (void)pub->publish(want); });
+  EXPECT_TRUE(done);
+}
+
 TEST_F(WrapperTest, CudaSubscriptionGetsASlotHostImageOnTheDevice)
 {
   SKIP_WITHOUT_CUDA();

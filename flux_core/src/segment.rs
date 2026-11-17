@@ -517,7 +517,7 @@ impl Segment {
     /// header's, at most `slot_count`. A host payload past them is a hole.
     pub fn slots_ready(&self) -> u32 {
         if self.is_publisher() {
-            return self.ready.load(Ordering::Relaxed);
+            return self.ready.load(Ordering::Acquire); // order: slots_ready
         }
         self.ctrl()
             .slots_ready
@@ -528,7 +528,9 @@ impl Segment {
     /// The publisher of a shm segment gives the next slot its memory, in `/dev/shm` committed or
     /// locked as `mem` asks, or on the device, and returns it. None once every slot has memory,
     /// when there is no room, and from the first slot that would not commit or lock: a slot short
-    /// of what `mem` asks is not used.
+    /// of what `mem` asks is not used. A registered payload's slot is registered before it is
+    /// counted. One thread per segment calls this: the publisher's, or for a fixed-slot channel
+    /// `channel::filler`'s.
     pub(crate) fn add_slot(&self, mem: MemoryPolicy) -> Option<u32> {
         let fd = self.publisher_fd()?;
         let s = self.ready.load(Ordering::Relaxed);
@@ -553,7 +555,11 @@ impl Segment {
             self.grown_out.store(true, Ordering::Relaxed);
             return None;
         }
-        self.ready.store(s + 1, Ordering::Relaxed);
+        // Registered here rather than at its first use, which may be a loan.
+        if let Some(r) = self.registrations() {
+            let _ = r.slot(s);
+        }
+        self.ready.store(s + 1, Ordering::Release); // order: slots_ready
         self.ctrl().slots_ready.store(s + 1, Ordering::Release); // order: slots_ready
         Some(s)
     }

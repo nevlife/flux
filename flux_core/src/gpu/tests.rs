@@ -449,12 +449,20 @@ fn child(test: &str, env: &str) -> bool {
 
 mod stand_in;
 
+/// The next chunk `flux-filler` maps into a device range fails as `cuMemMap` would: a publisher's
+/// slots are added there.
+pub(super) static FAIL_MAP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn fail_map_here() -> bool {
+    std::thread::current().name() == Some("flux-filler")
+        && FAIL_MAP.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
 thread_local! {
     pub(super) static UNMAPPED_UNREGISTERS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     /// The route `probe` reports on this thread, in place of the host's.
     pub(super) static ROUTE: std::cell::Cell<Option<Route>> = const { std::cell::Cell::new(None) };
-    /// The next chunk this thread maps into a device range fails as `cuMemMap` would.
-    pub(super) static FAIL_MAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Every stream wait on this thread fails.
     pub(super) static FAIL_FENCES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The ordinal `device_for_uuid` finds on this thread, in place of the host's.
@@ -466,6 +474,7 @@ mod channel {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::{FAIL_FENCES, FAIL_MAP, Gate, ROUTE, UUID_DEVICE, fill, gpu, read_back};
+    use crate::channel::{loan_soon, soon};
     use crate::gpu::{Stream, probe};
     use crate::layout::{DEFAULT_MAX_SUBSCRIBERS, NO_SCHEMA};
     use crate::qos::{MemoryPolicy, QoS};
@@ -570,8 +579,8 @@ mod channel {
         assert_eq!(super::UNMAPPED_UNREGISTERS.get(), 0);
     }
 
-    /// A host payload left at count 0 is registered only where it has memory; a slot added later
-    /// is registered when it is first reached. The publisher's mapping is writable, so this
+    /// A host payload left at count 0 is registered only where it has memory; a slot the filler
+    /// adds later is registered before the publisher sees it. The publisher's mapping is writable, so this
     /// registers on any device that registers host memory.
     #[test]
     fn a_registered_payload_registers_only_the_slots_with_memory() {
@@ -593,20 +602,19 @@ mod channel {
             None,
         )
         .unwrap();
-        assert_eq!(
-            p.registered_slots(),
-            crate::sizing::SLOT_ALLOC_START_SLOTS as usize
-        );
+        let start = crate::sizing::SLOT_ALLOC_START_SLOTS;
+        assert_eq!(p.registered_slots(), start as usize);
         let mut cpu = subscriber(&name, Stream::default()).unwrap();
         cpu.set_qos(QoS::new(20).unwrap()).unwrap();
         for i in 0..15u8 {
-            let w = p.loan().unwrap();
+            let w = loan_soon(&mut p);
             assert_ne!(w.device_ptr(), 0);
             assert_eq!(w.commit_len(64), Published::Ok);
             assert!(cpu.take().is_some(), "frame {i}");
         }
-        assert_eq!(p.slots_ready(), 15);
-        assert_eq!(p.registered_slots(), 15);
+        assert!(soon(
+            || p.slots_ready() > start && p.registered_slots() == p.slots_ready() as usize
+        ));
     }
 
     fn discrete() -> Option<Forced> {
@@ -807,14 +815,15 @@ mod channel {
         .unwrap();
         assert!(p.device_backed());
         assert_eq!(p.slot_count(), crate::sizing::SLOT_ALLOC_MAX_SLOTS);
-        assert_eq!(p.slots_ready(), crate::sizing::SLOT_ALLOC_START_SLOTS);
+        let start = crate::sizing::SLOT_ALLOC_START_SLOTS;
+        assert_eq!(p.slots_ready(), start);
         let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
         let mut cpu = subscriber(&name, Stream::default()).unwrap();
         for s in [&mut dev, &mut cpu] {
             s.set_qos(QoS::new(20).unwrap()).unwrap();
         }
         for i in 0..15u8 {
-            let w = p.loan().unwrap();
+            let w = loan_soon(&mut p);
             fill(memset, w.device_ptr(), i, 4096, &w.stream());
             assert_eq!(w.commit_len(4096), Published::Ok);
             let v = dev.take().unwrap();
@@ -827,7 +836,7 @@ mod channel {
             let c = cpu.take().unwrap();
             assert!(c.data()[..4096].iter().all(|&b| b == i), "frame {i}");
         }
-        assert_eq!(p.slots_ready(), 15);
+        assert!(soon(|| p.slots_ready() > start), "the filler added slots");
     }
 
     /// A chunk the publisher fails to map is not sent: the subscribers' chunks stay where the
@@ -835,6 +844,10 @@ mod channel {
     #[test]
     fn a_chunk_that_fails_to_map_does_not_shift_the_subscribers_chunks() {
         let Some((memset, copy)) = gpu() else { return };
+        // Alone: the filler of this process maps every publisher's chunks.
+        if !alone("a_chunk_that_fails_to_map_does_not_shift_the_subscribers_chunks") {
+            return;
+        }
         let Some(_route) = discrete() else { return };
         let name = topic("devfail");
         let mut p = Channel::create_on(
@@ -853,21 +866,21 @@ mod channel {
         let mut dev = subscriber(&name, Stream::create().unwrap()).unwrap();
         dev.set_qos(QoS::new(20).unwrap()).unwrap();
         let start = p.slots_ready();
-        FAIL_MAP.set(true);
+        FAIL_MAP.store(true, Ordering::Relaxed);
         for i in 0..15u8 {
-            let w = p.loan().unwrap();
-            // Armed for the publisher's growth only, not the subscriber's import.
-            let armed = FAIL_MAP.replace(false);
+            let w = loan_soon(&mut p);
             fill(memset, w.device_ptr(), i, 4096, &w.stream());
             assert_eq!(w.commit_len(4096), Published::Ok);
             let v = dev.take().unwrap();
             let got = read_back(copy, v.device_ptr(), 4096);
             assert!(got.iter().all(|&b| b == i), "frame {i} reads {}", got[0]);
             drop(v);
-            FAIL_MAP.set(armed);
         }
-        assert!(!FAIL_MAP.get(), "the publisher grew past a chunk");
-        assert!(p.slots_ready() > start);
+        assert!(
+            !FAIL_MAP.load(Ordering::Relaxed),
+            "the filler grew past a chunk"
+        );
+        assert!(soon(|| p.slots_ready() > start));
     }
 
     /// The device copy of a host payload left at count 0 has memory for the slots with memory,

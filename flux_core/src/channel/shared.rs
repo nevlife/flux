@@ -109,6 +109,13 @@ pub struct ChannelShared {
     pub(super) owned: PiMutex<Vec<Vec<Owned>>>,
     /// Slots with arena memory, so a claim of a channel that never used the arena skips the lock.
     pub(super) owned_slots: AtomicU32,
+    /// Publisher only: slots are added by `filler`, never by a claim.
+    pub(super) filled: bool,
+    /// Publisher only: the start slots `filler` gives memory once a subscriber attaches; 0 once
+    /// it did, or when it never had to.
+    pub(super) fill_start: AtomicU32,
+    /// Publisher only: a claim asked `filler` for one more slot.
+    pub(super) want_slot: AtomicBool,
     /// Publisher side: `Alloc::Slot`, so loans hand out no arena.
     pub(super) slot_only: AtomicBool,
     /// Subscriber side: the publisher's arena, mapped by the first frame that named it. One
@@ -225,6 +232,9 @@ impl ChannelShared {
             gpu_waker_of: AtomicUsize::new(0),
             owned: PiMutex::new(Vec::new()),
             owned_slots: AtomicU32::new(0),
+            filled: false,
+            fill_start: AtomicU32::new(0),
+            want_slot: AtomicBool::new(false),
             slot_only: AtomicBool::new(false),
             arena_map: OnceLock::new(),
             gpu_arena: OnceLock::new(),

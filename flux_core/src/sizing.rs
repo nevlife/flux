@@ -92,6 +92,8 @@ pub struct Plan {
     pub slot_size: u32,
     pub slot_count: u32,
     pub start: u32,
+    /// Slots past `start` are added off the publish path (`channel::filler`).
+    pub fixed: bool,
 }
 
 /// The slots of a publisher. `Arena` as `slot_size`, `slot_count` and `start_slots`. `Slot`, and a
@@ -115,6 +117,7 @@ pub fn plan(
             slot_size,
             slot_count,
             start: start_slots(count, slot_count),
+            fixed: false,
         });
     }
     let or = |n: u32, default: u32| if n == 0 { default } else { n };
@@ -146,6 +149,7 @@ pub fn plan(
         slot_size: size,
         slot_count: reserve,
         start: count,
+        fixed: true,
     })
 }
 
@@ -176,6 +180,7 @@ mod tests {
                 slot_size: SLOT_ALLOC_SLOT_SIZE,
                 slot_count: SLOT_ALLOC_MAX_SLOTS,
                 start: SLOT_ALLOC_START_SLOTS,
+                fixed: true,
             }
         );
         let asked = plan(Alloc::Slot, 32 << 20, 20, 64 << 20, 24, None, false).unwrap();
@@ -185,6 +190,7 @@ mod tests {
         );
         let fixed = plan(Alloc::Slot, 0, 4, 0, 0, None, false).unwrap();
         assert_eq!((fixed.slot_count, fixed.start), (4, 4));
+        assert!(fixed.fixed);
         assert!(plan(Alloc::Slot, 17 << 20, 0, 0, 0, None, false).is_err());
         assert!(plan(Alloc::Slot, 0, 17, 0, 0, None, false).is_err());
         // A GPU memory channel's payload is its data: it takes the same defaults.
@@ -196,6 +202,7 @@ mod tests {
         let arena = plan(Alloc::Arena, 0, 0, 0, 0, Some(100), false).unwrap();
         assert_eq!(arena.slot_size, slot_size(0, Some(100), false));
         assert_eq!(arena.start, START_SLOTS);
+        assert!(!arena.fixed);
     }
 
     #[test]

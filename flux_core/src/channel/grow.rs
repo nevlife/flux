@@ -5,7 +5,7 @@
 
 use std::os::unix::fs::MetadataExt;
 
-use super::{Channel, Published};
+use super::{Channel, Published, soon};
 use crate::discovery::signpost_name;
 use crate::layout::{DEFAULT_MAX_SUBSCRIBERS, NO_SCHEMA};
 use crate::qos::{MemoryPolicy, QoS};
@@ -98,6 +98,75 @@ fn a_count_asked_for_has_every_slot_and_never_adds() {
     }
     assert_eq!(p.publish(&[4]), Published::Backpressure);
     assert_eq!(p.slots_ready(), 4);
+}
+
+fn slot_publisher(name: &str, count: u32, max_count: u32, on_subscriber: bool) -> Channel {
+    let config = crate::channel::PublisherConfig {
+        alloc: crate::channel::Alloc::Slot,
+        slot_size: SLOT,
+        slot_count: count,
+        max_slot_count: max_count,
+        alloc_on_subscriber: on_subscriber,
+        ..crate::channel::PublisherConfig::default()
+    };
+    let none = crate::gpu::Stream::default();
+    Channel::create_config(
+        name,
+        &config,
+        NO_SCHEMA,
+        MemoryPolicy::default(),
+        none,
+        -1,
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_slot_publisher_has_its_slots_at_creation() {
+    let p = slot_publisher(&name("at_create"), 0, 0, false);
+    assert_eq!(p.slots_ready(), crate::sizing::SLOT_ALLOC_START_SLOTS);
+}
+
+#[test]
+fn a_slot_publisher_that_allocs_on_subscriber_has_slot_memory_only_once_one_attaches() {
+    let n = name("on_sub");
+    let mut p = slot_publisher(&n, 0, 0, true);
+    assert_eq!(p.slots_ready(), 0);
+    assert_eq!(resident(&p), p.sh.seg.layout().payload_offset() as u64);
+    assert!(p.loan().is_none());
+    let mut s = subscriber(&n, QoS::new(1).unwrap());
+    assert!(soon(
+        || p.slots_ready() == crate::sizing::SLOT_ALLOC_START_SLOTS
+    ));
+    assert_eq!(p.publish(&[7]), Published::Ok);
+    assert_eq!(s.take().map(|v| v.data()[0]), Some(7));
+    assert_eq!(p.slots_ready(), crate::sizing::SLOT_ALLOC_START_SLOTS);
+}
+
+/// The loan that finds every slot held asks for one and fails; a later loan takes it.
+#[test]
+fn a_slot_publisher_with_every_slot_held_gets_one_more_off_its_loan() {
+    let n = name("fill_held");
+    let mut p = slot_publisher(&n, 4, 6, false);
+    assert_eq!(p.slots_ready(), 4);
+    let mut s = subscriber(&n, QoS::new(1).unwrap().max_borrow(6).unwrap());
+    let mut held = Vec::new();
+    for i in 0..4u8 {
+        assert_eq!(p.publish(&[i]), Published::Ok);
+        held.push(s.take().unwrap());
+    }
+    assert_eq!(p.publish(&[4]), Published::Backpressure);
+    assert!(soon(|| p.slots_ready() == 5));
+    assert_eq!(p.publish(&[5]), Published::Ok);
+    held.push(s.take().unwrap());
+    assert_eq!(p.publish(&[6]), Published::Backpressure);
+    assert!(soon(|| p.slots_ready() == 6));
+    assert_eq!(p.publish(&[7]), Published::Ok);
+    held.push(s.take().unwrap());
+    assert_eq!(p.publish(&[8]), Published::Backpressure);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(p.slots_ready(), 6, "max_slot_count");
 }
 
 #[test]

@@ -231,6 +231,8 @@ typedef struct flux_publisher_config {
   uint32_t max_slot_count;
   uint32_t max_subscribers;
   uint32_t aux_size;
+  // Slots get memory once a subscriber attaches (`FLUX_ALLOC_SLOT` and GPU memory channels).
+  bool alloc_on_subscriber;
 } flux_publisher_config;
 
 // `replay` 0 is volatile, N is `transient_local(N)`.

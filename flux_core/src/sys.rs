@@ -466,7 +466,7 @@ pub(crate) fn start_reaper() {
 
 /// Leaving an RT policy is always allowed. Raising a nice above 0 back to 0 needs `RLIMIT_NICE`,
 /// and without it the thread keeps the nicer value.
-fn normal_priority() {
+pub(crate) fn normal_priority() {
     let param = libc::sched_param { sched_priority: 0 };
     // SAFETY: no preconditions.
     let me = unsafe { libc::pthread_self() };
