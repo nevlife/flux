@@ -1730,6 +1730,11 @@ NB_MODULE(_flux, m)
       [](Publisher & p, std::int64_t ns) {
         p.channel().set_fence_timeout(std::chrono::nanoseconds(ns));
       })
+    .def(
+      "_set_alloc",
+      [](Publisher & p, bool slot) {
+        p.channel().set_alloc(slot ? flux::Alloc::Slot : flux::Alloc::Arena);
+      })
     .def_prop_ro("stream", [](Publisher & p) { return addr_of(p.stream().native()); });
 
   nb::class_<Subscription>(m, "_Subscription")

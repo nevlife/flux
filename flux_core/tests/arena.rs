@@ -1,6 +1,6 @@
 use flux_core::arena::{BLOCK_BYTES, HEAP_BASE, TRAILER_BYTES};
 use flux_core::{
-    Channel, DEFAULT_MAX_SUBSCRIBERS, MemoryPolicy, NO_SCHEMA, Published, signpost_name,
+    Alloc, Channel, DEFAULT_MAX_SUBSCRIBERS, MemoryPolicy, NO_SCHEMA, Published, signpost_name,
 };
 
 fn pair(test: &str, slots: u32) -> (Channel, Channel) {
@@ -190,6 +190,19 @@ fn arena_pages_follow_the_publishers_memory_policy() {
             );
         },
     );
+}
+
+#[test]
+fn a_slot_publisher_loans_no_arena() {
+    let (mut p, _s) = pair("slot_alloc", 2);
+    assert_eq!(p.alloc(), Alloc::Arena);
+    p.set_alloc(Alloc::Slot);
+    assert_eq!(p.alloc(), Alloc::Slot);
+    let w = p.loan().unwrap();
+    assert!(w.heap().is_none());
+    drop(w);
+    p.set_alloc(Alloc::Arena);
+    assert!(p.loan().unwrap().heap().is_some());
 }
 
 #[test]

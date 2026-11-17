@@ -80,6 +80,10 @@
 
 #define FLUX_RELEASE_DEFERRED 1
 
+#define FLUX_ALLOC_ARENA 0
+
+#define FLUX_ALLOC_SLOT 1
+
 // This and `flux_published` gain values without an ABI bump: treat an unknown one as an error.
 enum flux_status
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
@@ -493,6 +497,9 @@ void flux_channel_set_fence_timeout(const struct flux_channel *ch, uint64_t ns);
 
 // `FLUX_RELEASE_DEFERRED`: a release returns at once; its slot goes back once the device is done.
 flux_status flux_channel_set_release_mode(const struct flux_channel *ch, int32_t mode);
+
+// Where later loans put variable-length fields; `FLUX_ALLOC_SLOT` refuses a frame past the slot.
+flux_status flux_channel_set_alloc(const struct flux_channel *ch, int32_t alloc);
 
 // Orders the view's channel stream after what `s` queued so far, on the device, not the host.
 bool flux_view_after(const struct flux_view *v, const struct flux_stream *s);

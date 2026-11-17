@@ -93,6 +93,12 @@ def _cuda(device):
     raise ValueError(f"flux: device is 'cpu' or 'cuda', not {device!r}")
 
 
+def _slot(alloc):
+    if alloc in ("arena", "slot"):
+        return alloc == "slot"
+    raise ValueError(f"flux: alloc is 'arena' or 'slot', not {alloc!r}")
+
+
 def _on_device(array):
     if hasattr(array, "__cuda_array_interface__"):
         return True
@@ -184,14 +190,18 @@ class Publisher(_flux._Publisher):
         fence_timeout=None,
         mirror_to_ros=False,
         aux_size=0,
+        alloc="arena",
     ):
-        """fence_timeout, in seconds, bounds each commit's wait for the stream; None waits as long
-        as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
+        """alloc="slot" keeps every variable-length field of a frame in its slot, where an
+        integrated GPU reads it in place; a frame that does not fit is refused. "arena" puts them
+        in the process's arena. fence_timeout, in seconds, bounds each commit's wait for the
+        stream; None waits as long as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
         work is done. mirror_to_ros also publishes every frame as its ROS 2 message on the same
         topic while a ROS 2 subscriber wants it (depth 1, best effort, volatile). aux_size gives
         each slot that many bytes of host memory beside its payload: a loan writes them through
         loan.aux and loan.aux_len, and flux.aux(frame) reads them."""
         bound = _timeout_ns(fence_timeout)
+        slot = _slot(alloc)
         self.topic_name = node.resolve_topic_name(topic)
         self.signpost_name = _flux.signpost_name(self.topic_name, fingerprint)
         self._fingerprint = fingerprint
@@ -208,6 +218,7 @@ class Publisher(_flux._Publisher):
             aux_size,
         )
         self._set_fence_timeout(bound)
+        self._set_alloc(slot)
         if mirror_to_ros:
             _start_mirror(self, node)
 

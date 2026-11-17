@@ -61,6 +61,18 @@ const SWEEP_NS: u64 = 1_000_000_000;
 /// a peer overwrote. Each process holds far fewer borrows.
 const COUNT_CORRUPT: u32 = 1 << 31;
 
+/// Where a publisher's loans put the variable-length fields of a frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Alloc {
+    /// Past the scalar block in the process's arena, the slot holding only what must be there.
+    #[default]
+    Arena = 0,
+    /// All in the slot. A frame that does not fit is refused. The slot's GPU registration covers
+    /// every field, so an integrated GPU reads them without a copy.
+    Slot = 1,
+}
+
 /// When a view of a channel with a stream gives its slot back.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(i32)]
@@ -1055,6 +1067,21 @@ impl Channel {
         self.fence.timeout_ns.store(timeout_ns, Ordering::Relaxed);
         if timeout_ns > 0 {
             self.stream.prepare_waiter();
+        }
+    }
+
+    /// For the loans made after it. A publisher setting.
+    pub fn set_alloc(&self, alloc: Alloc) {
+        self.sh
+            .slot_only
+            .store(alloc == Alloc::Slot, Ordering::Relaxed);
+    }
+
+    pub fn alloc(&self) -> Alloc {
+        if self.sh.slot_only() {
+            Alloc::Slot
+        } else {
+            Alloc::Arena
         }
     }
 

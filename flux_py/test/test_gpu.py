@@ -454,11 +454,9 @@ def test_a_builder_without_a_device_refuses_a_device_field(node, blob):
     assert not b and b.commit__() == flux.Published.TOO_LARGE
 
 
-def test_every_cpu_field_of_a_frame_reaches_a_gpu_reader(node, blob):
-    if flux.probe().route != flux.Route.DEVICE_HANDLE:
-        pytest.skip("an integrated GPU has no device address for the arena yet")
-    t, fp = topic("cpu_fields"), blob.FINGERPRINT__
-    pub = flux.Publisher(node, t, fingerprint=fp, **SMALL)
+def _cpu_fields_reach_a_gpu_reader(node, blob, name, **publisher):
+    t, fp = topic(name), blob.FINGERPRINT__
+    pub = flux.Publisher(node, t, fingerprint=fp, **publisher)
     dev = flux.Subscription(node, t, fingerprint=fp, qos=flux.QoS(depth=4), device="cuda")
     b = blob.build__(pub)
     b.alloc__data(3 << 20)[:] = 0x5A
@@ -478,6 +476,24 @@ def test_every_cpu_field_of_a_frame_reaches_a_gpu_reader(node, blob):
         for i, n in enumerate((10, 100_000, 20)):
             ids = torch.from_dlpack(v.items[i].ids__device).cpu().numpy()
             np.testing.assert_array_equal(ids, np.full(n, 0x100 + i, np.uint16))
+
+
+def test_every_cpu_field_of_a_frame_reaches_a_gpu_reader(node, blob):
+    if flux.probe().route != flux.Route.DEVICE_HANDLE:
+        pytest.skip("an integrated GPU has no device address for the arena yet")
+    _cpu_fields_reach_a_gpu_reader(node, blob, "cpu_fields", **SMALL)
+
+
+def test_every_cpu_field_of_a_slot_frame_reaches_a_gpu_reader(node, blob):
+    """alloc="slot" keeps every field in the slot, which an integrated GPU reads in place."""
+    _cpu_fields_reach_a_gpu_reader(
+        node, blob, "cpu_slot_fields", slot_size=4 << 20, slot_count=4, alloc="slot"
+    )
+
+
+def test_an_alloc_other_than_arena_or_slot_is_refused(node):
+    with pytest.raises(ValueError, match="alloc"):
+        flux.Publisher(node, topic("bad_alloc"), alloc="heap", **SMALL)
 
 
 def test_a_device_array_is_refused_by_publish(node):

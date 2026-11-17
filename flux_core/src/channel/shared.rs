@@ -109,6 +109,8 @@ pub struct ChannelShared {
     pub(super) owned: PiMutex<Vec<Vec<Owned>>>,
     /// Slots with arena memory, so a claim of a channel that never used the arena skips the lock.
     pub(super) owned_slots: AtomicU32,
+    /// Publisher side: `Alloc::Slot`, so loans hand out no arena.
+    pub(super) slot_only: AtomicBool,
     /// Subscriber side: the publisher's arena, mapped by the first frame that named it. One
     /// publisher process, so one arena, per segment.
     pub(super) arena_map: OnceLock<Arc<ArenaMap>>,
@@ -192,6 +194,11 @@ impl Deferred {
 }
 
 impl ChannelShared {
+    /// The publisher set `Alloc::Slot`.
+    pub(super) fn slot_only(&self) -> bool {
+        self.slot_only.load(Ordering::Relaxed)
+    }
+
     pub(super) fn new(seg: Arc<Segment>, stamp_offset: i32) -> ChannelShared {
         sys::watch_fork();
         ChannelShared {
@@ -218,6 +225,7 @@ impl ChannelShared {
             gpu_waker_of: AtomicUsize::new(0),
             owned: PiMutex::new(Vec::new()),
             owned_slots: AtomicU32::new(0),
+            slot_only: AtomicBool::new(false),
             arena_map: OnceLock::new(),
             gpu_arena: OnceLock::new(),
             gpu_import: OnceLock::new(),

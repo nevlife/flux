@@ -153,6 +153,13 @@ enum class Device : std::uint8_t {
   Cuda,
 };
 
+// Where a publisher's loans put a frame's variable-length fields: the process's arena, or all in
+// the slot (a frame that does not fit is refused).
+enum class Alloc : std::int32_t {
+  Arena = FLUX_ALLOC_ARENA,
+  Slot = FLUX_ALLOC_SLOT,
+};
+
 namespace gpu
 {
 
@@ -765,6 +772,12 @@ public:
   {
     if (ch_) {
       flux_channel_set_release_mode(ch_, static_cast<std::int32_t>(m));
+    }
+  }
+  void set_alloc(Alloc a) const noexcept
+  {
+    if (ch_) {
+      flux_channel_set_alloc(ch_, static_cast<std::int32_t>(a));
     }
   }
   [[nodiscard]] auto device_backed() const noexcept -> bool

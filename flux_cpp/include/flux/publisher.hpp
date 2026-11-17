@@ -18,6 +18,7 @@ namespace flux
 // Fields as rclcpp::PublisherOptions. A declared `stream` takes precedence over `device`.
 struct PublisherOptions
 {
+  Alloc alloc = Alloc::Arena;
   std::uint32_t slot_size = FLUX_DEFAULT_SLOT_SIZE;
   std::uint32_t slot_count = FLUX_DEFAULT_SLOT_COUNT;
   Device device = Device::Cpu;

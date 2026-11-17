@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use flux_core::{
-    Channel, DType, Error, FrameMeta, FrameView, Mapped, MemoryPolicy, Published, PublisherWatch,
-    QoS, ReleaseMode, WriteSlot, signpost_name,
+    Alloc, Channel, DType, Error, FrameMeta, FrameView, Mapped, MemoryPolicy, Published,
+    PublisherWatch, QoS, ReleaseMode, WriteSlot, signpost_name,
 };
 
 use crate::gpu::{flux_stream, stream_of};
@@ -864,6 +864,29 @@ pub unsafe extern "C" fn flux_channel_set_release_mode(
     };
     // SAFETY: valid handle.
     unsafe { chan_ref(ch) }.set_release_mode(mode);
+    flux_status::FLUX_OK
+}
+
+pub const FLUX_ALLOC_ARENA: i32 = 0;
+pub const FLUX_ALLOC_SLOT: i32 = 1;
+
+/// Where later loans put variable-length fields; `FLUX_ALLOC_SLOT` refuses a frame past the slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_channel_set_alloc(
+    ch: *const flux_channel,
+    alloc: i32,
+) -> flux_status {
+    let alloc = match alloc {
+        FLUX_ALLOC_ARENA => Alloc::Arena,
+        FLUX_ALLOC_SLOT => Alloc::Slot,
+        _ => {
+            return status(Err(Error::InvalidArgument(format!(
+                "alloc {alloc} is neither FLUX_ALLOC_ARENA nor FLUX_ALLOC_SLOT"
+            ))));
+        }
+    };
+    // SAFETY: valid handle.
+    unsafe { chan_ref(ch) }.set_alloc(alloc);
     flux_status::FLUX_OK
 }
 

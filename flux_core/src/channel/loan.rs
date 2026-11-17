@@ -197,7 +197,7 @@ impl WriteSlot {
     /// The loan's way into the arena; None with the arena off, on a device payload, and in a
     /// forked child.
     pub fn heap(&self) -> Option<Heap> {
-        if !self.sh.seg.host_payload() || self.sh.inherited() {
+        if !self.sh.seg.host_payload() || self.sh.inherited() || self.sh.slot_only() {
             return None;
         }
         Some(Heap {

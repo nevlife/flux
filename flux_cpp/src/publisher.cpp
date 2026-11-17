@@ -95,6 +95,7 @@ Publisher::Publisher(
     options.stream.declared() ? options.stream : gpu::stream_for(options.device), options.memory,
     options.max_subscribers, options.aux_size)
 {
+  ch_.set_alloc(options.alloc);
 }
 
 Publisher::Publisher(

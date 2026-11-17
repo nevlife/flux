@@ -548,17 +548,15 @@ TEST_F(Gpu, DeviceBlocksGoBackWithTheirSlots)
   }
 }
 
-// The other way: a CPU publisher's fields, in its slot and in its arena, reach a GPU reader on
-// the device. A discrete GPU reads its copies, which the take and the View made.
-TEST_F(Gpu, EveryCpuFieldOfAFrameReachesAGpuReader)
+namespace
+{
+
+// A CPU publisher's fields, in its slot and wherever its Alloc puts the rest, reach a GPU reader
+// on the device. A discrete GPU reads its copies, which the take and the View made.
+void expect_cpu_fields_on_device(
+  flux::detail::Channel & pub, const std::string & name, bool in_slot)
 {
   using Blob = flux_test::flux_msg::Blob;
-  if (platform_.route != flux::gpu::Route::DeviceHandle) {
-    GTEST_SKIP() << "an integrated GPU has no device address for the arena yet";
-  }
-  const std::string name = unique_name("cpu_fields");
-  auto pub = flux::detail::Channel::create(
-    name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS);
   flux::WriteSlot w = pub.loan();
   ASSERT_TRUE(w);
   Blob::Builder b(w);
@@ -583,6 +581,7 @@ TEST_F(Gpu, EveryCpuFieldOfAFrameReachesAGpuReader)
   auto gpu = flux::detail::Channel::open(watch, Blob::kFingerprint, q, {}, stream);
   flux::FrameView v = gpu.take();
   ASSERT_TRUE(v);
+  EXPECT_EQ(v.heap().empty(), in_slot);
   const Blob::View m(v);
   const auto d = m.data__device();
   ASSERT_EQ(d.size(), data.size());
@@ -600,6 +599,31 @@ TEST_F(Gpu, EveryCpuFieldOfAFrameReachesAGpuReader)
     }
   }
   EXPECT_TRUE(m.ok__());
+}
+
+}  // namespace
+
+TEST_F(Gpu, EveryCpuFieldOfAFrameReachesAGpuReader)
+{
+  using Blob = flux_test::flux_msg::Blob;
+  if (platform_.route != flux::gpu::Route::DeviceHandle) {
+    GTEST_SKIP() << "an integrated GPU has no device address for the arena yet";
+  }
+  const std::string name = unique_name("cpu_fields");
+  auto pub = flux::detail::Channel::create(
+    name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS);
+  expect_cpu_fields_on_device(pub, name, false);
+}
+
+// Alloc::Slot keeps every field in the slot, which an integrated GPU reads in place.
+TEST_F(Gpu, EveryCpuFieldOfASlotFrameReachesAGpuReader)
+{
+  using Blob = flux_test::flux_msg::Blob;
+  const std::string name = unique_name("cpu_slot_fields");
+  auto pub = flux::detail::Channel::create(
+    name, 4 << 20, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS);
+  pub.set_alloc(flux::Alloc::Slot);
+  expect_cpu_fields_on_device(pub, name, true);
 }
 
 // A raw tensor loan's channel keeps its device payload: the type registered nothing.
