@@ -260,9 +260,10 @@ class Loan:
 
 class Publisher:
     """One topic over flux or ROS. On the flux path `slot_count` is how many messages are in flight
-    (0: the flux default), and with device="cuda" `max_device_data_size` bounds the data field (0:
-    8 MiB); on "cpu" the data field goes to the publisher's arena, whatever its size. `mirror_to_ros` also publishes
-    each one as its ROS message while a ROS subscriber wants it.
+    (0: the flux default), and with device="cuda" `max_device_data_size` bounds the data field
+    (default 10 MiB, 0: 8 MiB); on "cpu" the data field goes to the publisher's arena, whatever
+    its size. `mirror_to_ros` also publishes each one as its ROS message while a ROS subscriber
+    wants it.
 
     device="cuda" puts the data field in GPU memory (Loan.alloc_buffer()), on a flux GPU channel
     that the C++ flux_wrapper shares. Where that cannot be had (no flux GPU route, the ROS path)
@@ -276,7 +277,7 @@ class Publisher:
         topic,
         qos,
         *,
-        max_device_data_size=0,
+        max_device_data_size=10 << 20,
         slot_count=0,
         mirror_to_ros=False,
         device="cpu",

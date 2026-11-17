@@ -23,9 +23,9 @@ namespace flux_wrapper
 struct PublisherOptions
 {
   // flux with Device::Cuda only: the largest data field in bytes, which is the slot of device
-  // memory. Zero takes 8 MiB (FLUX_UNTYPED_SLOT_SIZE). On Host the slot is the type's and the
-  // data field goes to the publisher's arena, whatever its size.
-  std::uint32_t max_device_data_size = 0;
+  // memory, 10 MiB by default. Zero takes 8 MiB (FLUX_UNTYPED_SLOT_SIZE). On Host the slot is
+  // the type's and the data field goes to the publisher's arena, whatever its size.
+  std::uint32_t max_device_data_size = std::uint32_t{10} << 20;
   // flux only: messages a subscriber may hold at once, plus one to write into. Zero leaves it to
   // flux (FLUX_DEFAULT_SLOT_COUNT).
   std::uint32_t slot_count = 0;
