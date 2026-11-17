@@ -18,6 +18,7 @@ from rosbag2_interfaces.srv import Pause, Resume, SetRate
 from std_msgs.msg import Int32
 
 import flux
+from verb_command import command
 from flux_msgs.msg import FluxFrame
 
 # rclpy's MultiThreadedExecutor on Fast DDS keeps the GIL for up to a second at a time, so the
@@ -126,7 +127,7 @@ def play(bag, *args):
     """play under a node name of its own, so its services are this test's alone."""
     name = f"play{os.getpid()}"
     proc = subprocess.Popen(
-        [program("play"), bag, *args, "--ros-args", "-r", f"__node:={name}"],
+        [*command("play", bag, *args), "--ros-args", "-r", f"__node:={name}"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

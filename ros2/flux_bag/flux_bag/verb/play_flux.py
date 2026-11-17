@@ -1,20 +1,38 @@
-from ros2bag.api import check_positive_float
-from ros2bag.verb import VerbExtension
+import math
 
-from flux_bag.verb import run
+from ros2bag.verb import VerbExtension
+from ros2bag.verb import play as ros2bag_play
+
+from flux_bag.verb import rosbag2_options, run_with_options
 
 
 class PlayFluxVerb(VerbExtension):
-    """Play a bag, putting its flux channels back onto flux."""
+    """Play a bag, its flux channels onto flux, with the options of ros2 bag play."""
 
     def add_arguments(self, parser, cli_name):
-        parser.add_argument("bag_path", metavar="BAG", help="Bag to play.")
-        parser.add_argument(
-            "-r", "--rate", type=check_positive_float, help="Playback rate (default: 1)."
-        )
+        ros2bag_play.PlayVerb().add_arguments(parser, cli_name)
 
     def main(self, *, args):
-        argv = [args.bag_path]
-        if args.rate is not None:
-            argv += ["-r", str(args.rate)]
-        run("play", argv)
+        built = program_options(args)
+        if isinstance(built, str):
+            return built
+        run_with_options("play", *built)
+
+
+def program_options(args):
+    """The YAML options and ROS arguments the play program runs with, or why ros2 bag play
+    would not run."""
+    # The flux clock waits rate-scaled times: a rate that is not finite has none.
+    if not math.isfinite(args.rate):
+        return "argument -r/--rate: Value must be finite"
+    built = rosbag2_options.built_by(ros2bag_play, "Player", ros2bag_play.PlayVerb(), args)
+    if isinstance(built, str):
+        return built
+    storage, play, log_level = built
+    if len(storage) != 1:
+        return "play_flux plays one bag"
+    options = {
+        "storage": rosbag2_options.storage(storage[0]),
+        "play": rosbag2_options.play(play),
+    }
+    return rosbag2_options.dump(options), ["--ros-args", "--log-level", log_level]

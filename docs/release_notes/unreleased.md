@@ -18,8 +18,8 @@
 * `flux` 명령의 bash Tab 자동완성. 하위 명령, `--window`, 이 호스트에 보이는 채널 이름을 채운다
 * 외장 GPU에서 CPU와 GPU의 네 조합을 모두 받는다. GPU 메모리 채널의 CPU 구독과 호스트 메모리 채널의 GPU 구독은 구독자가 take마다 한 번 복사한다. GPU 메모리 채널의 `publish(호스트 배열)`은 슬롯으로 복사해 발행한다. 전에는 각각 `MISMATCH`, `INVALID_ARGUMENT`, `WrongDevice`였다
 * C ABI가 기본값 상수 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_TURN_NS`를 내보낸다
-* `record_flux`가 `-s`, `--storage-preset-profile`을 rosbag2에 넘긴다. `zstd_fast`로 mcap bag을 무손실 압축한다
-* `record_flux --image-codec jpeg`가 `sensor_msgs/Image`(`rgb8`, `bgr8`, `mono8`)의 픽셀을 JPEG로 저장한다. `play_flux`는 디코딩해 원래 채널에 발행하고, `convert_flux`는 `sensor_msgs/CompressedImage`로 바꾼다
+* `record_flux`와 `play_flux`가 `ros2 bag record`, `ros2 bag play`의 옵션을 모두 받는다. 인자의 정의, 검사, 변환은 설치된 `ros2bag`의 것이다. bag 나누기(`-b`, `-d`), rosbag2 압축(`--compression-mode`, `--storage-preset-profile zstd_fast`), snapshot, QoS override, 반복(`-l`), remap, `--start-offset`, `--playback-duration` 등이 flux 채널에도 적용된다. 옵션마다 flux 채널에 적용되는 방식은 [ros2_tools.md](../ros2_tools.md#flux_bag)에 있다
+* `flux_bag`이 `record_flux`의 `FluxFrame` 만들기를 라이브러리 `flux_bag::flux_bag_frames`(`flux_bag::FrameEncoder`)로 내보낸다. 다른 녹화기도 같은 형식의 bag을 쓴다
 * 발행자가 같은 이름의 ROS 2 토픽도 발행 가능하다(C++ `mirror_to_ros()`, Python `mirror_to_ros=True`). ROS 2 구독자가 있는 동안만 변환한다. `flux_bridge`는 다른 ROS 2 발행자가 있는 토픽을 중계하지 않고, `echo_flux`·`hz_flux`는 mirror만 있어도 동작한다
 * 발행자가 지금 구독하는 프로세스 수를 센다(C++ `subscriber_count()`, Python `subscriber_count`, C `flux_channel_subscriber_count`). 죽은 구독 프로세스는 세지 않는다
 * `ros2/flux_wrapper`: flux가 있든 없든 빌드되는 발행·구독 API. 빌드 시와 실행 시 `ENABLE_FLUX=1`이면 flux로, 아니면 ROS 2로 보낸다. `sensor_msgs/Image`와 `PointCloud2`를 다룬다
@@ -137,3 +137,15 @@
 
 7. 발행자의 `slot_count` 기본값이 16에서 0이 되었다(`FLUX_DEFAULT_SLOT_COUNT`, `kDefaultSlotCount`, `flux.DEFAULT_SLOT_COUNT`). 0이면 슬롯 크기로 상한을 정한다. 호스트 메모리 슬롯은 256 MiB 안에서 최대 256개, GPU 메모리 슬롯은 256 MiB 안에서 최대 32개다. 발행자는 9개 슬롯에만 메모리를 잡고 시작해, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 늘린다. GPU 메모리 발행자도 같다. 그래서 타입이 없는 8 MiB 발행자는 `/dev/shm`이나 GPU 메모리를 72 MiB로 시작해 최대 256 MiB까지 쓴다. 늘리는 프레임의 loan은 그 슬롯의 메모리를 잡는 만큼 길어진다(호스트 8 MiB 슬롯에서 약 1.4 ms). `slot_count`를 지정하면 전처럼 그 개수를 처음부터 모두 잡고 늘리지 않는다. `play_flux`는 bag에 개수나 크기가 0으로 기록된 채널을 기본값으로 만들지 않고 건너뛴다.
 8. 발행 결과 `WrongDevice`(C `FLUX_PUBLISHED_WRONG_DEVICE`, Python `Published.WRONG_DEVICE`)와 trace 값 `FLUX_TRACE_CLAIM_WRONG_DEVICE`를 지웠다. GPU 메모리 채널의 `publish()`가 호스트 배열을 복사해 발행하게 된 뒤로 돌려주는 경로가 없었다. 다른 값의 번호는 그대로다. 이 값을 다루던 `switch`와 비교는 지운다
+9. `record_flux`, `play_flux`의 옵션이 `ros2 bag record`, `ros2 bag play`의 것이 되었다. flux 프레임을 쓰기 전에 모아 두던 녹화기의 큐(`--max-cache-size`, 기본 1 GiB)가 없어졌다. flux 프레임은 ROS 메시지처럼 rosbag2 writer로 바로 가고, `--max-cache-size`는 rosbag2 writer cache의 크기(버퍼 하나당, 기본 100 MiB)다. cache가 차서 버려진 메시지는 rosbag2가 세고, 녹화기는 녹화하는 동안 그 수를 토픽별로 로그에 남긴다. 채널별 종료 로그는 큐에 넣은 수와 큐가 차서 버린 수 대신 rosbag2에 넘긴 수를 남긴다. 녹화기와 재생기의 노드 이름은 `flux_bag_record`, `flux_bag_play`에서 rosbag2와 같은 `rosbag2_recorder`, `rosbag2_player`가 되었다. `-a`는 서비스도 녹화한다. 위치 인자로 준 토픽은 `ros2 bag record`처럼 deprecated 경고를 낸다.
+
+   ```bash
+   # 전
+   ros2 bag record_flux /cam --max-cache-size 2000000000
+   ros2 service call /flux_bag_record/pause rosbag2_interfaces/srv/Pause
+   # 후
+   ros2 bag record_flux --topics /cam --max-cache-size 1000000000   # 버퍼 두 개, 최대 2 GB
+   ros2 service call /rosbag2_recorder/pause rosbag2_interfaces/srv/Pause
+   ```
+
+10. trace 값 `FLUX_TRACE_RECORD_CACHE_FULL`을 지웠다. 9의 큐가 없어져 `record_drop`이 이 값을 내는 곳이 없다. 다른 `RECORD_*` 값의 번호는 그대로이고 0은 비워 둔다. 이 값을 다루던 `switch`와 비교는 지운다. 이전 `record_flux`가 기록한 trace에는 0이 남아 있을 수 있다

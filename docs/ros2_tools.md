@@ -155,20 +155,19 @@ flux_wrapper::Subscription<sensor_msgs::msg::Image> sub(
 ## flux_bag
 
 ```bash
-ros2 bag record_flux -a                         # 모든 flux 채널과 ROS 토픽
-ros2 bag record_flux /camera/image /imu         # 이름으로. flux와 ROS 이름은 한 목록이다
-ros2 bag record_flux -a -s mcap --storage-preset-profile zstd_fast --image-codec jpeg   # 압축
+ros2 bag record_flux -a                         # 모든 flux 채널과 ROS 토픽, 서비스
+ros2 bag record_flux --topics /camera/image /imu   # 이름으로. flux와 ROS 이름은 한 목록이다
+ros2 bag record_flux -a -s mcap --storage-preset-profile zstd_fast   # 무손실 압축
 ros2 bag play_flux rosbag2_2026_10_23-10_00_00
 ros2 bag convert_flux rosbag2_2026_10_23-10_00_00 -o converted
 ```
 
+`record_flux`와 `play_flux`는 `ros2 bag record`, `ros2 bag play`의 옵션을 모두 받는다. 인자 정의, 검사, rosbag2 옵션으로의 변환은 설치된 `ros2bag`의 것을 그대로 쓴다. 그래서 ROS 토픽은 `ros2 bag record`, `ros2 bag play`와 똑같이 녹화, 재생되고, flux 채널은 같은 bag에 들어간다. 옵션 목록은 `-h`로 본다. 아래 표는 각 옵션이 flux 채널에 어떻게 적용되는지다.
+
 ### 녹화
 
 ```text
-ros2 bag record_flux [-a] [TOPIC ...] [-e REGEX] [-x REGEX] [--exclude-topics TOPIC ...]
-                     [-o OUT] [--poll SEC] [--max-cache-size BYTES]
-                     [-s STORAGE] [--storage-preset-profile PROFILE]
-                     [--image-codec raw|jpeg] [--jpeg-quality Q]
+ros2 bag record_flux [ros2 bag record의 옵션] [-x REGEX] [--poll SEC]
 ```
 
 flux 채널 `NAME`의 프레임은 토픽 `NAME/flux`에 `flux_msgs/msg/FluxFrame`으로 저장된다. ROS 토픽은 같은 bag에 그대로 저장된다.
@@ -177,44 +176,67 @@ flux 채널 `NAME`의 프레임은 토픽 `NAME/flux`에 `flux_msgs/msg/FluxFram
 std_msgs/Header header   # commit 시각
 string flux_topic        # 채널 이름
 uint64 fingerprint       # 채널의 fingerprint
-string codec             # "raw" 또는 "jpeg"
+string codec             # "raw"
 uint8[] meta             # raw: slot_size u32, slot_count u32, dtype u8, ndim u8, shape u64[ndim]
-                         # jpeg: raw의 meta 뒤에 픽셀 구간의 offset u64, 길이 u64
                          # aux가 있는 채널: 위 meta 뒤에 version u32(1), aux_size u32,
                          #   aux_len u32, aux u8[aux_len]
 uint8[] data             # raw: 슬롯에 있던 프레임 bytes 그대로
-                         # jpeg: 픽셀 구간을 뺀 프레임 bytes 뒤에 JPEG bytes
 ```
+
+| 옵션 | flux 채널에서 |
+| --- | --- |
+| `--topics`(위치 인자도), `-a`, `--all-topics`, `-e`, `--exclude-regex`, `--exclude-topics`, `--include-hidden-topics` | 채널 이름에 ROS 토픽 이름과 같은 규칙으로 적용한다. `-x`는 `--exclude-regex`와 같다 |
+| `--topic-types`, `--exclude-topic-types` | 채널의 fingerprint가 가리키는 설치된 ROS 타입(`sensor_msgs/msg/Image` 등)으로 비교한다. 타입이 설치되어 있지 않은 채널은 `flux_msgs/msg/FluxFrame`으로 본다 |
+| `--no-discovery` | 시작할 때 있던 채널만 녹화한다 |
+| `-o`, `-s`, `--storage-config-file`, `--storage-preset-profile`, `-b`, `-d`, `--custom-data` | bag 전체에 적용된다 |
+| `--max-cache-size`, `--snapshot-mode` | rosbag2 writer의 cache다. flux 프레임도 ROS 메시지처럼 이 cache를 거친다(아래) |
+| `--compression-mode`, `--compression-format`, `--compression-queue-size`, `--compression-threads`, `--compression-threads-priority` | flux 프레임도 압축된다. `message` 모드는 flux 프레임 하나하나를 압축한다 |
+| `--start-paused`, `--disable-keyboard-controls`, `--node-name`, `--log-level` | 녹화기 전체에 적용된다. pause 동안의 프레임은 받지만 쓰지 않는다 |
+| `--use-sim-time` | flux 프레임의 시각도 녹화기의 시계(`/clock`)로 기록한다. 첫 `/clock` 전의 프레임은 쓰지 않는다 |
+| `--services`, `--all-services`, `--exclude-services`, `--include-unpublished-topics`, `--ignore-leaf-topics`, `--qos-profile-overrides-path`, `-p`, `-f` | ROS 토픽과 서비스에만 적용된다. flux 채널은 발행자가 있을 때만 목록에 있고, QoS와 직렬화 형식이 없다 |
+| `--poll` | flux 전용. 채널 목록을 다시 읽는 간격(기본 0.1 s)이다. 10 s 넘게 내려간 채널은 해제한다 |
 
 | 항목 | 값 |
 | --- | --- |
-| 선택 | `ros2 bag record`와 같은 규칙을 flux 채널 이름과 ROS 토픽 이름에 적용한다 |
-| 채널 찾기 | `--poll` 간격(기본 0.1 s)마다 채널 목록을 다시 읽는다. 10 s 넘게 내려간 채널은 해제한다 |
-| 복사 | 채널 스레드가 프레임을 자기 버퍼로 복사하고 슬롯을 바로 반납한다. jpeg로 저장하는 프레임은 인코딩이 끝난 뒤 반납한다. bag 쓰기는 스레드 하나가 한다 |
-| 쓰기 대기 | 디스크가 느린 동안 프레임은 메모리에서 기다린다. 상한은 `--max-cache-size`(기본 1 GiB)이고, 넘는 프레임은 버리고 알린다. 발행자는 기다리지 않는다 |
+| 복사 | 채널 스레드가 프레임을 자기 버퍼로 복사하고 슬롯을 바로 반납한 뒤, rosbag2가 ROS 메시지를 쓰듯 writer에 쓴다 |
+| 쓰기 대기 | flux_bag은 flux 프레임을 따로 모아 두지 않는다. writer는 `ros2 bag record`처럼 `--max-cache-size`(기본 100 MiB, 버퍼 두 개)의 cache에 메시지를 모아 쓴다. cache가 차면 rosbag2가 메시지를 버리고 토픽별로 센다. 녹화기는 녹화하는 동안 토픽이 처음 메시지를 잃을 때와 그 뒤 최대 5 s마다 잃은 수를 로그로 남기고(`rosbag2's cache is full: lost N on TOPIC since the last report`), rosbag2는 bag 파일을 닫을 때 합계를 남긴다. flux 프레임의 토픽은 `NAME/flux`다. flux 프레임과 ROS 메시지는 한 cache를 나눠 쓰므로, 큰 프레임이 cache를 채우면 ROS 메시지도 버려진다. `--max-cache-size 0`이면 writer가 바로 storage에 쓴다. 디스크가 느린 동안 flux 프레임은 채널의 슬롯에서 기다리고, 녹화기가 받기 전에 채널이 덮어쓴 프레임은 채널별 `lost`로 센다. ROS 메시지도 구독 콜백에서 바로 쓰이므로, writer가 느리면 ROS 메시지가 구독의 QoS depth를 넘어 DDS에서 버려질 수 있고, 그 수는 어디에도 남지 않는다 |
+| 압축 큐 | `--compression-mode message`에서 압축이 따라가지 못하면 rosbag2가 압축 큐(`--compression-queue-size`, 기본 1)를 넘는 메시지를 버린다. flux 프레임도 같다 |
 | 시각 | send 시각과 header stamp는 commit 시각, recv 시각은 take 시각이다 |
-| 일시정지 | `~/pause`, `~/resume` 서비스(rosbag2와 같다). 멈춘 동안의 프레임은 받지만 쓰지 않는다 |
-| 저장 형식 | `-s`가 없으면 rosbag2 기본값(mcap)이다. `-s`와 `--storage-preset-profile`은 `ros2 bag record`의 같은 옵션처럼 rosbag2에 넘긴다 |
-| 무손실 압축 | `-s mcap --storage-preset-profile zstd_fast`는 mcap chunk를 zstd로 압축한다. flux 채널과 ROS 토픽에 모두 적용된다. 읽는 쪽(`play_flux`, `convert_flux`, `ros2 bag play`)은 옵션 없이 읽는다 |
-| 이미지 압축 | `--image-codec jpeg`는 `sensor_msgs/Image` 채널의 `rgb8`, `bgr8`, `mono8` 프레임의 픽셀을 JPEG(품질 `--jpeg-quality`, 기본 90)로 저장한다. 손실 압축이다. 픽셀 밖의 bytes(header, encoding, step 등)는 그대로 유지한다. 다른 encoding과 다른 타입의 프레임은 raw로 저장한다. 기본은 `raw`다 |
+| 일시정지 | `~/pause`, `~/resume` 서비스와 키보드(rosbag2와 같다). 노드 이름은 `--node-name`(기본 `rosbag2_recorder`)이다 |
+| 저장 형식 | `-s`가 없으면 rosbag2 기본값(mcap)이다 |
+| 무손실 압축 | `-s mcap --storage-preset-profile zstd_fast`는 mcap chunk를 zstd로 압축한다. `--compression-mode file`은 파일을 닫을 때 zstd 등으로 압축한다. 둘 다 flux 채널과 ROS 토픽에 모두 적용된다. 읽는 쪽(`play_flux`, `convert_flux`, `ros2 bag play`)은 옵션 없이 읽는다 |
+| 이미지 압축 | 녹화기는 프레임을 바꾸지 않고 슬롯의 bytes 그대로 저장한다. 압축한 이미지를 녹화하려면 압축한 결과를 따로 flux 채널로 발행하고 그 채널을 녹화한다 |
 | aux | 채널을 `aux_size`와 함께 생성했으면 프레임마다 meta 끝에 채널의 `aux_size`와 그 프레임의 aux bytes를 담는다. aux를 쓰지 않은 프레임도 `aux_size`는 담는다 |
 | GPU 메모리 채널 | `flux_wrapper`의 `Device::Cuda` Image, PointCloud2 채널 같은 GPU 메모리 채널도 녹화한다. 녹화기는 CPU 구독자라서 take마다 자기 호스트 버퍼로 한 번 복사하고, 그 bytes를 `data`에 담는다. 헤더는 aux로 함께 담긴다 |
 | arena | 필드를 arena에 저장한 프레임([concepts.md](concepts.md#arena))은 arena의 필드를 프레임 안으로 복사한 사본으로 녹화한다. 프레임에는 arena 안의 위치만 있어 그대로는 재생이 불가능하기 때문이다. 재생과 변환은 이 사본을 다른 프레임과 똑같이 읽고, 재생은 사본이 들어가는 슬롯으로 발행자를 생성한다. 사본을 만들려면 그 타입이 설치되어 있어야 한다. 타입이 설치되어 있지 않거나 필드가 GPU 메모리에 있는 프레임은 녹화하지 않고, 처음 한 번 경고를 남긴다 |
-| 종료 시 | 채널마다 큐에 넣은 수, 캐시가 차서 버린 수, `lost`, 위 이유로 녹화하지 않은 arena 프레임 수를 로그로 남긴다 |
+| 종료 시 | 채널마다 rosbag2에 넘긴 수, 받기 전에 채널이 덮어쓴 수(`lost`), 위 이유로 녹화하지 않은 arena 프레임 수를 로그로 남긴다. 넘긴 프레임 중 cache가 버린 수는 rosbag2의 종료 로그에 있다 |
+| 다른 녹화기 | 라이브러리 `flux_bag::flux_bag_frames`의 `flux_bag::FrameEncoder`(`flux_bag/frame_encoder.hpp`)가 위의 meta, aux, arena 사본을 같은 방식으로 만든다. 채널마다 하나를 두고, `encode()`가 채운 필드를 `flux_bag::FluxFrameCdr::write()`로 직렬화한다. 그 bag도 `play_flux`와 `convert_flux`로 읽는다 |
 
 ### 재생
 
 ```text
-ros2 bag play_flux BAG [-r RATE]
+ros2 bag play_flux [ros2 bag play의 옵션]
 ```
 
 `FluxFrame` 토픽은 bag에 기록된 fingerprint, `slot_size`, `slot_count`로 원래 채널에 발행한다. 나머지 토픽은 rosbag2 player가 재생한다.
 
-flux 채널은 자기 시계를 따른다. player의 pause, resume, rate(서비스와 키보드)는 이 시계도 함께 조정한다. play_next와 burst는 ROS 토픽을 진행시키고, flux 채널은 그 뒤를 따라간다. ROS 메시지가 모두 소진되면 play_next와 burst는 flux 프레임을 진행시킨다.
+| 옵션 | flux 채널에서 |
+| --- | --- |
+| `-r`, `-p`, `--disable-keyboard-controls`, `--log-level` | ROS 토픽과 함께 적용된다. `-r`은 유한한 양수다 |
+| `--topics`, `-e`, `-x`, `--exclude-topics` | 채널 이름(`NAME/flux`가 아니라 `NAME`)에 rosbag2의 storage plugin과 같은 규칙으로 적용한다. 목록에 있거나 정규식이 이름 전체에 맞으면 재생하고, 제외 목록에 있거나 제외 정규식이 전체에 맞으면 뺀다 |
+| `-l` | ROS 토픽과 함께 반복한다. 한 회차는 둘 다 마지막 메시지를 재생하면 끝나고, 둘이 함께 처음부터 다시 시작한다 |
+| `--remap` | 채널 이름에도 player 노드의 remap 규칙을 적용한다 |
+| `--start-offset`, `-d`, `--playback-duration`, `--playback-until-sec`, `--playback-until-nsec` | ROS 토픽과 같은 시작 시각과 끝 시각을 쓴다. `-d`는 첫 회차 앞에서만 기다린다 |
+| bag 경로, `-i`, `-s`, `--storage-config-file` | bag 하나만 받는다. `-i`를 두 번 이상 주면 거절한다 |
+| `--clock` | player의 시계를 주어진 주기로 `/clock`에 발행한다. 이 시계는 flux 채널의 시계와 같은 시점에 시작하므로, `/clock`은 flux 프레임이 나가는 시각과 한 주기 안에서 맞는다. flux 채널만 있는 bag에서도 재생하는 동안 발행한다 |
+| `--read-ahead-queue-size`, `--qos-profile-overrides-path`, `--clock-topics`, `--clock-topics-all`, `--wait-for-all-acked`, `--disable-loan-message`, `--services`, `--exclude-services`, `--publish-service-requests`, `--service-requests-source` | ROS 토픽과 서비스에만 적용된다. `--clock-topics`, `--clock-topics-all`은 ROS 메시지를 재생할 때만 `/clock`을 발행하고, 미리 읽기는 아래의 256 MiB다 |
+
+flux 채널은 자기 시계를 따른다. player의 pause, resume, rate(서비스와 키보드)는 이 시계도 함께 조정한다. play_next와 burst는 ROS 토픽을 진행시키고, flux 채널은 그 뒤를 따라간다. ROS 메시지가 모두 소진되면 play_next와 burst는 flux 프레임을 진행시킨다. 서비스는 player 노드(`rosbag2_player`, `ros2 bag play`와 같다) 아래에 있다.
 
 - 재생은 발행자를 생성한 뒤 200 ms 기다리고 시작한다. 먼저 시작된 구독자가 연결될 시간을 주기 위해서다.
+- 재생할 flux 프레임은 별도 스레드가 최대 256 MiB 미리 읽는다.
 - 프레임의 `slot_size`나 `slot_count`가 바뀌면 발행자를 다시 생성한다. dtype x shape가 데이터 크기와 다른 프레임은 건너뛴다.
-- jpeg 프레임은 픽셀을 디코딩해 원래 크기의 프레임으로 발행한다. 픽셀 값은 원본과 다르다. 행 끝의 padding(`step`이 `width` x 채널 수보다 긴 부분)은 0이다.
+- codec이 `raw`가 아닌 프레임은 건너뛰고, 처음 한 번 로그를 남긴다.
 - aux를 담은 프레임은 녹화된 `aux_size`로 발행자를 생성하고, aux bytes를 프레임과 함께 commit한다. `aux_size`가 바뀌면 발행자를 다시 생성한다.
 - 재생은 GPU 메모리 채널도 호스트 메모리 채널로 발행한다. CPU 구독자는 슬롯을 그대로 읽는다. GPU 구독자(`flux_wrapper`의 `SubscriptionOptions::device = Cuda` 등)는 외장 GPU에서 take마다 GPU로 한 번 복사해 받고, 통합 GPU에서는 복사 없이 받는다. aux는 둘 다 그대로 받는다.
 - seek는 ROS 토픽만 진행시킨다.
@@ -231,12 +253,12 @@ bag의 flux 프레임을 ROS 메시지로 변환해 새 bag에 저장한다.
 | --- | --- |
 | fingerprint가 설치된 타입을 가리키는 `FluxFrame` | ROS 메시지로 바꿔 채널 이름의 토픽에 넣는다. 녹화 시각은 유지한다 |
 | 타입을 찾지 못했거나, 같은 이름의 ROS 토픽이 다른 타입인 `FluxFrame` | `FluxFrame`으로 남긴다 |
-| jpeg 프레임 | `sensor_msgs/msg/CompressedImage`로 바꿔 `<채널 이름>/compressed`에 넣는다. `format`은 compressed_image_transport와 같은 형식(`rgb8; jpeg compressed bgr8`)이고, `data`는 녹화한 JPEG bytes 그대로다 |
 | `flux_wrapper`의 `Device::Cuda` Image, PointCloud2 채널 | 설치된 타입이 아니므로 `FluxFrame`으로 남는다 |
 | 나머지 토픽 | 그대로 복사한다 |
 
 - 변환한 토픽은 flux 없이 읽기 가능하다. 남은 `FluxFrame`을 읽으려면 `flux_msgs`가 필요하다.
-- 스키마와 맞지 않는 프레임이 있으면 변환이 exit code 1로 멈춘다.
+- 스키마와 맞지 않는 프레임이나 codec이 `raw`가 아닌 프레임이 있으면 변환이 exit code 1로 멈춘다.
+- `--compression-mode file`이나 `message`로 압축한 bag도 읽는다. 출력은 압축하지 않은 mcap bag이다.
 - ROS 메시지에는 aux를 담을 자리가 없으므로 aux는 버린다. `FluxFrame`으로 남는 프레임은 aux를 그대로 가진다.
 
 ### aux를 담은 bag의 호환

@@ -15,49 +15,56 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(flux_bridge REQUIRED)
 find_package(flux_cpp REQUIRED)
-find_package(flux_std_adapters REQUIRED)
-find_package(JPEG REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rcutils REQUIRED)
+find_package(rosbag2_compression REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)
 find_package(rosbag2_transport REQUIRED)
-find_package(sensor_msgs REQUIRED)
+find_package(yaml_cpp_vendor REQUIRED)
+find_package(yaml-cpp REQUIRED)
+
+# FluxFrame as record_flux stores it, for other recorders too.
+add_library(flux_bag_frames SHARED src/frame_encoder.cpp)
+target_include_directories(flux_bag_frames PUBLIC
+  "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+  "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
+target_link_libraries(flux_bag_frames PUBLIC flux_cpp::flux_cpp)
+target_compile_options(flux_bag_frames PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(record src/record.cpp)
-target_include_directories(record PRIVATE include ${flux_bridge_INCLUDE_DIRS}
-  ${flux_std_adapters_INCLUDE_DIRS})
+target_include_directories(record PRIVATE include ${flux_bridge_INCLUDE_DIRS})
 target_link_libraries(record
+  flux_bag_frames
   flux_cpp::flux_cpp
-  JPEG::JPEG
   rclcpp::rclcpp
   rcutils::rcutils
+  rosbag2_compression::rosbag2_compression
   rosbag2_cpp::rosbag2_cpp
   rosbag2_storage::rosbag2_storage
-  rosbag2_transport::rosbag2_transport)
+  rosbag2_transport::rosbag2_transport
+  yaml-cpp)
 target_compile_options(record PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(play src/play.cpp)
-target_include_directories(play PRIVATE include ${flux_bridge_INCLUDE_DIRS}
-  ${flux_std_adapters_INCLUDE_DIRS})
+target_include_directories(play PRIVATE include)
 target_link_libraries(play
   flux_cpp::flux_cpp
-  JPEG::JPEG
+  rclcpp::rclcpp
+  rosbag2_cpp::rosbag2_cpp
+  rosbag2_storage::rosbag2_storage
+  rosbag2_transport::rosbag2_transport
+  yaml-cpp)
+target_compile_options(play PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(convert src/convert.cpp)
+target_include_directories(convert PRIVATE include)
+target_link_libraries(convert
+  flux_cpp::flux_cpp
   rclcpp::rclcpp
   rosbag2_cpp::rosbag2_cpp
   rosbag2_storage::rosbag2_storage
   rosbag2_transport::rosbag2_transport)
-target_compile_options(play PRIVATE -Wall -Wextra -Wpedantic)
-
-add_executable(convert src/convert.cpp)
-target_include_directories(convert PRIVATE include ${flux_std_adapters_INCLUDE_DIRS})
-target_link_libraries(convert
-  flux_cpp::flux_cpp
-  JPEG::JPEG
-  ${sensor_msgs_TARGETS}
-  rclcpp::rclcpp
-  rosbag2_cpp::rosbag2_cpp
-  rosbag2_storage::rosbag2_storage)
 target_compile_options(convert PRIVATE -Wall -Wextra -Wpedantic)
 
 # libFuzzer targets: -DFLUX_FUZZ=ON with clang (-DCMAKE_CXX_COMPILER=clang++).
@@ -67,8 +74,8 @@ if(FLUX_FUZZ)
   target_compile_definitions(fuzz_frame PRIVATE FLUX_LIBFUZZER)
   target_compile_options(fuzz_frame PRIVATE -fsanitize=fuzzer,address,undefined)
   target_link_options(fuzz_frame PRIVATE -fsanitize=fuzzer,address,undefined)
-  target_include_directories(fuzz_frame PRIVATE include ${flux_std_adapters_INCLUDE_DIRS})
-  target_link_libraries(fuzz_frame flux_cpp::flux_cpp JPEG::JPEG)
+  target_include_directories(fuzz_frame PRIVATE include)
+  target_link_libraries(fuzz_frame flux_cpp::flux_cpp)
 endif()
 
 if(BUILD_TESTING)
@@ -80,8 +87,8 @@ if(BUILD_TESTING)
     ${flux_msgs_TARGETS})
 
   ament_add_gtest(test_fuzz_frame test/fuzz_frame.cpp)
-  target_include_directories(test_fuzz_frame PRIVATE include ${flux_std_adapters_INCLUDE_DIRS})
-  target_link_libraries(test_fuzz_frame flux_cpp::flux_cpp JPEG::JPEG)
+  target_include_directories(test_fuzz_frame PRIVATE include)
+  target_link_libraries(test_fuzz_frame flux_cpp::flux_cpp)
 
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_verbs test/test_verbs.py)
@@ -89,29 +96,21 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_play_control test/test_play_control.py TIMEOUT 120)
   ament_add_pytest_test(test_record_live test/test_record_live.py TIMEOUT 120)
 
-  foreach(poll 0 -1)
-    add_test(NAME record_refuses_poll_${poll} COMMAND record --poll ${poll})
-    set_tests_properties(record_refuses_poll_${poll} PROPERTIES
-      PASS_REGULAR_EXPRESSION "argument --poll: Value must be positive" TIMEOUT 10)
-  endforeach()
-  foreach(poll abc 1s)
-    add_test(NAME record_refuses_poll_${poll} COMMAND record --poll ${poll})
-    set_tests_properties(record_refuses_poll_${poll} PROPERTIES
-      PASS_REGULAR_EXPRESSION "argument --poll: Expects a floating point number" TIMEOUT 10)
-  endforeach()
-  foreach(poll nan inf)
-    add_test(NAME record_refuses_poll_${poll} COMMAND record --poll ${poll})
-    set_tests_properties(record_refuses_poll_${poll} PROPERTIES
-      PASS_REGULAR_EXPRESSION "argument --poll: Value must be finite" TIMEOUT 10)
-  endforeach()
-  foreach(rate 2abc nan inf 0)
-    add_test(NAME play_refuses_rate_${rate} COMMAND play some_bag -r ${rate})
-    set_tests_properties(play_refuses_rate_${rate} PROPERTIES
-      PASS_REGULAR_EXPRESSION "argument -r: " TIMEOUT 10)
+  # The verbs are how the programs get their options; by hand they only say so.
+  foreach(program record play)
+    add_test(NAME ${program}_takes_an_options_file COMMAND ${program})
+    set_tests_properties(${program}_takes_an_options_file PROPERTIES
+      PASS_REGULAR_EXPRESSION "expects the options file" TIMEOUT 10)
   endforeach()
 endif()
 
 install(TARGETS record play convert DESTINATION lib/${PROJECT_NAME})
+install(TARGETS flux_bag_frames EXPORT export_${PROJECT_NAME}
+  LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
+install(FILES include/flux_bag/flux_frame_cdr.hpp include/flux_bag/frame_encoder.hpp
+  include/flux_bag/raw_meta.hpp DESTINATION include/${PROJECT_NAME}/flux_bag)
+ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_dependencies(flux_cpp)
 
 # The ros2 bag verbs (setup.cfg) are how a person runs the three programs above.
 ament_python_install_package(${PROJECT_NAME})

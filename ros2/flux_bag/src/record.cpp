@@ -3,13 +3,16 @@
 #include "flux/topics.hpp"
 #include "flux/trace.h"
 #include "flux_bag/flux_frame_cdr.hpp"
-#include "flux_bag/jpeg_frame.hpp"
-#include "flux_bag/raw_meta.hpp"
+#include "flux_bag/frame_encoder.hpp"
 #include "flux_bag/spin_thread.hpp"
 #include "flux_bridge/tools.hpp"
 
 #include <rclcpp/rclcpp.hpp>
+#include <rosbag2_compression/compression_options.hpp>
+#include <rosbag2_compression/sequential_compression_writer.hpp>
+#include <rosbag2_cpp/cache/message_cache.hpp>
 #include <rosbag2_cpp/writer.hpp>
+#include <rosbag2_cpp/writers/sequential_writer.hpp>
 #include <rosbag2_storage/ros_helper.hpp>
 #include <rosbag2_storage/serialized_bag_message.hpp>
 #include <rosbag2_storage/storage_options.hpp>
@@ -18,22 +21,17 @@
 #include <rosbag2_transport/recorder.hpp>
 #include <rosbag2_transport/topic_filter.hpp>
 
-#include "sensor_msgs/flux/image.hpp"
-
 #include <rcutils/types/uint8_array.h>
 #include <rmw/rmw.h>
+#include <yaml-cpp/yaml.h>
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
-#include <condition_variable>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
-#include <deque>
 #include <exception>
 #include <iostream>
 #include <iterator>
@@ -46,6 +44,8 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace
@@ -59,102 +59,28 @@ struct Options
 {
   rosbag2_storage::StorageOptions storage;
   rosbag2_transport::RecordOptions record;
+  std::string node_name;
   std::chrono::duration<double> poll{0.1};
-  std::uint64_t cache_bytes = 1ULL << 30;
-  // 0 records images as they are.
-  int jpeg_quality = 0;
 };
 
 constexpr const char * kUsage =
-  "usage: ros2 bag record_flux [-a] [TOPIC ...] [-e REGEX] [-x REGEX]\n"
-  "                             [--exclude-topics TOPIC ...] [-o OUT] [--poll SEC]\n"
-  "                             [--max-cache-size BYTES] [-s STORAGE]\n"
-  "                             [--storage-preset-profile PROFILE]\n"
-  "                             [--image-codec raw|jpeg] [--jpeg-quality Q]\n"
+  "usage: ros2 bag record_flux [options], see ros2 bag record_flux -h\n"
   "\n"
-  "Records the selected flux channels and ROS topics into one bag. A flux channel NAME\n"
-  "is stored as flux_msgs/FluxFrame on NAME/flux; ROS topics are stored as they are.\n"
-  "flux frames wait for the bag in memory, up to BYTES (default 1 GiB); a frame that does\n"
-  "not fit is dropped and reported, the publisher never waits.\n"
-  "-s and --storage-preset-profile go to rosbag2 as in ros2 bag record (zstd_fast\n"
-  "compresses an mcap bag). --image-codec jpeg stores the pixels of sensor_msgs/Image\n"
-  "frames in rgb8, bgr8 or mono8 as JPEG of quality Q (1-100, default 90); other frames\n"
-  "are stored as they are.\n";
+  "This program takes the options ros2 bag record_flux builds, as a YAML file: the\n"
+  "storage and record options of rosbag2's YAML converters, node_name and poll (seconds).\n";
 
-auto default_uri() -> std::string
-{
-  const std::time_t now = std::time(nullptr);
-  std::array<char, 64> buf{};
-  std::strftime(buf.data(), buf.size(), "rosbag2_%Y_%m_%d-%H_%M_%S", std::localtime(&now));
-  return buf.data();
-}
-
+// The verb checked every value, as ros2 bag record does.
 auto parse(const std::vector<std::string> & args) -> Options
 {
+  if (args.size() != 2) {
+    throw std::invalid_argument("expects the options file as its one argument");
+  }
+  const YAML::Node n = YAML::LoadFile(args[1]);
   Options o;
-  std::vector<std::string> * list = &o.record.topics;
-  std::string image_codec = "raw";
-  int quality = 90;
-  for (std::size_t i = 1; i < args.size(); ++i) {
-    const std::string & a = args[i];
-    auto value = [&]() -> const std::string & {
-      if (i + 1 >= args.size()) {
-        throw std::invalid_argument(a + " needs a value");
-      }
-      return args[++i];
-    };
-    if (a == "-a" || a == "--all") {
-      o.record.all_topics = true;
-    } else if (a == "-e" || a == "--regex") {
-      o.record.regex = value();
-    } else if (a == "-x" || a == "--exclude-regex") {
-      o.record.exclude_regex = value();
-    } else if (a == "--exclude-topics") {
-      list = &o.record.exclude_topics;
-    } else if (a == "-o" || a == "--output") {
-      o.storage.uri = value();
-    } else if (a == "-s" || a == "--storage") {
-      o.storage.storage_id = value();
-    } else if (a == "--storage-preset-profile") {
-      o.storage.storage_preset_profile = value();
-    } else if (a == "--image-codec") {
-      const std::string & v = value();
-      if (v != "raw" && v != "jpeg") {
-        throw std::invalid_argument("--image-codec takes raw or jpeg");
-      }
-      image_codec = v;
-    } else if (a == "--jpeg-quality") {
-      const std::string & v = value();
-      if (
-        v.empty() || v.size() > 3 || v.find_first_not_of("0123456789") != std::string::npos ||
-        std::stoi(v) < 1 || std::stoi(v) > 100) {
-        throw std::invalid_argument("--jpeg-quality takes a number from 1 to 100");
-      }
-      quality = std::stoi(v);
-    } else if (a == "--poll") {
-      o.poll = std::chrono::duration<double>(flux_bridge::positive_number("--poll", value()));
-    } else if (a == "--max-cache-size") {
-      const std::string & v = value();
-      if (v.empty() || v.find_first_not_of("0123456789") != std::string::npos) {
-        throw std::invalid_argument("--max-cache-size takes a positive number of bytes");
-      }
-      o.cache_bytes = std::stoull(v);
-      if (o.cache_bytes == 0) {
-        throw std::invalid_argument("--max-cache-size takes a positive number of bytes");
-      }
-    } else if (!a.empty() && a[0] == '-') {
-      throw std::invalid_argument("unknown option " + a);
-    } else {
-      list->push_back(a);
-    }
-  }
-  if (o.storage.uri.empty()) {
-    o.storage.uri = default_uri();
-  }
-  if (image_codec == "jpeg") {
-    o.jpeg_quality = quality;
-  }
-  o.record.rmw_serialization_format = rmw_get_serialization_format();
+  o.storage = n["storage"].as<rosbag2_storage::StorageOptions>();
+  YAML::convert<rosbag2_transport::RecordOptions>::decode(n["record"], o.record);
+  o.node_name = n["node_name"].as<std::string>();
+  o.poll = std::chrono::duration<double>(n["poll"].as<double>());
   return o;
 }
 
@@ -173,36 +99,16 @@ auto monotonic_ns() -> std::int64_t
   return ts.tv_sec * 1'000'000'000LL + ts.tv_nsec;
 }
 
-// Frames between the channel threads, which copy each frame out and release its slot at once, and
-// the one thread that writes the bag: a burst waits here instead of being overwritten in the
-// channel.
-class WriteQueue
+// Message buffers their last owner gives back instead of freeing: the writer's cache, its snapshot
+// buffer and its compression queue keep a written message for a while, and the buffer is reused
+// once they let it go. A fresh frame-sized buffer costs a page fault per page, slower than the
+// frames come.
+class BufferPool : public std::enable_shared_from_this<BufferPool>
 {
 public:
-  WriteQueue(std::shared_ptr<rosbag2_cpp::Writer> writer, std::uint64_t budget)
-  : writer_(std::move(writer)), budget_(budget), thread_([this] { run(); })
+  auto get(std::size_t n) -> std::shared_ptr<rosbag2_storage::SerializedBagMessage>
   {
-  }
-  WriteQueue(const WriteQueue &) = delete;
-  auto operator=(const WriteQueue &) -> WriteQueue & = delete;
-  WriteQueue(WriteQueue &&) = delete;
-  auto operator=(WriteQueue &&) -> WriteQueue & = delete;
-  // Writes what is queued, then ends.
-  ~WriteQueue()
-  {
-    {
-      const std::lock_guard<std::mutex> lock(mutex_);
-      stop_ = true;
-    }
-    ready_.notify_one();
-    thread_.join();
-  }
-
-  // A message for `n` bytes: one the writer is done with, so its pages are already mapped (a
-  // fresh frame-sized buffer costs a page fault per page, slower than the frames come).
-  auto message(std::size_t n) -> std::shared_ptr<rosbag2_storage::SerializedBagMessage>
-  {
-    std::shared_ptr<rosbag2_storage::SerializedBagMessage> msg;
+    std::unique_ptr<rosbag2_storage::SerializedBagMessage> msg;
     {
       const std::lock_guard<std::mutex> lock(mutex_);
       if (!free_.empty()) {
@@ -211,115 +117,213 @@ public:
       }
     }
     if (!msg) {
-      msg = std::make_shared<rosbag2_storage::SerializedBagMessage>();
+      msg = std::make_unique<rosbag2_storage::SerializedBagMessage>();
       msg->serialized_data = rosbag2_storage::make_empty_serialized_message(n);
     } else if (msg->serialized_data->buffer_capacity < n) {
       if (rcutils_uint8_array_resize(msg->serialized_data.get(), n) != RCUTILS_RET_OK) {
         throw std::bad_alloc();
       }
     }
-    return msg;
-  }
-
-  // False when the frame does not fit in the budget.
-  auto push(
-    std::shared_ptr<rosbag2_storage::SerializedBagMessage> msg, const void * channel,
-    std::uint64_t ticket) -> bool
-  {
-    const std::size_t n = msg->serialized_data->buffer_length;
-    {
-      const std::lock_guard<std::mutex> lock(mutex_);
-      if (bytes_ + n > budget_) {
-        free_.push_back(std::move(msg));
-        return false;
-      }
-      bytes_ += n;
-      queue_.push_back({std::move(msg), channel, ticket});
-    }
-    ready_.notify_one();
-    return true;
-  }
-
-  // The first write that failed; the frames after it are reported as they fail too.
-  auto error() const -> std::exception_ptr
-  {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    return error_;
+    // The pool lives as long as a message from it: the writer may hold one past its channel.
+    return {msg.release(), [pool = shared_from_this()](auto * m) { pool->put(m); }};
   }
 
 private:
-  struct Item
+  void put(rosbag2_storage::SerializedBagMessage * m) noexcept
   {
-    std::shared_ptr<rosbag2_storage::SerializedBagMessage> msg;
-    const void * channel;
-    std::uint64_t ticket;
-  };
-
-  void run()
-  {
-    std::unique_lock<std::mutex> lock(mutex_);
-    for (;;) {
-      ready_.wait(lock, [this] { return stop_ || !queue_.empty(); });
-      if (queue_.empty()) {
-        return;
-      }
-      Item item = std::move(queue_.front());
-      queue_.pop_front();
-      lock.unlock();
-      const std::size_t n = item.msg->serialized_data->buffer_length;
-      std::exception_ptr failed;
-      try {
-        writer_->write(item.msg);
-      } catch (...) {
-        failed = std::current_exception();
-        flux_trace_record_drop(item.channel, item.ticket, 1, FLUX_TRACE_RECORD_WRITE_FAILED);
-      }
-      lock.lock();
-      bytes_ -= n;
-      free_.push_back(std::move(item.msg));
-      if (failed && !error_) {
-        error_ = failed;
-      }
+    std::unique_ptr<rosbag2_storage::SerializedBagMessage> owned(m);
+    const std::lock_guard<std::mutex> lock(mutex_);
+    try {
+      free_.push_back(std::move(owned));
+    } catch (const std::bad_alloc &) {
+      // Freed instead.
     }
   }
 
-  std::shared_ptr<rosbag2_cpp::Writer> writer_;
-  const std::uint64_t budget_;
-  mutable std::mutex mutex_;
-  std::condition_variable ready_;
-  std::deque<Item> queue_;
-  // As many as were queued at once, so no more than the budget.
-  std::vector<std::shared_ptr<rosbag2_storage::SerializedBagMessage>> free_;
-  std::uint64_t bytes_ = 0;
-  bool stop_ = false;
-  std::exception_ptr error_;
-  std::thread thread_;
+  std::mutex mutex_;
+  // No more than were in use at once: in the writer and being filled.
+  std::vector<std::unique_ptr<rosbag2_storage::SerializedBagMessage>> free_;
 };
 
+// rosbag2's cache drops a message it has no room for and counts it per topic, ROS message or flux
+// frame, but Jazzy logs the counts only when a bag file closes (later rosbag2 has a MESSAGES_LOST
+// writer event). These log them while recording, from rosbag2's own counts.
+constexpr auto kLossReportEvery = std::chrono::seconds(5);
+using LostPerTopic = std::unordered_map<std::string, std::uint32_t>;
+
+// rosbag2's count, a protected member of MessageCache.
+struct LostIn : rosbag2_cpp::cache::MessageCache
+{
+  static auto of(const rosbag2_cpp::cache::MessageCache & cache) -> const LostPerTopic &
+  {
+    return cache.*(&LostIn::messages_dropped_per_topic_);
+  }
+};
+
+// Copies of the counts from the writing threads, logged by the main thread: the writing threads
+// hold the writer's lock.
+class CacheLosses
+{
+public:
+  // Assigned over the last copy, which reuses its entries: only a topic's first loss allocates.
+  void post(const LostPerTopic & lost)
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    posted_ = lost;
+    fresh_ = true;
+  }
+
+  // What was lost since the last line, or empty.
+  auto line() -> std::string
+  {
+    LostPerTopic now;
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      if (!fresh_) {
+        return {};
+      }
+      fresh_ = false;
+      now = posted_;
+    }
+    std::string out;
+    for (const auto & [topic, n] : std::map<std::string, std::uint32_t>(now.begin(), now.end())) {
+      const auto it = logged_.find(topic);
+      if (const std::uint32_t since = n - (it == logged_.end() ? 0 : it->second); since > 0) {
+        out += (out.empty() ? "" : ", ") + std::to_string(since) + " on " + topic;
+      }
+    }
+    logged_ = std::move(now);
+    return out;
+  }
+
+private:
+  std::mutex mutex_;
+  LostPerTopic posted_;
+  bool fresh_ = false;
+  LostPerTopic logged_;
+};
+
+// rosbag2's cache, posting its counts when a topic first loses a message and then at most every
+// kLossReportEvery. Only the writer pushes through it; rosbag2's consumer thread keeps the cache
+// itself.
+class ReportingCache : public rosbag2_cpp::cache::MessageCacheInterface
+{
+public:
+  ReportingCache(
+    std::shared_ptr<rosbag2_cpp::cache::MessageCache> cache, std::shared_ptr<CacheLosses> losses)
+  : cache_(std::move(cache)), losses_(std::move(losses))
+  {
+  }
+
+  // With the writer's lock held, as rosbag2 counts.
+  void push(std::shared_ptr<const rosbag2_storage::SerializedBagMessage> msg) override
+  {
+    cache_->push(std::move(msg));
+    const LostPerTopic & lost = LostIn::of(*cache_);
+    if (lost.empty()) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (lost.size() == topics_ && now - posted_ < kLossReportEvery) {
+      return;
+    }
+    topics_ = lost.size();
+    posted_ = now;
+    losses_->post(lost);
+  }
+
+  auto get_consumer_buffer() -> std::shared_ptr<rosbag2_cpp::cache::CacheBufferInterface> override
+  {
+    return cache_->get_consumer_buffer();
+  }
+  void release_consumer_buffer() override { cache_->release_consumer_buffer(); }
+  void wait_for_data() override { cache_->wait_for_data(); }
+  void swap_buffers() override { cache_->swap_buffers(); }
+  void begin_flushing() override { cache_->begin_flushing(); }
+  void done_flushing() override { cache_->done_flushing(); }
+  void log_dropped() override { cache_->log_dropped(); }
+  void notify_data_ready() override { cache_->notify_data_ready(); }
+
+private:
+  std::shared_ptr<rosbag2_cpp::cache::MessageCache> cache_;
+  std::shared_ptr<CacheLosses> losses_;
+  std::size_t topics_ = 0;
+  std::chrono::steady_clock::time_point posted_;
+};
+
+// A rosbag2 writer whose cache reports its losses. Snapshot mode's circular cache overwrites
+// instead of losing and is left as it is.
+template <class Base>
+class ReportingWriter : public Base
+{
+public:
+  template <class... Args>
+  explicit ReportingWriter(std::shared_ptr<CacheLosses> losses, Args &&... args)
+  : Base(std::forward<Args>(args)...), losses_(std::move(losses))
+  {
+  }
+
+  void open(
+    const rosbag2_storage::StorageOptions & storage,
+    const rosbag2_cpp::ConverterOptions & converter) override
+  {
+    Base::open(storage, converter);
+    if (
+      auto cache =
+        std::dynamic_pointer_cast<rosbag2_cpp::cache::MessageCache>(this->message_cache_)) {
+      this->message_cache_ = std::make_shared<ReportingCache>(std::move(cache), losses_);
+    }
+  }
+
+private:
+  std::shared_ptr<CacheLosses> losses_;
+};
+
+// rosbag2_transport::ReaderWriterFactory::make_writer (Jazzy), with the reporting writers.
+auto make_writer(
+  const rosbag2_transport::RecordOptions & record,
+  const std::shared_ptr<CacheLosses> & losses) -> std::shared_ptr<rosbag2_cpp::Writer>
+{
+  std::unique_ptr<rosbag2_cpp::writer_interfaces::BaseWriterInterface> impl;
+  if (!record.compression_format.empty()) {
+    rosbag2_compression::CompressionOptions compression{
+      record.compression_format,
+      rosbag2_compression::compression_mode_from_string(record.compression_mode),
+      record.compression_queue_size, record.compression_threads,
+      record.compression_threads_priority};
+    if (compression.compression_threads < 1) {
+      compression.compression_threads = std::thread::hardware_concurrency();
+    }
+    impl = std::make_unique<ReportingWriter<rosbag2_compression::SequentialCompressionWriter>>(
+      losses, compression);
+  } else {
+    impl = std::make_unique<ReportingWriter<rosbag2_cpp::writers::SequentialWriter>>(losses);
+  }
+  return std::make_shared<rosbag2_cpp::Writer>(std::move(impl));
+}
+
 // One flux channel into the bag: a thread that takes each frame, serializes it as a FluxFrame
-// around the slot bytes into a buffer of its own, releases the borrow, and queues the buffer.
+// around the slot bytes into a buffer of its own, releases the borrow, and writes the buffer, as
+// rosbag2 writes a ROS message from its subscription. rosbag2's cache is the only buffer: while
+// the writer blocks, frames wait in their slots.
 class ChannelRecorder
 {
 public:
   ChannelRecorder(
-    rosbag2_transport::Recorder & recorder, const flux::Topic & topic, rosbag2_cpp::Writer & writer,
-    WriteQueue & queue, int jpeg_quality)
+    rosbag2_transport::Recorder & recorder, const flux::Topic & topic, rosbag2_cpp::Writer & writer)
   : recorder_(recorder),
-    queue_(queue),
+    writer_(writer),
     flux_topic_(topic.key),
     bag_topic_(topic.key + kBagTopicSuffix),
     fingerprint_(topic.fingerprint),
     sub_(recorder, topic.key, topic.fingerprint),
-    meta_bytes_(flux_bag::JpegMeta::kMaxSize + flux_bag::AuxTail::kMaxSize)
+    encoder_(topic.key, topic.fingerprint)
   {
-    if (jpeg_quality > 0 && fingerprint_ == sensor_msgs::flux_msg::Image::kFingerprint) {
-      jpeg_ = std::make_unique<flux_bag::JpegEncoder>(jpeg_quality);
-    }
     rosbag2_storage::TopicMetadata meta;
     meta.name = bag_topic_;
     meta.type = kFrameType;
     meta.serialization_format = "cdr";
-    writer.create_topic(meta);
+    writer_.create_topic(meta);
     thread_ = std::thread([this] { run(); });
   }
 
@@ -331,14 +335,13 @@ public:
   {
     stop_ = true;
     thread_.join();
+    // What rosbag2's cache drops of the frames handed to it is in rosbag2's own log.
     RCLCPP_INFO(
       recorder_.get_logger(),
-      "%s: %lu frames queued, %lu dropped with the cache full, %lu lost, %lu left out with fields "
-      "in "
-      "the arena",
-      flux_topic_.c_str(), static_cast<unsigned long>(queued_),
-      static_cast<unsigned long>(dropped_), static_cast<unsigned long>(sub_.lost()),
-      static_cast<unsigned long>(arena_left_));
+      "%s: %lu frames handed to rosbag2, %lu lost in the channel before they were taken, %lu left "
+      "out with fields in the arena",
+      flux_topic_.c_str(), static_cast<unsigned long>(handed_),
+      static_cast<unsigned long>(sub_.lost()), static_cast<unsigned long>(arena_left_));
   }
 
   // What ended the thread early, rethrown on the main thread so the bag is still closed.
@@ -400,72 +403,24 @@ private:
     if (recorder_.is_paused()) {
       return;
     }
-    // A frame with fields in its publisher's arena holds only offsets there, which a bag cannot
-    // replay: the bag gets a copy that holds the fields itself. That needs the installed type.
-    const void * data = v.data();
-    std::size_t size = v.size();
-    if (flux::in_arena(v)) {
-      if (!inline_arena(v)) {
-        return;
-      }
-      data = inlined_.data();
-      size = inlined_.size();
-    }
     const rclcpp::Time stamp = recorder_.now();
+    // Simulated time before its first /clock: rosbag2 writes no message then either.
+    if (stamp.nanoseconds() == 0) {
+      return;
+    }
     const std::int64_t sent = on_clock(v.publish_ns(), monotonic_ns(), stamp);
-    // A publisher restarted with other slots is a new attach: replay recreates it the same way.
-    if (sub_.attach_generation() != generation_) {
-      generation_ = sub_.attach_generation();
-      meta_.slot_size = sub_.channel()->slot_size();
-      meta_.slot_count = sub_.channel()->slot_count();
-      aux_size_ = sub_.channel()->aux_size();
-    }
-    const flux::FrameMeta & m = v.meta();
-    meta_.dtype = static_cast<flux::DType>(m.dtype);
-    meta_.ndim = m.ndim;
-    std::memcpy(meta_.shape.data(), m.shape, sizeof(meta_.shape));
-    if (data != v.data()) {
-      // The copy is a byte frame of its own size, and replay needs a slot that holds it.
-      meta_.dtype = flux::DType::U8;
-      meta_.ndim = 1;
-      meta_.shape.fill(0);
-      meta_.shape[0] = size;
-      std::uint64_t slot = 4096;
-      while (slot < size) {
-        slot *= 2;
-      }
-      inlined_slot_ = std::max(inlined_slot_, slot);
-      meta_.slot_size = std::max<std::uint32_t>(
-        meta_.slot_size,
-        static_cast<std::uint32_t>(std::min<std::uint64_t>(inlined_slot_, 1u << 31)));
-    }
-
     flux_bag::FluxFrameFields f;
-    f.sec = static_cast<std::int32_t>(sent / 1'000'000'000);
-    f.nanosec = static_cast<std::uint32_t>(sent % 1'000'000'000);
-    f.flux_topic = flux_topic_;
-    f.fingerprint = fingerprint_;
-    f.codec = "raw";
-    f.meta = meta_bytes_.data();
-    f.meta_size = meta_.write(meta_bytes_.data());
-    f.data = data;
-    f.data_size = size;
-    if (jpeg_) {
-      const sensor_msgs::flux_msg::Image::View img =
-        data == v.data() ? sensor_msgs::flux_msg::Image::View(v)
-                         : sensor_msgs::flux_msg::Image::View(data, size);
-      compress(img, static_cast<const std::uint8_t *>(data), size, f, meta_bytes_.data());
-    }
-    if (aux_size_ != 0) {
-      const auto aux = v.aux();
-      flux_bag::AuxTail tail;
-      tail.aux_size = aux_size_;
-      tail.aux = aux.data();
-      tail.aux_len = static_cast<std::uint32_t>(aux.size());
-      f.meta_size += tail.write(meta_bytes_.data() + f.meta_size);
+    if (const char * why = encoder_.encode(v, sub_, sent, f)) {
+      if (arena_left_++ == 0) {
+        RCLCPP_WARN(
+          recorder_.get_logger(),
+          "%s: a frame with fields in its publisher's arena is not recorded: %s",
+          flux_topic_.c_str(), why);
+      }
+      return;
     }
 
-    auto msg = queue_.message(flux_bag::FluxFrameCdr::size(f));
+    auto msg = pool_->get(flux_bag::FluxFrameCdr::size(f));
     msg->topic_name = bag_topic_;
     rcutils_uint8_array_t & buf = *msg->serialized_data;
     buf.buffer_length = flux_bag::FluxFrameCdr::write(f, buf.buffer);
@@ -474,93 +429,25 @@ private:
     // As rosbag2 records a DDS message: received now, sent when its publisher committed it.
     msg->recv_timestamp = stamp.nanoseconds();
     msg->send_timestamp = sent;
-    if (queue_.push(std::move(msg), channel, ticket)) {
-      ++queued_;
-    } else {
-      flux_trace_record_drop(channel, ticket, 1, FLUX_TRACE_RECORD_CACHE_FULL);
-      ++dropped_;
+    try {
+      writer_.write(std::move(msg));
+    } catch (...) {
+      flux_trace_record_drop(channel, ticket, 1, FLUX_TRACE_RECORD_WRITE_FAILED);
+      throw;
     }
-  }
-
-  // `v` with its arena fields copied in, into `inlined_`; false, and nothing recorded, when its
-  // type is not installed.
-  auto inline_arena(const flux::FrameView & v) -> bool
-  {
-    // Every .msg on AMENT_PREFIX_PATH, read once by the first channel that needs it.
-    static const flux::Schemas schemas;
-    const char * why = "its type is not installed";
-    if (schemas.contains(fingerprint_)) {
-      try {
-        schemas.at(fingerprint_).inline_arena(v, inlined_);
-        return true;
-      } catch (const flux::Error &) {
-        why = "it does not match its type";
-      }
-    }
-    if (arena_left_++ == 0) {
-      RCLCPP_WARN(
-        recorder_.get_logger(),
-        "%s: a frame with fields in its publisher's arena is not recorded: %s", flux_topic_.c_str(),
-        why);
-    }
-    return false;
-  }
-
-  // An Image frame JPEG holds becomes codec "jpeg" in `f`, its data in packed_; any other frame
-  // stays raw. `frame` is the frame `img` reads, of `size` bytes.
-  void compress(
-    const sensor_msgs::flux_msg::Image::View & img, const std::uint8_t * frame, std::size_t size,
-    flux_bag::FluxFrameFields & f, std::uint8_t * meta)
-  {
-    const std::uint32_t width = img.width();
-    const std::uint32_t height = img.height();
-    const std::uint32_t step = img.step();
-    const J_COLOR_SPACE space = flux_bag::jpeg_space(img.encoding());
-    const auto pixels = img.data();
-    if (
-      !img.ok__() || space == JCS_UNKNOWN ||
-      std::uint64_t{width} * flux_bag::jpeg_channels(space) > step ||
-      pixels.size() != std::uint64_t{step} * height) {
-      return;
-    }
-    const std::size_t n = jpeg_->encode(pixels.data(), width, height, step, space);
-    if (n == 0) {
-      return;
-    }
-    flux_bag::JpegMeta jm;
-    jm.raw = meta_;
-    jm.at = static_cast<std::uint64_t>(pixels.data() - frame);
-    jm.len = pixels.size();
-    const std::size_t rest = size - jm.at - jm.len;
-    packed_.resize(jm.at + rest + n);
-    std::memcpy(packed_.data(), frame, jm.at);
-    std::memcpy(packed_.data() + jm.at, frame + jm.at + jm.len, rest);
-    std::memcpy(packed_.data() + jm.at + rest, jpeg_->data(), n);
-    f.codec = "jpeg";
-    f.meta_size = jm.write(meta);
-    f.data = packed_.data();
-    f.data_size = packed_.size();
+    ++handed_;
   }
 
   rosbag2_transport::Recorder & recorder_;
-  WriteQueue & queue_;
+  rosbag2_cpp::Writer & writer_;
   std::string flux_topic_;
   std::uint64_t arena_left_ = 0;
   std::string bag_topic_;
   std::uint64_t fingerprint_;
   flux::Subscription sub_;
-  std::uint32_t generation_ = 0;
-  flux_bag::RawMeta meta_;
-  std::uint32_t aux_size_ = 0;
-  // The codec's meta, then the aux tail of a channel made with an aux_size.
-  std::vector<std::uint8_t> meta_bytes_;
-  std::unique_ptr<flux_bag::JpegEncoder> jpeg_;
-  std::vector<std::uint8_t> packed_;
-  // A frame with fields in the arena, copied to hold them, and the slot replay needs for it.
-  std::vector<std::uint8_t> inlined_;
-  std::uint64_t inlined_slot_ = 0;
-  std::uint64_t queued_ = 0;
-  std::uint64_t dropped_ = 0;
+  flux_bag::FrameEncoder encoder_;
+  std::shared_ptr<BufferPool> pool_ = std::make_shared<BufferPool>();
+  std::uint64_t handed_ = 0;
   std::uint64_t reported_lost_ = 0;
   std::atomic<bool> stop_{false};
   mutable std::mutex error_mutex_;
@@ -586,17 +473,33 @@ struct Recorded
 
 void run(Options & opt)
 {
-  auto writer = std::make_shared<rosbag2_cpp::Writer>();
-  auto recorder = std::make_shared<rosbag2_transport::Recorder>(
-    writer, opt.storage, opt.record, "flux_bag_record");
+  // As ros2 bag record (rosbag2_py's Recorder) makes it: the rmw's format unless one was asked
+  // for, and a compressing writer for a compression mode.
+  if (opt.record.rmw_serialization_format.empty()) {
+    opt.record.rmw_serialization_format = rmw_get_serialization_format();
+  }
+  const auto losses = std::make_shared<CacheLosses>();
+  std::shared_ptr<rosbag2_cpp::Writer> writer = make_writer(opt.record, losses);
+  auto recorder =
+    std::make_shared<rosbag2_transport::Recorder>(writer, opt.storage, opt.record, opt.node_name);
   recorder->record();
 
   rclcpp::executors::SingleThreadedExecutor exec;
   exec.add_node(recorder);
   const flux_bag::SpinThread spin(exec);
 
+  // Without a graph the filter leaves out what only ROS topics have: unpublished and leaf topics.
   rosbag2_transport::TopicFilter filter(opt.record, nullptr, /*allow_unknown_types=*/true);
-  auto queue = std::make_unique<WriteQueue>(writer, opt.cache_bytes);
+  // --topic-types and --exclude-topic-types see a flux channel as the ROS type its fingerprint
+  // names, when that is installed.
+  std::optional<flux::Schemas> schemas;
+  if (!opt.record.topic_types.empty() || !opt.record.exclude_topic_types.empty()) {
+    schemas.emplace();
+  }
+  const auto type_of = [&](std::uint64_t fingerprint) -> std::string {
+    return schemas && schemas->contains(fingerprint) ? schemas->at(fingerprint).ros_type()
+                                                     : kFrameType;
+  };
   // By signpost: one name can carry channels of two fingerprints, each recorded on its own.
   std::map<std::string, Recorded> channels;
   std::set<std::string> bad_keys;
@@ -611,76 +514,87 @@ void run(Options & opt)
         key.c_str(), why.c_str());
     };
   std::exception_ptr error;
+  bool listed_once = false;
   while (!g_stop && !error) {
     const auto listed = std::chrono::steady_clock::now();
-    for (auto & [signpost, channel] : channels) {
-      if (!channel.down_since) {
-        channel.down_since = listed;
+    // --no-discovery: the channels up at the start only, as rosbag2 does with its topics.
+    if (!listed_once || !opt.record.is_discovery_disabled) {
+      for (auto & [signpost, channel] : channels) {
+        if (!channel.down_since) {
+          channel.down_since = listed;
+        }
       }
-    }
-    std::map<std::string, std::vector<std::string>> candidates;
-    std::map<std::string, std::vector<const flux::Topic *>> live;
-    std::set<std::string> bad;
-    std::set<std::string> seen;
-    const std::vector<flux::Topic> topics = flux::enumerate_topics();
-    for (const flux::Topic & t : topics) {
-      seen.insert(t.signpost);
-      if (!t.key_exact) {
-        continue;
-      }
-      const flux::ChannelStats stats = flux::read_channel_stats(t.signpost);
-      if (!stats.live) {
-        continue;
-      }
-      if (const auto out = left_out.find(t.signpost); out != left_out.end()) {
-        if (out->second == stats.epoch) {
+      std::map<std::string, std::vector<std::string>> candidates;
+      std::map<std::string, std::vector<const flux::Topic *>> live;
+      std::set<std::string> bad;
+      std::set<std::string> seen;
+      const std::vector<flux::Topic> topics = flux::enumerate_topics();
+      for (const flux::Topic & t : topics) {
+        seen.insert(t.signpost);
+        if (!t.key_exact) {
           continue;
         }
-        left_out.erase(out);
-      }
-      if (!flux_bridge::is_ros_topic_name(t.key)) {
-        if (!bad_keys.count(t.signpost)) {
-          RCLCPP_WARN(
-            recorder->get_logger(), "a channel whose key is not a ROS topic name is not recorded");
-        }
-        bad.insert(t.signpost);
-        continue;
-      }
-      if (const auto it = channels.find(t.signpost); it != channels.end()) {
-        it->second.down_since.reset();
-        continue;
-      }
-      candidates[t.key] = {kFrameType};
-      live[t.key].push_back(&t);
-    }
-    bad_keys = std::move(bad);
-    for (auto it = left_out.begin(); it != left_out.end();) {
-      it = seen.count(it->first) ? std::next(it) : left_out.erase(it);
-    }
-    // Its thread, subscription and hold on the signpost go with it.
-    for (auto it = channels.begin(); it != channels.end();) {
-      const auto & down = it->second.down_since;
-      const bool gone = down && listed - *down > kKeepDown;
-      const std::string why = it->second.recorder->left_out();
-      if (!why.empty()) {
-        leave_out(it->second.recorder->key(), it->first, why);
-      }
-      it = gone || !why.empty() ? channels.erase(it) : std::next(it);
-    }
-    for (const auto & [key, type] : filter.filter_topics(candidates)) {
-      for (const flux::Topic * t : live[key]) {
-        std::unique_ptr<ChannelRecorder> r;
-        try {
-          r = std::make_unique<ChannelRecorder>(*recorder, *t, *writer, *queue, opt.jpeg_quality);
-        } catch (const flux::Error & e) {
-          leave_out(key, t->signpost, e.what());
+        const flux::ChannelStats stats = flux::read_channel_stats(t.signpost);
+        if (!stats.live) {
           continue;
         }
-        RCLCPP_INFO(recorder->get_logger(), "recording flux channel %s", key.c_str());
-        channels.emplace(t->signpost, Recorded{std::move(r), std::nullopt});
+        if (const auto out = left_out.find(t.signpost); out != left_out.end()) {
+          if (out->second == stats.epoch) {
+            continue;
+          }
+          left_out.erase(out);
+        }
+        if (!flux_bridge::is_ros_topic_name(t.key)) {
+          if (!bad_keys.count(t.signpost)) {
+            RCLCPP_WARN(
+              recorder->get_logger(),
+              "a channel whose key is not a ROS topic name is not recorded");
+          }
+          bad.insert(t.signpost);
+          continue;
+        }
+        if (const auto it = channels.find(t.signpost); it != channels.end()) {
+          it->second.down_since.reset();
+          continue;
+        }
+        candidates[t.key] = {type_of(t.fingerprint)};
+        live[t.key].push_back(&t);
+      }
+      bad_keys = std::move(bad);
+      for (auto it = left_out.begin(); it != left_out.end();) {
+        it = seen.count(it->first) ? std::next(it) : left_out.erase(it);
+      }
+      // Its thread, subscription and hold on the signpost go with it.
+      for (auto it = channels.begin(); it != channels.end();) {
+        const auto & down = it->second.down_since;
+        const bool gone = down && listed - *down > kKeepDown;
+        const std::string why = it->second.recorder->left_out();
+        if (!why.empty()) {
+          leave_out(it->second.recorder->key(), it->first, why);
+        }
+        it = gone || !why.empty() ? channels.erase(it) : std::next(it);
+      }
+      for (const auto & [key, type] : filter.filter_topics(candidates)) {
+        for (const flux::Topic * t : live[key]) {
+          std::unique_ptr<ChannelRecorder> r;
+          try {
+            r = std::make_unique<ChannelRecorder>(*recorder, *t, *writer);
+          } catch (const flux::Error & e) {
+            leave_out(key, t->signpost, e.what());
+            continue;
+          }
+          RCLCPP_INFO(recorder->get_logger(), "recording flux channel %s", key.c_str());
+          channels.emplace(t->signpost, Recorded{std::move(r), std::nullopt});
+        }
       }
     }
+    listed_once = true;
     while (!g_stop) {
+      if (const std::string lost = losses->line(); !lost.empty()) {
+        RCLCPP_WARN(
+          recorder->get_logger(), "rosbag2's cache is full: lost %s since the last report",
+          lost.c_str());
+      }
       const std::chrono::duration<double> left =
         opt.poll - (std::chrono::steady_clock::now() - listed);
       if (left <= left.zero()) {
@@ -693,13 +607,9 @@ void run(Options & opt)
         error = channel.recorder->error();
       }
     }
-    if (!error) {
-      error = queue->error();
-    }
   }
 
   channels.clear();
-  queue.reset();
   recorder->stop();
   if (error) {
     std::rethrow_exception(error);

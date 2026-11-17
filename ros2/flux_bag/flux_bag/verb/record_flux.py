@@ -1,79 +1,56 @@
-from ros2bag.api import check_positive_float
-from ros2bag.verb import VerbExtension
+from argparse import ArgumentTypeError
+import math
 
-from flux_bag.verb import run
+from ros2bag.verb import VerbExtension
+from ros2bag.verb import record as ros2bag_record
+
+from flux_bag.verb import rosbag2_options, run_with_options
+
+
+def positive_seconds(value):
+    try:
+        s = float(value)
+    except ValueError:
+        raise ArgumentTypeError("Expects a floating point number") from None
+    if not math.isfinite(s):
+        raise ArgumentTypeError("Value must be finite")
+    if s <= 0:
+        raise ArgumentTypeError("Value must be positive")
+    return s
 
 
 class RecordFluxVerb(VerbExtension):
-    """Record flux channels and ROS topics into one bag."""
+    """Record flux channels and ROS topics into one bag, with the options of ros2 bag record."""
 
     def add_arguments(self, parser, cli_name):
-        parser.add_argument(
-            "topics", nargs="*", metavar="TOPIC", help="Channels and topics to record, by name."
-        )
-        parser.add_argument(
-            "-a", "--all", action="store_true", help="Record every flux channel and ROS topic."
-        )
-        parser.add_argument("-e", "--regex", help="Record the names this expression matches.")
-        parser.add_argument("-x", "--exclude-regex", help="Skip the names this expression matches.")
-        parser.add_argument(
-            "--exclude-topics", nargs="+", default=[], metavar="TOPIC", help="Names to skip."
-        )
-        parser.add_argument(
-            "-o", "--output", help="Bag directory to create (default: a timestamped name)."
-        )
+        ros2bag_record.add_recorder_arguments(parser)
+        parser.add_argument("-x", dest="exclude_regex", default="", help="Same as --exclude-regex.")
         parser.add_argument(
             "--poll",
-            type=check_positive_float,
+            type=positive_seconds,
+            default=0.1,
             metavar="SEC",
-            help="Seconds between looks for new flux channels (default: 1).",
-        )
-        parser.add_argument(
-            "--max-cache-size",
-            type=int,
-            metavar="BYTES",
-            help="Memory flux frames may wait in for the bag; a frame past it is dropped and "
-            "reported (default: 1 GiB).",
-        )
-        parser.add_argument(
-            "-s", "--storage", help="rosbag2 storage plugin, as in ros2 bag record."
-        )
-        parser.add_argument(
-            "--storage-preset-profile",
-            metavar="PROFILE",
-            help="Storage preset, as in ros2 bag record; zstd_fast compresses an mcap bag.",
-        )
-        parser.add_argument(
-            "--image-codec",
-            choices=("raw", "jpeg"),
-            help="jpeg stores the pixels of rgb8, bgr8 and mono8 sensor_msgs/Image frames as "
-            "JPEG (default: raw).",
-        )
-        parser.add_argument(
-            "--jpeg-quality",
-            type=int,
-            metavar="Q",
-            help="JPEG quality from 1 to 100 (default: 90).",
+            help="flux: seconds between looks for new flux channels (default: %(default)s).",
         )
 
     def main(self, *, args):
-        argv = list(args.topics)
-        if args.all:
-            argv.append("-a")
-        for flag, value in (
-            ("-e", args.regex),
-            ("-x", args.exclude_regex),
-            ("-o", args.output),
-            ("--poll", args.poll),
-            ("--max-cache-size", args.max_cache_size),
-            ("-s", args.storage),
-            ("--storage-preset-profile", args.storage_preset_profile),
-            ("--image-codec", args.image_codec),
-            ("--jpeg-quality", args.jpeg_quality),
-        ):
-            if value is not None:
-                argv += [flag, str(value)]
-        # Last: in the recorder every name after --exclude-topics is excluded.
-        if args.exclude_topics:
-            argv += ["--exclude-topics", *args.exclude_topics]
-        run("record", argv)
+        built = program_options(args)
+        if isinstance(built, str):
+            return built
+        run_with_options("record", *built)
+
+
+def program_options(args):
+    """The YAML options and ROS arguments the record program runs with, or why ros2 bag record
+    would not run."""
+    built = rosbag2_options.built_by(ros2bag_record, "Recorder", ros2bag_record.RecordVerb(), args)
+    if isinstance(built, str):
+        return built
+    storage, record, log_level, node_name = built
+    options = {
+        "storage": rosbag2_options.storage(storage),
+        "record": rosbag2_options.record(record),
+        "node_name": node_name,
+        "poll": args.poll,
+    }
+    return rosbag2_options.dump(options), ["--ros-args", "--log-level", log_level]

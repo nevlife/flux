@@ -1,6 +1,7 @@
 """record then play: a flux channel goes into a bag and comes back with its fingerprint, dtype,
 shape and bytes."""
 
+import contextlib
 import ctypes
 import ctypes.util
 import gc
@@ -10,6 +11,7 @@ import signal
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 import numpy as np
@@ -20,6 +22,7 @@ from ament_index_python.packages import get_package_prefix
 from rclpy.serialization import deserialize_message, serialize_message
 
 import flux
+from verb_command import command
 from flux import _flux
 from flux_msgs.msg import FluxFrame
 
@@ -46,7 +49,7 @@ def key(name):
 
 def record(bag, *args):
     return subprocess.Popen(
-        [program("record"), *args, "-o", bag, "--poll", "0.1"],
+        command("record", *args, "-o", bag, "--poll", "0.1"),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -75,7 +78,7 @@ def frames(bag):
 def play_into(sub, *args):
     """Every frame `play` puts on the channel `sub` is waiting on."""
     play = subprocess.Popen(
-        [program("play"), *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        command("play", *args), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
     got = []
     while True:
@@ -288,7 +291,7 @@ def test_a_rate_too_slow_for_int64_nanoseconds_plays_slowly(node, tmp_path):
     write_bag(bag, k, [(4096, 4, 0, [16], bytes(16))] * 3)
     sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
     play = subprocess.Popen(
-        [program("play"), bag, "-r", "1e-12"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        command("play", bag, "-r", "1e-12"), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
     got = 0
     end = time.monotonic() + 2.0
@@ -303,7 +306,7 @@ def test_waiting_for_the_next_frame_takes_no_cpu(node, tmp_path):
     bag = str(tmp_path / "bag")
     write_bag(bag, key("idle"), [(4096, 4, 0, [16], bytes(16))] * 2, step_ns=3_000_000_000)
     play = subprocess.Popen(
-        [program("play"), bag], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        command("play", bag), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
     time.sleep(1.0)
 
@@ -328,6 +331,31 @@ def test_a_frame_whose_data_does_not_fill_its_shape_is_skipped(node, tmp_path):
     assert [a.size for _, _, a in play_into(sub, bag)] == [16, 16]
 
 
+# record_flux writes codec "raw" only: play skips a frame of any other codec and says so once.
+def test_a_frame_of_another_codec_is_skipped(node, tmp_path):
+    k = key("codec")
+    bag = str(tmp_path / "bag")
+    writer = rosbag2_py.SequentialWriter()
+    writer.open(rosbag2_py.StorageOptions(uri=bag), rosbag2_py.ConverterOptions("cdr", "cdr"))
+    writer.create_topic(
+        rosbag2_py.TopicMetadata(
+            id=0, name=k + "/flux", type=FRAME_TYPE, serialization_format="cdr"
+        )
+    )
+    for i, codec in enumerate(["raw", "jpeg", "raw"]):
+        f = FluxFrame()
+        f.flux_topic, f.fingerprint, f.codec = k, FINGERPRINT, codec
+        f.meta = struct.pack("<IIBBQ", 4096, 4, 0, 1, 16)
+        f.data = bytes([i]) * 16
+        writer.write(k + "/flux", serialize_message(f), 1_000_000_000 + i * 100_000_000)
+    del writer
+    sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+    got = []
+    out = play_taking([taker(sub, got)], bag)
+    assert [a.tobytes() for a, _ in got] == [bytes([0]) * 16, bytes([2]) * 16]
+    assert out.count("not a raw FluxFrame, skipped") == 1
+
+
 # A channel whose publisher cannot be made, at the start or on a later geometry, is skipped as
 # rosbag2's player skips a topic; the other channels play on.
 @pytest.mark.parametrize("bad_at", [0, 1])
@@ -340,7 +368,7 @@ def test_a_channel_that_cannot_be_recreated_is_skipped(node, tmp_path, bad_at):
     write_bag_channels(bag, {key(f"zero{bad_at}"): rows, ok: [good] * 3})
     sub = flux.Subscription(node, ok, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
     assert len(play_into(sub, bag)) == 3
-    play = subprocess.run([program("play"), bag], capture_output=True, text=True, timeout=30)
+    play = subprocess.run(command("play", bag), capture_output=True, text=True, timeout=30)
     assert play.returncode == 0, play.stderr
     assert "Ignoring a flux channel" in play.stderr + play.stdout
 
@@ -412,114 +440,6 @@ def test_a_channel_of_no_installed_type_stays_a_flux_frame(tmp_path):
     assert len(got["/raw/flux"][1]) == 3
 
 
-def picture(i, height, width, channels):
-    """A smooth picture that moves with i, which JPEG keeps close."""
-    y, x = np.mgrid[0:height, 0:width]
-    planes = [128 + 60 * np.sin((x + i * 3) / 9 + c) * np.cos(y / 7) for c in range(channels)]
-    return np.stack(planes, axis=-1).astype(np.uint8).reshape(height, width * channels)
-
-
-def publish_images(pub, encoding, channels, count, height=48, width=64, pad=8):
-    """Images with `pad` bytes past each row, as some drivers send them."""
-    from sensor_msgs_flux.image import Image
-
-    sent = []
-    for i in range(count):
-        rows = np.zeros((height, width * channels + pad), np.uint8)
-        rows[:, : width * channels] = picture(i, height, width, channels)
-        b = Image.build__(pub)
-        b.set__header__stamp(100 + i, 7)
-        b.header__frame_id = "cam"
-        b.height, b.width, b.encoding = height, width, encoding
-        b.step = rows.shape[1]
-        b.alloc__data(rows.size)[:] = rows.reshape(-1)
-        assert b.commit__() == flux.Published.OK
-        sent.append(rows)
-        time.sleep(0.02)
-    return sent
-
-
-# A 4096-byte slot sends the pixels to the publisher's arena: the recorder copies them into the
-# frame before it compresses.
-@pytest.mark.parametrize("slot", [1 << 16, 4096])
-@pytest.mark.parametrize("encoding,channels", [("rgb8", 3), ("bgr8", 3), ("mono8", 1)])
-def test_an_image_recorded_as_jpeg_plays_back_close_to_what_was_sent(
-    node, tmp_path, encoding, channels, slot
-):
-    from sensor_msgs_flux.image import Image
-
-    k = key(f"jpeg_{encoding}_{slot}")
-    bag = str(tmp_path / "bag")
-    pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=slot, slot_count=4)
-    rec = record(bag, k, "--image-codec", "jpeg", "--jpeg-quality", "95")
-    time.sleep(0.5)
-    sent = publish_images(pub, encoding, channels, 20)
-    stop(rec)
-    del pub
-    gc.collect()
-    recorded = frames(bag)
-    assert recorded and all(f.codec == "jpeg" for _, f in recorded)
-    assert all(len(f.data) < sent[0].size / 2 for _, f in recorded)
-
-    sub = flux.Subscription(node, k, fingerprint=Image.FINGERPRINT__, qos=flux.QoS(depth=16))
-    got = play_into(sub, bag)
-    assert len(got) == len(recorded)
-    first = len(sent) - len(got)
-    for n, (dtype, shape, data) in enumerate(got):
-        img = Image.View(data)
-        assert (img.encoding, img.width, img.height, img.step) == (
-            encoding,
-            64,
-            48,
-            64 * channels + 8,
-        )
-        assert (img.header__stamp, img.header__frame_id) == ((100 + first + n, 7), "cam")
-        rows = np.asarray(img.data).reshape(48, -1).astype(int)
-        want = sent[first + n].astype(int)
-        assert np.abs(rows[:, : 64 * channels] - want[:, : 64 * channels]).mean() < 3
-        assert not rows[:, 64 * channels :].any()
-
-
-def test_an_image_jpeg_cannot_hold_is_recorded_as_it_is(node, tmp_path):
-    from sensor_msgs_flux.image import Image
-
-    k = key("jpeg_mono16")
-    bag = str(tmp_path / "bag")
-    pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=1 << 16, slot_count=4)
-    rec = record(bag, k, "--image-codec", "jpeg")
-    time.sleep(0.5)
-    publish_images(pub, "mono16", 2, 10)
-    stop(rec)
-    recorded = frames(bag)
-    assert recorded and all(f.codec == "raw" for _, f in recorded)
-
-
-def test_a_jpeg_image_converts_to_a_compressed_image(node, tmp_path):
-    from sensor_msgs.msg import CompressedImage
-    from sensor_msgs_flux.image import Image
-
-    k = key("jpeg_convert")
-    bag, out = str(tmp_path / "bag"), str(tmp_path / "ros")
-    pub = flux.Publisher(node, k, fingerprint=Image.FINGERPRINT__, slot_size=1 << 16, slot_count=4)
-    rec = record(bag, k, "--image-codec", "jpeg")
-    time.sleep(0.5)
-    publish_images(pub, "rgb8", 3, 10)
-    stop(rec)
-    recorded = frames(bag)
-
-    convert(bag, out)
-    got = messages(out)
-    assert got[k + "/compressed"][0] == "sensor_msgs/msg/CompressedImage"
-    msgs = [deserialize_message(data, CompressedImage) for _, data in got[k + "/compressed"][1]]
-    assert len(msgs) == len(recorded)
-    for m, (_, f) in zip(msgs, recorded):
-        assert m.format == "rgb8; jpeg compressed bgr8"
-        assert m.header.frame_id == "cam"
-        assert bytes(m.data[:2]) == b"\xff\xd8"
-        assert bytes(m.data) == bytes(f.data)[-len(m.data) :]
-    assert not any(t.endswith("/flux") for t in got)
-
-
 def test_a_bag_recorded_with_zstd_reads_back_whole_and_smaller(node, tmp_path):
     k = key("zstd")
     bag = str(tmp_path / "bag")
@@ -559,7 +479,7 @@ def play_taking(takers, *args):
     """Runs play on the bag until it exits and no taker gets a frame. A taker takes one frame and
     says whether it got one. play's output."""
     play = subprocess.Popen(
-        [program("play"), *args], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        command("play", *args), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
     while True:
         got = [take() for take in takers]
@@ -775,3 +695,360 @@ def test_a_gpu_image_channel_is_recorded_and_played_to_cpu_and_cuda(node, tmp_pa
     assert [(bytes(m.data), m.header.frame_id) for m in images] == [
         (d, "cam%d" % i) for i, (d, _) in enumerate(sent)
     ][first:]
+
+
+# rosbag2's own options: ros2 bag record and play take them, and they apply to the flux channels
+# as well.
+
+
+def publish_values(pub, count, period=0.02):
+    for i in range(count):
+        assert pub.publish(np.full(16, i, dtype=np.uint8))
+        time.sleep(period)
+
+
+def bag_files(bag):
+    return sorted(n for n in os.listdir(bag) if n != "metadata.yaml")
+
+
+def test_a_bag_split_by_duration_holds_every_frame(node, tmp_path):
+    k = key("split")
+    bag = str(tmp_path / "bag")
+    pub = flux.Publisher(node, k, fingerprint=FINGERPRINT, slot_size=4096, slot_count=4)
+    rec = record(bag, k, "-d", "1")
+    time.sleep(0.5)
+    publish_values(pub, 100)
+    stop(rec)
+    assert len(bag_files(bag)) >= 2
+    recorded = [int(f.data[0]) for _, f in frames(bag)]
+    assert recorded == list(range(recorded[0], 100)) and len(recorded) > 50
+
+
+def compressed_values(bag):
+    reader = rosbag2_py.SequentialCompressionReader()
+    reader.open(rosbag2_py.StorageOptions(uri=bag), rosbag2_py.ConverterOptions("cdr", "cdr"))
+    out = []
+    while reader.has_next():
+        topic, data, _ = reader.read_next()
+        if topic.endswith("/flux"):
+            out.append(bytes(deserialize_message(data, FluxFrame).data))
+    return out
+
+
+# rosbag2's writer keeps a message after write() returns, in its cache and its compression queue:
+# each frame's bytes must still be its own when it reaches the file. A burst of large frames keeps
+# them there long enough for a reused buffer to show.
+@pytest.mark.parametrize("mode", ["file", "message"])
+def test_a_compressed_bag_holds_every_frame_and_plays_back(node, tmp_path, mode):
+    k = key(f"compressed_{mode}")
+    bag = str(tmp_path / "bag")
+    size = 1 << 18
+    pub = flux.Publisher(node, k, fingerprint=FINGERPRINT, slot_size=size + 4096, slot_count=8)
+    rec = record(bag, k, "--compression-mode", mode, "--compression-format", "zstd")
+    time.sleep(0.5)
+    for i in range(40):
+        assert pub.publish(np.full(size, i, dtype=np.uint8))
+    time.sleep(0.5)
+    stop(rec)
+    if mode == "file":
+        assert all(n.endswith(".zstd") for n in bag_files(bag))
+    recorded = compressed_values(bag)
+    firsts = [r[0] for r in recorded]
+    # Message compression drops what its queue cannot hold, as rosbag2 does with any topic.
+    assert len(recorded) >= 10 and firsts == sorted(set(firsts)), firsts
+    assert all(r == bytes([r[0]]) * size for r in recorded)
+    del pub
+    gc.collect()
+    # Played back at the pace it was recorded, a burst overruns the subscriber here too.
+    sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=64))
+    played = [a.tobytes() for _, _, a in play_into(sub, bag)]
+    left = iter(recorded)
+    assert played and all(p in left for p in played)
+
+
+def frame_bag(path, k, count=10):
+    """A bag of `count` frames on `k`, the i-th of byte i, 100 ms apart."""
+    write_bag(path, k, [(4096, 4, 0, [16], bytes([i]) * 16) for i in range(count)])
+
+
+def test_play_loops_the_flux_frames(node, tmp_path):
+    k = key("loop")
+    bag = str(tmp_path / "bag")
+    frame_bag(bag, k, 5)
+    sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+    play = subprocess.Popen(command("play", bag, "-l"), stdout=subprocess.DEVNULL)
+    got = []
+    end = time.monotonic() + 10
+    while len(got) < 12 and time.monotonic() < end:
+        frame = sub.take_blocking(50_000_000)
+        if frame is not None:
+            got.append(int(frame.copy()[0]))
+    play.send_signal(signal.SIGINT)
+    assert play.wait(timeout=30) == 0
+    assert got == [0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1]
+
+
+@contextlib.contextmanager
+def spun_node():
+    """A node of its own, spun on a thread while the block runs, for ROS callbacks."""
+    from rclpy.executors import SingleThreadedExecutor
+
+    n = rclpy.create_node(f"flux_bag_spun{os.getpid()}")
+    executor = SingleThreadedExecutor()
+    executor.add_node(n)
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
+    try:
+        yield n
+    finally:
+        executor.shutdown()
+        spin.join()
+        n.destroy_node()
+
+
+@contextlib.contextmanager
+def listening(topic, msg_type, qos=10):
+    """(arrival, message) of every message on `topic` while the block runs."""
+    with spun_node() as n:
+        got = []
+        n.create_subscription(msg_type, topic, lambda m: got.append((time.monotonic(), m)), qos)
+        yield got
+
+
+def write_bag_with_ros(path, k, topic, count, frame_after_ns=0):
+    """`count` frames on `k` and Int32 messages on `topic`, the i-th of each holding i: the
+    messages 100 ms apart from 1 s, each frame `frame_after_ns` after its message."""
+    from std_msgs.msg import Int32
+
+    writer = rosbag2_py.SequentialWriter()
+    writer.open(rosbag2_py.StorageOptions(uri=path), rosbag2_py.ConverterOptions("cdr", "cdr"))
+    writer.create_topic(
+        rosbag2_py.TopicMetadata(
+            id=0, name=k + "/flux", type=FRAME_TYPE, serialization_format="cdr"
+        )
+    )
+    writer.create_topic(
+        rosbag2_py.TopicMetadata(
+            id=1, name=topic, type="std_msgs/msg/Int32", serialization_format="cdr"
+        )
+    )
+    for i in range(count):
+        at = 1_000_000_000 + i * 100_000_000
+        writer.write(topic, serialize_message(Int32(data=i)), at)
+        f = FluxFrame()
+        f.flux_topic, f.fingerprint, f.codec = k, FINGERPRINT, "raw"
+        f.meta = struct.pack("<IIBBQ", 4096, 4, 0, 1, 16)
+        f.data = bytes([i]) * 16
+        writer.write(k + "/flux", serialize_message(f), at + frame_after_ns)
+    del writer
+
+
+# Each loop starts the ROS topics and the flux channels from the bag's start at once, so every
+# frame keeps its place between the ROS messages on every loop. The stock player takes up to
+# 100 ms to fill its queue at each loop's start.
+def test_play_loops_the_ros_topics_and_the_flux_channels_together(node, tmp_path):
+    from std_msgs.msg import Int32
+
+    k, topic = key("loop_both"), key("loop_both_ros")
+    bag = str(tmp_path / "bag")
+    write_bag_with_ros(bag, k, topic, 4, frame_after_ns=50_000_000)
+    sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+    with listening(topic, Int32) as msgs:
+        # -d: the ROS subscription is matched before the first message.
+        play = subprocess.Popen(
+            command("play", bag, "-l", "-d", "0.5"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        events = []
+        end = time.monotonic() + 15
+        while len(events) < 12 and time.monotonic() < end:
+            frame = sub.take_blocking(20_000_000)
+            if frame is not None:
+                events.append((time.monotonic(), f"F{int(frame.copy()[0])}"))
+        play.send_signal(signal.SIGINT)
+        assert play.wait(timeout=30) == 0
+        events += [(t, f"R{m.data}") for t, m in list(msgs)]
+    order = [name for _, name in sorted(events)]
+    want = [f"{kind}{i}" for _ in range(3) for i in range(4) for kind in "RF"]
+    assert order[: len(want)] == want, order
+
+
+# --clock: the player's /clock runs on the bag's time while the flux frames play, at the rate
+# asked. Remapped so that no other /clock on the network reaches the test.
+def test_play_publishes_the_clock_while_the_flux_frames_play(node, tmp_path):
+    from rclpy.qos import qos_profile_sensor_data
+    from rosgraph_msgs.msg import Clock
+
+    k, clock = key("clock"), key("clock_topic")
+    bag = str(tmp_path / "bag")
+    frame_bag(bag, k, 10)
+    sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+    with listening(clock, Clock, qos_profile_sensor_data) as clocks:
+        play = subprocess.Popen(
+            command("play", bag, "--clock", "20", "-d", "0.5", "--remap", f"/clock:={clock}"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        arrivals = []
+        while True:
+            frame = sub.take_blocking(20_000_000)
+            if frame is not None:
+                arrivals.append((time.monotonic(), int(frame.copy()[0])))
+            elif play.poll() is not None:
+                break
+        assert play.returncode == 0
+        ticks = [(t, c.clock.sec + c.clock.nanosec * 1e-9) for t, c in list(clocks)]
+    assert [i for _, i in arrivals] == list(range(10))
+    first, last = arrivals[0][0], arrivals[-1][0]
+    during = [bag_time for t, bag_time in ticks if first <= t <= last]
+    # 0.9 s of frames at 20 Hz.
+    assert 12 <= len(during) <= 24, len(during)
+    # The last tick before each frame, one period or less behind it; the first frame can come
+    # before the first tick.
+    for t, i in arrivals[1:]:
+        before = [bag_time for at, bag_time in ticks if at <= t]
+        assert before and abs(before[-1] - (1.0 + 0.1 * i)) < 0.1, (i, before[-1:])
+
+
+# Services are ROS only: record_flux records a service's calls next to a flux channel, and
+# play_flux --publish-service-requests sends them to the service again, as ros2 bag does.
+def test_a_recorded_service_call_is_sent_to_the_service_again(node, tmp_path):
+    from rclpy.qos import qos_profile_system_default
+    from rclpy.service_introspection import ServiceIntrospectionState
+    from rosbag2_interfaces.srv import SetRate
+
+    k, service = key("service_channel"), key("service")
+    bag = str(tmp_path / "bag")
+    pub = flux.Publisher(node, k, fingerprint=FINGERPRINT, slot_size=4096, slot_count=4)
+    with spun_node() as n:
+        served = []
+
+        def serve(request, response):
+            served.append(request.rate)
+            response.success = True
+            return response
+
+        server = n.create_service(SetRate, service, serve)
+        client = n.create_client(SetRate, service)
+        for endpoint in (server, client):
+            endpoint.configure_introspection(
+                n.get_clock(), qos_profile_system_default, ServiceIntrospectionState.CONTENTS
+            )
+        rec = record(bag, k, "--services", service)
+        deadline = time.monotonic() + 10
+        while pub.subscriber_count == 0 or not n.count_subscribers(service + "/_service_event"):
+            assert time.monotonic() < deadline, "the recorder did not take both within 10 s"
+            time.sleep(0.05)
+        for i in range(3):
+            assert client.call_async(SetRate.Request(rate=float(i + 1)))
+            assert pub.publish(np.full(16, i, dtype=np.uint8))
+            time.sleep(0.1)
+        time.sleep(0.3)
+        stop(rec)
+        got = messages(bag)
+        assert len(got[k + "/flux"][1]) == 3
+        assert served == [1.0, 2.0, 3.0]
+        served.clear()
+        del pub
+        gc.collect()
+        play = subprocess.run(
+            command("play", bag, "--publish-service-requests", "-d", "0.5"),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert play.returncode == 0, play.stderr
+        deadline = time.monotonic() + 5
+        while len(served) < 3 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert served == [1.0, 2.0, 3.0]
+
+
+# rosbag2's message compression holds the flux frames as it holds the ROS messages: what
+# record_flux writes plays back and converts.
+def test_a_message_compressed_bag_records_plays_and_converts(node, tmp_path):
+    from sensor_msgs.msg import Imu
+    from sensor_msgs_flux.imu import Imu as FluxImu
+    from std_msgs.msg import Int32
+
+    k, topic = key("round_zstd"), key("round_zstd_ros")
+    bag, out = str(tmp_path / "bag"), str(tmp_path / "ros")
+    pub = flux.Publisher(node, k, fingerprint=FluxImu.FINGERPRINT__, slot_size=4096, slot_count=4)
+    ros_pub = node.create_publisher(Int32, topic, 10)
+    rec = record(bag, k, topic, "--compression-mode", "message", "--compression-format", "zstd")
+    deadline = time.monotonic() + 10
+    while ros_pub.get_subscription_count() == 0 or pub.subscriber_count == 0:
+        assert time.monotonic() < deadline, "the recorder did not take both topics within 10 s"
+        time.sleep(0.05)
+    for i in range(10):
+        b = FluxImu.build__(pub)
+        b.orientation_w = float(i)
+        assert b.commit__() == flux.Published.OK
+        ros_pub.publish(Int32(data=i))
+        time.sleep(0.02)
+    time.sleep(0.2)
+    stop(rec)
+    node.destroy_publisher(ros_pub)
+    del pub
+    gc.collect()
+    info = rosbag2_py.Info().read_metadata(bag, "")
+    assert (info.compression_mode, info.compression_format) == ("MESSAGE", "zstd")
+
+    sub = flux.Subscription(node, k, fingerprint=FluxImu.FINGERPRINT__, qos=flux.QoS(depth=16))
+    with listening(topic, Int32) as msgs:
+        played = play_into(sub, bag, "-d", "0.5")
+        time.sleep(0.2)
+        ros_played = [m.data for _, m in list(msgs)]
+    assert [FluxImu.View(a).orientation_w for _, _, a in played] == [float(i) for i in range(10)]
+    assert ros_played == list(range(10))
+
+    convert(bag, out)
+    got = messages(out)
+    assert got[k][0] == "sensor_msgs/msg/Imu"
+    imus = [deserialize_message(data, Imu) for _, data in got[k][1]]
+    assert [m.orientation.w for m in imus] == [float(i) for i in range(10)]
+    assert [deserialize_message(data, Int32).data for _, data in got[topic][1]] == list(range(10))
+
+
+def test_play_remaps_a_flux_channel(node, tmp_path):
+    k = key("remap")
+    bag = str(tmp_path / "bag")
+    frame_bag(bag, k, 3)
+    sub = flux.Subscription(node, k + "_moved", fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+    got = play_into(sub, bag, "--remap", f"{k}:={k}_moved")
+    assert [int(a[0]) for _, _, a in got] == [0, 1, 2]
+
+
+def test_play_starts_at_the_offset_and_stops_at_the_duration(node, tmp_path):
+    k = key("window")
+    bag = str(tmp_path / "bag")
+    frame_bag(bag, k, 10)
+    sub = flux.Subscription(node, k, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+    got = play_into(sub, bag, "--start-offset", "0.35", "--playback-duration", "0.3")
+    # From 0.35 s to 0.65 s into the bag: the frames at 0.4, 0.5 and 0.6 s.
+    assert [int(a[0]) for _, _, a in got] == [4, 5, 6]
+
+
+@pytest.mark.parametrize(
+    "args, played",
+    [
+        (["--topics", "{a}"], "a"),
+        (["-e", ".*/sel_b"], "b"),
+        (["-x", ".*/sel_a"], "b"),
+        (["--exclude-topics", "{a}"], "b"),
+        (["--topics", "{a}", "--exclude-topics", "{a}"], ""),
+    ],
+)
+def test_play_selects_flux_channels_by_name(node, tmp_path, args, played):
+    a, b = key("sel_a"), key("sel_b")
+    bag = str(tmp_path / "bag")
+    frame = (4096, 4, 0, [16], bytes(16))
+    write_bag_channels(bag, {a: [frame] * 3, b: [frame] * 3})
+    subs = {
+        n: flux.Subscription(node, c, fingerprint=FINGERPRINT, qos=flux.QoS(depth=16))
+        for n, c in (("a", a), ("b", b))
+    }
+    got = {n: [] for n in subs}
+    play_taking([taker(s, got[n]) for n, s in subs.items()], bag, *[x.format(a=a) for x in args])
+    assert {n for n, frames_got in got.items() if frames_got} == set(played)

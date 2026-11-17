@@ -1,17 +1,14 @@
 #include "flux/schemas.hpp"
 #include "flux_bag/flux_frame_cdr.hpp"
-#include "flux_bag/jpeg_frame.hpp"
 #include "flux_bag/raw_meta.hpp"
 
-#include <rclcpp/serialization.hpp>
 #include <rclcpp/serialized_message.hpp>
 #include <rosbag2_cpp/reader.hpp>
 #include <rosbag2_cpp/writer.hpp>
 #include <rosbag2_storage/serialized_bag_message.hpp>
 #include <rosbag2_storage/storage_options.hpp>
 #include <rosbag2_storage/topic_metadata.hpp>
-
-#include <sensor_msgs/msg/compressed_image.hpp>
+#include <rosbag2_transport/reader_writer_factory.hpp>
 
 #include <cstdint>
 #include <exception>
@@ -34,10 +31,8 @@ constexpr const char * kUsage =
   "usage: ros2 bag convert_flux BAG -o OUT\n"
   "\n"
   "Writes a copy of BAG in which each flux_msgs/FluxFrame topic becomes the ROS message its\n"
-  "fingerprint names, on the channel's own topic, with the recorded times. A jpeg frame\n"
-  "becomes a sensor_msgs/CompressedImage on the channel's topic + /compressed, as\n"
-  "compressed_image_transport publishes it. Every other topic is copied as it is. A frame\n"
-  "whose type is not installed stays a FluxFrame.\n";
+  "fingerprint names, on the channel's own topic, with the recorded times. Every other\n"
+  "topic is copied as it is. A frame whose type is not installed stays a FluxFrame.\n";
 
 struct Options
 {
@@ -84,16 +79,23 @@ struct Route
   std::uint64_t kept = 0;
 };
 
+auto storage_at(const std::string & uri) -> rosbag2_storage::StorageOptions
+{
+  rosbag2_storage::StorageOptions s;
+  s.uri = uri;
+  return s;
+}
+
 class Converter
 {
 public:
+  // A reader as ros2 bag play makes it, so a bag record_flux compressed reads too.
   explicit Converter(const Options & o)
+  : reader_(rosbag2_transport::ReaderWriterFactory::make_reader(storage_at(o.in)))
   {
-    reader_.open(o.in);
-    rosbag2_storage::StorageOptions out;
-    out.uri = o.out;
-    writer_.open(out);
-    for (const rosbag2_storage::TopicMetadata & t : reader_.get_all_topics_and_types()) {
+    reader_->open(storage_at(o.in));
+    writer_.open(storage_at(o.out));
+    for (const rosbag2_storage::TopicMetadata & t : reader_->get_all_topics_and_types()) {
       if (t.type == kFrameType) {
         frame_topics_[t.name] = t;
       } else {
@@ -105,8 +107,8 @@ public:
 
   void run()
   {
-    while (reader_.has_next()) {
-      const auto msg = reader_.read_next();
+    while (reader_->has_next()) {
+      const auto msg = reader_->read_next();
       if (frame_topics_.count(msg->topic_name) != 0) {
         frame(msg);
       } else {
@@ -127,15 +129,11 @@ private:
   {
     const rcutils_uint8_array_t & raw = *msg->serialized_data;
     flux_bag::FluxFrameFields f;
-    flux_bag::JpegMeta meta;
+    flux_bag::RawMeta meta;
     // A ROS message has no place for the aux bytes; a frame kept as a FluxFrame keeps them.
     flux_bag::AuxTail aux;
     if (!flux_bag::read_frame(raw.buffer, raw.buffer_length, f, meta, aux)) {
       throw std::runtime_error(msg->topic_name + ": a FluxFrame that does not parse");
-    }
-    if (f.codec == "jpeg") {
-      jpeg_frame(msg, f, meta);
-      return;
     }
     Route & r = route(msg->topic_name, std::string(f.flux_topic), f.fingerprint);
     if (!r.type) {
@@ -163,58 +161,6 @@ private:
     converted->recv_timestamp = msg->recv_timestamp;
     converted->send_timestamp = msg->send_timestamp;
     converted->topic_name = r.topic;
-    writer_.write(converted);
-    ++r.converted;
-  }
-
-  void jpeg_frame(
-    const std::shared_ptr<rosbag2_storage::SerializedBagMessage> & msg,
-    const flux_bag::FluxFrameFields & f, const flux_bag::JpegMeta & meta)
-  {
-    fields_.resize(meta.raw.nbytes());
-    const auto jpeg = flux_bag::restore_fields(f, meta, fields_.data());
-    const sensor_msgs::flux_msg::Image::View img(fields_.data(), fields_.size());
-    sensor_msgs::msg::CompressedImage out;
-    out.header.stamp.sec = img.header__sec();
-    out.header.stamp.nanosec = img.header__nanosec();
-    out.header.frame_id = std::string(img.header__frame_id());
-    const std::string encoding(img.encoding());
-    if (jpeg.empty() || !img.ok__()) {
-      throw std::runtime_error(msg->topic_name + ": a jpeg FluxFrame that does not parse");
-    }
-    // The JPEG decodes to the same picture whatever order its channels came in; the text after
-    // the encoding is what OpenCV, which decodes to BGR, turns it into.
-    out.format = encoding + "; jpeg compressed " + (encoding == "mono8" ? "mono8" : "bgr8");
-    out.data.assign(jpeg.begin(), jpeg.end());
-    const std::string topic = std::string(f.flux_topic) + "/compressed";
-    Route & r = routes_[std::make_pair(topic, f.fingerprint)];
-    if (r.topic.empty()) {
-      r.topic = topic;
-      if (types_.count(topic) == 0) {
-        rosbag2_storage::TopicMetadata t;
-        t.name = topic;
-        t.type = kCompressedType;
-        t.serialization_format = "cdr";
-        writer_.create_topic(t);
-        types_[topic] = kCompressedType;
-      }
-    }
-    if (types_[topic] != kCompressedType) {
-      if (kept_.insert(msg->topic_name).second) {
-        writer_.create_topic(frame_topics_[msg->topic_name]);
-      }
-      writer_.write(msg);
-      ++r.kept;
-      return;
-    }
-    auto cdr = std::make_shared<rclcpp::SerializedMessage>();
-    compressed_.serialize_message(&out, cdr.get());
-    auto converted = std::make_shared<rosbag2_storage::SerializedBagMessage>();
-    converted->serialized_data =
-      std::shared_ptr<rcutils_uint8_array_t>(cdr, &cdr->get_rcl_serialized_message());
-    converted->recv_timestamp = msg->recv_timestamp;
-    converted->send_timestamp = msg->send_timestamp;
-    converted->topic_name = topic;
     writer_.write(converted);
     ++r.converted;
   }
@@ -253,13 +199,9 @@ private:
     return routes_.emplace(key, std::move(r)).first->second;
   }
 
-  static constexpr const char * kCompressedType = "sensor_msgs/msg/CompressedImage";
-
   flux::Schemas schemas_;
-  rclcpp::Serialization<sensor_msgs::msg::CompressedImage> compressed_;
-  std::vector<std::uint8_t> fields_;
   std::vector<std::uint8_t> joined_;
-  rosbag2_cpp::Reader reader_;
+  std::unique_ptr<rosbag2_cpp::Reader> reader_;
   rosbag2_cpp::Writer writer_;
   std::map<std::string, rosbag2_storage::TopicMetadata> frame_topics_;
   // Every topic of the output and its type: a channel whose topic a ROS topic of another type

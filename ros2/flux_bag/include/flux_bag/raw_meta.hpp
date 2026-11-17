@@ -2,6 +2,7 @@
 #define FLUX_BAG_RAW_META_HPP
 
 #include "flux/channel.hpp"
+#include "flux_bag/flux_frame_cdr.hpp"
 
 #include <array>
 #include <cstddef>
@@ -125,6 +126,20 @@ struct AuxTail
     return true;
   }
 };
+
+// A recorded FluxFrame of codec "raw" and the aux tail of its meta. The fields of `f` and aux.aux
+// point into `in`.
+inline auto read_frame(
+  const std::uint8_t * in, std::size_t size, FluxFrameFields & f, RawMeta & meta,
+  AuxTail & aux) -> bool
+{
+  if (!FluxFrameCdr::read(in, size, f) || f.codec != "raw") {
+    return false;
+  }
+  const std::size_t used = meta.read(f.meta, f.meta_size);
+  return used != 0 &&
+         aux.read(static_cast<const std::uint8_t *>(f.meta) + used, f.meta_size - used);
+}
 
 }  // namespace flux_bag
 
