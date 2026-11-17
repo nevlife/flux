@@ -286,7 +286,27 @@ fn an_exported_allocation_is_imported_through_its_endpoint() {
 
 #[test]
 fn an_allocation_comes_apart_after_the_context_current_at_its_making_is_destroyed() {
+    const ENV: &str = "FLUX_TEST_CTX_ALLOC";
     if gpu().is_none() || !(probe(0).vmm && probe(0).posix_fd_handle) {
+        return;
+    }
+    // An integrated GPU's free memory is the system's: other processes move it, and on Orin this
+    // allocation did not lower it. There the process's anonymous pages hold the allocation, so
+    // the test runs alone in a child, away from the other tests' allocations.
+    let integrated = probe(0).integrated;
+    if integrated && std::env::var_os(ENV).is_none() {
+        let name = "gpu::tests::an_allocation_comes_apart_after_the_context_current_at_its_making_is_destroyed";
+        let out = sys::test_output(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([name, "--exact", "--nocapture"])
+                .env(ENV, "1"),
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         return;
     }
     let drv = Driver::get();
@@ -296,14 +316,23 @@ fn an_allocation_comes_apart_after_the_context_current_at_its_making_is_destroye
     let destroy: CtxDestroy = unsafe { drv.extra(c"cuCtxDestroy_v2") }.unwrap();
     // SAFETY: cuMemGetInfo_v2's C signature.
     let info: MemGetInfo = unsafe { drv.extra(c"cuMemGetInfo_v2") }.unwrap();
-    let free = || {
+    let used = || {
+        if integrated {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let kib: usize = status
+                .lines()
+                .find_map(|l| l.strip_prefix("RssAnon:"))
+                .and_then(|v| v.trim().trim_end_matches("kB").trim().parse().ok())
+                .unwrap();
+            return kib << 10;
+        }
         let (mut free, mut total) = (0, 0);
         // SAFETY: valid out-pointers, on a thread with a current context.
         assert_eq!(unsafe { info(&raw mut free, &raw mut total) }, SUCCESS);
-        free
+        total - free
     };
     let _primary = Stream::create().unwrap();
-    let before = free();
+    let before = used();
     let core = super::core().unwrap();
     let mut dev = 0;
     // SAFETY: dev is a valid out-pointer.
@@ -319,7 +348,7 @@ fn an_allocation_comes_apart_after_the_context_current_at_its_making_is_destroye
     assert_eq!(unsafe { destroy(ctx) }, SUCCESS);
     drop(import);
     drop(alloc);
-    let leaked = before.saturating_sub(free());
+    let leaked = used().saturating_sub(before);
     assert!(leaked < n / 2, "{leaked} bytes still allocated");
 }
 
