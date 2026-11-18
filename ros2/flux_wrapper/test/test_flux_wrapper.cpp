@@ -900,6 +900,10 @@ TEST_F(WrapperTest, ACudaImagePublisherWithAFormatReachesASubscriber)
   run_until(done, [&] { EXPECT_TRUE(pub->publish(want)); });
   ASSERT_TRUE(done);
   EXPECT_EQ(got, want.data);
+  want.width = 200;
+  want.step = 200;
+  want.data.resize(400);
+  EXPECT_FALSE(pub->publish(want)) << "rows 200 B apart in a slot of a 256 B pitch";
   options.image_encoding = "rgb8";
   EXPECT_THROW(
     flux_wrapper::create_publisher<Image>(*node_, "image_rgb8", rclcpp::QoS(4), options),

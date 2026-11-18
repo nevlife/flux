@@ -857,7 +857,11 @@ public:
     msg_->encoding = v;
   }
   void set_is_bigendian(std::uint8_t v) { FLUX_WRAPPER_SET(is_bigendian, v) }
-  void set_step(std::uint32_t v) { FLUX_WRAPPER_SET(step, v) }
+  void set_step(std::uint32_t v)
+  {
+    step_ = v;
+    FLUX_WRAPPER_SET(step, v)
+  }
 
   // Every field but data, through the setters, so that one that does not fit is logged by name.
   void set_from(const sensor_msgs::msg::Image & m)
@@ -872,6 +876,9 @@ public:
 
 private:
   using LoanBase::LoanBase;
+
+  // An image slot's rows are its layout's pitch apart, which the publisher holds step to.
+  std::uint32_t step_ = 0;
 
   friend class Publisher<sensor_msgs::msg::Image>;
 };

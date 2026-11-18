@@ -763,6 +763,12 @@ public:
     return o;
   }
   [[nodiscard]] auto aux_len() const noexcept -> std::size_t { return aux_len_; }
+  // An image slot's row pitch, 0 outside one.
+  [[nodiscard]] auto image_pitch() const noexcept -> std::uint32_t
+  {
+    const auto l = w_.image_layout();
+    return l ? l->pitch[0] : 0;
+  }
   // Past the aux region, the commit is TOO_LARGE.
   void set_aux_len(std::size_t n)
   {
@@ -1728,6 +1734,7 @@ NB_MODULE(_flux, m)
     .def_prop_ro("aux", [](nb::handle self) { return nb::inst_ptr<Loan>(self)->aux(self); })
     .def_prop_rw("aux_len", &Loan::aux_len, &Loan::set_aux_len)
     .def_prop_ro("_heap", &Loan::heap)
+    .def_prop_ro("_image_pitch", &Loan::image_pitch)
     .def_prop_ro("__cuda_array_interface__", &Loan::cai)
     .def(
       "__dlpack__",

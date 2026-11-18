@@ -376,6 +376,29 @@ def test_an_image_format_on_a_host_publisher_is_refused(node):
 
 @needs_cuda
 @pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
+def test_a_cuda_image_whose_step_is_not_the_slots_pitch_is_refused(node):
+    import flux
+
+    if not flux.probe().integrated:
+        pytest.skip("image slots need an integrated GPU")
+    pub = flux_wrapper.Publisher(
+        node,
+        Image,
+        "image_step",
+        4,
+        device="cuda",
+        image_encoding="mono8",
+        image_width=200,
+        image_height=2,
+    )
+    msg = Image(height=2, width=200, step=256, encoding="mono8", data=bytes(512))
+    assert pub.publish(msg)
+    msg.step, msg.data = 200, bytes(400)
+    assert not pub.publish(msg)
+
+
+@needs_cuda
+@pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
 def test_cuda_subscription_gets_a_slot_publishers_data_on_the_device(node):
     """alloc="slot" keeps the data in the slot, which an integrated GPU reads in place."""
     want = image(5)

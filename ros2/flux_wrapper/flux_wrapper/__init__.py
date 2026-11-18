@@ -178,6 +178,7 @@ class Loan:
         # for the publisher's log line.
         object.__setattr__(self, "_over", None)
         object.__setattr__(self, "_stamp", (0, 0))
+        object.__setattr__(self, "_step", None)
 
     def __bool__(self):
         if self._gpu:
@@ -203,6 +204,8 @@ class Loan:
                 f"{self._type.__name__}: no setter for {name}, as in C++; data is written with "
                 "alloc_data(n) or alloc_buffer(n)"
             )
+        if name == "step":
+            object.__setattr__(self, "_step", value)
         b = self._builder
         if b is None:
             setattr(self._msg, name, value)
@@ -444,6 +447,11 @@ class Publisher:
                 self._report(_flux.Published.TOO_LARGE)  # data past the slot, as publish(msg)
             else:
                 self._device_error(_GPU_OVER)
+            return False
+        pitch = slot._image_pitch
+        if pitch and loan._step != pitch:
+            slot.abort()
+            self._device_error(f"step {loan._step} is not the image slot's pitch {pitch}")
             return False
         slot.aux_len = loan._builder.size__
         return self._report(slot.commit(nbytes=loan._len))

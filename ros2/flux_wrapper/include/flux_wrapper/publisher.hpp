@@ -15,6 +15,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 namespace flux_wrapper
@@ -292,6 +293,15 @@ private:
         device_error(detail::Gpu<MsgT>::kOverCap);
       }
       return false;
+    }
+    if constexpr (std::is_same_v<MsgT, sensor_msgs::msg::Image>) {
+      if (const auto l = loan.slot_.image_layout(); l && loan.step_ != l->pitch[0]) {
+        loan.slot_.abort();
+        device_error(("step " + std::to_string(loan.step_) + " is not the image slot's pitch " +
+                      std::to_string(l->pitch[0]))
+                       .c_str());
+        return false;
+      }
     }
     loan.slot_.set_aux_len(loan.builder_->size__());
     return report(loan.slot_.commit(loan.len_));
