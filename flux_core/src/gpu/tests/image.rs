@@ -262,3 +262,31 @@ fn image_slots_without_a_format_have_no_layout() {
     assert!(slot.dmabuf_fd().is_some());
     assert_eq!(slot.commit_len(1), Published::Ok);
 }
+
+/// A generated type's frame starts with its scalars, so its image is not where the layout says.
+#[test]
+fn an_image_format_on_a_typed_channel_is_refused() {
+    if !integrated() {
+        return;
+    }
+    let config = PublisherConfig {
+        alloc: Alloc::Slot,
+        image_format: bgra(640, 480),
+        ..PublisherConfig::default()
+    };
+    let name = super::channel::topic("img_typed");
+    let made = Channel::create_config(
+        &name,
+        &config,
+        NO_SCHEMA,
+        MemoryPolicy::default(),
+        Stream::default(),
+        -1,
+        Some(64),
+    );
+    assert!(
+        matches!(made, Err(Error::InvalidArgument(_))),
+        "{:?}",
+        made.err()
+    );
+}

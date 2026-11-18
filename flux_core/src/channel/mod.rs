@@ -403,6 +403,13 @@ impl Channel {
             None
         };
         let image = config.image_slots || config.image_format.is_some();
+        if config.image_format.is_some() && scalar_bytes.is_some() {
+            return Err(Error::InvalidArgument(
+                "an image format places the image at the start of the slot, which a generated \
+                 type's frame does not: declare it on a byte or GPU memory channel"
+                    .into(),
+            ));
+        }
         let plan = sizing::plan(
             config.alloc,
             image_slot_size(config)?,

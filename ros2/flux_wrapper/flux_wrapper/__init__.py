@@ -324,7 +324,9 @@ class Publisher:
     alloc="slot" keeps every variable-length field of a "cpu" message in its flux slot, where an
     integrated GPU subscriber reads it in place; a message past the slot is refused.
     alloc_on_subscriber, with alloc="slot" or device="cuda", gives the slots memory once a
-    subscriber attaches; publish() is False until then.
+    subscriber attaches; publish() is False until then. image_slots, image_encoding ("bgra8",
+    "nv12", ...), image_width and image_height go to the flux publisher as they are; a format
+    needs device="cuda".
     """
 
     def __init__(
@@ -342,6 +344,10 @@ class Publisher:
         device="cpu",
         alloc="arena",
         alloc_on_subscriber=False,
+        image_slots=False,
+        image_encoding="",
+        image_width=0,
+        image_height=0,
     ):
         self._type = msg_type
         self._flux = None
@@ -352,6 +358,8 @@ class Publisher:
         self._over_logged = False
         self._cuda = _cuda_usable(self._logger, topic, device, msg_type)
         if use_flux():
+            if image_encoding and not self._cuda:
+                raise ValueError("flux_wrapper: an image format needs device='cuda'")
             self._adapter = _adapter(msg_type)[0]
             fingerprint, aux_size = self._adapter.FINGERPRINT__, 0
             if self._cuda:
@@ -369,6 +377,10 @@ class Publisher:
                 aux_size=aux_size,
                 alloc=alloc,
                 alloc_on_subscriber=alloc_on_subscriber,
+                image_slots=image_slots,
+                image_encoding=image_encoding,
+                image_width=image_width,
+                image_height=image_height,
             )
         else:
             self._ros = node.create_publisher(msg_type, topic, qos)

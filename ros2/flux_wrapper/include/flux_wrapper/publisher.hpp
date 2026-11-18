@@ -20,6 +20,27 @@
 namespace flux_wrapper
 {
 
+#ifdef USE_FLUX_ENABLED
+namespace detail
+{
+// The flux encoding of a sensor_msgs/Image encoding; an empty one is none.
+inline auto image_encoding(const std::string & e) -> flux::ImageEncoding
+{
+  using E = flux::ImageEncoding;
+  static const std::pair<const char *, E> kNames[] = {
+    {"", E::None},         {"bgra8", E::Bgra8}, {"rgba8", E::Rgba8}, {"mono8", E::Mono8},
+    {"mono16", E::Mono16}, {"nv12", E::Nv12},   {"uyvy", E::Uyvy},   {"yuyv", E::Yuyv}};
+  for (const auto & [name, value] : kNames) {
+    if (e == name) {
+      return value;
+    }
+  }
+  const std::string why = "flux_wrapper: no image slot takes encoding '" + e + "'";
+  throw flux::Error(FLUX_INVALID_ARGUMENT, why.c_str());
+}
+}  // namespace detail
+#endif
+
 struct PublisherOptions
 {
   Alloc alloc = Alloc::Arena;
@@ -34,6 +55,12 @@ struct PublisherOptions
   // flux with Alloc::Slot or Device::Cuda only: the slots get memory once a subscriber attaches,
   // and publish() is false until then. For topics nobody may subscribe to.
   bool alloc_on_subscriber = false;
+  // flux only, as flux::PublisherOptions: image slots, and their format as a sensor_msgs/Image
+  // encoding ("bgra8", "nv12", ...), which needs Device::Cuda and a step that is image_layout's.
+  bool image_slots = false;
+  std::string image_encoding;
+  std::uint32_t image_width = 0;
+  std::uint32_t image_height = 0;
   // flux only: also publish each message as its ROS message on the same topic while a ROS
   // subscriber (rviz2, ros2 bag) wants it. With Device::Cuda the mirror copies the data field
   // from the device for each of those messages.
@@ -70,6 +97,10 @@ public:
       o.max_slot_size = options.max_slot_size;
       o.max_slot_count = options.max_slot_count;
       o.alloc_on_subscriber = options.alloc_on_subscriber;
+      o.image_slots = options.image_slots;
+      o.image_encoding = detail::image_encoding(options.image_encoding);
+      o.image_width = options.image_width;
+      o.image_height = options.image_height;
       if constexpr (detail::kRootData<MsgT>) {
         if (cuda) {
           o.device = flux::Device::Cuda;
@@ -82,6 +113,11 @@ public:
           }
           return;
         }
+      }
+      if (o.image_encoding != flux::ImageEncoding::None) {
+        // A host message starts with its header, so the image is not where the layout says.
+        throw flux::Error(
+          FLUX_INVALID_ARGUMENT, "flux_wrapper: an image format needs Device::Cuda");
       }
       flux_ =
         std::make_unique<flux::Publisher>(node, topic, o, detail::AdapterT<MsgT>::kFingerprint);

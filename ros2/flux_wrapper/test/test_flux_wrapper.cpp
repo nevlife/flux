@@ -870,6 +870,47 @@ TEST_F(WrapperTest, ASlotPublisherThatAllocsOnSubscriberPublishesOnceOneAttaches
   EXPECT_TRUE(done);
 }
 
+// A Cuda publisher with an image format puts the data at the start of an image slot.
+TEST_F(WrapperTest, ACudaImagePublisherWithAFormatReachesASubscriber)
+{
+  SKIP_WITHOUT_CUDA();
+#if defined(FLUX_WRAPPER_CUDA) && defined(USE_FLUX_ENABLED)
+  if (!expect_flux() || !flux::gpu::probe().integrated) {
+    GTEST_SKIP() << "image slots are flux's, on an integrated GPU";
+  }
+  std::atomic<bool> done{false};
+  std::vector<std::uint8_t> got;
+  auto sub = flux_wrapper::create_subscription<Image>(
+    *node_, "image_fmt", rclcpp::QoS(4), [&](const flux_wrapper::View<Image> & v) {
+      got.assign(v.data().begin(), v.data().end());
+      done = true;
+    });
+  flux_wrapper::PublisherOptions options;
+  options.device = flux_wrapper::Device::Cuda;
+  options.image_encoding = "mono8";
+  options.image_width = 256;
+  options.image_height = 2;
+  auto pub = flux_wrapper::create_publisher<Image>(*node_, "image_fmt", rclcpp::QoS(4), options);
+  ASSERT_TRUE(pub->uses_device());
+  Image want = image(4, std::vector<std::uint8_t>(512, 7));
+  want.width = 256;
+  want.step = 256;
+  run_until(done, [&] { EXPECT_TRUE(pub->publish(want)); });
+  ASSERT_TRUE(done);
+  EXPECT_EQ(got, want.data);
+  options.image_encoding = "rgb8";
+  EXPECT_THROW(
+    flux_wrapper::create_publisher<Image>(*node_, "image_rgb8", rclcpp::QoS(4), options),
+    flux::Error);
+  options.image_encoding = "mono8";
+  options.device = flux_wrapper::Device::Host;
+  options.alloc = flux_wrapper::Alloc::Slot;
+  EXPECT_THROW(
+    flux_wrapper::create_publisher<Image>(*node_, "image_host", rclcpp::QoS(4), options),
+    flux::Error);
+#endif
+}
+
 TEST_F(WrapperTest, CudaSubscriptionGetsASlotHostImageOnTheDevice)
 {
   SKIP_WITHOUT_CUDA();

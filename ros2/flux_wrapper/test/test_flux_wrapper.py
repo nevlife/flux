@@ -341,6 +341,22 @@ def test_a_slot_publisher_that_allocs_on_subscriber_publishes_once_one_attaches(
     assert done.is_set()
 
 
+@pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
+def test_an_image_format_on_a_host_publisher_is_refused(node):
+    """A host message starts with its header, so the image is not at the start of the slot."""
+    with pytest.raises(ValueError, match="cuda"):
+        flux_wrapper.Publisher(
+            node,
+            Image,
+            "image_host",
+            4,
+            alloc="slot",
+            image_encoding="mono8",
+            image_width=256,
+            image_height=2,
+        )
+
+
 @needs_cuda
 @pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
 def test_cuda_subscription_gets_a_slot_publishers_data_on_the_device(node):
