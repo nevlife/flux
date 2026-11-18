@@ -653,7 +653,7 @@ TEST_F(Gpu, AnImageSlotReachesACpuAndAGpuSubscriber)
   c.alloc = FLUX_ALLOC_SLOT;
   c.slot_size = 3 << 20;
   c.slot_count = 4;
-  c.image_slots = true;
+  c.image_slots = FLUX_IMAGE_SLOTS_ON;
   const std::string name = unique_name("image");
   auto pub = flux::detail::Channel::create_config(name, c, flux::kNoSchema);
   flux::WriteSlot w = pub.loan();
@@ -728,7 +728,7 @@ TEST_F(Gpu, PublisherOptionsMakeImageSlots)
   flux::PublisherOptions o;
   o.alloc = flux::Alloc::Slot;
   o.slot_size = 3 << 20;
-  o.image_slots = true;
+  o.image_slots = flux::ImageSlots::On;
   auto pub = flux::create_publisher(*node, "/gpu" + std::to_string(getpid()) + "_image", o);
   flux::WriteSlot w = pub->loan();
   ASSERT_TRUE(w);
@@ -745,6 +745,11 @@ TEST_F(Gpu, PublisherOptionsMakeImageSlots)
   ASSERT_TRUE(b.image_layout().has_value());
   EXPECT_EQ(b.image_layout()->pitch[0], 3584U);
   b.abort();
+  o.image_slots = flux::ImageSlots::Off;
+  EXPECT_THROW(
+    flux::create_publisher(*node, "/gpu" + std::to_string(getpid()) + "_image_off", o),
+    flux::Error);
+  o.image_slots = flux::ImageSlots::On;
   o.alloc = flux::Alloc::Arena;
   EXPECT_THROW(
     flux::create_publisher(*node, "/gpu" + std::to_string(getpid()) + "_image_arena", o),

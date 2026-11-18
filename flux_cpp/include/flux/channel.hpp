@@ -161,6 +161,14 @@ enum class Alloc : std::int32_t {
   Slot = FLUX_ALLOC_SLOT,
 };
 
+// Whether a fixed-slot publisher's slots are image slots (docs/gpu.md). Auto makes them for an
+// image format.
+enum class ImageSlots : std::int32_t {
+  Auto = FLUX_IMAGE_SLOTS_AUTO,
+  Off = FLUX_IMAGE_SLOTS_OFF,
+  On = FLUX_IMAGE_SLOTS_ON,
+};
+
 // The sensor_msgs/Image encodings an image slot takes.
 enum class ImageEncoding : std::uint32_t {
   None = FLUX_IMAGE_NONE,

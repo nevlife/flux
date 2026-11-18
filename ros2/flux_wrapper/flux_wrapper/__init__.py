@@ -344,7 +344,7 @@ class Publisher:
         device="cpu",
         alloc="arena",
         alloc_on_subscriber=False,
-        image_slots=False,
+        image_slots="auto",
         image_encoding="",
         image_width=0,
         image_height=0,

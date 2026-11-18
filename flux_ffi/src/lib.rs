@@ -21,7 +21,7 @@ pub use schema::*;
 pub use status::*;
 
 // Raised on every change to the C ABI; the soname carries it (`build.rs`, `CMakeLists.txt`).
-pub const FLUX_ABI_VERSION: u32 = 4;
+pub const FLUX_ABI_VERSION: u32 = 5;
 
 // A caller compares it with its header's FLUX_ABI_VERSION.
 #[unsafe(no_mangle)]

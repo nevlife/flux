@@ -32,8 +32,8 @@ struct PublisherOptions
   // Alloc::Slot and device-payload publishers: slots get memory once a subscriber attaches, and
   // publish fails until then. For topics nobody may subscribe to.
   bool alloc_on_subscriber = false;
-  bool image_slots = false;  // fixed slots on an integrated GPU, each a dmabuf (docs/gpu.md)
-  ImageEncoding image_encoding = ImageEncoding::None;  // implies image_slots
+  ImageSlots image_slots = ImageSlots::Auto;
+  ImageEncoding image_encoding = ImageEncoding::None;
   std::uint32_t image_width = 0;
   std::uint32_t image_height = 0;
 };

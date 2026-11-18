@@ -5,7 +5,7 @@ use crate::channel::{Alloc, PublisherConfig, soon};
 use crate::gpu::{Stream, probe};
 use crate::layout::NO_SCHEMA;
 use crate::qos::{MemoryPolicy, QoS};
-use crate::{Channel, Error, Published};
+use crate::{Channel, Error, ImageSlots, Published};
 
 fn integrated() -> bool {
     let p = probe(0);
@@ -23,7 +23,7 @@ fn image_publisher(
         slot_size: 3 << 20,
         slot_count: count,
         max_slot_count: max_count,
-        image_slots: true,
+        image_slots: ImageSlots::On,
         ..PublisherConfig::default()
     };
     Channel::create_config(
@@ -135,7 +135,7 @@ fn image_slots_need_fixed_slots() {
         return;
     }
     let config = PublisherConfig {
-        image_slots: true,
+        image_slots: ImageSlots::On,
         ..PublisherConfig::default()
     };
     let name = super::channel::topic("img_arena");
@@ -160,10 +160,20 @@ fn format_publisher(
     format: crate::ImageFormat,
     slot_size: u32,
 ) -> crate::Result<Channel> {
+    slots_publisher(name, ImageSlots::Auto, format, slot_size)
+}
+
+fn slots_publisher(
+    name: &str,
+    slots: ImageSlots,
+    format: crate::ImageFormat,
+    slot_size: u32,
+) -> crate::Result<Channel> {
     let config = PublisherConfig {
         alloc: Alloc::Slot,
         slot_size,
         slot_count: 4,
+        image_slots: slots,
         image_format: format,
         ..PublisherConfig::default()
     };
@@ -261,6 +271,37 @@ fn image_slots_without_a_format_have_no_layout() {
     assert_eq!(slot.image_layout(), None);
     assert!(slot.dmabuf_fd().is_some());
     assert_eq!(slot.commit_len(1), Published::Ok);
+}
+
+/// Auto makes image slots for a format only, and Off with a format contradicts itself.
+#[test]
+fn auto_makes_image_slots_for_a_format_only_and_off_refuses_one() {
+    if !integrated() {
+        return;
+    }
+    let none = crate::ImageFormat::default();
+    let cases = [
+        ("img_auto_bytes", ImageSlots::Auto, none, Some(false)),
+        ("img_auto_fmt", ImageSlots::Auto, bgra(64, 64), Some(true)),
+        ("img_off", ImageSlots::Off, none, Some(false)),
+        ("img_off_fmt", ImageSlots::Off, bgra(64, 64), None),
+    ];
+    for (tag, slots, format, image) in cases {
+        let name = super::channel::topic(tag);
+        let made = slots_publisher(&name, slots, format, 4 << 20);
+        match image {
+            None => assert!(
+                matches!(made, Err(Error::InvalidArgument(_))),
+                "{tag}: {:?}",
+                made.err()
+            ),
+            Some(image) => {
+                let mut publisher = made.unwrap();
+                let slot = publisher.loan().unwrap();
+                assert_eq!(slot.dmabuf_fd().is_some(), image, "{tag}");
+            }
+        }
+    }
 }
 
 /// A generated type's frame starts with its scalars, so its image is not where the layout says.

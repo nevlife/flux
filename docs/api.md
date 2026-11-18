@@ -48,7 +48,7 @@ PYTHON=~/venvs/flux-docs/bin/python src/flux/scripts/build_docs.sh
 ## C ABI
 
 - 헤더 `flux.h`는 cbindgen이 Rust 소스에서 생성해 저장소에 커밋한다. 빌드에는 cbindgen이 필요하지 않다.
-- 공유 라이브러리의 soname은 `libflux_ffi.so.<FLUX_ABI_VERSION>`이고 현재 버전은 3이다. `flux_abi_version()`은 실행 중인 라이브러리의 버전을 반환한다. `flux_cpp`는 처음 사용 시 이 값을 헤더와 비교하고, 다르면 `flux::Error`(`FLUX_MISMATCH`)를 던진다.
+- 공유 라이브러리의 soname은 `libflux_ffi.so.<FLUX_ABI_VERSION>`이고 현재 버전은 5이다. `flux_abi_version()`은 실행 중인 라이브러리의 버전을 반환한다. `flux_cpp`는 처음 사용 시 이 값을 헤더와 비교하고, 다르면 `flux::Error`(`FLUX_MISMATCH`)를 던진다.
 - 핸들은 불투명 포인터이고, `_free` 함수에 `NULL`을 넘겨도 된다.
 - view와 loan은 호출자가 마련한 128 B 저장소에 담긴다. 0으로 채운 저장소는 빈 상태이고, 값으로 복사하지 않는다.
 - 오류는 `flux_status` 반환값과 스레드별 `flux_last_error()`로 알린다. 예외와 panic은 C ABI 경계를 넘지 않는다.

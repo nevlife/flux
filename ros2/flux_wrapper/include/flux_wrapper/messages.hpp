@@ -79,6 +79,10 @@ enum class Device { Host, Cuda };
 // slot is refused.
 enum class Alloc { Arena, Slot };
 
+// flux only: whether a publisher's slots are image slots, as flux::ImageSlots. Auto makes them for
+// an image format.
+enum class ImageSlots { Auto, Off, On };
+
 namespace detail
 {
 template <class MsgT>

@@ -512,13 +512,13 @@ def test_a_slot_publisher_that_allocs_on_subscriber_publishes_once_one_attaches(
 def test_an_image_slot_publisher_reaches_a_subscriber(node):
     if not flux.probe().integrated:
         pytest.skip("image slots need an integrated GPU")
-    pub = flux.Publisher(node, topic("image"), alloc="slot", slot_size=3 << 20, image_slots=True)
+    pub = flux.Publisher(node, topic("image"), alloc="slot", slot_size=3 << 20, image_slots="on")
     sub = flux.Subscription(node, topic("image"))
     frame = np.arange(4096, dtype=np.uint16)
     assert pub.publish(frame) == flux.Published.OK
     np.testing.assert_array_equal(sub.take().view(np.uint16), frame)
     with pytest.raises(flux.Error):
-        flux.Publisher(node, topic("image_arena"), image_slots=True)
+        flux.Publisher(node, topic("image_arena"), image_slots="on")
     small = flux.Publisher(
         node,
         topic("image_fmt"),
@@ -542,6 +542,18 @@ def test_an_image_slot_publisher_reaches_a_subscriber(node):
         )
     with pytest.raises(ValueError, match="image_encoding"):
         flux.Publisher(node, topic("image_bad"), alloc="slot", image_encoding="rgb8")
+    with pytest.raises(flux.Error):
+        flux.Publisher(
+            node,
+            topic("image_off"),
+            alloc="slot",
+            image_slots="off",
+            image_encoding="bgra8",
+            image_width=848,
+            image_height=480,
+        )
+    with pytest.raises(ValueError, match="image_slots"):
+        flux.Publisher(node, topic("image_yes"), alloc="slot", image_slots=True)
 
 
 def test_an_alloc_other_than_arena_or_slot_is_refused(node):

@@ -74,6 +74,19 @@ pub enum Alloc {
     Slot = 1,
 }
 
+/// Whether a fixed-slot publisher's slots are image slots: on an integrated GPU, each slot a
+/// dmabuf of its own that engines such as VIC read in place (`gpu::ImageExport`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ImageSlots {
+    /// Image slots when the publisher declares an image format.
+    // shortcut: no rule from the attached consumers yet, add one with the engine subscribers.
+    #[default]
+    Auto = 0,
+    Off = 1,
+    On = 2,
+}
+
 /// A publisher's settings. A size or count of 0 is `sizing`'s for its `alloc`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PublisherConfig {
@@ -90,11 +103,10 @@ pub struct PublisherConfig {
     /// attaches, not at creation, and loans fail until then. For a program that makes publishers
     /// for topics nobody may subscribe to.
     pub alloc_on_subscriber: bool,
-    /// Fixed slots on an integrated GPU only: each slot is a dmabuf of its own that engines such
-    /// as VIC read in place (`gpu::ImageExport`). The slot size is rounded up to 2 MiB.
-    pub image_slots: bool,
+    /// `On` needs fixed slots on an integrated GPU. An image slot's size is rounded up to 2 MiB.
+    pub image_slots: ImageSlots,
     /// Image slots in this format: the slot size defaults to a frame's and must hold one, and
-    /// subscribers read the layout (`FrameView::image_layout`). Implies `image_slots`.
+    /// subscribers read the layout (`FrameView::image_layout`). Refused with `ImageSlots::Off`.
     pub image_format: crate::image_format::ImageFormat,
 }
 
@@ -109,9 +121,21 @@ impl Default for PublisherConfig {
             max_subscribers: DEFAULT_MAX_SUBSCRIBERS,
             aux_size: 0,
             alloc_on_subscriber: false,
-            image_slots: false,
+            image_slots: ImageSlots::Auto,
             image_format: crate::image_format::ImageFormat::default(),
         }
+    }
+}
+
+fn wants_image(config: &PublisherConfig) -> Result<bool> {
+    let format = config.image_format.is_some();
+    match config.image_slots {
+        ImageSlots::On => Ok(true),
+        ImageSlots::Auto => Ok(format),
+        ImageSlots::Off if format => Err(Error::InvalidArgument(
+            "an image format needs image slots, which image_slots Off turns off".into(),
+        )),
+        ImageSlots::Off => Ok(false),
     }
 }
 
@@ -402,7 +426,7 @@ impl Channel {
         } else {
             None
         };
-        let image = config.image_slots || config.image_format.is_some();
+        let image = wants_image(config)?;
         if config.image_format.is_some() && scalar_bytes.is_some() {
             return Err(Error::InvalidArgument(
                 "an image format places the image at the start of the slot, which a generated \

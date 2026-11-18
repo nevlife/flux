@@ -99,6 +99,15 @@ def _slot(alloc):
     raise ValueError(f"flux: alloc is 'arena' or 'slot', not {alloc!r}")
 
 
+_IMAGE_SLOTS = ("auto", "off", "on")
+
+
+def _image_slots(mode):
+    if mode in _IMAGE_SLOTS:
+        return _IMAGE_SLOTS.index(mode)
+    raise ValueError(f"flux: image_slots is one of {_IMAGE_SLOTS}, not {mode!r}")
+
+
 _IMAGE_ENCODINGS = ("", "bgra8", "rgba8", "mono8", "mono16", "nv12", "uyvy", "yuyv")
 
 
@@ -203,7 +212,7 @@ class Publisher(_flux._Publisher):
         max_slot_size=0,
         max_slot_count=0,
         alloc_on_subscriber=False,
-        image_slots=False,
+        image_slots="auto",
         image_encoding="",
         image_width=0,
         image_height=0,
@@ -212,9 +221,10 @@ class Publisher(_flux._Publisher):
         integrated GPU reads it in place; a frame that does not fit is refused. "arena" puts them
         in the process's arena. With "slot", or a "cuda" publisher with no type, a size or count
         of 0 takes flux's fixed-slot default and the maxima bound the slots; alloc_on_subscriber
-        gives them memory once a subscriber attaches, and publish fails until then. image_slots, on an
-        integrated GPU with fixed slots, makes each slot a dmabuf of its own that engines such as
-        VIC read in place, its size rounded up to 2 MiB; image_encoding ("bgra8", "nv12", ...) with
+        gives them memory once a subscriber attaches, and publish fails until then. image_slots="on", on
+        an integrated GPU with fixed slots, makes each slot a dmabuf of its own that engines such as
+        VIC read in place, its size rounded up to 2 MiB; "auto" does for a format, "off" never does.
+        image_encoding ("bgra8", "nv12", ...) with
         image_width and image_height declares the frames, a slot then holding one by default at a
         row pitch of a multiple of 256 bytes. fence_timeout, in seconds, bounds each commit's
         wait for the stream; None waits as long as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
@@ -242,7 +252,7 @@ class Publisher(_flux._Publisher):
             max_slot_size,
             max_slot_count,
             alloc_on_subscriber,
-            image_slots,
+            _image_slots(image_slots),
             _image_encoding(image_encoding),
             image_width,
             image_height,

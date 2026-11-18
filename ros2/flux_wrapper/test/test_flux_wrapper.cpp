@@ -903,6 +903,11 @@ TEST_F(WrapperTest, ACudaImagePublisherWithAFormatReachesASubscriber)
     flux_wrapper::create_publisher<Image>(*node_, "image_rgb8", rclcpp::QoS(4), options),
     flux::Error);
   options.image_encoding = "mono8";
+  options.image_slots = flux_wrapper::ImageSlots::Off;
+  EXPECT_THROW(
+    flux_wrapper::create_publisher<Image>(*node_, "image_off", rclcpp::QoS(4), options),
+    flux::Error);
+  options.image_slots = flux_wrapper::ImageSlots::Auto;
   options.device = flux_wrapper::Device::Host;
   options.alloc = flux_wrapper::Alloc::Slot;
   EXPECT_THROW(

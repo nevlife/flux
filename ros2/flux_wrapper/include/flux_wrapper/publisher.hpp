@@ -57,7 +57,7 @@ struct PublisherOptions
   bool alloc_on_subscriber = false;
   // flux only, as flux::PublisherOptions: image slots, and their format as a sensor_msgs/Image
   // encoding ("bgra8", "nv12", ...), which needs Device::Cuda and a step that is image_layout's.
-  bool image_slots = false;
+  ImageSlots image_slots = ImageSlots::Auto;
   std::string image_encoding;
   std::uint32_t image_width = 0;
   std::uint32_t image_height = 0;
@@ -97,7 +97,9 @@ public:
       o.max_slot_size = options.max_slot_size;
       o.max_slot_count = options.max_slot_count;
       o.alloc_on_subscriber = options.alloc_on_subscriber;
-      o.image_slots = options.image_slots;
+      o.image_slots = options.image_slots == ImageSlots::On    ? flux::ImageSlots::On
+                      : options.image_slots == ImageSlots::Off ? flux::ImageSlots::Off
+                                                               : flux::ImageSlots::Auto;
       o.image_encoding = detail::image_encoding(options.image_encoding);
       o.image_width = options.image_width;
       o.image_height = options.image_height;

@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use flux_core::{
-    Alloc, Channel, DType, Error, FrameMeta, FrameView, Mapped, MemoryPolicy, Published,
-    PublisherConfig, PublisherWatch, QoS, ReleaseMode, WriteSlot, signpost_name,
+    Alloc, Channel, DType, Error, FrameMeta, FrameView, ImageSlots, Mapped, MemoryPolicy,
+    Published, PublisherConfig, PublisherWatch, QoS, ReleaseMode, WriteSlot, signpost_name,
 };
 
 use crate::gpu::{flux_stream, stream_of};
@@ -349,8 +349,9 @@ pub struct flux_publisher_config {
     pub aux_size: u32,
     /// Slots get memory once a subscriber attaches (`FLUX_ALLOC_SLOT` and GPU memory channels).
     pub alloc_on_subscriber: bool,
-    /// Integrated GPU only: each fixed slot is a dmabuf engines read in place.
-    pub image_slots: bool,
+    /// `FLUX_IMAGE_SLOTS_*`. Image slots, on an integrated GPU only, are fixed slots each a dmabuf
+    /// engines read in place. AUTO makes them for an image format.
+    pub image_slots: i32,
     /// `FLUX_IMAGE_*`: image slots in this format, the slot size defaulting to one frame.
     pub image_encoding: u32,
     pub image_width: u32,
@@ -409,7 +410,7 @@ pub extern "C" fn flux_publisher_config_default() -> flux_publisher_config {
         max_subscribers: d.max_subscribers,
         aux_size: d.aux_size,
         alloc_on_subscriber: d.alloc_on_subscriber,
-        image_slots: d.image_slots,
+        image_slots: d.image_slots as i32,
         image_encoding: d.image_format.encoding as u32,
         image_width: d.image_format.width,
         image_height: d.image_format.height,
@@ -438,6 +439,16 @@ pub unsafe extern "C" fn flux_channel_create_config(
             ))));
         }
     };
+    let image_slots = match c.image_slots {
+        FLUX_IMAGE_SLOTS_AUTO => ImageSlots::Auto,
+        FLUX_IMAGE_SLOTS_OFF => ImageSlots::Off,
+        FLUX_IMAGE_SLOTS_ON => ImageSlots::On,
+        m => {
+            return status(Err(Error::InvalidArgument(format!(
+                "image_slots {m} is no FLUX_IMAGE_SLOTS_*"
+            ))));
+        }
+    };
     let Some(encoding) = flux_core::ImageEncoding::from_u32(c.image_encoding) else {
         return status(Err(Error::InvalidArgument(format!(
             "image_encoding {} is no FLUX_IMAGE_*",
@@ -453,7 +464,7 @@ pub unsafe extern "C" fn flux_channel_create_config(
         max_subscribers: c.max_subscribers,
         aux_size: c.aux_size,
         alloc_on_subscriber: c.alloc_on_subscriber,
-        image_slots: c.image_slots,
+        image_slots,
         image_format: flux_core::ImageFormat {
             encoding,
             width: c.image_width,
@@ -1049,6 +1060,10 @@ pub unsafe extern "C" fn flux_channel_set_release_mode(
 
 pub const FLUX_ALLOC_ARENA: i32 = 0;
 pub const FLUX_ALLOC_SLOT: i32 = 1;
+
+pub const FLUX_IMAGE_SLOTS_AUTO: i32 = 0;
+pub const FLUX_IMAGE_SLOTS_OFF: i32 = 1;
+pub const FLUX_IMAGE_SLOTS_ON: i32 = 2;
 
 /// Orders the view's channel stream after what `s` queued so far, on the device, not the host.
 #[unsafe(no_mangle)]

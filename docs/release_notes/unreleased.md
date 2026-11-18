@@ -41,7 +41,7 @@
 * C++ `PublisherOptions`, `SubscriptionOptions`와 `flux::create_publisher`, `flux::create_subscription`. 옵션은 rclcpp처럼 구조체 필드로 채운다. 인자 순서는 rclcpp를 따르고 flux에만 있는 `fingerprint`는 맨 뒤에 둔다. 인자를 순서대로 받는 기존 생성자도 그대로 있다
 * 발행자가 가변 길이 필드를 둘 곳을 고른다(C++ `PublisherOptions::alloc`, Python `alloc="arena"|"slot"`, C `flux_publisher_config`와 `flux_channel_create_config`). 기본은 지금처럼 arena다. `Slot`은 모든 필드를 슬롯 안에 두고, 슬롯에 들어가지 않는 프레임은 거절한다. Jetson 같은 통합 GPU에서 CPU 발행자의 배열을 GPU 구독자가 복사 없이 읽는다. `Slot` 발행자는 크기와 개수를 주지 않으면 4 MiB 슬롯 12개로 시작하고, `max_slot_size`(기본 16 MiB)와 `max_slot_count`(기본 16)를 넘는 설정은 생성에서 거절한다
 * `Alloc::Slot` 발행자와 GPU 메모리 채널이 첫 구독자가 붙을 때 슬롯을 잡도록 고른다(C++·`flux_wrapper` `PublisherOptions::alloc_on_subscriber`, Python `alloc_on_subscriber=True`, C `flux_publisher_config::alloc_on_subscriber`). 구독자 없는 토픽에 메모리를 쓰지 않고, 그 전의 publish는 실패한다
-* 통합 GPU의 고정 슬롯 발행자가 이미지 슬롯을 고른다(C++ `PublisherOptions::image_slots`, Python `image_slots=True`, C `flux_publisher_config::image_slots`). 슬롯마다 dmabuf 하나이고, 발행자와 구독자가 그것을 매핑해 읽고 쓴다. 세그먼트 layout 버전이 10이 되어 버전 9와는 섞이지 않는다. 형식(`image_encoding`, `image_width`, `image_height`)을 주면 슬롯이 한 프레임을 담고, `image_layout()`과 `dmabuf_fd()`가 평면 배치와 슬롯의 dmabuf를 준다. `flux_wrapper`의 `PublisherOptions`(C++)와 `Publisher`(Python)도 같은 이름으로 넘긴다. C++ `flux/nvbufsurface.hpp`(Jetson에서만 include)의 `flux::NvBufSurfaces`가 이미지 슬롯을 복사 없이 `NvBufSurface`로 주고, 다른 프레임은 한 번 복사해서 준다
+* 통합 GPU의 고정 슬롯 발행자가 이미지 슬롯을 고른다(C++ `PublisherOptions::image_slots`, Python `image_slots=`, C `flux_publisher_config::image_slots`). 값은 `Auto`(기본, 형식을 주었을 때만), `Off`, `On`이다. 슬롯마다 dmabuf 하나이고, 발행자와 구독자가 그것을 매핑해 읽고 쓴다. 세그먼트 layout 버전이 10이 되어 버전 9와는 섞이지 않는다. 형식(`image_encoding`, `image_width`, `image_height`)을 주면 슬롯이 한 프레임을 담고, `image_layout()`과 `dmabuf_fd()`가 평면 배치와 슬롯의 dmabuf를 준다. `flux_wrapper`의 `PublisherOptions`(C++)와 `Publisher`(Python)도 같은 이름으로 넘긴다. C++ `flux/nvbufsurface.hpp`(Jetson에서만 include)의 `flux::NvBufSurfaces`가 이미지 슬롯을 복사 없이 `NvBufSurface`로 주고, 다른 프레임은 한 번 복사해서 준다
 * `flux_wrapper`의 발행자가 `alloc`을 받는다(C++ `PublisherOptions::alloc`, Python `alloc="slot"`). `flux_wrapper::create_publisher`, `flux_wrapper::create_subscription`을 더했다
 
 ### 버그 수정
@@ -104,7 +104,7 @@
     사용자가 고쳐야 하는 것마다 번호를 매기고, 고치기 전과 후를 코드로 보인다.
 -->
 
-1. 공유 메모리 배치 버전이 6에서 9로, C ABI 버전이 3에서 4로 올랐다. 슬롯에 aux 영역이 생겼고, arena를 가리키는 위치의 단위가 16 B가 되었고, 헤더에 메모리가 있는 슬롯 수와 구독자 depth의 최대값이 생겼기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
+1. 공유 메모리 배치 버전이 6에서 10으로, C ABI 버전이 3에서 5로 올랐다. 슬롯에 aux 영역이 생겼고, arena를 가리키는 위치의 단위가 16 B가 되었고, 헤더에 메모리가 있는 슬롯 수, 구독자 depth의 최대값, 이미지 슬롯의 형식이 생겼기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
 2. C `flux_channel_create`에 `max_subscribers` 다음 인자로 `aux_size`가 생겼다. aux가 필요 없으면 0을 준다. `flux_frame_meta.reserved0[2]`는 `uint16_t aux_len`이 되었다.
 
    ```c

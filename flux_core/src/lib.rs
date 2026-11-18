@@ -23,8 +23,8 @@ mod sys;
 pub mod trace;
 
 pub use channel::{
-    Alloc, Channel, FrameView, GpuBlock, GpuHeap, Heap, Published, PublisherConfig, PublisherWatch,
-    Refused, ReleaseMode, WriteSlot,
+    Alloc, Channel, FrameView, GpuBlock, GpuHeap, Heap, ImageSlots, Published, PublisherConfig,
+    PublisherWatch, Refused, ReleaseMode, WriteSlot,
 };
 pub use discovery::{flatten_key, signpost_name};
 pub use error::{Error, Result};

@@ -927,8 +927,8 @@ private:
 auto config(
   bool slot, std::uint32_t slot_size, std::uint32_t slot_count, std::uint32_t max_slot_size,
   std::uint32_t max_slot_count, std::uint32_t max_subscribers, std::uint32_t aux_size,
-  bool on_subscriber, bool image_slots, std::uint32_t image_encoding, std::uint32_t image_width,
-  std::uint32_t image_height) -> flux_publisher_config
+  bool on_subscriber, std::int32_t image_slots, std::uint32_t image_encoding,
+  std::uint32_t image_width, std::uint32_t image_height) -> flux_publisher_config
 {
   flux_publisher_config c = flux_publisher_config_default();
   c.alloc = slot ? FLUX_ALLOC_SLOT : FLUX_ALLOC_ARENA;
@@ -954,7 +954,7 @@ public:
     std::uint64_t fingerprint, std::uint32_t slot_size, std::uint32_t slot_count,
     flux::MemoryPolicy mem, std::uint32_t max_subscribers, bool cuda, std::uint32_t aux_size,
     bool slot, std::uint32_t max_slot_size, std::uint32_t max_slot_count, bool on_subscriber,
-    bool image_slots, std::uint32_t image_encoding, std::uint32_t image_width,
+    std::int32_t image_slots, std::uint32_t image_encoding, std::uint32_t image_width,
     std::uint32_t image_height)
   : stream_(flux::gpu::stream_for(cuda ? flux::Device::Cuda : flux::Device::Cpu)),
     ch_(flux::detail::Channel::create_config(
@@ -1742,12 +1742,12 @@ NB_MODULE(_flux, m)
       nb::init<
         const std::string &, const std::string &, const std::string &, std::uint64_t, std::uint32_t,
         std::uint32_t, flux::MemoryPolicy, std::uint32_t, bool, std::uint32_t, bool, std::uint32_t,
-        std::uint32_t, bool, bool, std::uint32_t, std::uint32_t, std::uint32_t>(),
+        std::uint32_t, bool, std::int32_t, std::uint32_t, std::uint32_t, std::uint32_t>(),
       "signpost"_a, "topic"_a, "label"_a, "fingerprint"_a, "slot_size"_a, "slot_count"_a,
       "memory"_a, "max_subscribers"_a = FLUX_DEFAULT_MAX_SUBSCRIBERS, "cuda"_a = false,
       "aux_size"_a = 0, "slot"_a = false, "max_slot_size"_a = 0, "max_slot_count"_a = 0,
-      "alloc_on_subscriber"_a = false, "image_slots"_a = false, "image_encoding"_a = 0,
-      "image_width"_a = 0, "image_height"_a = 0)
+      "alloc_on_subscriber"_a = false, "image_slots"_a = FLUX_IMAGE_SLOTS_AUTO,
+      "image_encoding"_a = 0, "image_width"_a = 0, "image_height"_a = 0)
     .def("publish", &Publisher::publish, "array"_a)
     .def("loan", &Publisher::loan, "shape"_a = nb::none(), "dtype"_a = "uint8")
     .def_prop_ro("dropped", &Publisher::dropped)

@@ -13,7 +13,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define FLUX_ABI_VERSION 4
+#define FLUX_ABI_VERSION 5
 
 #define FLUX_MAX_DIMS 8
 
@@ -99,6 +99,12 @@
 #define FLUX_ALLOC_ARENA 0
 
 #define FLUX_ALLOC_SLOT 1
+
+#define FLUX_IMAGE_SLOTS_AUTO 0
+
+#define FLUX_IMAGE_SLOTS_OFF 1
+
+#define FLUX_IMAGE_SLOTS_ON 2
 
 // This and `flux_published` gain values without an ABI bump: treat an unknown one as an error.
 enum flux_status
@@ -249,8 +255,9 @@ typedef struct flux_publisher_config {
   uint32_t aux_size;
   // Slots get memory once a subscriber attaches (`FLUX_ALLOC_SLOT` and GPU memory channels).
   bool alloc_on_subscriber;
-  // Integrated GPU only: each fixed slot is a dmabuf engines read in place.
-  bool image_slots;
+  // `FLUX_IMAGE_SLOTS_*`. Image slots, on an integrated GPU only, are fixed slots each a dmabuf
+  // engines read in place. AUTO makes them for an image format.
+  int32_t image_slots;
   // `FLUX_IMAGE_*`: image slots in this format, the slot size defaulting to one frame.
   uint32_t image_encoding;
   uint32_t image_width;
