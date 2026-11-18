@@ -21,12 +21,12 @@ import flux
 from sensor_msgs_flux.image import Image  # flux_std_adapters의 어댑터
 ```
 
-생성자의 첫 인자는 rclpy 노드다. 토픽 이름은 `node.resolve_topic_name()`으로 해석한다.
+`create_publisher`, `create_subscription`의 첫 인자는 rclpy 노드다. 토픽 이름은 `node.resolve_topic_name()`으로 해석한다.
 
 ## 발행
 
 ```python doc:py_publish
-pub = flux.Publisher(node, "image")
+pub = flux.create_publisher(node, "image")
 
 pixels = np.zeros((480, 640, 3), np.uint8)
 p = pub.publish(pixels)
@@ -35,10 +35,14 @@ if flux.faulted(p):
 ```
 
 ```python
-flux.Publisher(node, topic, fingerprint=flux.NO_SCHEMA, slot_size=0, slot_count=0,
-               memory=None, max_subscribers=16, device="cpu", fence_timeout=None,
-               mirror_to_ros=False, aux_size=0)
+flux.create_publisher(node, topic, *, fingerprint=flux.NO_SCHEMA, slot_size=0, slot_count=0,
+                      memory=None, max_subscribers=16, device="cpu", fence_timeout=None,
+                      mirror_to_ros=False, aux_size=0, alloc="arena", max_slot_size=0,
+                      max_slot_count=0, alloc_on_subscriber=False, image_slots="auto",
+                      image_encoding="", image_width=0, image_height=0)
 ```
+
+- 인자 순서는 C++ `flux::create_publisher`와 같다. `topic` 뒤의 인자는 이름으로만 받는다. `flux.Publisher(node, topic, ...)` 생성자도 같은 인자를 받는다.
 
 - 기본값은 C++와 같고, 모듈 상수 `flux.DEFAULT_SLOT_SIZE`, `flux.DEFAULT_SLOT_COUNT`, `flux.DEFAULT_MAX_SUBSCRIBERS`, `flux.UNTYPED_SLOT_SIZE`, `flux.SLOT_STRING_BYTES`로도 읽기 가능하다.
 - `publish(array)`는 numpy 배열이나 `bytes`를 dtype, shape와 함께 슬롯에 한 번 복사한다.
@@ -84,7 +88,7 @@ if loan is not None:
 def on_frame(frame):
     print(frame.shape, frame.dtype)
 
-sub = flux.Subscription(node, "image", callback=on_frame)
+sub = flux.create_subscription(node, "image", flux.QoS(), on_frame)
 
 ex = flux.Executor()
 ex.add(sub)
@@ -93,9 +97,11 @@ ex.spin()
 ```
 
 ```python
-flux.Subscription(node, topic, callback=None, fingerprint=flux.NO_SCHEMA, qos=None, memory=None,
-                  device="cpu", fence_timeout=None, release="wait")
+flux.create_subscription(node, topic, qos, callback, *, fingerprint=flux.NO_SCHEMA, memory=None,
+                         device="cpu", fence_timeout=None, release="wait")
 ```
+
+- 인자 순서는 C++ `flux::create_subscription`과 같다. `qos`가 `None`이면 `flux.QoS()`이고, `callback`이 `None`이면 `take()`로 받는다. `callback` 뒤의 인자는 이름으로만 받는다. `flux.Subscription(node, topic, callback=None, *, qos=None, ...)` 생성자도 같은 인자를 받는다.
 
 - 콜백은 읽기 전용 numpy 배열 하나를 받는다. `bfloat16` 프레임은 bit가 같은 `uint16` 배열로 읽힌다.
 - 배열(과 그 slice, view)이 남아 있는 동안 구독은 그 슬롯을 점유한다. 콜백 밖에서 쓸 값은 `np.array(frame)`처럼 복사한다. 동시에 보유 가능한 배열 수는 QoS `max_borrow`(기본 1)다.
@@ -122,7 +128,7 @@ flux.Subscription(node, topic, callback=None, fingerprint=flux.NO_SCHEMA, qos=No
 ## executor 없이 읽기
 
 ```python doc:py_take
-sub = flux.Subscription(node, "image")
+sub = flux.create_subscription(node, "image", flux.QoS(), None)
 ```
 
 ```python doc:py_take_frames
@@ -159,7 +165,7 @@ frame = sub.take_blocking(100_000_000)
 
 ```python doc:py_qos
 qos = flux.QoS(depth=4, replay=2, max_borrow=2)
-sub = flux.Subscription(node, "cmd", qos=qos)
+sub = flux.create_subscription(node, "cmd", qos, None)
 ```
 
 생략한 필드는 기본값이다. 값의 뜻은 [qos.md](qos.md)에 있다.
@@ -169,7 +175,7 @@ sub = flux.Subscription(node, "cmd", qos=qos)
 `.msg`에서 생성한 어댑터 모듈은 `FINGERPRINT__`, `View`, `Builder`를 제공한다. 생성 방법과 접근자 규칙은 [messages.md](messages.md)에 있다.
 
 ```python doc:py_adapter_publish
-pub = flux.Publisher(node, "image", fingerprint=Image.FINGERPRINT__)
+pub = flux.create_publisher(node, "image", fingerprint=Image.FINGERPRINT__)
 
 b = Image.build__(pub)
 if b:
@@ -227,7 +233,7 @@ def name_thread():
     threading.current_thread().name = "camera"
 
 camera = MutuallyExclusiveCallbackGroup()
-sub = flux.Subscription(node, "image", callback=on_frame)
+sub = flux.create_subscription(node, "image", flux.QoS(), on_frame)
 
 ex = flux.PartitionedExecutor()
 ex.add(sub, camera)

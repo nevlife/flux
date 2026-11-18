@@ -37,6 +37,24 @@ def test_qos_fields_left_out_take_the_core_default():
     assert (q.depth, q.replay, q.max_borrow) == (d.depth, d.replay, d.max_borrow + 1)
 
 
+def test_create_functions_take_the_cpp_order_and_options_only_by_name(node):
+    got = []
+    pub = flux.create_publisher(node, topic("create"), fingerprint=7, **SMALL)
+    sub = flux.create_subscription(node, topic("create"), None, got.append, fingerprint=7)
+    pulled = flux.create_subscription(node, topic("create"), flux.QoS(depth=2), None, fingerprint=7)
+    assert isinstance(pub, flux.Publisher) and isinstance(sub, flux.Subscription)
+    ex = flux.Executor()
+    ex.add(sub)
+    with pytest.raises(ValueError):
+        ex.add(pulled)
+    assert pub.publish(b"x") == flux.Published.OK
+    assert bytes(pulled.take()) == b"x"
+    with pytest.raises(TypeError):
+        flux.Publisher(node, topic("positional"), 7)
+    with pytest.raises(TypeError):
+        flux.Subscription(node, topic("positional"), None, 7)
+
+
 def test_a_frame_reads_back_as_a_read_only_view(node):
     pub = flux.Publisher(node, topic("rt"), **SMALL)
     sub = flux.Subscription(node, topic("rt"))

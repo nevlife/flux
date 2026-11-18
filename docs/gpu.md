@@ -66,7 +66,7 @@ if (flux::FrameView frame = sub.take()) {
 ## Python
 
 ```python doc:py_gpu_publish
-pub = flux.Publisher(node, "depth", slot_size=4 << 20, slot_count=4, device="cuda")
+pub = flux.create_publisher(node, "depth", slot_size=4 << 20, slot_count=4, device="cuda")
 
 loan = pub.loan((480, 640), "float32")
 if loan is not None:
@@ -76,7 +76,7 @@ if loan is not None:
 ```
 
 ```python
-sub = flux.Subscription(node, "depth", device="cuda")
+sub = flux.create_subscription(node, "depth", flux.QoS(), None, device="cuda")
 ```
 
 ```python doc:py_gpu_read

@@ -59,6 +59,8 @@ __all__ = [
     "Subscription",
     "arena_scope",
     "aux",
+    "create_publisher",
+    "create_subscription",
     "enumerate_topics",
     "faulted",
     "gpu_wedged",
@@ -199,6 +201,7 @@ class Publisher(_flux._Publisher):
         self,
         node,
         topic,
+        *,
         fingerprint=NO_SCHEMA,
         slot_size=DEFAULT_SLOT_SIZE,
         slot_count=DEFAULT_SLOT_COUNT,
@@ -281,6 +284,7 @@ class Subscription(_flux._Subscription):
         node,
         topic,
         callback=None,
+        *,
         fingerprint=NO_SCHEMA,
         qos=None,
         memory=None,
@@ -331,6 +335,17 @@ class Subscription(_flux._Subscription):
         self._logger.error(
             f"flux: {self.topic_name} is left out until its publisher restarts: {why}"
         )
+
+
+def create_publisher(node, topic, *, fingerprint=NO_SCHEMA, **options):
+    """As flux::create_publisher: a Publisher, with the options of its constructor."""
+    return Publisher(node, topic, fingerprint=fingerprint, **options)
+
+
+def create_subscription(node, topic, qos, callback, *, fingerprint=NO_SCHEMA, **options):
+    """As flux::create_subscription: a Subscription, with the options of its constructor. A qos
+    of None is QoS(); a callback of None leaves frames to take()."""
+    return Subscription(node, topic, callback, fingerprint=fingerprint, qos=qos, **options)
 
 
 class Executor:

@@ -52,7 +52,9 @@ pub->mirror_to_ros();
 ```
 
 ```python
-pub = flux.Publisher(node, "image", fingerprint=Image.FINGERPRINT__, mirror_to_ros=True)
+pub = flux.create_publisher(
+    node, "image", fingerprint=Image.FINGERPRINT__, mirror_to_ros=True
+)
 ```
 
 mirror를 활성화하면 발행자가 같은 이름의 ROS 2 토픽도 발행한다. 일반 ROS 2 노드와 기본 도구가 그 토픽을 구독 가능하고, flux 구독자의 경로는 바뀌지 않는다.

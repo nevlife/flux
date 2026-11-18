@@ -83,7 +83,7 @@ def feed(node, topic, adapter=None):
 
 def test_publish_and_loan(node):
     # [doc:py_publish]
-    pub = flux.Publisher(node, "image")
+    pub = flux.create_publisher(node, "image")
 
     pixels = np.zeros((480, 640, 3), np.uint8)
     p = pub.publish(pixels)
@@ -112,7 +112,7 @@ def test_subscribe_with_an_executor(node, capsys):
     def on_frame(frame):
         print(frame.shape, frame.dtype)
 
-    sub = flux.Subscription(node, "image", callback=on_frame)
+    sub = flux.create_subscription(node, "image", flux.QoS(), on_frame)
 
     ex = flux.Executor()
     ex.add(sub)
@@ -127,7 +127,7 @@ def test_subscribe_with_an_executor(node, capsys):
 def test_take_without_an_executor(node, capsys):
     pub = flux.Publisher(node, "image", slot_size=4096, slot_count=4)
     # [doc:py_take]
-    sub = flux.Subscription(node, "image")
+    sub = flux.create_subscription(node, "image", flux.QoS(), None)
     # [doc:/py_take]
     pub.publish(b"a")
     pub.publish(b"b")
@@ -147,14 +147,14 @@ def test_qos(node):
         pub.publish(c)
     # [doc:py_qos]
     qos = flux.QoS(depth=4, replay=2, max_borrow=2)
-    sub = flux.Subscription(node, "cmd", qos=qos)
+    sub = flux.create_subscription(node, "cmd", qos, None)
     # [doc:/py_qos]
     assert bytes(sub.take()) == b"b"
 
 
 def test_adapter(node, Image, capsys):  # noqa: N803
     # [doc:py_adapter_publish]
-    pub = flux.Publisher(node, "image", fingerprint=Image.FINGERPRINT__)
+    pub = flux.create_publisher(node, "image", fingerprint=Image.FINGERPRINT__)
 
     b = Image.build__(pub)
     if b:
@@ -210,7 +210,7 @@ def test_partitioned(node, capsys):
         threading.current_thread().name = "camera"
 
     camera = MutuallyExclusiveCallbackGroup()
-    sub = flux.Subscription(node, "image", callback=on_frame)
+    sub = flux.create_subscription(node, "image", flux.QoS(), on_frame)
 
     ex = flux.PartitionedExecutor()
     ex.add(sub, camera)
@@ -262,7 +262,7 @@ def test_enumerate(node, capsys):
 )
 def test_gpu(node, capsys):
     # [doc:py_gpu_publish]
-    pub = flux.Publisher(node, "depth", slot_size=4 << 20, slot_count=4, device="cuda")
+    pub = flux.create_publisher(node, "depth", slot_size=4 << 20, slot_count=4, device="cuda")
 
     loan = pub.loan((480, 640), "float32")
     if loan is not None:

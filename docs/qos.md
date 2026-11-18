@@ -15,7 +15,7 @@ auto sub = flux::create_subscription(*node, "cmd", qos, {});
 
 ```python doc:py_qos
 qos = flux.QoS(depth=4, replay=2, max_borrow=2)
-sub = flux.Subscription(node, "cmd", qos=qos)
+sub = flux.create_subscription(node, "cmd", qos, None)
 ```
 
 ## 세 깊이

@@ -39,6 +39,7 @@
 * `data`를 payload로, `data`를 비운 프레임을 aux로 보내는 GPU 메모리 채널(`flux::gpu_fingerprint`)을 `flux_bridge`, ROS 2 mirror, `convert_flux`, rviz2 디스플레이가 그 메시지 타입으로 읽는다. `flux_wrapper`의 `Cuda` 발행자가 이 형식으로 바뀌어 필드의 상한(`frame_id` 256 B 등)이 aux 4096 B 하나가 되었고, `mirror_to_ros`가 동작한다
 * loan에 호스트 메모리를 복사하고 프레임을 호스트 메모리로 복사한다(C `flux_loan_copy_from`, `flux_view_copy_to`, C++ `WriteSlot::copy_from`, `FrameView::copy_to`, Python `Loan.copy_from`, `Frame.copy_to_host`). GPU 메모리 슬롯이면 채널 스트림에서 복사한다. Python `flux_wrapper`의 `device="cuda"` 발행자가 `publish(msg)`로 보내고, GPU 메모리 프레임의 `to_msg()`가 동작한다. 전에는 각각 외장 GPU에서 `False`, `RuntimeError`였다
 * C++ `PublisherOptions`, `SubscriptionOptions`와 `flux::create_publisher`, `flux::create_subscription`. 옵션은 rclcpp처럼 구조체 필드로 채운다. 인자 순서는 rclcpp를 따르고 flux에만 있는 `fingerprint`는 맨 뒤에 둔다.
+* Python `flux.create_publisher`, `flux.create_subscription`. 인자 순서는 C++ `flux::create_publisher`, `flux::create_subscription`과 같다.
 * 발행자가 가변 길이 필드를 둘 곳을 고른다(C++ `PublisherOptions::alloc`, Python `alloc="arena"|"slot"`, C `flux_publisher_config`와 `flux_channel_create_config`). 기본은 지금처럼 arena다. `Slot`은 모든 필드를 슬롯 안에 두고, 슬롯에 들어가지 않는 프레임은 거절한다. Jetson 같은 통합 GPU에서 CPU 발행자의 배열을 GPU 구독자가 복사 없이 읽는다. `Slot` 발행자는 크기와 개수를 주지 않으면 4 MiB 슬롯 12개로 시작하고, `max_slot_size`(기본 16 MiB)와 `max_slot_count`(기본 16)를 넘는 설정은 생성에서 거절한다
 * `Alloc::Slot` 발행자와 GPU 메모리 채널이 첫 구독자가 붙을 때 슬롯을 잡도록 고른다(C++·`flux_wrapper` `PublisherOptions::alloc_on_subscriber`, Python `alloc_on_subscriber=True`, C `flux_publisher_config::alloc_on_subscriber`). 구독자 없는 토픽에 메모리를 쓰지 않고, 그 전의 publish는 실패한다
 * 통합 GPU의 고정 슬롯 발행자가 이미지 슬롯을 고른다(C++ `PublisherOptions::image_slots`, Python `image_slots=`, C `flux_publisher_config::image_slots`). 값은 `Auto`(기본, 형식을 주었을 때만), `Off`, `On`이다. 슬롯마다 dmabuf 하나이고, 발행자와 구독자가 그것을 매핑해 읽고 쓴다. 세그먼트 layout 버전이 10이 되어 버전 9와는 섞이지 않는다. 형식(`image_encoding`, `image_width`, `image_height`)을 주면 슬롯이 한 프레임을 담고, `image_layout()`과 `dmabuf_fd()`가 평면 배치와 슬롯의 dmabuf를 준다. `flux_wrapper`의 `PublisherOptions`(C++)와 `Publisher`(Python)도 같은 이름으로 넘긴다. C++ `flux/nvbufsurface.hpp`(Jetson에서만 include)의 `flux::NvBufSurfaces`가 이미지 슬롯을 복사 없이 `NvBufSurface`로 주고, 다른 프레임은 한 번 복사해서 준다
@@ -183,4 +184,17 @@
     auto pub = flux::create_publisher(*node, "image", options, Image::kFingerprint);
     auto sub =
       flux::create_subscription(*node, "image", flux::QoS(4), {}, {}, Image::kFingerprint);
+    ```
+
+13. Python `flux.Publisher`는 `topic` 뒤의 인자를, `flux.Subscription`은 `callback` 뒤의 인자를 이름으로만 받는다. 순서대로 넘기던 코드는 `TypeError`가 난다.
+
+    ```python
+    # 전
+    pub = flux.Publisher(node, "image", Image.FINGERPRINT__, 4096, 4)
+    sub = flux.Subscription(node, "image", None, Image.FINGERPRINT__)
+    # 후
+    pub = flux.create_publisher(
+        node, "image", fingerprint=Image.FINGERPRINT__, slot_size=4096, slot_count=4
+    )
+    sub = flux.create_subscription(node, "image", None, None, fingerprint=Image.FINGERPRINT__)
     ```

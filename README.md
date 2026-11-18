@@ -52,7 +52,7 @@ Python 노드가 같은 프레임을 numpy 배열로 받는다.
 def on_frame(frame):
     print(frame.shape, frame.dtype)
 
-sub = flux.Subscription(node, "image", callback=on_frame)
+sub = flux.create_subscription(node, "image", flux.QoS(), on_frame)
 
 ex = flux.Executor()
 ex.add(sub)
