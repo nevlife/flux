@@ -40,6 +40,7 @@
 * loan에 호스트 메모리를 복사하고 프레임을 호스트 메모리로 복사한다(C `flux_loan_copy_from`, `flux_view_copy_to`, C++ `WriteSlot::copy_from`, `FrameView::copy_to`, Python `Loan.copy_from`, `Frame.copy_to_host`). GPU 메모리 슬롯이면 채널 스트림에서 복사한다. Python `flux_wrapper`의 `device="cuda"` 발행자가 `publish(msg)`로 보내고, GPU 메모리 프레임의 `to_msg()`가 동작한다. 전에는 각각 외장 GPU에서 `False`, `RuntimeError`였다
 * C++ `PublisherOptions`, `SubscriptionOptions`와 `flux::create_publisher`, `flux::create_subscription`. 옵션은 rclcpp처럼 구조체 필드로 채운다. 인자 순서는 rclcpp를 따르고 flux에만 있는 `fingerprint`는 맨 뒤에 둔다.
 * Python `flux.create_publisher`, `flux.create_subscription`. 인자 순서는 C++ `flux::create_publisher`, `flux::create_subscription`과 같다.
+* Python `flux_wrapper.create_publisher(node, msg_type, topic, qos, **options)`, `flux_wrapper.create_subscription(node, msg_type, topic, qos, callback, **options)`. 인자 순서는 C++ `flux_wrapper::create_publisher`, `flux_wrapper::create_subscription`과 같다.
 * 발행자가 가변 길이 필드를 둘 곳을 고른다(C++ `PublisherOptions::alloc`, Python `alloc="arena"|"slot"`, C `flux_publisher_config`와 `flux_channel_create_config`). 기본은 지금처럼 arena다. `Slot`은 모든 필드를 슬롯 안에 두고, 슬롯에 들어가지 않는 프레임은 거절한다. Jetson 같은 통합 GPU에서 CPU 발행자의 배열을 GPU 구독자가 복사 없이 읽는다. `Slot` 발행자는 크기와 개수를 주지 않으면 4 MiB 슬롯 12개로 시작하고, `max_slot_size`(기본 16 MiB)와 `max_slot_count`(기본 16)를 넘는 설정은 생성에서 거절한다
 * `Alloc::Slot` 발행자와 GPU 메모리 채널이 첫 구독자가 붙을 때 슬롯을 잡도록 고른다(C++·`flux_wrapper` `PublisherOptions::alloc_on_subscriber`, Python `alloc_on_subscriber=True`, C `flux_publisher_config::alloc_on_subscriber`). 구독자 없는 토픽에 메모리를 쓰지 않고, 그 전의 publish는 실패한다
 * 통합 GPU의 고정 슬롯 발행자가 이미지 슬롯을 고른다(C++ `PublisherOptions::image_slots`, Python `image_slots=`, C `flux_publisher_config::image_slots`). 값은 `Auto`(기본, 형식을 주었을 때만), `Off`, `On`이다. 슬롯마다 dmabuf 하나이고, 발행자와 구독자가 그것을 매핑해 읽고 쓴다. 세그먼트 layout 버전이 10이 되어 버전 9와는 섞이지 않는다. 형식(`image_encoding`, `image_width`, `image_height`)을 주면 슬롯이 한 프레임을 담고, `image_layout()`과 `dmabuf_fd()`가 평면 배치와 슬롯의 dmabuf를 준다. `flux_wrapper`의 `PublisherOptions`(C++)와 `Publisher`(Python)도 같은 이름으로 넘긴다. C++ `flux/nvbufsurface.hpp`(Jetson에서만 include)의 `flux::NvBufSurfaces`가 이미지 슬롯을 복사 없이 `NvBufSurface`로 주고, 다른 프레임은 한 번 복사해서 준다
@@ -136,7 +137,7 @@
 
 5. C++에서 생성된 어댑터 헤더를 포함한 프로세스가 그 타입의 fingerprint로 `Device::Cuda`(또는 `gpu::Stream`)를 선언해 발행자를 만들면, 외장 GPU에서도 슬롯이 호스트 메모리다. 전에는 GPU 메모리 채널이었고, `Builder`는 사용 불가능했지만 원시 loan의 `device_ptr()`은 GPU 주소였다. 이제 그 loan의 `device_ptr()`은 0이다. 원시 GPU loan에는 `kNoSchema`나 생성 타입이 아닌 fingerprint를 쓴다. Python도 생성 모듈을 import한 프로세스에서 같다. 그 타입의 `device="cuda"` 발행자는 `device_backed`가 false이고 `mirror_to_ros=True`를 받는다. 전에는 `flux.Error`였다.
 
-6. 발행자의 `slot_size` 기본값이 0이 되었다(`FLUX_DEFAULT_SLOT_SIZE`, `kDefaultSlotSize`, `flux.DEFAULT_SLOT_SIZE`). 생성된 어댑터 타입의 발행자는 그 타입의 크기(고정 필드, 문자열 자리 4096 B, arena trailer를 4 KiB 단위로 올림)를 받는다. 예를 들어 `sensor_msgs/Image`는 8 KiB다. 타입이 없는 발행자는 전처럼 8 MiB(`FLUX_UNTYPED_SLOT_SIZE`)다. arena를 비활성화하고 생성된 어댑터 타입을 기본 슬롯 크기로 발행하던 코드는 배열이 들어가지 않으므로 `slot_size`를 지정한다.
+6. 발행자의 `slot_size` 기본값이 0이 되었다(`FLUX_DEFAULT_SLOT_SIZE`, `flux.DEFAULT_SLOT_SIZE`). 생성된 어댑터 타입의 발행자는 그 타입의 크기(고정 필드, 문자열 자리 4096 B, arena trailer를 4 KiB 단위로 올림)를 받는다. 예를 들어 `sensor_msgs/Image`는 8 KiB다. 타입이 없는 발행자는 전처럼 8 MiB(`FLUX_UNTYPED_SLOT_SIZE`)다. arena를 비활성화하고 생성된 어댑터 타입을 기본 슬롯 크기로 발행하던 코드는 배열이 들어가지 않으므로 `slot_size`를 지정한다.
 
    ```cpp
    // 전: 8 MiB 슬롯
@@ -147,7 +148,7 @@
    auto pub = flux::create_publisher(*node, "image", options, Image::kFingerprint);
    ```
 
-7. 발행자의 `slot_count` 기본값이 16에서 0이 되었다(`FLUX_DEFAULT_SLOT_COUNT`, `kDefaultSlotCount`, `flux.DEFAULT_SLOT_COUNT`). 0이면 슬롯 크기로 상한을 정한다. 호스트 메모리 슬롯은 256 MiB 안에서 최대 256개, GPU 메모리 슬롯은 256 MiB 안에서 최대 32개다. 발행자는 9개 슬롯에만 메모리를 잡고 시작해, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 늘린다. GPU 메모리 발행자도 같다. 그래서 타입이 없는 8 MiB 발행자는 `/dev/shm`이나 GPU 메모리를 72 MiB로 시작해 최대 256 MiB까지 쓴다. 늘리는 프레임의 loan은 그 슬롯의 메모리를 잡는 만큼 길어진다(호스트 8 MiB 슬롯에서 약 1.4 ms). `slot_count`를 지정하면 전처럼 그 개수를 처음부터 모두 잡고 늘리지 않는다. `play_flux`는 bag에 개수나 크기가 0으로 기록된 채널을 기본값으로 만들지 않고 건너뛴다.
+7. 발행자의 `slot_count` 기본값이 16에서 0이 되었다(`FLUX_DEFAULT_SLOT_COUNT`, `flux.DEFAULT_SLOT_COUNT`). 0이면 슬롯 크기로 상한을 정한다. 호스트 메모리 슬롯은 256 MiB 안에서 최대 256개, GPU 메모리 슬롯은 256 MiB 안에서 최대 32개다. 발행자는 9개 슬롯에만 메모리를 잡고 시작해, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 늘린다. GPU 메모리 발행자도 같다. 그래서 타입이 없는 8 MiB 발행자는 `/dev/shm`이나 GPU 메모리를 72 MiB로 시작해 최대 256 MiB까지 쓴다. 늘리는 프레임의 loan은 그 슬롯의 메모리를 잡는 만큼 길어진다(호스트 8 MiB 슬롯에서 약 1.4 ms). `slot_count`를 지정하면 전처럼 그 개수를 처음부터 모두 잡고 늘리지 않는다. `play_flux`는 bag에 개수나 크기가 0으로 기록된 채널을 기본값으로 만들지 않고 건너뛴다.
 8. 발행 결과 `WrongDevice`(C `FLUX_PUBLISHED_WRONG_DEVICE`, Python `Published.WRONG_DEVICE`)와 trace 값 `FLUX_TRACE_CLAIM_WRONG_DEVICE`를 지웠다. GPU 메모리 채널의 `publish()`가 호스트 배열을 복사해 발행하게 된 뒤로 돌려주는 경로가 없었다. 다른 값의 번호는 그대로다. 이 값을 다루던 `switch`와 비교는 지운다
 9. `record_flux`, `play_flux`의 옵션이 `ros2 bag record`, `ros2 bag play`의 것이 되었다. flux 프레임을 쓰기 전에 모아 두던 녹화기의 큐(`--max-cache-size`, 기본 1 GiB)가 없어졌다. flux 프레임은 ROS 메시지처럼 rosbag2 writer로 바로 가고, `--max-cache-size`는 rosbag2 writer cache의 크기(버퍼 하나당, 기본 100 MiB)다. cache가 차서 버려진 메시지는 rosbag2가 세고, 녹화기는 녹화하는 동안 그 수를 토픽별로 로그에 남긴다. 채널별 종료 로그는 큐에 넣은 수와 큐가 차서 버린 수 대신 rosbag2에 넘긴 수를 남긴다. 녹화기와 재생기의 노드 이름은 `flux_bag_record`, `flux_bag_play`에서 rosbag2와 같은 `rosbag2_recorder`, `rosbag2_player`가 되었다. `-a`는 서비스도 녹화한다. 위치 인자로 준 토픽은 `ros2 bag record`처럼 deprecated 경고를 낸다.
 
@@ -171,7 +172,7 @@
     options.slot_size = 10 << 20;
     ```
 
-12. C++ `flux::Publisher`와 `flux::Subscription`의 인자를 순서대로 받던 생성자를 지웠다. 발행자는 `PublisherOptions`, 구독은 `SubscriptionOptions`를 받는 `create_publisher`, `create_subscription`이나 같은 인자의 생성자로 만든다. 인자 순서는 rclcpp를 따라 fingerprint가 맨 뒤에 온다. 콜백 없는 구독은 콜백에 `{}`를 준다.
+12. C++ `flux::Publisher`와 `flux::Subscription`의 인자를 순서대로 받던 생성자를 지웠다. 발행자는 `PublisherOptions`, 구독은 `SubscriptionOptions`를 받는 `create_publisher`, `create_subscription`이나 같은 인자의 생성자로 만든다. 인자 순서는 rclcpp를 따라 fingerprint가 맨 뒤에 온다. 콜백 없는 구독은 콜백에 `{}`를 준다. 그 생성자의 기본값이던 `Publisher::kDefaultSlotSize`, `kDefaultSlotCount`, `kDefaultMaxSubscribers`도 지웠다. 같은 값은 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`다.
 
     ```cpp
     // 전

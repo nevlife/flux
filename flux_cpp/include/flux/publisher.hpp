@@ -50,10 +50,6 @@ public:
   Publisher(
     const NodeRef & node, const std::string & topic, const PublisherOptions & options,
     std::uint64_t fingerprint = kNoSchema);
-  static constexpr std::uint32_t kDefaultSlotSize = FLUX_DEFAULT_SLOT_SIZE;
-  static constexpr std::uint32_t kDefaultSlotCount = FLUX_DEFAULT_SLOT_COUNT;
-  static constexpr std::uint32_t kDefaultMaxSubscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS;
-
   Publisher(const Publisher &) = delete;
   auto operator=(const Publisher &) -> Publisher & = delete;
   Publisher(Publisher &&) noexcept;

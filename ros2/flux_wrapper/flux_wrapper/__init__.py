@@ -705,6 +705,15 @@ class Subscription:
         return self._rejects[0]
 
 
+def create_publisher(node, msg_type, topic, qos, **options):
+    """As flux_wrapper::create_publisher<msg_type>, and create_subscription as its C++ twin."""
+    return Publisher(node, msg_type, topic, qos, **options)
+
+
+def create_subscription(node, msg_type, topic, qos, callback, **options):
+    return Subscription(node, msg_type, topic, callback, qos, **options)
+
+
 class Executor:
     """flux.Executor on the flux path, rclpy's SingleThreadedExecutor otherwise."""
 

@@ -109,6 +109,23 @@ def test_run_switch_picks_the_path(node):
     assert pub.uses_flux == EXPECT_FLUX
 
 
+def test_create_functions_take_the_cpp_order(node):
+    got, done = [], threading.Event()
+
+    def on_image(v):
+        got.append(bytes(v.data))
+        done.set()
+
+    sub = flux_wrapper.create_subscription(node, Image, "create", 4, on_image)
+    pub = flux_wrapper.create_publisher(node, Image, "create", 4)
+    assert isinstance(pub, flux_wrapper.Publisher)
+    assert isinstance(sub, flux_wrapper.Subscription)
+    assert (pub.uses_flux, sub.uses_flux) == (EXPECT_FLUX, EXPECT_FLUX)
+    msg = Image(height=1, width=2, step=2, encoding="mono8", data=[5, 6])
+    run_until(node, sub, done, lambda: pub.publish(msg))
+    assert got[0] == bytes([5, 6])
+
+
 def test_image_through_a_loan(node):
     got, done = {}, threading.Event()
 
