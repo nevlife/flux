@@ -38,7 +38,7 @@
 * `flux_bridge`와 ROS 2 mirror가 필드를 arena(GPU arena 포함)에 저장한 프레임을 중계한다. view를 보유한 동안 arena의 필드까지 사본에 복사한 뒤 CDR로 바꾼다
 * `data`를 payload로, `data`를 비운 프레임을 aux로 보내는 GPU 메모리 채널(`flux::gpu_fingerprint`)을 `flux_bridge`, ROS 2 mirror, `convert_flux`, rviz2 디스플레이가 그 메시지 타입으로 읽는다. `flux_wrapper`의 `Cuda` 발행자가 이 형식으로 바뀌어 필드의 상한(`frame_id` 256 B 등)이 aux 4096 B 하나가 되었고, `mirror_to_ros`가 동작한다
 * loan에 호스트 메모리를 복사하고 프레임을 호스트 메모리로 복사한다(C `flux_loan_copy_from`, `flux_view_copy_to`, C++ `WriteSlot::copy_from`, `FrameView::copy_to`, Python `Loan.copy_from`, `Frame.copy_to_host`). GPU 메모리 슬롯이면 채널 스트림에서 복사한다. Python `flux_wrapper`의 `device="cuda"` 발행자가 `publish(msg)`로 보내고, GPU 메모리 프레임의 `to_msg()`가 동작한다. 전에는 각각 외장 GPU에서 `False`, `RuntimeError`였다
-* C++ `PublisherOptions`, `SubscriptionOptions`와 `flux::create_publisher`, `flux::create_subscription`. 옵션은 rclcpp처럼 구조체 필드로 채운다. 인자 순서는 rclcpp를 따르고 flux에만 있는 `fingerprint`는 맨 뒤에 둔다. 인자를 순서대로 받는 기존 생성자도 그대로 있다
+* C++ `PublisherOptions`, `SubscriptionOptions`와 `flux::create_publisher`, `flux::create_subscription`. 옵션은 rclcpp처럼 구조체 필드로 채운다. 인자 순서는 rclcpp를 따르고 flux에만 있는 `fingerprint`는 맨 뒤에 둔다.
 * 발행자가 가변 길이 필드를 둘 곳을 고른다(C++ `PublisherOptions::alloc`, Python `alloc="arena"|"slot"`, C `flux_publisher_config`와 `flux_channel_create_config`). 기본은 지금처럼 arena다. `Slot`은 모든 필드를 슬롯 안에 두고, 슬롯에 들어가지 않는 프레임은 거절한다. Jetson 같은 통합 GPU에서 CPU 발행자의 배열을 GPU 구독자가 복사 없이 읽는다. `Slot` 발행자는 크기와 개수를 주지 않으면 4 MiB 슬롯 12개로 시작하고, `max_slot_size`(기본 16 MiB)와 `max_slot_count`(기본 16)를 넘는 설정은 생성에서 거절한다
 * `Alloc::Slot` 발행자와 GPU 메모리 채널이 첫 구독자가 붙을 때 슬롯을 잡도록 고른다(C++·`flux_wrapper` `PublisherOptions::alloc_on_subscriber`, Python `alloc_on_subscriber=True`, C `flux_publisher_config::alloc_on_subscriber`). 구독자 없는 토픽에 메모리를 쓰지 않고, 그 전의 publish는 실패한다
 * 통합 GPU의 고정 슬롯 발행자가 이미지 슬롯을 고른다(C++ `PublisherOptions::image_slots`, Python `image_slots=`, C `flux_publisher_config::image_slots`). 값은 `Auto`(기본, 형식을 주었을 때만), `Off`, `On`이다. 슬롯마다 dmabuf 하나이고, 발행자와 구독자가 그것을 매핑해 읽고 쓴다. 세그먼트 layout 버전이 10이 되어 버전 9와는 섞이지 않는다. 형식(`image_encoding`, `image_width`, `image_height`)을 주면 슬롯이 한 프레임을 담고, `image_layout()`과 `dmabuf_fd()`가 평면 배치와 슬롯의 dmabuf를 준다. `flux_wrapper`의 `PublisherOptions`(C++)와 `Publisher`(Python)도 같은 이름으로 넘긴다. C++ `flux/nvbufsurface.hpp`(Jetson에서만 include)의 `flux::NvBufSurfaces`가 이미지 슬롯을 복사 없이 `NvBufSurface`로 주고, 다른 프레임은 한 번 복사해서 준다
@@ -122,7 +122,7 @@
    // 전
    flux::Subscription sub(*node, "image", flux::kNoSchema, flux::QoS{}, [](flux::FrameView & f) {});
    // 후
-   flux::Subscription sub(*node, "image", flux::kNoSchema, flux::QoS{}, [](flux::FrameView && f) {});
+   auto sub = flux::create_subscription(*node, "image", flux::QoS{}, [](flux::FrameView && f) {});
    ```
 
 4. arena가 기본으로 활성화된다. 생성된 어댑터의 배열과 메시지 배열은 크기와 상관없이 arena에 저장된다. 전에는 슬롯에 들어가지 않으면 `commit__()`이 `TooLarge`였다. 메시지 자신의 문자열은 슬롯에 남고, 넘치면 전처럼 `TooLarge`다. arena가 활성화된 `Builder`는 슬롯의 마지막 71 B를 문자열에 쓰지 않는다. `flux_bridge`, ROS 2 mirror, `record_flux`는 그 필드를 프레임 안으로 복사한 사본을 다룬다. 사본을 만들려면 그 타입이 설치되어 있어야 한다. 전처럼 동작하게 하려면 arena를 비활성화한다.
@@ -141,7 +141,9 @@
    // 전: 8 MiB 슬롯
    flux::Publisher pub(*node, "image", Image::kFingerprint);
    // 후: arena 없이 같은 슬롯을 쓰려면
-   flux::Publisher pub(*node, "image", Image::kFingerprint, FLUX_UNTYPED_SLOT_SIZE);
+   flux::PublisherOptions options;
+   options.slot_size = FLUX_UNTYPED_SLOT_SIZE;
+   auto pub = flux::create_publisher(*node, "image", options, Image::kFingerprint);
    ```
 
 7. 발행자의 `slot_count` 기본값이 16에서 0이 되었다(`FLUX_DEFAULT_SLOT_COUNT`, `kDefaultSlotCount`, `flux.DEFAULT_SLOT_COUNT`). 0이면 슬롯 크기로 상한을 정한다. 호스트 메모리 슬롯은 256 MiB 안에서 최대 256개, GPU 메모리 슬롯은 256 MiB 안에서 최대 32개다. 발행자는 9개 슬롯에만 메모리를 잡고 시작해, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 늘린다. GPU 메모리 발행자도 같다. 그래서 타입이 없는 8 MiB 발행자는 `/dev/shm`이나 GPU 메모리를 72 MiB로 시작해 최대 256 MiB까지 쓴다. 늘리는 프레임의 loan은 그 슬롯의 메모리를 잡는 만큼 길어진다(호스트 8 MiB 슬롯에서 약 1.4 ms). `slot_count`를 지정하면 전처럼 그 개수를 처음부터 모두 잡고 늘리지 않는다. `play_flux`는 bag에 개수나 크기가 0으로 기록된 채널을 기본값으로 만들지 않고 건너뛴다.
@@ -161,9 +163,24 @@
 
 11. GPU 메모리 채널(C++ `Device::Cuda`나 stream을 준 타입 없는 발행자, `flux_wrapper`의 `Device::Cuda`)의 기본 슬롯이 8 MiB, 최대 32개에서 4 MiB 12개(최대 16개)가 되었다. `flux_wrapper`의 `max_device_data_size`(기본 10 MiB)는 `slot_size`가 되었다. 4 MiB보다 큰 `data`는 `slot_size`를 준다(최대 16 MiB, 더 크면 `max_slot_size`도 준다). 이 채널과 `Alloc::Slot` 발행자는 모든 슬롯이 쓰이고 있으면 슬롯을 더할 때까지 loan이 실패한다. 슬롯은 별도 스레드가 더한다.
 
-   ```cpp
-   // 전
-   options.max_device_data_size = 10 << 20;
-   // 후
-   options.slot_size = 10 << 20;
-   ```
+    ```cpp
+    // 전
+    options.max_device_data_size = 10 << 20;
+    // 후
+    options.slot_size = 10 << 20;
+    ```
+
+12. C++ `flux::Publisher`와 `flux::Subscription`의 인자를 순서대로 받던 생성자를 지웠다. 발행자는 `PublisherOptions`, 구독은 `SubscriptionOptions`를 받는 `create_publisher`, `create_subscription`이나 같은 인자의 생성자로 만든다. 인자 순서는 rclcpp를 따라 fingerprint가 맨 뒤에 온다. 콜백 없는 구독은 콜백에 `{}`를 준다.
+
+    ```cpp
+    // 전
+    flux::Publisher pub(*node, "image", Image::kFingerprint, 4096, 4);
+    flux::Subscription sub(*node, "image", Image::kFingerprint, flux::QoS(4));
+    // 후
+    flux::PublisherOptions options;
+    options.slot_size = 4096;
+    options.slot_count = 4;
+    auto pub = flux::create_publisher(*node, "image", options, Image::kFingerprint);
+    auto sub =
+      flux::create_subscription(*node, "image", flux::QoS(4), {}, {}, Image::kFingerprint);
+    ```

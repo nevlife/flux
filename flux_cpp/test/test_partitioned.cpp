@@ -28,6 +28,14 @@ using namespace std::chrono_literals;
 constexpr std::uint32_t kSlot = 4096;
 constexpr std::uint32_t kSlots = 4;
 
+auto slots(std::uint32_t size, std::uint32_t count) -> flux::PublisherOptions
+{
+  flux::PublisherOptions o;
+  o.slot_size = size;
+  o.slot_count = count;
+  return o;
+}
+
 auto topic(const char * name) -> std::string
 {
   return "/p" + std::to_string(getpid()) + "_" + name;
@@ -71,7 +79,7 @@ protected:
 
   auto pub(const char * name) -> flux::Publisher
   {
-    return flux::Publisher(*node_, topic(name), flux::kNoSchema, kSlot, kSlots);
+    return flux::Publisher(*node_, topic(name), slots(kSlot, kSlots));
   }
 
   // Spins on a thread until the test body returns, then rethrows nothing: failures are asserted.
@@ -120,14 +128,16 @@ TEST_F(Partitioned, ABlockedGroupDoesNotStallAnother)
   std::atomic<bool> release{false};
   std::atomic<int> a_in{0};
   std::atomic<int> b_got{0};
-  flux::Subscription sa(*node_, topic("blocka"), flux::kNoSchema, 4, [&](const flux::FrameView &) {
-    ++a_in;
-    while (!release) {
-      std::this_thread::sleep_for(1ms);
-    }
-  });
-  flux::Subscription sb(
-    *node_, topic("blockb"), flux::kNoSchema, 4, [&](const flux::FrameView &) { ++b_got; });
+  flux::Subscription sa(
+    *node_, topic("blocka"), 4,
+    [&](const flux::FrameView &) {
+      ++a_in;
+      while (!release) {
+        std::this_thread::sleep_for(1ms);
+      }
+    },
+    {});
+  flux::Subscription sb(*node_, topic("blockb"), 4, [&](const flux::FrameView &) { ++b_got; }, {});
   flux::PartitionedExecutor ex;
   ex.add(sa, a_);
   ex.add(sb, b_);
@@ -147,9 +157,9 @@ TEST_F(Partitioned, AGroupRunsItsFluxAndRosCallbacksOnItsOwnThread)
   std::atomic<std::thread::id> flux_thread{};
   std::atomic<std::thread::id> ros_thread{};
   std::atomic<std::thread::id> default_thread{};
-  flux::Subscription sa(*node_, topic("threads"), flux::kNoSchema, 4, [&](const flux::FrameView &) {
-    flux_thread = std::this_thread::get_id();
-  });
+  flux::Subscription sa(
+    *node_, topic("threads"), 4,
+    [&](const flux::FrameView &) { flux_thread = std::this_thread::get_id(); }, {});
   rclcpp::SubscriptionOptions in_a;
   in_a.callback_group = a_;
   auto ros_a = node_->create_subscription<std_msgs::msg::String>(
@@ -177,10 +187,9 @@ TEST_F(Partitioned, ALifecycleNodeCarriesFrames)
 {
   auto node = std::make_shared<rclcpp_lifecycle::LifecycleNode>("flux_part_lifecycle");
   auto group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
-  flux::Publisher p(*node, topic("lifecycle"), flux::kNoSchema, kSlot, kSlots);
+  flux::Publisher p(*node, topic("lifecycle"), slots(kSlot, kSlots));
   std::atomic<int> got{0};
-  flux::Subscription s(
-    *node, topic("lifecycle"), flux::kNoSchema, 4, [&](const flux::FrameView &) { ++got; });
+  flux::Subscription s(*node, topic("lifecycle"), 4, [&](const flux::FrameView &) { ++got; }, {});
   flux::PartitionedExecutor ex;
   ex.add(s, group);
   ex.add_node(node);
@@ -208,9 +217,9 @@ TEST_F(Partitioned, AThreadStartHookRunsOnTheGroupsThread)
   auto pa = pub("hook");
   std::atomic<std::thread::id> hook_thread{};
   std::atomic<std::thread::id> cb_thread{};
-  flux::Subscription sa(*node_, topic("hook"), flux::kNoSchema, 4, [&](const flux::FrameView &) {
-    cb_thread = std::this_thread::get_id();
-  });
+  flux::Subscription sa(
+    *node_, topic("hook"), 4,
+    [&](const flux::FrameView &) { cb_thread = std::this_thread::get_id(); }, {});
   flux::PartitionedExecutor ex;
   ex.add(sa, a_);
   ex.add_node(node_);
@@ -278,9 +287,9 @@ TEST_F(Partitioned, CancelTakesNoLockSpinMayHold)
 TEST_F(Partitioned, AnErrorOnOneThreadStopsAllAndReachesSpin)
 {
   auto pa = pub("throw");
-  flux::Subscription sa(*node_, topic("throw"), flux::kNoSchema, 4, [](const flux::FrameView &) {
-    throw std::logic_error("in group a");
-  });
+  flux::Subscription sa(
+    *node_, topic("throw"), 4,
+    [](const flux::FrameView &) { throw std::logic_error("in group a"); }, {});
   flux::PartitionedExecutor ex;
   ex.add(sa, a_);
   ex.add_node(node_);
@@ -296,9 +305,9 @@ TEST_F(Partitioned, ASubscriptionInAGroupIsServedOnThatGroupsThread)
   auto group = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   std::atomic<std::thread::id> hook_thread{};
   std::atomic<std::thread::id> cb_thread{};
-  flux::Subscription sa(*node_, topic("member"), flux::kNoSchema, 4, [&](const flux::FrameView &) {
-    cb_thread = std::this_thread::get_id();
-  });
+  flux::Subscription sa(
+    *node_, topic("member"), 4,
+    [&](const flux::FrameView &) { cb_thread = std::this_thread::get_id(); }, {});
   sa.add_to_callback_group(*node_, group);
   EXPECT_THROW(sa.add_to_callback_group(*node_, group), std::logic_error);
   flux::PartitionedExecutor ex;
@@ -411,12 +420,11 @@ TEST_F(Partitioned, AGroupAnotherExecutorServesIsLeftToIt)
 
 TEST_F(Partitioned, MisuseIsRefused)
 {
-  flux::Subscription pull(*node_, topic("misuse"));
+  flux::Subscription pull(*node_, topic("misuse"), flux::QoS{}, {}, {});
   flux::PartitionedExecutor ex;
   EXPECT_THROW(ex.add(pull, a_), std::invalid_argument);
 
-  flux::Subscription sa(
-    *node_, topic("misuse"), flux::kNoSchema, 4, [](const flux::FrameView &) {});
+  flux::Subscription sa(*node_, topic("misuse"), 4, [](const flux::FrameView &) {}, {});
   ex.add(sa, a_);
   EXPECT_THROW(ex.add(sa, b_), std::invalid_argument);
   EXPECT_THROW(ex.spin(), std::invalid_argument);  // a_ belongs to no added node

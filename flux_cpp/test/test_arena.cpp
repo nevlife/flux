@@ -25,6 +25,14 @@ using Blob = flux_test::flux_msg::Blob;
 constexpr std::uint32_t kSlot = 4096;
 constexpr std::size_t kRun = 1 << 20;
 
+auto slots(std::uint32_t size, std::uint32_t count) -> flux::PublisherOptions
+{
+  flux::PublisherOptions o;
+  o.slot_size = size;
+  o.slot_count = count;
+  return o;
+}
+
 auto topic(const char * name) -> std::string
 {
   return "/a" + std::to_string(getpid()) + "_" + name;
@@ -48,8 +56,8 @@ protected:
 
 TEST_F(Arena, AFrameLargerThanItsSlotGoesThroughTheArena)
 {
-  flux::Publisher pub(*node_, topic("big"), Blob::kFingerprint, kSlot, 4);
-  flux::Subscription sub(*node_, topic("big"), Blob::kFingerprint);
+  flux::Publisher pub(*node_, topic("big"), slots(kSlot, 4), Blob::kFingerprint);
+  flux::Subscription sub(*node_, topic("big"), flux::QoS{}, {}, {}, Blob::kFingerprint);
   auto b = Blob::build__(pub);
   b.set__name("blob");
   const auto data = b.alloc__data(kRun);
@@ -95,8 +103,8 @@ TEST_F(Arena, AFrameLargerThanItsSlotGoesThroughTheArena)
 // that does not fit the slot fails the frame rather than going to the arena.
 TEST_F(Arena, AVariableFieldGoesWhereItsKindSaysNotWhereItFits)
 {
-  flux::Publisher pub(*node_, topic("kind"), Blob::kFingerprint, kSlot, 4);
-  flux::Subscription sub(*node_, topic("kind"), Blob::kFingerprint);
+  flux::Publisher pub(*node_, topic("kind"), slots(kSlot, 4), Blob::kFingerprint);
+  flux::Subscription sub(*node_, topic("kind"), flux::QoS{}, {}, {}, Blob::kFingerprint);
   auto b = Blob::build__(pub);
   b.set__name("blob");
   b.alloc__data(4)[3] = 9;
@@ -137,18 +145,18 @@ TEST_F(Arena, AVariableFieldGoesWhereItsKindSaysNotWhereItFits)
 // and the arena trailer, in pages. One no generated header registered gets the untyped size.
 TEST_F(Arena, ASlotSizeOfZeroIsTheTypes)
 {
-  const flux::Publisher typed(*node_, topic("typed"), Blob::kFingerprint);
+  const flux::Publisher typed(*node_, topic("typed"), flux::PublisherOptions(), Blob::kFingerprint);
   EXPECT_EQ(typed.slot_size(), 8192U) << "32 + 4096 + 71, in 4 KiB pages";
-  const flux::Publisher untyped(*node_, topic("untyped"), flux::kNoSchema);
+  const flux::Publisher untyped(*node_, topic("untyped"), flux::PublisherOptions());
   EXPECT_EQ(untyped.slot_size(), FLUX_UNTYPED_SLOT_SIZE);
-  const flux::Publisher sized(*node_, topic("sized"), Blob::kFingerprint, 4096, 4);
+  const flux::Publisher sized(*node_, topic("sized"), slots(4096, 4), Blob::kFingerprint);
   EXPECT_EQ(sized.slot_size(), 4096U);
 }
 
 TEST_F(Arena, AnArenaOffsetPastTheArenaIsRefused)
 {
-  flux::Publisher pub(*node_, topic("bad"), Blob::kFingerprint, kSlot, 4);
-  flux::Subscription sub(*node_, topic("bad"), Blob::kFingerprint);
+  flux::Publisher pub(*node_, topic("bad"), slots(kSlot, 4), Blob::kFingerprint);
+  flux::Subscription sub(*node_, topic("bad"), flux::QoS{}, {}, {}, Blob::kFingerprint);
   auto b = Blob::build__(pub);
   b.alloc__data(kRun);
   ASSERT_EQ(b.commit__(), flux::Published::Ok);
@@ -192,8 +200,8 @@ TEST(ArenaWire, AFieldPastOneGibIsReadAtItsPosition)
 
 TEST_F(Arena, AdoptCopiesAContainerTheHookDidNotPlace)
 {
-  flux::Publisher pub(*node_, topic("copy"), Blob::kFingerprint, kSlot, 4);
-  flux::Subscription sub(*node_, topic("copy"), Blob::kFingerprint);
+  flux::Publisher pub(*node_, topic("copy"), slots(kSlot, 4), Blob::kFingerprint);
+  flux::Subscription sub(*node_, topic("copy"), flux::QoS{}, {}, {}, Blob::kFingerprint);
   auto b = Blob::build__(pub);
   EXPECT_FALSE(b.adopt__data(std::vector<std::uint8_t>(kRun, 5)));
   ASSERT_EQ(b.commit__(), flux::Published::Ok);
@@ -205,8 +213,8 @@ TEST_F(Arena, AdoptCopiesAContainerTheHookDidNotPlace)
 
 TEST_F(Arena, AdoptTakesAScopesBufferWithoutACopy)
 {
-  flux::Publisher pub(*node_, topic("adopt"), Blob::kFingerprint, kSlot, 2);
-  flux::Subscription sub(*node_, topic("adopt"), Blob::kFingerprint);
+  flux::Publisher pub(*node_, topic("adopt"), slots(kSlot, 2), Blob::kFingerprint);
+  flux::Subscription sub(*node_, topic("adopt"), flux::QoS{}, {}, {}, Blob::kFingerprint);
   const std::uint8_t * at = nullptr;
   {
     auto b = Blob::build__(pub);

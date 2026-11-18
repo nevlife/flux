@@ -60,10 +60,11 @@ public:
     frames_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
     timer_(every_10ms("default")),
     sub_(
-      *this, declare_parameter<std::string>("topic"), flux::kNoSchema, flux::QoS{},
+      *this, declare_parameter<std::string>("topic"), flux::QoS{},
       [this](const flux::FrameView &) {
         probe::record(std::string(get_name()) + "/frame", frames_.get());
-      })
+      },
+      {})
   {
     sub_.add_to_callback_group(*this, frames_);
   }

@@ -10,7 +10,7 @@
 
 ```cpp doc:cpp_qos
 const flux::QoS qos = flux::QoS(4).transient_local(2).max_borrow(2);
-flux::Subscription sub(*node, "cmd", flux::kNoSchema, qos);
+auto sub = flux::create_subscription(*node, "cmd", qos, {});
 ```
 
 ```python doc:py_qos

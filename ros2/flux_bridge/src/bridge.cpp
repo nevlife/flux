@@ -56,7 +56,7 @@ public:
     signpost_(topic.signpost),
     gpu_(gpu),
     type_(type),
-    sub_(node, topic.key, topic.fingerprint, flux::QoS(1).max_borrow(1)),
+    sub_(node, topic.key, flux::QoS(1).max_borrow(1), {}, {}, topic.fingerprint),
     pub_(node.create_generic_publisher(
       topic.key, type.ros_type(), rclcpp::QoS(1).best_effort().durability_volatile())),
     thread_([this] { run(); })

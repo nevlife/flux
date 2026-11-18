@@ -316,7 +316,7 @@ public:
     flux_topic_(topic.key),
     bag_topic_(topic.key + kBagTopicSuffix),
     fingerprint_(topic.fingerprint),
-    sub_(recorder, topic.key, topic.fingerprint),
+    sub_(recorder, topic.key, flux::QoS{}, {}, {}, topic.fingerprint),
     encoder_(topic.key, topic.fingerprint)
   {
     rosbag2_storage::TopicMetadata meta;

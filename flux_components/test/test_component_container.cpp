@@ -206,7 +206,10 @@ TEST_F(Container, EachGroupOfAPlainComponentRunsOnItsOwnThread)
 TEST_F(Container, AFluxSubscriptionInAComponentReceivesFrames)
 {
   const std::string topic = "/c" + std::to_string(getpid()) + "_frames";
-  flux::Publisher pub(*client_, topic, flux::kNoSchema, 4096, 4);
+  flux::PublisherOptions options;
+  options.slot_size = 4096;
+  options.slot_count = 4;
+  flux::Publisher pub(*client_, topic, options);
   const auto loaded = load("FluxSub", "flux_sub", {rclcpp::Parameter("topic", topic)});
   ASSERT_TRUE(loaded->success) << loaded->error_message;
   ASSERT_TRUE(eventually([&] {

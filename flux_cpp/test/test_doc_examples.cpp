@@ -81,7 +81,10 @@ protected:
   auto feed(const std::string & topic, std::uint64_t fingerprint = flux::kNoSchema) -> std::thread
   {
     return std::thread([this, topic, fingerprint] {
-      flux::Publisher pub(*node, topic, fingerprint, 1U << 20U, 16);
+      flux::PublisherOptions options;
+      options.slot_size = 1U << 20U;
+      options.slot_count = 16;
+      flux::Publisher pub(*node, topic, options, fingerprint);
       for (int i = 0; i < 50 && rclcpp::ok(); ++i) {
         std::this_thread::sleep_for(10ms);
         if (fingerprint == flux::kNoSchema) {
@@ -104,29 +107,32 @@ protected:
 TEST_F(Doc, PublishAndLoan)
 {
   // [doc:cpp_publish]
-  flux::Publisher pub(*node, "image");
+  auto pub = flux::create_publisher(*node, "image");
 
   constexpr std::size_t kHeight = 480;
   constexpr std::size_t kWidth = 640;
   std::vector<std::uint8_t> pixels(kHeight * kWidth * 3);
-  const flux::Published p = pub.publish(pixels.data(), flux::DType::U8, {kHeight, kWidth, 3});
+  const flux::Published p = pub->publish(pixels.data(), flux::DType::U8, {kHeight, kWidth, 3});
   if (flux::faulted(p)) {
     RCLCPP_ERROR(node->get_logger(), "publish: %s", flux::to_string(p));
   }
   // [doc:/cpp_publish]
   EXPECT_EQ(p, flux::Published::Ok);
-  flux::Subscription image(*node, "image", flux::kNoSchema, flux::QoS(1).transient_local(1));
+  flux::Subscription image(*node, "image", flux::QoS(1).transient_local(1), {}, {});
   const flux::FrameView sent = image.take();
   ASSERT_TRUE(sent);
   EXPECT_EQ(sent.meta().shape[2], 3U);
 
-  flux::Publisher points_pub(*node, "points", flux::kNoSchema, 1U << 20U, 4);
-  flux::Subscription check(*node, "points");
+  flux::PublisherOptions points_options;
+  points_options.slot_size = 1U << 20U;
+  points_options.slot_count = 4;
+  const auto points_pub = flux::create_publisher(*node, "points", points_options);
+  flux::Subscription check(*node, "points", flux::QoS{}, {}, {});
   {
-    flux::Publisher & pub = points_pub;
+    const std::shared_ptr<flux::Publisher> & pub = points_pub;
     // [doc:cpp_loan]
     constexpr std::size_t kPoints = 1024;
-    flux::WriteSlot slot = pub.loan(flux::DType::F32, {kPoints, 3});
+    flux::WriteSlot slot = pub->loan(flux::DType::F32, {kPoints, 3});
     if (slot) {
       auto * xyz = static_cast<float *>(slot.data());
       std::fill_n(xyz, kPoints * 3, 0.0F);
@@ -144,11 +150,11 @@ TEST_F(Doc, PublishAndLoan)
 TEST_F(Doc, ReadmeLoan)
 {
   // [doc:readme_loan]
-  flux::Publisher pub(*node, "image");
+  auto pub = flux::create_publisher(*node, "image");
 
   constexpr std::size_t kHeight = 480;
   constexpr std::size_t kWidth = 640;
-  flux::WriteSlot slot = pub.loan(flux::DType::U8, {kHeight, kWidth, 3});
+  flux::WriteSlot slot = pub->loan(flux::DType::U8, {kHeight, kWidth, 3});
   if (slot) {
     auto * pixels = static_cast<std::uint8_t *>(slot.data());
     std::fill_n(pixels, kHeight * kWidth * 3, std::uint8_t{0});
@@ -157,7 +163,7 @@ TEST_F(Doc, ReadmeLoan)
     }
   }
   // [doc:/readme_loan]
-  flux::Subscription image(*node, "image", flux::kNoSchema, flux::QoS(1).transient_local(1));
+  flux::Subscription image(*node, "image", flux::QoS(1).transient_local(1), {}, {});
   const flux::FrameView sent = image.take();
   ASSERT_TRUE(sent);
   EXPECT_EQ(sent.meta().shape[0], kHeight);
@@ -170,13 +176,13 @@ TEST_F(Doc, SubscribeWithAnExecutor)
   testing::internal::CaptureStdout();
 
   // [doc:cpp_subscribe]
-  flux::Subscription sub(
-    *node, "image", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & frame) {
+  auto sub =
+    flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::FrameView & frame) {
       std::cout << frame.size() << " bytes, " << unsigned{frame.meta().ndim} << " dimensions\n";
     });
 
   flux::Executor ex;
-  ex.add(sub);
+  ex.add(*sub);
   ex.add_node(node);
   ex.spin();
   // [doc:/cpp_subscribe]
@@ -188,18 +194,21 @@ TEST_F(Doc, SubscribeWithAnExecutor)
 
 TEST_F(Doc, TakeWithoutAnExecutor)
 {
-  flux::Publisher pub(*node, "image", flux::kNoSchema, 4096, 4);
+  flux::PublisherOptions options;
+  options.slot_size = 4096;
+  options.slot_count = 4;
+  flux::Publisher pub(*node, "image", options);
   testing::internal::CaptureStdout();
   // [doc:cpp_take]
-  flux::Subscription sub(*node, "image");
+  auto sub = flux::create_subscription(*node, "image", flux::QoS{}, {});
   // [doc:/cpp_take]
   ASSERT_EQ(pub.publish("a", 1), flux::Published::Ok);
   ASSERT_EQ(pub.publish("b", 1), flux::Published::Ok);
   // [doc:cpp_take_frames]
-  while (flux::FrameView frame = sub.take()) {
+  while (flux::FrameView frame = sub->take()) {
     std::cout << "frame " << frame.ticket() << ", " << frame.size() << " bytes\n";
   }
-  if (flux::FrameView frame = sub.take_blocking(100'000'000)) {
+  if (flux::FrameView frame = sub->take_blocking(100'000'000)) {
     std::cout << "one more, " << frame.size() << " bytes\n";
   }
   // [doc:/cpp_take_frames]
@@ -208,15 +217,18 @@ TEST_F(Doc, TakeWithoutAnExecutor)
 
 TEST_F(Doc, Qos)
 {
-  flux::Publisher pub(*node, "cmd", flux::kNoSchema, 4096, 8);
+  flux::PublisherOptions options;
+  options.slot_size = 4096;
+  options.slot_count = 8;
+  flux::Publisher pub(*node, "cmd", options);
   for (const char * c : {"a", "b", "c"}) {
     ASSERT_EQ(pub.publish(c, 1), flux::Published::Ok);
   }
   // [doc:cpp_qos]
   const flux::QoS qos = flux::QoS(4).transient_local(2).max_borrow(2);
-  flux::Subscription sub(*node, "cmd", flux::kNoSchema, qos);
+  auto sub = flux::create_subscription(*node, "cmd", qos, {});
   // [doc:/cpp_qos]
-  const flux::FrameView first = sub.take();
+  const flux::FrameView first = sub->take();
   ASSERT_TRUE(first);
   EXPECT_EQ(*static_cast<const char *>(first.data()), 'b');
 }
@@ -224,12 +236,12 @@ TEST_F(Doc, Qos)
 TEST_F(Doc, Adapter)
 {
   // [doc:cpp_adapter_publish]
-  flux::Publisher pub(*node, "image", Image::kFingerprint);
+  auto pub = flux::create_publisher(*node, "image", flux::PublisherOptions(), Image::kFingerprint);
 
   constexpr std::uint32_t kHeight = 480;
   constexpr std::uint32_t kWidth = 640;
 
-  Image::Builder b = Image::build__(pub);
+  Image::Builder b = Image::build__(*pub);
   if (b) {
     const builtin_interfaces::msg::Time stamp = node->now();
     b.set__header__stamp(stamp.sec, stamp.nanosec);
@@ -245,7 +257,8 @@ TEST_F(Doc, Adapter)
     }
   }
   // [doc:/cpp_adapter_publish]
-  flux::Subscription sub(*node, "image", Image::kFingerprint, flux::QoS(1).transient_local(1));
+  flux::Subscription sub(
+    *node, "image", flux::QoS(1).transient_local(1), {}, {}, Image::kFingerprint);
   testing::internal::CaptureStdout();
   if (flux::FrameView frame = sub.take()) {
     // [doc:cpp_adapter_read]
@@ -264,8 +277,9 @@ TEST_F(Doc, Adapter)
 
 TEST_F(Doc, RosMessageBridge)
 {
-  flux::Publisher pub(*node, "image", Image::kFingerprint);
-  flux::Subscription sub(*node, "image", Image::kFingerprint);
+  const auto pub =
+    flux::create_publisher(*node, "image", flux::PublisherOptions(), Image::kFingerprint);
+  flux::Subscription sub(*node, "image", flux::QoS{}, {}, {}, Image::kFingerprint);
   sensor_msgs::msg::Image msg;
   msg.width = 2;
   msg.height = 1;
@@ -273,7 +287,7 @@ TEST_F(Doc, RosMessageBridge)
   msg.data = {7, 9};
   {
     // [doc:cpp_ros_bridge_publish]
-    Image::Builder b = Image::build__(pub);
+    Image::Builder b = Image::build__(*pub);
     sensor_msgs::flux_msg::msg_to_frame(msg, b);
     if (flux::faulted(b.commit__())) {
       RCLCPP_ERROR(node->get_logger(), "image not published");
@@ -296,15 +310,15 @@ TEST_F(Doc, Partitioned)
 
   // [doc:cpp_partitioned]
   auto camera = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
-  flux::Subscription sub(
-    *node, "image", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & frame) {
+  auto sub =
+    flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::FrameView & frame) {
       std::array<char, 16> name{};
       pthread_getname_np(pthread_self(), name.data(), name.size());
       std::cout << name.data() << ": " << frame.size() << " bytes\n";
     });
 
   flux::PartitionedExecutor ex;
-  ex.add(sub, camera);
+  ex.add(*sub, camera);
   ex.add_node(node);
   ex.on_thread_start(camera, [] { pthread_setname_np(pthread_self(), "camera"); });
   ex.spin();
@@ -321,17 +335,17 @@ class Camera : public rclcpp::Node
 public:
   explicit Camera(const rclcpp::NodeOptions & options)
   : Node("camera", options),
-    group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
-    sub_(*this, "image", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & frame) {
-      std::cout << "camera: " << frame.size() << " bytes\n";
-    })
+    group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive))
   {
-    sub_.add_to_callback_group(*this, group_);
+    sub_ = flux::create_subscription(
+      *this, "image", flux::QoS{},
+      [](const flux::FrameView & frame) { std::cout << "camera: " << frame.size() << " bytes\n"; });
+    sub_->add_to_callback_group(*this, group_);
   }
 
 private:
   rclcpp::CallbackGroup::SharedPtr group_;
-  flux::Subscription sub_;
+  std::shared_ptr<flux::Subscription> sub_;
 };
 // [doc:/cpp_component]
 
@@ -382,7 +396,10 @@ TEST_F(Doc, MessageFilters)
 
 TEST_F(Doc, Enumerate)
 {
-  flux::Publisher pub(*node, "image", flux::kNoSchema, 4096, 4);
+  flux::PublisherOptions options;
+  options.slot_size = 4096;
+  options.slot_count = 4;
+  flux::Publisher pub(*node, "image", options);
   testing::internal::CaptureStdout();
   // [doc:cpp_enumerate]
   for (const flux::Topic & t : flux::enumerate_topics()) {
@@ -401,9 +418,13 @@ TEST_F(Doc, Gpu)
     GTEST_SKIP() << "no GPU route on this host";
   }
   // [doc:cpp_gpu_publish]
-  flux::Publisher pub(*node, "depth", flux::kNoSchema, 4U << 20U, 4, flux::Device::Cuda);
+  flux::PublisherOptions options;
+  options.slot_size = 4U << 20U;
+  options.slot_count = 4;
+  options.device = flux::Device::Cuda;
+  auto pub = flux::create_publisher(*node, "depth", options);
 
-  flux::WriteSlot slot = pub.loan(flux::DType::F32, {480, 640});
+  flux::WriteSlot slot = pub->loan(flux::DType::F32, {480, 640});
   if (slot) {
     launch_my_kernel(slot.device_ptr(), slot.capacity(), slot.stream());
     if (flux::faulted(slot.commit())) {
@@ -411,8 +432,9 @@ TEST_F(Doc, Gpu)
     }
   }
   // [doc:/cpp_gpu_publish]
-  flux::Subscription sub(
-    *node, "depth", flux::kNoSchema, flux::QoS(1).transient_local(1), {}, flux::Device::Cuda);
+  flux::SubscriptionOptions sub_options;
+  sub_options.device = flux::Device::Cuda;
+  flux::Subscription sub(*node, "depth", flux::QoS(1).transient_local(1), {}, sub_options);
   // [doc:cpp_gpu_read]
   if (flux::FrameView frame = sub.take()) {
     read_on_device(frame.device_ptr(), frame.size(), frame.stream());

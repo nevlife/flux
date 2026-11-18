@@ -31,27 +31,29 @@ target_include_directories(camera_node PRIVATE ${flux_std_adapters_INCLUDE_DIRS}
 | `flux/topics.hpp` | `enumerate_topics`, `read_channel_stats` |
 | `sensor_msgs/flux/image.hpp` | `flux_std_adapters`의 `sensor_msgs::flux_msg::Image` 어댑터 |
 
-생성자의 첫 인자는 노드다. `rclcpp::Node`, `rclcpp_lifecycle::LifecycleNode` 등 노드 interface 접근자를 가진 타입이 가능하다. 토픽 이름은 rclcpp처럼 namespace와 remap으로 해석한다.
+`create_publisher`와 `create_subscription`의 첫 인자는 노드다. `rclcpp::Node`, `rclcpp_lifecycle::LifecycleNode` 등 노드 interface 접근자를 가진 타입이 가능하다. 토픽 이름은 rclcpp처럼 namespace와 remap으로 해석한다.
 
 ## 발행
 
 ```cpp doc:cpp_publish
-flux::Publisher pub(*node, "image");
+auto pub = flux::create_publisher(*node, "image");
 
 constexpr std::size_t kHeight = 480;
 constexpr std::size_t kWidth = 640;
 std::vector<std::uint8_t> pixels(kHeight * kWidth * 3);
-const flux::Published p = pub.publish(pixels.data(), flux::DType::U8, {kHeight, kWidth, 3});
+const flux::Published p = pub->publish(pixels.data(), flux::DType::U8, {kHeight, kWidth, 3});
 if (flux::faulted(p)) {
   RCLCPP_ERROR(node->get_logger(), "publish: %s", flux::to_string(p));
 }
 ```
 
 ```cpp
-flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
-                slot_size = 0, slot_count = 0, MemoryPolicy mem = {},
-                max_subscribers = 16, aux_size = 0);
+auto flux::create_publisher(node, topic, const PublisherOptions & options = {},
+                            fingerprint = flux::kNoSchema) -> std::shared_ptr<Publisher>;
 ```
+
+- rclcpp `create_publisher`처럼 `shared_ptr`를 반환한다. `flux::Publisher(node, topic, options, fingerprint)` 생성자도 같은 인자를 받는다.
+- `PublisherOptions`의 필드는 `alloc`, `slot_size`, `slot_count`, `max_slot_size`, `max_slot_count`, `device`, `stream`, `memory`, `max_subscribers`(기본 16), `aux_size`, `alloc_on_subscriber`, `image_slots`, `image_encoding`, `image_width`, `image_height`다. 선언한 `stream`이 `device`보다 우선한다.
 
 - 기본값은 `flux.h`의 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`이고, Python과 같다. `slot_size`와 `slot_count` 0의 뜻은 [concepts.md](concepts.md#발행자와-슬롯)에 있다. 타입이 없는 발행자의 크기는 `FLUX_UNTYPED_SLOT_SIZE`(8 MiB), 문자열 자리는 `FLUX_SLOT_STRING_BYTES`(4096 B)다.
 - `publish(data, dtype, shape)`는 배열을 슬롯에 한 번 복사한다. `publish(data, nbytes)`는 `u8[nbytes]`로 발행한다.
@@ -83,7 +85,7 @@ flux::Publisher(node, topic, fingerprint = flux::kNoSchema,
 
 ```cpp doc:cpp_loan
 constexpr std::size_t kPoints = 1024;
-flux::WriteSlot slot = pub.loan(flux::DType::F32, {kPoints, 3});
+flux::WriteSlot slot = pub->loan(flux::DType::F32, {kPoints, 3});
 if (slot) {
   auto * xyz = static_cast<float *>(slot.data());
   std::fill_n(xyz, kPoints * 3, 0.0F);
@@ -105,21 +107,24 @@ if (slot) {
 구독에 콜백을 주고 executor에 넣는다.
 
 ```cpp doc:cpp_subscribe
-flux::Subscription sub(
-  *node, "image", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & frame) {
+auto sub =
+  flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::FrameView & frame) {
     std::cout << frame.size() << " bytes, " << unsigned{frame.meta().ndim} << " dimensions\n";
   });
 
 flux::Executor ex;
-ex.add(sub);
+ex.add(*sub);
 ex.add_node(node);
 ex.spin();
 ```
 
 ```cpp
-flux::Subscription(node, topic, fingerprint = flux::kNoSchema, const QoS & qos = {},
-                   Callback cb = {}, MemoryPolicy mem = {});
+auto flux::create_subscription(node, topic, const QoS & qos, Callback cb,
+                               const SubscriptionOptions & options = {},
+                               fingerprint = flux::kNoSchema) -> std::shared_ptr<Subscription>;
 ```
+
+- `flux::Subscription(node, topic, qos, cb, options, fingerprint)` 생성자도 같은 인자를 받는다. `SubscriptionOptions`의 필드는 `device`, `stream`, `memory`이고, 선언한 `stream`이 `device`보다 우선한다.
 
 - 콜백(`Callback`)은 `std::function<void(FrameView &&)>`다. `const flux::FrameView &`로 받으면 슬롯은 호출 종료 시 반납된다. 프레임을 move해서 보유하면 그 `FrameView`의 해제 시 반납되고, 해제는 어느 스레드에서든 가능하다.
 - 한 구독이 동시에 보유 가능한 프레임은 QoS `max_borrow`개다. 그만큼 보유하는 동안 executor는 그 구독의 콜백을 호출하지 않고, 다음 프레임은 링에서 대기한다. depth보다 뒤처진 프레임은 `lost()`에 더해진다.
@@ -165,17 +170,17 @@ flux::Subscription(node, topic, fingerprint = flux::kNoSchema, const QoS & qos =
 
 ## executor 없이 읽기
 
-콜백 없이 생성한 구독은 직접 읽는다.
+콜백에 `{}`를 주어 콜백 없이 만든 구독은 직접 읽는다.
 
 ```cpp doc:cpp_take
-flux::Subscription sub(*node, "image");
+auto sub = flux::create_subscription(*node, "image", flux::QoS{}, {});
 ```
 
 ```cpp doc:cpp_take_frames
-while (flux::FrameView frame = sub.take()) {
+while (flux::FrameView frame = sub->take()) {
   std::cout << "frame " << frame.ticket() << ", " << frame.size() << " bytes\n";
 }
-if (flux::FrameView frame = sub.take_blocking(100'000'000)) {
+if (flux::FrameView frame = sub->take_blocking(100'000'000)) {
   std::cout << "one more, " << frame.size() << " bytes\n";
 }
 ```
@@ -198,7 +203,7 @@ if (flux::FrameView frame = sub.take_blocking(100'000'000)) {
 
 ```cpp doc:cpp_qos
 const flux::QoS qos = flux::QoS(4).transient_local(2).max_borrow(2);
-flux::Subscription sub(*node, "cmd", flux::kNoSchema, qos);
+auto sub = flux::create_subscription(*node, "cmd", qos, {});
 ```
 
 값의 뜻은 [qos.md](qos.md)에 있다.
@@ -208,12 +213,12 @@ flux::Subscription sub(*node, "cmd", flux::kNoSchema, qos);
 `.msg`에서 생성한 어댑터는 fingerprint와 `View`, `Builder`를 제공한다. 생성 방법과 접근자 규칙은 [messages.md](messages.md)에 있다.
 
 ```cpp doc:cpp_adapter_publish
-flux::Publisher pub(*node, "image", Image::kFingerprint);
+auto pub = flux::create_publisher(*node, "image", flux::PublisherOptions(), Image::kFingerprint);
 
 constexpr std::uint32_t kHeight = 480;
 constexpr std::uint32_t kWidth = 640;
 
-Image::Builder b = Image::build__(pub);
+Image::Builder b = Image::build__(*pub);
 if (b) {
   const builtin_interfaces::msg::Time stamp = node->now();
   b.set__header__stamp(stamp.sec, stamp.nanosec);
@@ -254,7 +259,7 @@ if (img.ok__()) {
 ROS 메시지 객체는 `<pkg>/flux/<name>_ros.hpp`의 함수로 변환한다. 필드 전체를 복사한다.
 
 ```cpp doc:cpp_ros_bridge_publish
-Image::Builder b = Image::build__(pub);
+Image::Builder b = Image::build__(*pub);
 sensor_msgs::flux_msg::msg_to_frame(msg, b);
 if (flux::faulted(b.commit__())) {
   RCLCPP_ERROR(node->get_logger(), "image not published");
@@ -273,15 +278,15 @@ ROS 2 노드도 같은 토픽을 구독해야 하면 발행자에서 `mirror_to_
 
 ```cpp doc:cpp_partitioned
 auto camera = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
-flux::Subscription sub(
-  *node, "image", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & frame) {
+auto sub =
+  flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::FrameView & frame) {
     std::array<char, 16> name{};
     pthread_getname_np(pthread_self(), name.data(), name.size());
     std::cout << name.data() << ": " << frame.size() << " bytes\n";
   });
 
 flux::PartitionedExecutor ex;
-ex.add(sub, camera);
+ex.add(*sub, camera);
 ex.add_node(node);
 ex.on_thread_start(camera, [] { pthread_setname_np(pthread_self(), "camera"); });
 ex.spin();
@@ -314,17 +319,17 @@ class Camera : public rclcpp::Node
 public:
   explicit Camera(const rclcpp::NodeOptions & options)
   : Node("camera", options),
-    group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)),
-    sub_(*this, "image", flux::kNoSchema, flux::QoS{}, [](const flux::FrameView & frame) {
-      std::cout << "camera: " << frame.size() << " bytes\n";
-    })
+    group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive))
   {
-    sub_.add_to_callback_group(*this, group_);
+    sub_ = flux::create_subscription(
+      *this, "image", flux::QoS{},
+      [](const flux::FrameView & frame) { std::cout << "camera: " << frame.size() << " bytes\n"; });
+    sub_->add_to_callback_group(*this, group_);
   }
 
 private:
   rclcpp::CallbackGroup::SharedPtr group_;
-  flux::Subscription sub_;
+  std::shared_ptr<flux::Subscription> sub_;
 };
 ```
 

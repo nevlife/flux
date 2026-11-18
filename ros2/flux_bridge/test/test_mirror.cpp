@@ -28,6 +28,14 @@ using Imu = sensor_msgs::flux_msg::Imu;
 constexpr std::uint32_t kSlot = 4096;
 constexpr std::uint32_t kSlots = 4;
 
+auto slots() -> flux::PublisherOptions
+{
+  flux::PublisherOptions o;
+  o.slot_size = kSlot;
+  o.slot_count = kSlots;
+  return o;
+}
+
 auto topic(const char * name) -> std::string
 {
   return "/m" + std::to_string(getpid()) + "_" + name;
@@ -45,7 +53,7 @@ protected:
 
 TEST_F(Mirror, AFrameReachesARosSubscriber)
 {
-  flux::Publisher pub(*node_, topic("imu"), Imu::kFingerprint, kSlot, kSlots);
+  flux::Publisher pub(*node_, topic("imu"), slots(), Imu::kFingerprint);
   pub.mirror_to_ros();
   EXPECT_EQ(node_->count_publishers(pub.topic_name()), 1U);
 
@@ -80,7 +88,7 @@ TEST_F(Mirror, AFrameReachesARosSubscriber)
 
 TEST_F(Mirror, AnUntypedPublisherIsRefused)
 {
-  flux::Publisher pub(*node_, topic("raw"), flux::kNoSchema, kSlot, kSlots);
+  flux::Publisher pub(*node_, topic("raw"), slots());
   try {
     pub.mirror_to_ros();
     FAIL() << "an untyped mirror was accepted";
@@ -91,7 +99,7 @@ TEST_F(Mirror, AnUntypedPublisherIsRefused)
 
 TEST_F(Mirror, AMovedPublisherKeepsItsMirror)
 {
-  flux::Publisher pub(*node_, topic("moved"), Imu::kFingerprint, kSlot, kSlots);
+  flux::Publisher pub(*node_, topic("moved"), slots(), Imu::kFingerprint);
   pub.mirror_to_ros();
   flux::Publisher moved = std::move(pub);
   EXPECT_EQ(node_->count_publishers(moved.topic_name()), 1U);
@@ -125,7 +133,7 @@ TEST_F(Mirror, DroppingThePublisherStopsItsThread)
 {
   const std::size_t before = threads();
   {
-    flux::Publisher pub(*node_, topic("drop"), Imu::kFingerprint, kSlot, kSlots);
+    flux::Publisher pub(*node_, topic("drop"), slots(), Imu::kFingerprint);
     pub.mirror_to_ros();
     EXPECT_EQ(threads(), before + 1);
   }
@@ -136,8 +144,9 @@ TEST_F(Mirror, DroppingThePublisherStopsItsThread)
 // per process, so the subscriber that takes it runs in another one.
 TEST_F(Mirror, AnUnwatchedMirrorHoldsNoReader)
 {
-  flux::Publisher pub(
-    *node_, topic("idle"), Imu::kFingerprint, kSlot, kSlots, flux::MemoryPolicy{}, 1);
+  flux::PublisherOptions options = slots();
+  options.max_subscribers = 1;
+  flux::Publisher pub(*node_, topic("idle"), options, Imu::kFingerprint);
   pub.mirror_to_ros();
   std::this_thread::sleep_for(300ms);
   const std::string script =
@@ -166,7 +175,9 @@ TEST_F(Mirror, ACudaPublisherOfAGeneratedTypeMirrorsItsHostSlots)
   if (flux::gpu::probe().route == flux::gpu::Route::None) {
     GTEST_SKIP() << "no GPU route";
   }
-  flux::Publisher pub(*node_, topic("cuda"), Imu::kFingerprint, kSlot, kSlots, flux::Device::Cuda);
+  flux::PublisherOptions options = slots();
+  options.device = flux::Device::Cuda;
+  flux::Publisher pub(*node_, topic("cuda"), options, Imu::kFingerprint);
   EXPECT_FALSE(pub.device_backed());
   EXPECT_NO_THROW(pub.mirror_to_ros());
 }

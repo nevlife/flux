@@ -47,8 +47,8 @@ ros2 topic hz_flux /camera/image
 ## 발행자의 ROS 2 mirror
 
 ```cpp
-flux::Publisher pub(*node, "image", Image::kFingerprint);
-pub.mirror_to_ros();
+auto pub = flux::create_publisher(*node, "image", flux::PublisherOptions(), Image::kFingerprint);
+pub->mirror_to_ros();
 ```
 
 ```python

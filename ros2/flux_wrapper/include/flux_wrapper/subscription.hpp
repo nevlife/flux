@@ -252,24 +252,28 @@ private:
       const flux::Device device = cuda ? flux::Device::Cuda : flux::Device::Cpu;
       if constexpr (detail::kRootData<MsgT>) {
         if (cuda) {
+          flux::SubscriptionOptions o;
+          o.device = device;
           flux_ = std::make_unique<flux::Subscription>(
-            node, topic, Adapter::kFingerprint, q,
+            node, topic, q,
             [sink](flux::FrameView && f) {
               (*sink)(std::move(f), [](const flux::FrameView & g) {
                 const typename Adapter::View v(g);
                 return View<MsgT>(v, v.data__device().data(), g.stream());
               });
             },
-            device);
+            o, Adapter::kFingerprint);
         }
       }
       if (!flux_) {
         flux_ = std::make_unique<flux::Subscription>(
-          node, topic, Adapter::kFingerprint, q, [sink](flux::FrameView && f) {
+          node, topic, q,
+          [sink](flux::FrameView && f) {
             (*sink)(std::move(f), [](const flux::FrameView & g) {
               return View<MsgT>(typename Adapter::View(g));
             });
-          });
+          },
+          flux::SubscriptionOptions(), Adapter::kFingerprint);
       }
       // Views kept past the callback hold slots, and the publisher needs one to write into.
       flux_->require_publisher_slots(options.max_borrow + 1);
@@ -363,8 +367,10 @@ private:
       (*sink)(
         std::move(f), [&fields](const flux::FrameView & g) { return View<MsgT>(g, *fields); });
     };
+    flux::SubscriptionOptions o;
+    o.device = device;
     gpu_ = std::make_unique<flux::Subscription>(
-      node, topic, detail::Gpu<MsgT>::kFingerprint, q, std::move(on_frame), device);
+      node, topic, q, std::move(on_frame), o, detail::Gpu<MsgT>::kFingerprint);
     gpu_->require_publisher_slots(options.max_borrow + 1);
     gpu_->add_to_callback_group(node, options.callback_group);
   }

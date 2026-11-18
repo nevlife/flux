@@ -48,7 +48,7 @@ public:
 
   Subscriber(
     const NodeRef & node, const std::string & topic, std::uint32_t queue, const QoS & qos = QoS{})
-  : sub_(node, topic, Adapter::kFingerprint, covering(qos, queue))
+  : sub_(node, topic, covering(qos, queue), {}, SubscriptionOptions(), Adapter::kFingerprint)
   {
     sub_.sub_.require_slots(queue + 1);
   }

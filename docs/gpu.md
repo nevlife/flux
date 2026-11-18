@@ -28,9 +28,13 @@ p = flux.probe()                                     # p.route, p.reason
 ## C++
 
 ```cpp doc:cpp_gpu_publish
-flux::Publisher pub(*node, "depth", flux::kNoSchema, 4U << 20U, 4, flux::Device::Cuda);
+flux::PublisherOptions options;
+options.slot_size = 4U << 20U;
+options.slot_count = 4;
+options.device = flux::Device::Cuda;
+auto pub = flux::create_publisher(*node, "depth", options);
 
-flux::WriteSlot slot = pub.loan(flux::DType::F32, {480, 640});
+flux::WriteSlot slot = pub->loan(flux::DType::F32, {480, 640});
 if (slot) {
   launch_my_kernel(slot.device_ptr(), slot.capacity(), slot.stream());
   if (flux::faulted(slot.commit())) {
@@ -40,7 +44,9 @@ if (slot) {
 ```
 
 ```cpp
-flux::Subscription sub(*node, "depth", flux::kNoSchema, flux::QoS{}, callback, flux::Device::Cuda);
+flux::SubscriptionOptions sub_options;
+sub_options.device = flux::Device::Cuda;
+auto sub = flux::create_subscription(*node, "depth", flux::QoS{}, callback, sub_options);
 ```
 
 ```cpp doc:cpp_gpu_read
@@ -51,7 +57,7 @@ if (flux::FrameView frame = sub.take()) {
 
 `launch_my_kernel`과 `read_on_device`는 사용자의 커널 호출 자리다.
 
-- `flux::Device::Cuda`를 넘기면 flux가 스트림을 생성해 선언한다. 직접 만든 스트림은 `flux::gpu::Stream::from_native(cudaStream_t)`로 넘기고, 채널과 view보다 오래 유지한다. legacy default 스트림(`nullptr`)은 스레드마다 다른 스트림이므로 거절한다.
+- 옵션의 `device`를 `flux::Device::Cuda`로 두면 flux가 스트림을 생성해 선언한다. 직접 만든 스트림은 옵션의 `stream`에 `flux::gpu::Stream::from_native(cudaStream_t)`로 넘기고, 채널과 view보다 오래 유지한다. legacy default 스트림(`nullptr`)은 스레드마다 다른 스트림이므로 거절한다.
 - 주소는 `device_ptr()`로 얻고, 커널은 `stream()`의 채널 스트림에 올린다. 다른 스트림의 작업은 flux가 기다리지 않는다.
 - `commit()`은 스트림의 작업이 끝난 뒤 발행하므로, 구독자는 받은 프레임을 CPU 채널처럼 바로 읽어도 된다.
 - view를 해제하면 스트림의 작업이 끝난 뒤 슬롯이 반납된다. 구독의 GPU 매핑은 읽기 전용이다(`ShmRegistered`에서는 GPU가 읽기 전용 등록을 지원하는 경우).
@@ -102,9 +108,13 @@ if frame is not None:
 
 ```cpp
 using Image = sensor_msgs::flux_msg::Image;
-flux::Publisher pub(*node, "image", Image::kFingerprint, 1U << 16U, 4, flux::Device::Cuda);
+flux::PublisherOptions options;
+options.slot_size = 1U << 16U;
+options.slot_count = 4;
+options.device = flux::Device::Cuda;
+auto pub = flux::create_publisher(*node, "image", options, Image::kFingerprint);
 
-flux::WriteSlot slot = pub.loan();
+flux::WriteSlot slot = pub->loan();
 Image::Builder b(slot);
 b.set__encoding("rgb8");
 const flux::wire::DeviceSpan<std::uint8_t> data = b.alloc_device__data(bytes);

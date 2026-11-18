@@ -30,11 +30,11 @@ source install/setup.bash
 C++ 노드가 슬롯을 loan해 이미지를 직접 쓰고 발행한다.
 
 ```cpp doc:readme_loan
-flux::Publisher pub(*node, "image");
+auto pub = flux::create_publisher(*node, "image");
 
 constexpr std::size_t kHeight = 480;
 constexpr std::size_t kWidth = 640;
-flux::WriteSlot slot = pub.loan(flux::DType::U8, {kHeight, kWidth, 3});
+flux::WriteSlot slot = pub->loan(flux::DType::U8, {kHeight, kWidth, 3});
 if (slot) {
   auto * pixels = static_cast<std::uint8_t *>(slot.data());
   std::fill_n(pixels, kHeight * kWidth * 3, std::uint8_t{0});
@@ -44,7 +44,7 @@ if (slot) {
 }
 ```
 
-이미 만들어진 배열은 `pub.publish(pixels.data(), flux::DType::U8, {kHeight, kWidth, 3})`로 보내고, 이 경우 슬롯으로 한 번 복사한다([복사 모델](docs/copy_model.md)).
+이미 만들어진 배열은 `pub->publish(pixels.data(), flux::DType::U8, {kHeight, kWidth, 3})`로 보내고, 이 경우 슬롯으로 한 번 복사한다([복사 모델](docs/copy_model.md)).
 
 Python 노드가 같은 프레임을 numpy 배열로 받는다.
 

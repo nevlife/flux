@@ -139,9 +139,11 @@ protected:
         ++delivered;
       });
     // A host channel will do: the subscription parses the aux bytes the same way.
-    flux::Publisher raw(
-      *node_, topic, flux_wrapper::detail::Gpu<MsgT>::kFingerprint, 4096, 4, flux::MemoryPolicy{},
-      flux::Publisher::kDefaultMaxSubscribers, flux_wrapper::detail::Gpu<MsgT>::kAuxBytes);
+    flux::PublisherOptions options;
+    options.slot_size = 4096;
+    options.slot_count = 4;
+    options.aux_size = flux_wrapper::detail::Gpu<MsgT>::kAuxBytes;
+    flux::Publisher raw(*node_, topic, options, flux_wrapper::detail::Gpu<MsgT>::kFingerprint);
     const auto send = [&](const std::vector<std::uint8_t> & a) {
       flux::WriteSlot w = raw.loan();
       if (!w) {

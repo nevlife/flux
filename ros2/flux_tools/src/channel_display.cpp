@@ -79,7 +79,8 @@ void ChannelDisplay::subscribe()
   const auto qos = flux::QoS(1).max_borrow(1);
   const std::uint64_t fingerprint = frames_of_type_.fingerprint_for(topic);
   try {
-    sub_ = std::make_unique<flux::Subscription>(*node_, topic, fingerprint, qos);
+    sub_ = std::make_unique<flux::Subscription>(
+      *node_, topic, qos, flux::Subscription::Callback(), flux::SubscriptionOptions(), fingerprint);
   } catch (const std::exception & e) {
     setStatus(StatusProperty::Error, "Topic", QString("Subscribe failed: ") + e.what());
     return;

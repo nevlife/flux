@@ -27,7 +27,7 @@ flux에서 복사가 발생하는 경우다. 읽기에는 복사가 없고, 예�
 
 ```cpp doc:cpp_loan
 constexpr std::size_t kPoints = 1024;
-flux::WriteSlot slot = pub.loan(flux::DType::F32, {kPoints, 3});
+flux::WriteSlot slot = pub->loan(flux::DType::F32, {kPoints, 3});
 if (slot) {
   auto * xyz = static_cast<float *>(slot.data());
   std::fill_n(xyz, kPoints * 3, 0.0F);

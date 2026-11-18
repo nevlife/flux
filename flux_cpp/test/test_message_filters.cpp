@@ -42,6 +42,14 @@ using MsgPtr = std::shared_ptr<const Msg>;
 using std::placeholders::_1;
 using std::placeholders::_2;
 
+auto slots(std::uint32_t size, std::uint32_t count) -> flux::PublisherOptions
+{
+  flux::PublisherOptions o;
+  o.slot_size = size;
+  o.slot_count = count;
+  return o;
+}
+
 auto topic(const char * name) -> std::string
 {
   return "/m" + std::to_string(getpid()) + "_" + name;
@@ -85,9 +93,9 @@ protected:
 
   void SetUp() override { node_ = std::make_shared<rclcpp::Node>("flux_mf_test"); }
 
-  auto pub(const char * name, std::uint32_t slots = 8) -> flux::Publisher
+  auto pub(const char * name, std::uint32_t count = 8) -> flux::Publisher
   {
-    return flux::Publisher(*node_, topic(name), Stamped::kFingerprint, 64, slots);
+    return flux::Publisher(*node_, topic(name), slots(64, count), Stamped::kFingerprint);
   }
 
   // Queued frames hold slots: the borrow limit covers the synchronizer's queue.

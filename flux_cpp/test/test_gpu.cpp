@@ -125,6 +125,23 @@ auto unique_name(const char * test) -> std::string
   return flux::detail::signpost_name("/gpu" + std::to_string(getpid()) + "_" + test);
 }
 
+auto cuda_subscription() -> flux::SubscriptionOptions
+{
+  flux::SubscriptionOptions o;
+  o.device = flux::Device::Cuda;
+  return o;
+}
+
+// Four 64 KiB slots on the GPU.
+auto cuda_slots() -> flux::PublisherOptions
+{
+  flux::PublisherOptions o;
+  o.slot_size = 1 << 16;
+  o.slot_count = 4;
+  o.device = flux::Device::Cuda;
+  return o;
+}
+
 class Gpu : public ::testing::Test
 {
 protected:
@@ -305,10 +322,10 @@ TEST_F(Gpu, PublisherAndSubscriptionTakeADevice)
   }
   auto node = std::make_shared<rclcpp::Node>("flux_gpu_test");
   const std::string topic = "/gpu" + std::to_string(getpid()) + "_node";
-  flux::Publisher pub(*node, topic, flux::kNoSchema, 1 << 16, 4, flux::Device::Cuda);
+  flux::Publisher pub(*node, topic, cuda_slots());
   flux::QoS q(4);
   q.transient_local(4);
-  flux::Subscription sub(*node, topic, flux::kNoSchema, q, {}, flux::Device::Cuda);
+  flux::Subscription sub(*node, topic, q, {}, cuda_subscription());
   flux::WriteSlot w = pub.loan();
   ASSERT_TRUE(w);
   ASSERT_EQ(driver()->memset(addr(w.device_ptr()), 0x11, 64, w.stream()), 0);
@@ -335,12 +352,12 @@ TEST_F(Gpu, ADeviceFieldGoesThroughTheGpuArena)
   }
   auto node = std::make_shared<rclcpp::Node>("flux_gpu_arena");
   const std::string topic = "/gpu" + std::to_string(getpid()) + "_arena";
-  flux::Publisher pub(*node, topic, Blob::kFingerprint, 1 << 16, 4, flux::Device::Cuda);
+  flux::Publisher pub(*node, topic, cuda_slots(), Blob::kFingerprint);
   EXPECT_FALSE(pub.device_backed());
   flux::QoS q(4);
   q.transient_local(4);
-  flux::Subscription gpu(*node, topic, Blob::kFingerprint, q, {}, flux::Device::Cuda);
-  flux::Subscription cpu(*node, topic, Blob::kFingerprint, q);
+  flux::Subscription gpu(*node, topic, q, {}, cuda_subscription(), Blob::kFingerprint);
+  flux::Subscription cpu(*node, topic, q, {}, {}, Blob::kFingerprint);
   // The second frame reaches past the chunks the subscriber imported for the first.
   for (const auto & [bytes, fill] :
        {std::pair<std::size_t, unsigned char>{3 << 20, 0x41}, {40 << 20, 0x42}}) {
@@ -787,11 +804,11 @@ TEST_F(Gpu, ABoundedFenceWaitsForWorkThatEndsInTime)
   }
   auto node = std::make_shared<rclcpp::Node>("flux_gpu_bound");
   const std::string topic = "/gpu" + std::to_string(getpid()) + "_bound";
-  flux::Publisher pub(*node, topic, flux::kNoSchema, 1 << 16, 4, flux::Device::Cuda);
+  flux::Publisher pub(*node, topic, cuda_slots());
   pub.set_fence_timeout(std::chrono::seconds(5));
   flux::QoS q(4);
   q.transient_local(4);
-  flux::Subscription sub(*node, topic, flux::kNoSchema, q, {}, flux::Device::Cuda);
+  flux::Subscription sub(*node, topic, q, {}, cuda_subscription());
   sub.set_fence_timeout(std::chrono::seconds(5));
   flux::WriteSlot w = pub.loan();
   ASSERT_TRUE(w);
@@ -814,11 +831,11 @@ TEST_F(Gpu, ADeferredReleaseReturnsTheSlotOnceTheDeviceIsDone)
   }
   auto node = std::make_shared<rclcpp::Node>("flux_gpu_deferred");
   const std::string topic = "/gpu" + std::to_string(getpid()) + "_deferred";
-  flux::Publisher pub(*node, topic, flux::kNoSchema, 1 << 16, 4, flux::Device::Cuda);
+  flux::Publisher pub(*node, topic, cuda_slots());
   flux::QoS q(4);
   q.transient_local(4);
   q.max_borrow(1);
-  flux::Subscription sub(*node, topic, flux::kNoSchema, q, {}, flux::Device::Cuda);
+  flux::Subscription sub(*node, topic, q, {}, cuda_subscription());
   sub.set_release_mode(flux::gpu::ReleaseMode::Deferred);
   for (const unsigned char b : {0x31, 0x32}) {
     flux::WriteSlot w = pub.loan();

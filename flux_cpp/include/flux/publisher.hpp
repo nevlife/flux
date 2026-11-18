@@ -27,7 +27,10 @@ struct PublisherOptions
   Device device = Device::Cpu;
   gpu::Stream stream;
   MemoryPolicy memory = {};
+  // Subscribing processes (up to FLUX_MAX_SUBSCRIBERS), not subscriptions. Each one adds a
+  // counter that every publish reads.
   std::uint32_t max_subscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS;
+  // Host bytes beside each slot's payload (up to FLUX_MAX_AUX_SIZE), which a loan's aux() writes.
   std::uint32_t aux_size = 0;
   // Alloc::Slot and device-payload publishers: slots get memory once a subscriber attaches, and
   // publish fails until then. For topics nobody may subscribe to.
@@ -51,26 +54,6 @@ public:
   static constexpr std::uint32_t kDefaultSlotCount = FLUX_DEFAULT_SLOT_COUNT;
   static constexpr std::uint32_t kDefaultMaxSubscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS;
 
-  // `max_subscribers` counts subscribing processes (up to FLUX_MAX_SUBSCRIBERS), not
-  // subscriptions. Each one adds a counter that every publish reads. Each slot carries `aux_size`
-  // host bytes beside its payload (up to FLUX_MAX_AUX_SIZE), which a loan's aux() writes.
-  Publisher(
-    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
-    std::uint32_t slot_size = kDefaultSlotSize, std::uint32_t slot_count = kDefaultSlotCount,
-    MemoryPolicy mem = {}, std::uint32_t max_subscribers = kDefaultMaxSubscribers,
-    std::uint32_t aux_size = 0);
-  // Frames produced on the GPU. Device::Cuda declares a stream flux creates; Error where the
-  // host has no GPU route.
-  Publisher(
-    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
-    std::uint32_t slot_size, std::uint32_t slot_count, Device device, MemoryPolicy mem = {},
-    std::uint32_t max_subscribers = kDefaultMaxSubscribers, std::uint32_t aux_size = 0);
-  // The caller's stream; the commit waits for everything queued on it.
-  Publisher(
-    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
-    std::uint32_t slot_size, std::uint32_t slot_count, const gpu::Stream & stream,
-    MemoryPolicy mem = {}, std::uint32_t max_subscribers = kDefaultMaxSubscribers,
-    std::uint32_t aux_size = 0);
   Publisher(const Publisher &) = delete;
   auto operator=(const Publisher &) -> Publisher & = delete;
   Publisher(Publisher &&) noexcept;

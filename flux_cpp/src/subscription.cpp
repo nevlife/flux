@@ -15,33 +15,12 @@ namespace flux
 Subscription::Subscription(
   const NodeRef & node, const std::string & topic, const QoS & qos, Callback cb,
   const SubscriptionOptions & options, std::uint64_t fingerprint)
-: Subscription(
-    node, topic, fingerprint, qos, std::move(cb),
-    options.stream.declared() ? options.stream : gpu::stream_for(options.device), options.memory)
-{
-}
-
-Subscription::Subscription(
-  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
-  Callback cb, MemoryPolicy mem)
-: Subscription(node, topic, fingerprint, qos, std::move(cb), gpu::Stream{}, mem)
-{
-}
-
-Subscription::Subscription(
-  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
-  Callback cb, Device device, MemoryPolicy mem)
-: Subscription(node, topic, fingerprint, qos, std::move(cb), gpu::stream_for(device), mem)
-{
-}
-
-Subscription::Subscription(
-  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
-  Callback cb, const gpu::Stream & stream, MemoryPolicy mem)
 : topic_(detail::resolve(node, topic)),
   logger_(node.logging()->get_logger_name()),
   context_(node.base()->get_context()),
-  sub_(detail::signpost_name(topic_, fingerprint), fingerprint, qos, mem, stream),
+  sub_(
+    detail::signpost_name(topic_, fingerprint), fingerprint, qos, options.memory,
+    options.stream.declared() ? options.stream : gpu::stream_for(options.device)),
   cb_(std::move(cb)),
   announced_(detail::announce(node, sub_.signpost_name(), topic_, false))
 {

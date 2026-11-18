@@ -415,9 +415,11 @@ private:
       try {
         // --remap: the player node's rules, as they rename its ROS topics.
         name = node_.get_node_topics_interface()->resolve_topic_name(name);
-        c.pub = std::make_unique<flux::Publisher>(
-          node_, name, f.fingerprint, meta.slot_size, meta.slot_count, flux::MemoryPolicy{},
-          flux::Publisher::kDefaultMaxSubscribers, aux_size);
+        flux::PublisherOptions options;
+        options.slot_size = meta.slot_size;
+        options.slot_count = meta.slot_count;
+        options.aux_size = aux_size;
+        c.pub = std::make_unique<flux::Publisher>(node_, name, options, f.fingerprint);
       } catch (const std::exception & e) {
         why = e.what();
       }

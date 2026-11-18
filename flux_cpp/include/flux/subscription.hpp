@@ -50,21 +50,10 @@ class Subscription : public detail::Source
 public:
   using Callback = std::function<void(FrameView &&)>;
 
+  // Throws on a QoS the channel would refuse, before anything is announced.
   Subscription(
     const NodeRef & node, const std::string & topic, const QoS & qos, Callback cb,
     const SubscriptionOptions & options, std::uint64_t fingerprint = kNoSchema);
-
-  // Throws on a QoS the channel would refuse, before anything is announced.
-  Subscription(
-    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint = kNoSchema,
-    const QoS & qos = QoS{}, Callback cb = {}, MemoryPolicy mem = {});
-  // Frames consumed on the GPU; a device payload takes no other kind of subscription.
-  Subscription(
-    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
-    Callback cb, Device device, MemoryPolicy mem = {});
-  Subscription(
-    const NodeRef & node, const std::string & topic, std::uint64_t fingerprint, const QoS & qos,
-    Callback cb, const gpu::Stream & stream, MemoryPolicy mem = {});
 
   auto take() -> FrameView { return sub_.take(); }
   // With no publisher yet it also waits for one. A negative timeout waits forever. Empty once the

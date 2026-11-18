@@ -90,20 +90,6 @@ private:
 namespace
 {
 
-auto options_of(
-  std::uint32_t slot_size, std::uint32_t slot_count, const gpu::Stream & stream, MemoryPolicy mem,
-  std::uint32_t max_subscribers, std::uint32_t aux_size) -> PublisherOptions
-{
-  PublisherOptions o;
-  o.slot_size = slot_size;
-  o.slot_count = slot_count;
-  o.stream = stream;
-  o.memory = mem;
-  o.max_subscribers = max_subscribers;
-  o.aux_size = aux_size;
-  return o;
-}
-
 auto config_of(const PublisherOptions & o) -> flux_publisher_config
 {
   flux_publisher_config c = flux_publisher_config_default();
@@ -137,36 +123,6 @@ Publisher::Publisher(
   announced_(detail::announce(node, signpost_, topic_, true))
 {
   detail::trace_endpoint(this, node, topic_, signpost_, fingerprint, true);
-}
-
-Publisher::Publisher(
-  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
-  std::uint32_t slot_size, std::uint32_t slot_count, MemoryPolicy mem,
-  std::uint32_t max_subscribers, std::uint32_t aux_size)
-: Publisher(
-    node, topic, options_of(slot_size, slot_count, {}, mem, max_subscribers, aux_size), fingerprint)
-{
-}
-
-Publisher::Publisher(
-  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
-  std::uint32_t slot_size, std::uint32_t slot_count, Device device, MemoryPolicy mem,
-  std::uint32_t max_subscribers, std::uint32_t aux_size)
-: Publisher(
-    node, topic,
-    options_of(slot_size, slot_count, gpu::stream_for(device), mem, max_subscribers, aux_size),
-    fingerprint)
-{
-}
-
-Publisher::Publisher(
-  const NodeRef & node, const std::string & topic, std::uint64_t fingerprint,
-  std::uint32_t slot_size, std::uint32_t slot_count, const gpu::Stream & stream, MemoryPolicy mem,
-  std::uint32_t max_subscribers, std::uint32_t aux_size)
-: Publisher(
-    node, topic, options_of(slot_size, slot_count, stream, mem, max_subscribers, aux_size),
-    fingerprint)
-{
 }
 
 Publisher::Publisher(Publisher &&) noexcept = default;
