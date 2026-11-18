@@ -327,6 +327,15 @@ impl Share {
         })
     }
 
+    /// Chunk `i`'s descriptor, held here for as long as the share.
+    pub(crate) fn fd(&self, i: u32) -> Option<RawFd> {
+        self.state
+            .lock()
+            .fds
+            .get(i as usize)
+            .map(AsRawFd::as_raw_fd)
+    }
+
     pub(crate) fn count(&self) -> u32 {
         self.count.load(Ordering::Acquire) // order: chunk_count
     }

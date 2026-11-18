@@ -306,8 +306,9 @@ pub enum SegmentPayload {
     Host,
     /// A device allocation on this ordinal, for the device-handle route.
     Device(i32),
-    /// Image slots of an integrated GPU's context on this ordinal (`gpu::ImageExport`).
-    Image(i32),
+    /// Image slots of an integrated GPU's context on this ordinal (`gpu::ImageExport`), in the
+    /// format the header carries for subscribers (encoding `None` for bytes).
+    Image(i32, crate::image_format::ImageFormat),
 }
 
 /// `open_publisher_segment` with the payload's place named.
@@ -324,7 +325,7 @@ pub(crate) fn open_publisher_segment_in(
 ) -> Result<Segment> {
     let layout = checked_layout(slot_size, slot_count, max_subscribers, aux_size)?;
     let image = match payload {
-        SegmentPayload::Image(o) => Some(o),
+        SegmentPayload::Image(_, f) => Some(f),
         _ => None,
     };
     let device = match payload {
@@ -398,16 +399,7 @@ pub(crate) fn open_publisher_segment_in(
         #[allow(clippy::cast_sign_loss)]
         let header_device = device.map(|(ordinal, uuid)| (ordinal as u32, uuid));
         // SAFETY: a fresh mapping of `bytes`, not yet advertised to anyone.
-        let header = unsafe {
-            init_header(
-                base,
-                layout,
-                fingerprint,
-                header_device,
-                image.is_some(),
-                ready,
-            )
-        };
+        let header = unsafe { init_header(base, layout, fingerprint, header_device, image, ready) };
         let mut seg = Segment::adopt_shm(base, bytes, header, seg_name, id_of(raw));
         seg.publisher = Some(live);
         // Dropping seg on failure unlinks it; nothing was advertised.
@@ -439,7 +431,7 @@ fn give_payload(seg: &Segment, payload: SegmentPayload, ready: u32) -> Result<()
             )?;
             seg.device_payload(|| Ok(gpu::DevicePayload::Exported(alloc)))?;
         }
-        SegmentPayload::Image(ordinal) => {
+        SegmentPayload::Image(ordinal, _) => {
             let e = gpu::ImageExport::create(
                 &gpu::endpoint(seg.id()),
                 seg.payload(0),

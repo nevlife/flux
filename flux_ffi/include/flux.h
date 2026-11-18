@@ -76,6 +76,22 @@
 
 #define FLUX_DTYPE_BF16 11
 
+#define FLUX_IMAGE_NONE 0
+
+#define FLUX_IMAGE_BGRA8 1
+
+#define FLUX_IMAGE_RGBA8 2
+
+#define FLUX_IMAGE_MONO8 3
+
+#define FLUX_IMAGE_MONO16 4
+
+#define FLUX_IMAGE_NV12 5
+
+#define FLUX_IMAGE_UYVY 6
+
+#define FLUX_IMAGE_YUYV 7
+
 #define FLUX_RELEASE_WAIT 0
 
 #define FLUX_RELEASE_DEFERRED 1
@@ -235,6 +251,10 @@ typedef struct flux_publisher_config {
   bool alloc_on_subscriber;
   // Integrated GPU only: each fixed slot is a dmabuf engines read in place.
   bool image_slots;
+  // `FLUX_IMAGE_*`: image slots in this format, the slot size defaulting to one frame.
+  uint32_t image_encoding;
+  uint32_t image_width;
+  uint32_t image_height;
 } flux_publisher_config;
 
 // `replay` 0 is volatile, N is `transient_local(N)`.
@@ -243,6 +263,16 @@ typedef struct flux_qos {
   uint32_t replay;
   uint32_t max_borrow;
 } flux_qos;
+
+// A frame's planes in an image slot. `pitch` is the row length, the `step` a message carries.
+typedef struct flux_image_layout {
+  uint32_t planes;
+  uint32_t width[2];
+  uint32_t height[2];
+  uint32_t pitch[2];
+  uint32_t offset[2];
+  uint32_t bytes;
+} flux_image_layout;
 
 // Same bytes as the frame header in shared memory; `dtype` is a `FLUX_DTYPE_*`.
 typedef struct flux_frame_meta {
@@ -462,6 +492,12 @@ void *flux_loan_stream(const struct flux_loan *l);
 // 0 when the channel declared no stream, as for `flux_view_device_ptr`.
 uint64_t flux_loan_device_ptr(const struct flux_loan *l);
 
+// False but in an image slot with a declared format.
+bool flux_loan_image_layout(const struct flux_loan *l, struct flux_image_layout *out);
+
+// The slot's dmabuf, owned by the channel; -1 but in an image slot.
+int32_t flux_loan_dmabuf_fd(const struct flux_loan *l);
+
 bool flux_loan_copy_from(struct flux_loan *l, size_t at, const uint8_t *src, size_t n);
 
 flux_published flux_loan_commit(struct flux_loan *l);
@@ -489,6 +525,10 @@ void *flux_view_stream(const struct flux_view *v);
 
 // The frame's device address, 0 when the channel declared no stream.
 uint64_t flux_view_device_ptr(const struct flux_view *v);
+
+bool flux_view_image_layout(const struct flux_view *v, struct flux_image_layout *out);
+
+int32_t flux_view_dmabuf_fd(const struct flux_view *v);
 
 // Points into `v`, so moving the view moves it. Size a typed read from `dtype`, not `itemsize`.
 const struct flux_frame_meta *flux_view_meta(const struct flux_view *v);

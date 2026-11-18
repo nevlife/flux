@@ -351,6 +351,48 @@ pub struct flux_publisher_config {
     pub alloc_on_subscriber: bool,
     /// Integrated GPU only: each fixed slot is a dmabuf engines read in place.
     pub image_slots: bool,
+    /// `FLUX_IMAGE_*`: image slots in this format, the slot size defaulting to one frame.
+    pub image_encoding: u32,
+    pub image_width: u32,
+    pub image_height: u32,
+}
+
+pub const FLUX_IMAGE_NONE: u32 = 0;
+pub const FLUX_IMAGE_BGRA8: u32 = 1;
+pub const FLUX_IMAGE_RGBA8: u32 = 2;
+pub const FLUX_IMAGE_MONO8: u32 = 3;
+pub const FLUX_IMAGE_MONO16: u32 = 4;
+pub const FLUX_IMAGE_NV12: u32 = 5;
+pub const FLUX_IMAGE_UYVY: u32 = 6;
+pub const FLUX_IMAGE_YUYV: u32 = 7;
+
+/// A frame's planes in an image slot. `pitch` is the row length, the `step` a message carries.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct flux_image_layout {
+    pub planes: u32,
+    pub width: [u32; 2],
+    pub height: [u32; 2],
+    pub pitch: [u32; 2],
+    pub offset: [u32; 2],
+    pub bytes: u32,
+}
+
+fn image_layout_out(l: Option<flux_core::ImageLayout>, out: *mut flux_image_layout) -> bool {
+    let Some(l) = l else {
+        return false;
+    };
+    let c = flux_image_layout {
+        planes: l.planes,
+        width: l.width,
+        height: l.height,
+        pitch: l.pitch,
+        offset: l.offset,
+        bytes: l.bytes,
+    };
+    // SAFETY: the caller passes a writable flux_image_layout.
+    unsafe { out.write(c) };
+    true
 }
 
 #[unsafe(no_mangle)]
@@ -366,6 +408,9 @@ pub extern "C" fn flux_publisher_config_default() -> flux_publisher_config {
         aux_size: d.aux_size,
         alloc_on_subscriber: d.alloc_on_subscriber,
         image_slots: d.image_slots,
+        image_encoding: d.image_format.encoding as u32,
+        image_width: d.image_format.width,
+        image_height: d.image_format.height,
     }
 }
 
@@ -391,6 +436,12 @@ pub unsafe extern "C" fn flux_channel_create_config(
             ))));
         }
     };
+    let Some(encoding) = flux_core::ImageEncoding::from_u32(c.image_encoding) else {
+        return status(Err(Error::InvalidArgument(format!(
+            "image_encoding {} is no FLUX_IMAGE_*",
+            c.image_encoding
+        ))));
+    };
     let config = PublisherConfig {
         alloc,
         slot_size: c.slot_size,
@@ -401,6 +452,11 @@ pub unsafe extern "C" fn flux_channel_create_config(
         aux_size: c.aux_size,
         alloc_on_subscriber: c.alloc_on_subscriber,
         image_slots: c.image_slots,
+        image_format: flux_core::ImageFormat {
+            encoding,
+            width: c.image_width,
+            height: c.image_height,
+        },
     };
     // SAFETY: stream is NULL or a live handle.
     let stream = unsafe { stream_of(stream) };
@@ -674,6 +730,25 @@ pub unsafe extern "C" fn flux_loan_device_ptr(l: *const flux_loan) -> u64 {
         .map_or(0, WriteSlot::device_ptr)
 }
 
+/// False but in an image slot with a declared format.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_loan_image_layout(
+    l: *const flux_loan,
+    out: *mut flux_image_layout,
+) -> bool {
+    // SAFETY: flux_loan is sized and aligned for LoanCell (asserted above).
+    let w = unsafe { &*l.cast::<LoanCell>() }.slot.get();
+    image_layout_out(w.and_then(WriteSlot::image_layout), out)
+}
+
+/// The slot's dmabuf, owned by the channel; -1 but in an image slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_loan_dmabuf_fd(l: *const flux_loan) -> i32 {
+    // SAFETY: flux_loan is sized and aligned for LoanCell (asserted above).
+    let w = unsafe { &*l.cast::<LoanCell>() }.slot.get();
+    w.and_then(WriteSlot::dmabuf_fd).unwrap_or(-1)
+}
+
 // Host bytes into the payload at `at`: a plain copy into host memory, or a copy queued on the
 // loan's stream into device memory, which the commit waits for. Pageable `src` is read before
 // this returns; page-locked `src` must stay unchanged until the commit or abort. False past the
@@ -819,6 +894,23 @@ pub unsafe extern "C" fn flux_view_device_ptr(v: *const flux_view) -> u64 {
     unsafe { view_ref(v) }
         .get()
         .map_or(0, FrameView::device_ptr)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_view_image_layout(
+    v: *const flux_view,
+    out: *mut flux_image_layout,
+) -> bool {
+    // SAFETY: valid view storage.
+    let f = unsafe { view_ref(v) }.get();
+    image_layout_out(f.and_then(FrameView::image_layout), out)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_view_dmabuf_fd(v: *const flux_view) -> i32 {
+    // SAFETY: valid view storage.
+    let f = unsafe { view_ref(v) }.get();
+    f.and_then(FrameView::dmabuf_fd).unwrap_or(-1)
 }
 
 /// Points into `v`, so moving the view moves it. Size a typed read from `dtype`, not `itemsize`.

@@ -519,6 +519,29 @@ def test_an_image_slot_publisher_reaches_a_subscriber(node):
     np.testing.assert_array_equal(sub.take().view(np.uint16), frame)
     with pytest.raises(flux.Error):
         flux.Publisher(node, topic("image_arena"), image_slots=True)
+    small = flux.Publisher(
+        node,
+        topic("image_fmt"),
+        alloc="slot",
+        slot_size=2 << 20,
+        slot_count=4,
+        image_encoding="bgra8",
+        image_width=848,
+        image_height=480,
+    )
+    assert small.publish(np.zeros(3584 * 480, np.uint8)) == flux.Published.OK
+    with pytest.raises(flux.Error):
+        flux.Publisher(
+            node,
+            topic("image_small"),
+            alloc="slot",
+            slot_size=1 << 20,
+            image_encoding="bgra8",
+            image_width=1920,
+            image_height=1200,
+        )
+    with pytest.raises(ValueError, match="image_encoding"):
+        flux.Publisher(node, topic("image_bad"), alloc="slot", image_encoding="rgb8")
 
 
 def test_an_alloc_other_than_arena_or_slot_is_refused(node):

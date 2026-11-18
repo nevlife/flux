@@ -192,7 +192,7 @@ impl Segment {
         };
         // SAFETY: base is a fresh zeroed allocation of total_bytes, aligned to a page.
         let header =
-            unsafe { init_header(base, layout, fingerprint, None, false, layout.slot_count) };
+            unsafe { init_header(base, layout, fingerprint, None, None, layout.slot_count) };
         Ok(Segment::adopt(
             base,
             bytes,
@@ -402,6 +402,23 @@ impl Segment {
     /// The publisher's image slots, set once when the segment is made.
     pub(crate) fn set_image_export(&self, e: crate::gpu::ImageExport) {
         let _ = self.image.set(ImagePayload::Export(e));
+    }
+
+    /// An image segment's frame layout, if its publisher declared a format a slot holds.
+    pub(crate) fn image_layout(&self) -> Option<crate::image_format::ImageLayout> {
+        if !self.header.image_payload() {
+            return None;
+        }
+        let l = self.header.image.layout().ok()?;
+        (l.bytes as usize <= self.layout.payload_stride()).then_some(l)
+    }
+
+    /// Slot `s`'s dmabuf on an image segment, once this mapping has it; owned by the segment.
+    pub(crate) fn dmabuf_fd(&self, s: u32) -> Option<RawFd> {
+        match self.image.get()? {
+            ImagePayload::Export(e) => e.fd(s),
+            ImagePayload::Import(i) => i.fd(s),
+        }
     }
 
     /// Whether slot `s`'s payload is mapped here: always but for an image segment's subscriber,
@@ -774,7 +791,7 @@ pub(crate) unsafe fn init_header(
     layout: SegmentLayout,
     fingerprint: u64,
     device: Option<(u32, [u8; 16])>,
-    image: bool,
+    image: Option<crate::image_format::ImageFormat>,
     ready: u32,
 ) -> HeaderConfig {
     // SAFETY: the header region is inside the allocation and nobody else reads it yet.
@@ -784,7 +801,7 @@ pub(crate) unsafe fn init_header(
     unsafe {
         let kind = if device.is_some() {
             StorageKind::CudaIpc
-        } else if image {
+        } else if image.is_some() {
             StorageKind::HostImage
         } else {
             StorageKind::HostInline
@@ -793,6 +810,11 @@ pub(crate) unsafe fn init_header(
         if let Some((ordinal, uuid)) = device {
             h.device_id = ordinal;
             h.device_uuid = uuid;
+        }
+        if let Some(f) = image {
+            h.image_encoding = f.encoding as u32;
+            h.image_width = f.width;
+            h.image_height = f.height;
         }
         ctrl.write(h);
     }

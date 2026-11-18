@@ -189,6 +189,13 @@ impl ImageExport {
     }
 }
 
+impl ImageExport {
+    /// Slot `slot`'s dmabuf, held for as long as the export.
+    pub(crate) fn fd(&self, slot: u32) -> Option<c_int> {
+        self.share.fd(slot)
+    }
+}
+
 impl Drop for ImageExport {
     /// The overlays stay until the segment is unmapped; each holds its dmabuf, and so its pages.
     fn drop(&mut self) {
@@ -232,6 +239,12 @@ impl ImageImport {
             mapped: AtomicU32::new(0),
             fds: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Slot `slot`'s dmabuf once it is mapped, held for as long as the import.
+    pub(crate) fn fd(&self, slot: u32) -> Option<c_int> {
+        let fds = self.fds.lock().unwrap_or_else(PoisonError::into_inner);
+        fds.get(slot as usize).map(AsRawFd::as_raw_fd)
     }
 
     /// Maps the slots up to `slot` that have come. `NotReady` when `slot` has not.

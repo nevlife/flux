@@ -182,7 +182,9 @@ with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stre
 
 ## 이미지 슬롯(통합 GPU)
 
-Jetson에서 고정 슬롯 발행자(`Alloc::Slot`이나 GPU 메모리 채널)는 `image_slots`를 켜서 슬롯마다 따로 할당한 page-locked 메모리를 쓸 수 있다(C++ `PublisherOptions::image_slots`, Python `image_slots=True`, C `flux_publisher_config::image_slots`). 슬롯은 dmabuf로 발행자와 구독자에게 매핑되므로, CPU 구독자와 GPU 구독자는 지금처럼 복사 없이 읽고, VIC처럼 dmabuf를 받는 엔진도 슬롯을 그대로 받을 수 있다. 슬롯 크기는 2 MiB 단위로 올린다. 발행자가 먼저 끝나도 구독자가 쥔 프레임은 계속 읽힌다. 통합 GPU가 아니거나 고정 슬롯이 아니면 생성이 실패한다. 엔진에 넘기는 접근자와 이미지 형식은 아직 없다.
+Jetson에서 고정 슬롯 발행자(`Alloc::Slot`이나 GPU 메모리 채널)는 `image_slots`를 켜서 슬롯마다 따로 할당한 page-locked 메모리를 쓸 수 있다(C++ `PublisherOptions::image_slots`, Python `image_slots=True`, C `flux_publisher_config::image_slots`). 슬롯은 dmabuf로 발행자와 구독자에게 매핑되므로, CPU 구독자와 GPU 구독자는 지금처럼 복사 없이 읽고, VIC처럼 dmabuf를 받는 엔진도 슬롯을 그대로 받을 수 있다. 슬롯 크기는 2 MiB 단위로 올린다. 발행자가 먼저 끝나도 구독자가 쥔 프레임은 계속 읽힌다. 통합 GPU가 아니거나 고정 슬롯이 아니면 생성이 실패한다.
+
+형식을 주면(`image_encoding`, `image_width`, `image_height`, C++ `flux::ImageEncoding`, Python `"bgra8"` 등) 슬롯 크기의 기본값이 한 프레임의 크기가 되고, 그보다 작은 `slot_size`는 생성이 실패한다. 받는 형식은 bgra8, rgba8, mono8, mono16, nv12, uyvy, yuyv다. 각 평면의 행 간격은 VIC가 요구하는 대로 256바이트 배수이고, 평면은 차례로 놓인다. 발행자는 그 간격으로 쓰고, `sensor_msgs/Image`의 `step`에 그 값을 넣는다. loan과 프레임의 `image_layout()`(C `flux_loan_image_layout`, `flux_view_image_layout`)이 평면 수, 크기, 간격, 위치를 준다. `dmabuf_fd()`(C `flux_loan_dmabuf_fd`, `flux_view_dmabuf_fd`)는 그 슬롯의 dmabuf로, 엔진 API(`NvBufSurfaceImport` 등)에 넘길 수 있다. 채널이 소유하므로 닫지 않는다. `NvBufSurfaceImport`처럼 fd를 가져가는 API에는 `dup`한 값을 넘긴다. 같은 dmabuf를 다시 내보내거나 범위로 잘라 내보내지 않는다. Jetson 커널이 그런 dmabuf를 놓을 때 멈춘다.
 
 ## 대기 상한과 해제 방식
 

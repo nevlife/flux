@@ -10,6 +10,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -159,6 +160,19 @@ enum class Alloc : std::int32_t {
   Arena = FLUX_ALLOC_ARENA,
   Slot = FLUX_ALLOC_SLOT,
 };
+
+// The sensor_msgs/Image encodings an image slot takes.
+enum class ImageEncoding : std::uint32_t {
+  None = FLUX_IMAGE_NONE,
+  Bgra8 = FLUX_IMAGE_BGRA8,
+  Rgba8 = FLUX_IMAGE_RGBA8,
+  Mono8 = FLUX_IMAGE_MONO8,
+  Mono16 = FLUX_IMAGE_MONO16,
+  Nv12 = FLUX_IMAGE_NV12,
+  Uyvy = FLUX_IMAGE_UYVY,
+  Yuyv = FLUX_IMAGE_YUYV,
+};
+using ImageLayout = flux_image_layout;
 
 namespace gpu
 {
@@ -413,6 +427,14 @@ public:
     return reinterpret_cast<const void *>(  // NOLINT(*-reinterpret-cast,performance-no-int-to-ptr)
       static_cast<std::uintptr_t>(flux_view_device_ptr(raw())));
   }
+  // An image slot's planes, if its publisher declared a format.
+  [[nodiscard]] auto image_layout() const noexcept -> std::optional<ImageLayout>
+  {
+    ImageLayout l{};
+    return flux_view_image_layout(raw(), &l) ? std::optional<ImageLayout>(l) : std::nullopt;
+  }
+  // An image slot's dmabuf, owned by the channel; -1 otherwise.
+  [[nodiscard]] auto dmabuf_fd() const noexcept -> int { return flux_view_dmabuf_fd(raw()); }
   // The channel's cudaStream_t: queue the frame's work on it, since the release waits for it.
   [[nodiscard]] auto stream() const noexcept -> void * { return flux_view_stream(raw()); }
   // Copies n bytes from byte `at` of the frame into host dst. A device payload is copied on
@@ -516,6 +538,12 @@ public:
     return reinterpret_cast<void *>(  // NOLINT(*-reinterpret-cast,performance-no-int-to-ptr)
       static_cast<std::uintptr_t>(flux_loan_device_ptr(raw())));
   }
+  [[nodiscard]] auto image_layout() const noexcept -> std::optional<ImageLayout>
+  {
+    ImageLayout l{};
+    return flux_loan_image_layout(raw(), &l) ? std::optional<ImageLayout>(l) : std::nullopt;
+  }
+  [[nodiscard]] auto dmabuf_fd() const noexcept -> int { return flux_loan_dmabuf_fd(raw()); }
   // The channel's cudaStream_t: queue the producing work on it, since the commit waits for it.
   [[nodiscard]] auto stream() const noexcept -> void * { return flux_loan_stream(raw()); }
   // Copies n host bytes from src to byte `at` of the payload: a plain copy into host memory, or a

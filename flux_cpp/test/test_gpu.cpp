@@ -678,6 +678,43 @@ TEST_F(Gpu, AnImageSlotReachesACpuAndAGpuSubscriber)
   EXPECT_TRUE(all(read_back(v.device_ptr(), 4096), 0x5c));
 }
 
+// A declared format sizes the slot and gives both ends the layout and the slot's dmabuf.
+TEST_F(Gpu, AnImageFormatReachesTheSubscriber)
+{
+  if (!platform_.integrated) {
+    GTEST_SKIP() << "image slots need an integrated GPU";
+  }
+  flux_publisher_config c = flux_publisher_config_default();
+  c.alloc = FLUX_ALLOC_SLOT;
+  c.slot_count = 4;
+  c.image_encoding = FLUX_IMAGE_NV12;
+  c.image_width = 1920;
+  c.image_height = 1200;
+  const std::string name = unique_name("image_fmt");
+  auto pub = flux::detail::Channel::create_config(name, c, flux::kNoSchema);
+  flux::WriteSlot w = pub.loan();
+  ASSERT_TRUE(w);
+  const auto l = w.image_layout();
+  ASSERT_TRUE(l.has_value());
+  EXPECT_EQ(l->planes, 2U);
+  EXPECT_EQ(l->pitch[0], 2048U);
+  EXPECT_EQ(l->offset[1], 2048U * 1200U);
+  EXPECT_GE(w.dmabuf_fd(), 0);
+  ASSERT_EQ(w.commit(l->bytes), flux::Published::Ok);
+  flux::QoS q(4);
+  q.transient_local(4);
+  flux::detail::Watch watch(name);
+  auto sub = flux::detail::Channel::open(watch, flux::kNoSchema, q);
+  flux::FrameView v = sub.take();
+  ASSERT_TRUE(v);
+  ASSERT_TRUE(v.image_layout().has_value());
+  EXPECT_EQ(v.image_layout()->bytes, l->bytes);
+  EXPECT_GE(v.dmabuf_fd(), 0);
+  c.image_encoding = 99;
+  EXPECT_THROW(
+    flux::detail::Channel::create_config(name + "_bad", c, flux::kNoSchema), flux::Error);
+}
+
 // The options carry image_slots to the publisher.
 TEST_F(Gpu, PublisherOptionsMakeImageSlots)
 {
@@ -696,7 +733,18 @@ TEST_F(Gpu, PublisherOptionsMakeImageSlots)
   flux::WriteSlot w = pub->loan();
   ASSERT_TRUE(w);
   EXPECT_EQ(w.capacity(), std::size_t{4} << 20);
+  EXPECT_FALSE(w.image_layout().has_value());
   w.abort();
+  o.slot_size = 0;
+  o.image_encoding = flux::ImageEncoding::Bgra8;
+  o.image_width = 848;
+  o.image_height = 480;
+  auto bgra = flux::create_publisher(*node, "/gpu" + std::to_string(getpid()) + "_image_bgra", o);
+  flux::WriteSlot b = bgra->loan();
+  ASSERT_TRUE(b);
+  ASSERT_TRUE(b.image_layout().has_value());
+  EXPECT_EQ(b.image_layout()->pitch[0], 3584U);
+  b.abort();
   o.alloc = flux::Alloc::Arena;
   EXPECT_THROW(
     flux::create_publisher(*node, "/gpu" + std::to_string(getpid()) + "_image_arena", o),

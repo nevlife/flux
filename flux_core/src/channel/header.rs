@@ -51,14 +51,7 @@ fn a_storage_kind_rewritten_after_attach_is_not_believed() {
     let mine = crate::sys::map_shared(file.as_raw_fd(), layout.payload_offset()).unwrap();
     // SAFETY: a fresh mapping of payload_offset bytes, as a device-backed header needs.
     unsafe {
-        crate::segment::init_header(
-            mine,
-            layout,
-            7,
-            Some((0, [1; 16])),
-            false,
-            layout.slot_count,
-        )
+        crate::segment::init_header(mine, layout, 7, Some((0, [1; 16])), None, layout.slot_count)
     };
     let (base, len, header) = crate::discovery::map_validate(file.as_raw_fd(), "kind", 7).unwrap();
     let id = crate::segment::SegmentId::default();

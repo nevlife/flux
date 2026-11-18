@@ -93,6 +93,9 @@ pub struct PublisherConfig {
     /// Fixed slots on an integrated GPU only: each slot is a dmabuf of its own that engines such
     /// as VIC read in place (`gpu::ImageExport`). The slot size is rounded up to 2 MiB.
     pub image_slots: bool,
+    /// Image slots in this format: the slot size defaults to a frame's and must hold one, and
+    /// subscribers read the layout (`FrameView::image_layout`). Implies `image_slots`.
+    pub image_format: crate::image_format::ImageFormat,
 }
 
 impl Default for PublisherConfig {
@@ -107,12 +110,34 @@ impl Default for PublisherConfig {
             aux_size: 0,
             alloc_on_subscriber: false,
             image_slots: false,
+            image_format: crate::image_format::ImageFormat::default(),
         }
     }
 }
 
 /// An image segment's payload and slot size, or why `plan` cannot have one.
-fn image_payload(plan: &sizing::Plan, stream: &Stream) -> Result<(SegmentPayload, u32)> {
+/// `config`'s slot size: with an image format, a frame's when 0, refused when smaller.
+fn image_slot_size(config: &PublisherConfig) -> Result<u32> {
+    let f = config.image_format;
+    if !f.is_some() {
+        return Ok(config.slot_size);
+    }
+    let bytes = f.layout()?.bytes;
+    match config.slot_size {
+        0 => Ok(bytes),
+        n if n < bytes => Err(Error::InvalidArgument(format!(
+            "a slot of {n} bytes does not hold a {:?} frame of {}x{}, {bytes} bytes",
+            f.encoding, f.width, f.height
+        ))),
+        n => Ok(n),
+    }
+}
+
+fn image_payload(
+    plan: &sizing::Plan,
+    stream: &Stream,
+    format: crate::image_format::ImageFormat,
+) -> Result<(SegmentPayload, u32)> {
     if !plan.fixed {
         return Err(Error::InvalidArgument(
             "image slots are fixed slots: use Alloc::Slot or a GPU memory channel".into(),
@@ -134,7 +159,7 @@ fn image_payload(plan: &sizing::Plan, stream: &Stream) -> Result<(SegmentPayload
     let size = u32::try_from(size).map_err(|_| {
         Error::InvalidArgument(format!("an image slot of {size} bytes is too large"))
     })?;
-    Ok((SegmentPayload::Image(ordinal), size))
+    Ok((SegmentPayload::Image(ordinal, format), size))
 }
 
 /// When a view of a channel with a stream gives its slot back.
@@ -377,9 +402,10 @@ impl Channel {
         } else {
             None
         };
+        let image = config.image_slots || config.image_format.is_some();
         let plan = sizing::plan(
             config.alloc,
-            config.slot_size,
+            image_slot_size(config)?,
             config.slot_count,
             config.max_slot_size,
             config.max_slot_count,
@@ -389,8 +415,8 @@ impl Channel {
         check_slot_count(plan.slot_count)?;
         let filled = plan.fixed && filler::available();
         let later = filled && config.alloc_on_subscriber;
-        let (payload, slot_size) = if config.image_slots {
-            image_payload(&plan, &stream)?
+        let (payload, slot_size) = if image {
+            image_payload(&plan, &stream, config.image_format)?
         } else {
             (
                 device.map_or(SegmentPayload::Host, SegmentPayload::Device),

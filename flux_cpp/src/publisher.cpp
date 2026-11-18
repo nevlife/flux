@@ -116,6 +116,9 @@ auto config_of(const PublisherOptions & o) -> flux_publisher_config
   c.aux_size = o.aux_size;
   c.alloc_on_subscriber = o.alloc_on_subscriber;
   c.image_slots = o.image_slots;
+  c.image_encoding = static_cast<std::uint32_t>(o.image_encoding);
+  c.image_width = o.image_width;
+  c.image_height = o.image_height;
   return c;
 }
 

@@ -157,6 +157,17 @@ impl WriteSlot {
         self.sh.device_ptr(self.slot)
     }
 
+    /// The image layout of the slot, None but in an image slot with a declared format.
+    pub fn image_layout(&self) -> Option<crate::ImageLayout> {
+        self.sh.seg.image_layout()
+    }
+
+    /// The slot's dmabuf, for an engine that takes one; None but in an image slot. Owned by the
+    /// channel: valid while the channel is, and not to be closed.
+    pub fn dmabuf_fd(&self) -> Option<std::os::fd::RawFd> {
+        self.sh.seg.dmabuf_fd(self.slot)
+    }
+
     /// The channel's stream, which the commit waits for: queue the producing work on it.
     pub fn stream(&self) -> Stream {
         self.sh.stream()

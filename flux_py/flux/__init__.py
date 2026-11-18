@@ -99,6 +99,15 @@ def _slot(alloc):
     raise ValueError(f"flux: alloc is 'arena' or 'slot', not {alloc!r}")
 
 
+_IMAGE_ENCODINGS = ("", "bgra8", "rgba8", "mono8", "mono16", "nv12", "uyvy", "yuyv")
+
+
+def _image_encoding(encoding):
+    if encoding in _IMAGE_ENCODINGS:
+        return _IMAGE_ENCODINGS.index(encoding)
+    raise ValueError(f"flux: image_encoding is one of {_IMAGE_ENCODINGS[1:]}, not {encoding!r}")
+
+
 def _on_device(array):
     if hasattr(array, "__cuda_array_interface__"):
         return True
@@ -195,6 +204,9 @@ class Publisher(_flux._Publisher):
         max_slot_count=0,
         alloc_on_subscriber=False,
         image_slots=False,
+        image_encoding="",
+        image_width=0,
+        image_height=0,
     ):
         """alloc="slot" keeps every variable-length field of a frame in its slot, where an
         integrated GPU reads it in place; a frame that does not fit is refused. "arena" puts them
@@ -202,7 +214,9 @@ class Publisher(_flux._Publisher):
         of 0 takes flux's fixed-slot default and the maxima bound the slots; alloc_on_subscriber
         gives them memory once a subscriber attaches, and publish fails until then. image_slots, on an
         integrated GPU with fixed slots, makes each slot a dmabuf of its own that engines such as
-        VIC read in place, its size rounded up to 2 MiB. fence_timeout, in seconds, bounds each commit's
+        VIC read in place, its size rounded up to 2 MiB; image_encoding ("bgra8", "nv12", ...) with
+        image_width and image_height declares the frames, a slot then holding one by default at a
+        row pitch of a multiple of 256 bytes. fence_timeout, in seconds, bounds each commit's
         wait for the stream; None waits as long as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
         work is done. mirror_to_ros also publishes every frame as its ROS 2 message on the same
         topic while a ROS 2 subscriber wants it (depth 1, best effort, volatile). aux_size gives
@@ -229,6 +243,9 @@ class Publisher(_flux._Publisher):
             max_slot_count,
             alloc_on_subscriber,
             image_slots,
+            _image_encoding(image_encoding),
+            image_width,
+            image_height,
         )
         self._set_fence_timeout(bound)
         if mirror_to_ros:

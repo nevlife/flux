@@ -9,6 +9,7 @@ mod executor;
 #[doc(hidden)]
 pub mod fuzz;
 pub mod gpu;
+mod image_format;
 mod layout;
 mod manifest;
 mod partitioned;
@@ -28,6 +29,7 @@ pub use channel::{
 pub use discovery::{flatten_key, signpost_name};
 pub use error::{Error, Result};
 pub use executor::{DEFAULT_TICK_NS, DEFAULT_TURN_NS, Executor, ExecutorHandle, MAX_DRAIN, Source};
+pub use image_format::{IMAGE_PITCH_ALIGN, ImageEncoding, ImageFormat, ImageLayout};
 pub use layout::{
     DEFAULT_MAX_SUBSCRIBERS, DType, FrameMeta, MAX_AUX_SIZE, MAX_DIMS, MAX_LABEL_LEN,
     MAX_SUBSCRIBERS, NO_SCHEMA, ROSTER_ENTRIES,

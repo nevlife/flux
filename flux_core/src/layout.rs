@@ -198,7 +198,11 @@ pub struct ControlHeader {
     /// The largest depth a subscriber has asked for. The publisher adds a slot rather than reuse
     /// one whose frame is still within it.
     pub depth_high: AtomicU32,
-    _reserved2: [u8; 44],
+    /// `HostImage`: the `ImageFormat` the publisher declared, its encoding 0 for none.
+    pub image_encoding: u32,
+    pub image_width: u32,
+    pub image_height: u32,
+    _reserved2: [u8; 32],
     /// Waits by a process with no subscriber number here: the publisher's own, or a heap
     /// channel's. Others count under their number in the words after this header, one store
     /// each, so a dead number's count is taken back whole. The publisher skips the wake syscall
@@ -233,7 +237,10 @@ impl ControlHeader {
             wakeup: AtomicU32::new(0),
             slots_ready: AtomicU32::new(ready),
             depth_high: AtomicU32::new(0),
-            _reserved2: [0; 44],
+            image_encoding: 0,
+            image_width: 0,
+            image_height: 0,
+            _reserved2: [0; 32],
             waiters: AtomicI32::new(0),
             _reserved3: [0; 60],
         }
@@ -264,6 +271,7 @@ pub(crate) struct HeaderConfig {
     pub storage_kind: u8,
     pub fingerprint: u64,
     pub device_uuid: [u8; 16],
+    pub image: crate::image_format::ImageFormat,
 }
 
 impl HeaderConfig {
@@ -280,6 +288,15 @@ impl HeaderConfig {
             storage_kind: peer_field!(ctrl, storage_kind),
             fingerprint: peer_field!(ctrl, fingerprint),
             device_uuid: peer_field!(ctrl, device_uuid),
+            image: crate::image_format::ImageFormat {
+                encoding: crate::image_format::ImageEncoding::from_u32(peer_field!(
+                    ctrl,
+                    image_encoding
+                ))
+                .unwrap_or_default(),
+                width: peer_field!(ctrl, image_width),
+                height: peer_field!(ctrl, image_height),
+            },
         }
     }
 
@@ -454,6 +471,8 @@ const _: () = {
     assert!(offset_of!(ControlHeader, wakeup) == 72);
     assert!(offset_of!(ControlHeader, slots_ready) == 76);
     assert!(offset_of!(ControlHeader, depth_high) == 80);
+    assert!(offset_of!(ControlHeader, image_encoding) == 84);
+    assert!(offset_of!(ControlHeader, image_height) == 92);
     assert!(offset_of!(ControlHeader, waiters) == 128);
 
     assert!(size_of::<Signpost>() == CACHE_LINE);

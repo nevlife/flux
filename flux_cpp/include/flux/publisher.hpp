@@ -33,6 +33,9 @@ struct PublisherOptions
   // publish fails until then. For topics nobody may subscribe to.
   bool alloc_on_subscriber = false;
   bool image_slots = false;  // fixed slots on an integrated GPU, each a dmabuf (docs/gpu.md)
+  ImageEncoding image_encoding = ImageEncoding::None;  // implies image_slots
+  std::uint32_t image_width = 0;
+  std::uint32_t image_height = 0;
 };
 
 // One per topic on the host: Error with FLUX_PUBLISHER_EXISTS while another is live. One call at

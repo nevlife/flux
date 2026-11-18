@@ -154,3 +154,111 @@ fn image_slots_need_fixed_slots() {
         made.err()
     );
 }
+
+fn format_publisher(
+    name: &str,
+    format: crate::ImageFormat,
+    slot_size: u32,
+) -> crate::Result<Channel> {
+    let config = PublisherConfig {
+        alloc: Alloc::Slot,
+        slot_size,
+        slot_count: 4,
+        image_format: format,
+        ..PublisherConfig::default()
+    };
+    Channel::create_config(
+        name,
+        &config,
+        NO_SCHEMA,
+        MemoryPolicy::default(),
+        Stream::default(),
+        -1,
+        None,
+    )
+}
+
+fn bgra(width: u32, height: u32) -> crate::ImageFormat {
+    crate::ImageFormat {
+        encoding: crate::ImageEncoding::Bgra8,
+        width,
+        height,
+    }
+}
+
+/// The publisher declares the format, a slot holds one frame of it, and both ends see the layout
+/// and a dmabuf for the slot.
+#[test]
+fn an_image_format_sizes_the_slot_and_reaches_the_subscriber() {
+    if !integrated() {
+        return;
+    }
+    let name = super::channel::topic("img_fmt");
+    let mut publisher = format_publisher(&name, bgra(848, 480), 0).unwrap();
+    let mut sub = subscriber(&name, Stream::default(), 1);
+    let slot = publisher.loan().unwrap();
+    assert_eq!(
+        slot.capacity(),
+        2 << 20,
+        "848x480 at a pitch of 3584 rounds up to 2 MiB"
+    );
+    let layout = slot.image_layout().unwrap();
+    assert_eq!(
+        (layout.planes, layout.pitch[0], layout.bytes),
+        (1, 3584, 3584 * 480)
+    );
+    let mine = slot.dmabuf_fd().unwrap();
+    assert_eq!(slot.commit_len(layout.bytes as usize), Published::Ok);
+    let view = sub.take().unwrap();
+    assert_eq!(view.image_layout(), Some(layout));
+    let theirs = view.dmabuf_fd().unwrap();
+    let target = |fd| std::fs::read_link(format!("/proc/self/fd/{fd}")).unwrap();
+    assert!(
+        target(theirs).to_string_lossy().contains("dmabuf"),
+        "{:?}",
+        target(theirs)
+    );
+    assert_ne!(
+        mine, theirs,
+        "each end holds its own descriptor of the slot"
+    );
+}
+
+#[test]
+fn a_slot_smaller_than_a_frame_of_the_format_is_refused() {
+    if !integrated() {
+        return;
+    }
+    let name = super::channel::topic("img_small");
+    let made = format_publisher(&name, bgra(1920, 1200), 4 << 20);
+    assert!(
+        matches!(made, Err(Error::InvalidArgument(_))),
+        "{:?}",
+        made.err()
+    );
+    let odd = crate::ImageFormat {
+        encoding: crate::ImageEncoding::Nv12,
+        width: 1921,
+        height: 1080,
+    };
+    let made = format_publisher(&name, odd, 0);
+    assert!(
+        matches!(made, Err(Error::InvalidArgument(_))),
+        "{:?}",
+        made.err()
+    );
+}
+
+/// A byte-image slot has no layout to report.
+#[test]
+fn image_slots_without_a_format_have_no_layout() {
+    if !integrated() {
+        return;
+    }
+    let name = super::channel::topic("img_nofmt");
+    let mut publisher = image_publisher(&name, 4, 0, Stream::default()).unwrap();
+    let slot = publisher.loan().unwrap();
+    assert_eq!(slot.image_layout(), None);
+    assert!(slot.dmabuf_fd().is_some());
+    assert_eq!(slot.commit_len(1), Published::Ok);
+}
