@@ -8,7 +8,7 @@ C++와 Python API에 공통인 규칙이다. 언어별 사용법은 [cpp.md](cpp
 
 | 요소 | 뜻 |
 | --- | --- |
-| 토픽 이름 | 노드의 namespace와 remap을 적용한 이름. `/robot1` namespace에서 `Publisher(node, "image")`는 `/robot1/image`다 |
+| 토픽 이름 | 노드의 namespace와 remap을 적용한 이름. `/robot1` namespace에서 `create_publisher(node, "image")`는 `/robot1/image`다 |
 | fingerprint | 메시지 스키마의 64-bit 해시. `flux_gen`이 만든 어댑터의 `kFingerprint`(Python은 `FINGERPRINT__`)를 넘긴다. 타입 없이 배열을 보내면 `kNoSchema`(0)다 |
 
 - ROS 2처럼 한 이름에 fingerprint가 다른 채널이 공존 가능하다.
@@ -123,7 +123,7 @@ fork한 자식 프로세스에서는 상속받은 채널이 사용 불가능하�
 
 | 상황 | 할 일 |
 | --- | --- |
-| Docker의 `/dev/shm`은 기본 64 MiB라서 기본 채널(128 MiB) 하나도 생성 불가능하다 | `--shm-size`를 채널들의 합보다 크게 설정하거나 `--ipc=host`를 사용한다 |
+| Docker의 `/dev/shm`은 기본 64 MiB라서 타입 없는 기본 채널(처음 72 MiB) 하나도 생성 불가능하다 | `--shm-size`를 채널들의 합보다 크게 설정하거나 `--ipc=host`를 사용한다 |
 | 오래 사용하지 않은 슬롯 페이지가 스왑 아웃되어(Jetson의 zram 등) 첫 접근이 느려진다 | `MemoryPolicy`의 `lock`으로 세그먼트를 잠근다(`RLIMIT_MEMLOCK` 필요). 또는 systemd 유닛에 `MemorySwapMax=0`을 설정한다 |
 | 첫 발행과 첫 take에서 페이지 폴트가 발생한다 | `MemoryPolicy`의 `precommit`으로 연결 시 페이지를 미리 채운다(Linux 5.14 이상) |
 

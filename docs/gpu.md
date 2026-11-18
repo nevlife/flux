@@ -50,7 +50,7 @@ auto sub = flux::create_subscription(*node, "depth", flux::QoS{}, callback, sub_
 ```
 
 ```cpp doc:cpp_gpu_read
-if (flux::FrameView frame = sub.take()) {
+if (flux::FrameView frame = sub->take()) {
   read_on_device(frame.device_ptr(), frame.size(), frame.stream());
 }
 ```

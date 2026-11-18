@@ -434,13 +434,14 @@ TEST_F(Doc, Gpu)
   // [doc:/cpp_gpu_publish]
   flux::SubscriptionOptions sub_options;
   sub_options.device = flux::Device::Cuda;
-  flux::Subscription sub(*node, "depth", flux::QoS(1).transient_local(1), {}, sub_options);
+  auto sub =
+    flux::create_subscription(*node, "depth", flux::QoS(1).transient_local(1), {}, sub_options);
   // [doc:cpp_gpu_read]
-  if (flux::FrameView frame = sub.take()) {
+  if (flux::FrameView frame = sub->take()) {
     read_on_device(frame.device_ptr(), frame.size(), frame.stream());
   }
   // [doc:/cpp_gpu_read]
-  EXPECT_EQ(sub.lost(), 0U);
+  EXPECT_EQ(sub->lost(), 0U);
 }
 
 }  // namespace

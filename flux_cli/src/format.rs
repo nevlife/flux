@@ -94,6 +94,7 @@ pub fn storage_name(kind: u32) -> String {
     match kind {
         0 => "host".into(),
         1 => "cuda-ipc".into(),
+        2 => "host-image".into(),
         k => format!("unknown({k})"),
     }
 }
@@ -128,6 +129,7 @@ mod tests {
     #[test]
     fn an_unknown_storage_kind_is_reported_as_itself() {
         assert_eq!(storage_name(0), "host");
+        assert_eq!(storage_name(2), "host-image");
         assert_eq!(storage_name(9), "unknown(9)");
     }
 }

@@ -32,7 +32,7 @@ CHANNEL         SEGMENT  ENDPOINTS
 ```text
 channel      /clidemo/image
 fingerprint  0x0000000000000000
-signpost     /flux.v6..clidemo.image.0000000000000000
+signpost     /flux.v10..clidemo.image.0000000000000000
 segment      up, epoch 1
 slots        4 x 1 MiB
 subscribers  up to 16 processes
@@ -51,7 +51,7 @@ endpoints
 | `epoch` | 발행자 재시작마다 바뀌는 번호 |
 | `published` | 이 세그먼트에서 commit된 프레임 수 |
 | `parked` | 프레임을 기다리며 잠든 구독자 수. 0보다 크면 발행자는 발행마다 futex wake를 한 번 보낸다 |
-| `storage` | 슬롯 데이터의 위치. `host`는 공유 메모리, `cuda-ipc`는 GPU 메모리(`DeviceHandle`, [gpu.md](gpu.md)) |
+| `storage` | 슬롯 데이터의 위치. `host`는 공유 메모리, `cuda-ipc`는 GPU 메모리(`DeviceHandle`, [gpu.md](gpu.md)), `host-image`는 이미지 슬롯([gpu.md](gpu.md)) |
 | `LABEL` | 노드의 전체 이름 |
 
 엔드포인트 목록은 62개까지 표시하고, 초과분은 생략했다는 줄 하나로 대신한다. 이 제한은 프레임 전달과 관계가 없다.

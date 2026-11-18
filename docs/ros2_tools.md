@@ -162,7 +162,7 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
 - flux 경로에서는 `data`를 payload로, 나머지 필드를 aux로 보내는 GPU 메모리 채널([gpu.md](gpu.md#gpu-메모리-채널devicehandle))로 보낸다. ROS 경로에서는 wrapper가 GPU 버퍼를 하나 생성하고, publish 시 호스트로 복사해 ROS 메시지로 보낸다.
 - `data` 밖의 필드는 aux 4096 B에 들어가야 한다. 넘으면 loan이 `false`가 되고 publish가 `false`를 반환한다. 발행자마다 처음 한 번, 들어가지 않은 첫 필드와 그 크기, 그 앞까지 쓴 크기, 메시지의 `header.stamp`를 오류 로그로 남긴다.
 
-- `Cuda`를 사용 불가능하면(CUDA 없이 빌드했거나, GPU 경로나 GPU가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Host`로 바뀐다. `uses_device()`가 실제로 사용하는 쪽을 알려 준다. `mirror_to_ros`를 켜면 mirror가 ROS 2 구독자가 있는 동안 `data`를 호스트로 복사해 발행한다.
+- `Cuda`를 사용 불가능하면(CUDA 없이 빌드했거나, GPU 경로나 GPU가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Host`로 바뀐다. 발행자는 `uses_device()`가 실제로 사용하는 쪽을 알려 준다. 구독에는 이것이 없다. `mirror_to_ros`를 켜면 mirror가 ROS 2 구독자가 있는 동안 `data`를 호스트로 복사해 발행한다.
 - 구독은 flux 경로에서 `Cuda` 발행자의 프레임도 받는다. `SubscriptionOptions::device`가 `Host`(기본)면 `data()`가 호스트 메모리다(외장 GPU에서는 take 시 한 번 복사한다). aux가 잘못된 프레임은 건너뛰고 `rejected()`로 센다.
 - 구독의 `device`가 `Cuda`면 발행자가 어느 쪽이든 `data`가 GPU 메모리에 있다. `on_device()`, `device_ptr()`, `size()`, `stream()`으로 읽고, GPU 작업은 `stream()`에 올린다. `Host` 발행자의 프레임은 외장 GPU에서 take 시 GPU로 한 번 복사하고, 통합 GPU에서는 복사하지 않는다. 호스트 메모리에도 있는 프레임은 `data()`로도 읽힌다.
 - ROS 경로의 `Cuda` 구독은 구독마다 GPU 버퍼를 `max_borrow`개 생성하고, 메시지 수신마다 빈 버퍼로 복사한다. 버퍼마다 스트림이 따로 있다.
@@ -188,7 +188,7 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
   | `"cpu"` | `flux.wire.DeviceSpan`(`__dlpack__`, `__cuda_array_interface__`, `nbytes`). `data`와 `to_msg()`도 호스트 메모리에서 읽힌다. 외장 GPU에서는 구독자가 GPU로 한 번 복사한다 |
 
 - 통합 GPU에서는 슬롯을 넘어 arena에 저장된 `data`에 GPU 주소가 없어 `on_device`가 거짓이다.
-- `"cuda"`를 사용 불가능하면 경고를 한 번 남기고 `"cpu"`로 바뀐다(`uses_device`).
+- `"cuda"`를 사용 불가능하면 경고를 한 번 남기고 `"cpu"`로 바뀐다(발행자는 `uses_device`로 안다).
 
 - `device="cuda"` 발행자의 `publish(msg)`는 메시지의 `data`를 슬롯으로 복사해 보낸다. GPU 메모리에 있는 프레임의 `to_msg()`는 `data`를 호스트로 복사하고, 그 복사가 끝날 때까지 기다린다.
 
@@ -250,7 +250,7 @@ uint8[] data             # raw: 슬롯에 있던 프레임 bytes 그대로
 | 압축 큐 | `--compression-mode message`에서 압축이 따라가지 못하면 rosbag2가 압축 큐(`--compression-queue-size`, 기본 1)를 넘는 메시지를 버린다. flux 프레임도 같다 |
 | 시각 | send 시각과 header stamp는 commit 시각, recv 시각은 take 시각이다 |
 | 일시정지 | `~/pause`, `~/resume` 서비스와 키보드(rosbag2와 같다). 노드 이름은 `--node-name`(기본 `rosbag2_recorder`)이다 |
-| 저장 형식 | `-s`가 없으면 rosbag2 기본값(mcap)이다 |
+| 저장 형식 | `-s`가 없으면 rosbag2 기본값이다(Jazzy는 mcap, Humble은 sqlite3) |
 | 무손실 압축 | `-s mcap --storage-preset-profile zstd_fast`는 mcap chunk를 zstd로 압축한다. `--compression-mode file`은 파일을 닫을 때 zstd 등으로 압축한다. 둘 다 flux 채널과 ROS 토픽에 모두 적용된다. 읽는 쪽(`play_flux`, `convert_flux`, `ros2 bag play`)은 옵션 없이 읽는다 |
 | 이미지 압축 | 녹화기는 프레임을 바꾸지 않고 슬롯의 bytes 그대로 저장한다. 압축한 이미지를 녹화하려면 압축한 결과를 따로 flux 채널로 발행하고 그 채널을 녹화한다 |
 | aux | 채널을 `aux_size`와 함께 생성했으면 프레임마다 meta 끝에 채널의 `aux_size`와 그 프레임의 aux bytes를 담는다. aux를 쓰지 않은 프레임도 `aux_size`는 담는다 |
@@ -305,7 +305,7 @@ bag의 flux 프레임을 ROS 메시지로 변환해 새 bag에 저장한다.
 
 - 변환한 토픽은 flux 없이 읽기 가능하다. 남은 `FluxFrame`을 읽으려면 `flux_msgs`가 필요하다.
 - 스키마와 맞지 않는 프레임이나 codec이 `raw`가 아닌 프레임이 있으면 변환이 exit code 1로 멈춘다.
-- `--compression-mode file`이나 `message`로 압축한 bag도 읽는다. 출력은 압축하지 않은 mcap bag이다.
+- `--compression-mode file`이나 `message`로 압축한 bag도 읽는다. 출력은 압축하지 않은 bag이고, 저장 형식은 rosbag2 기본값이다.
 - ROS 메시지에는 aux를 담을 자리가 없으므로 aux는 버린다. `FluxFrame`으로 남는 프레임은 aux를 그대로 가진다.
 
 ### aux를 담은 bag의 호환

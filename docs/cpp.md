@@ -52,10 +52,10 @@ auto flux::create_publisher(node, topic, const PublisherOptions & options = {},
                             fingerprint = flux::kNoSchema) -> std::shared_ptr<Publisher>;
 ```
 
-- rclcpp `create_publisher`처럼 `shared_ptr`를 반환한다. `flux::Publisher(node, topic, options, fingerprint)` 생성자도 같은 인자를 받는다.
+- rclcpp `create_publisher`처럼 `shared_ptr`를 반환한다. `flux::Publisher(node, topic, options, fingerprint)` 생성자도 같은 인자를 받는다. 생성자에서는 `options`를 생략할 수 없다.
 - `PublisherOptions`의 필드는 `alloc`, `slot_size`, `slot_count`, `max_slot_size`, `max_slot_count`, `device`, `stream`, `memory`, `max_subscribers`(기본 16), `aux_size`, `alloc_on_subscriber`, `image_slots`, `image_encoding`, `image_width`, `image_height`다. 선언한 `stream`이 `device`보다 우선한다.
 
-- 기본값은 `flux.h`의 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`이고, Python과 같다. `slot_size`와 `slot_count` 0의 뜻은 [concepts.md](concepts.md#발행자와-슬롯)에 있다. 타입이 없는 발행자의 크기는 `FLUX_UNTYPED_SLOT_SIZE`(8 MiB), 문자열 자리는 `FLUX_SLOT_STRING_BYTES`(4096 B)다.
+- 기본값은 `flux.h`의 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`이고, Python과 같다. `slot_size`와 `slot_count` 0의 뜻은 [concepts.md](concepts.md#발행자와-슬롯)에 있다. 타입이 없는 발행자의 크기는 `FLUX_UNTYPED_SLOT_SIZE`(8 MiB, `Alloc::Slot` 발행자와 GPU 메모리 채널은 4 MiB), 문자열 자리는 `FLUX_SLOT_STRING_BYTES`(4096 B)다.
 - `publish(data, dtype, shape)`는 배열을 슬롯에 한 번 복사한다. `publish(data, nbytes)`는 `u8[nbytes]`로 발행한다.
 - 같은 채널에 살아 있는 발행자가 있으면 생성자가 `flux::Error`(`FLUX_PUBLISHER_EXISTS`)를 던진다.
 
@@ -124,7 +124,7 @@ auto flux::create_subscription(node, topic, const QoS & qos, Callback cb,
                                fingerprint = flux::kNoSchema) -> std::shared_ptr<Subscription>;
 ```
 
-- `flux::Subscription(node, topic, qos, cb, options, fingerprint)` 생성자도 같은 인자를 받는다. `SubscriptionOptions`의 필드는 `device`, `stream`, `memory`이고, 선언한 `stream`이 `device`보다 우선한다.
+- `flux::Subscription(node, topic, qos, cb, options, fingerprint)` 생성자도 같은 인자를 받는다. 생성자에서는 `options`를 생략할 수 없다. `SubscriptionOptions`의 필드는 `device`, `stream`, `memory`이고, 선언한 `stream`이 `device`보다 우선한다.
 
 - 콜백(`Callback`)은 `std::function<void(FrameView &&)>`다. `const flux::FrameView &`로 받으면 슬롯은 호출 종료 시 반납된다. 프레임을 move해서 보유하면 그 `FrameView`의 해제 시 반납되고, 해제는 어느 스레드에서든 가능하다.
 - 한 구독이 동시에 보유 가능한 프레임은 QoS `max_borrow`개다. 그만큼 보유하는 동안 executor는 그 구독의 콜백을 호출하지 않고, 다음 프레임은 링에서 대기한다. depth보다 뒤처진 프레임은 `lost()`에 더해진다.
