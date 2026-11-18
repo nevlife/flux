@@ -115,6 +115,7 @@ auto config_of(const PublisherOptions & o) -> flux_publisher_config
   c.max_subscribers = o.max_subscribers;
   c.aux_size = o.aux_size;
   c.alloc_on_subscriber = o.alloc_on_subscriber;
+  c.image_slots = o.image_slots;
   return c;
 }
 

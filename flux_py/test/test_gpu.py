@@ -509,6 +509,18 @@ def test_a_slot_publisher_that_allocs_on_subscriber_publishes_once_one_attaches(
     np.testing.assert_array_equal(sub.take(), frame)
 
 
+def test_an_image_slot_publisher_reaches_a_subscriber(node):
+    if not flux.probe().integrated:
+        pytest.skip("image slots need an integrated GPU")
+    pub = flux.Publisher(node, topic("image"), alloc="slot", slot_size=3 << 20, image_slots=True)
+    sub = flux.Subscription(node, topic("image"))
+    frame = np.arange(4096, dtype=np.uint16)
+    assert pub.publish(frame) == flux.Published.OK
+    np.testing.assert_array_equal(sub.take().view(np.uint16), frame)
+    with pytest.raises(flux.Error):
+        flux.Publisher(node, topic("image_arena"), image_slots=True)
+
+
 def test_an_alloc_other_than_arena_or_slot_is_refused(node):
     with pytest.raises(ValueError, match="alloc"):
         flux.Publisher(node, topic("bad_alloc"), alloc="heap", **SMALL)

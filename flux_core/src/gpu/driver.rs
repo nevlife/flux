@@ -30,6 +30,9 @@ pub(crate) const MEM_HOST_REGISTER_DEVICEMAP: c_uint = 0x02;
 /// with `INVALID_VALUE` otherwise. Thor does not support it and registers the mapping without it.
 pub(crate) const MEM_HOST_REGISTER_READ_ONLY: c_uint = 0x08;
 
+pub(crate) const MEM_HOST_ALLOC_DEVICEMAP: c_uint = 0x02;
+pub(crate) const MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD: c_int = 0x1;
+
 pub(crate) const MEM_ALLOCATION_TYPE_PINNED: c_int = 0x1;
 pub(crate) const MEM_HANDLE_TYPE_POSIX_FD: c_int = 0x1;
 pub(crate) const MEM_LOCATION_TYPE_DEVICE: c_int = 0x1;
@@ -113,6 +116,13 @@ pub(crate) struct HostReg {
     pub device_pointer: unsafe extern "C" fn(*mut DevicePtr, *mut c_void, c_uint) -> CuResult,
 }
 
+/// Page-locked allocations exported as dmabufs, for image slots (`super::image`).
+pub(crate) struct HostExport {
+    pub alloc: unsafe extern "C" fn(*mut *mut c_void, usize, c_uint) -> CuResult,
+    pub free: unsafe extern "C" fn(*mut c_void) -> CuResult,
+    pub range_handle: unsafe extern "C" fn(*mut c_void, DevicePtr, usize, c_int, u64) -> CuResult,
+}
+
 pub(crate) struct Vmm {
     pub granularity: unsafe extern "C" fn(*mut usize, *const MemAllocationProp, c_int) -> CuResult,
     pub create:
@@ -142,6 +152,7 @@ pub(crate) struct Driver {
     pub host_reg: Result<HostReg, &'static str>,
     pub vmm: Result<Vmm, &'static str>,
     pub copies: Result<Copies, &'static str>,
+    pub host_export: Result<HostExport, &'static str>,
     born: u32,
 }
 
@@ -192,6 +203,7 @@ impl Driver {
             host_reg: Err(why),
             vmm: Err(why),
             copies: Err(why),
+            host_export: Err(why),
             born: sys::fork_gen(),
         };
         // SAFETY: a constant NUL-terminated name.
@@ -220,6 +232,7 @@ impl Driver {
             host_reg: Driver::host_reg(lib).ok_or("libcuda.so.1 has no host registration"),
             vmm: Driver::vmm(lib).ok_or("libcuda.so.1 has no virtual memory management"),
             copies: Driver::copies(lib).ok_or("libcuda.so.1 has no asynchronous copies"),
+            host_export: Driver::host_export(lib).ok_or("libcuda.so.1 has no dmabuf export"),
             born: sys::fork_gen(),
         }
     }
@@ -283,6 +296,14 @@ impl Driver {
         })
     }
 
+    fn host_export(lib: usize) -> Option<HostExport> {
+        load!(lib, HostExport {
+            alloc = c"cuMemHostAlloc",
+            free = c"cuMemFreeHost",
+            range_handle = c"cuMemGetHandleForAddressRange",
+        })
+    }
+
     fn copies(lib: usize) -> Option<Copies> {
         load!(lib, Copies {
             htod = c"cuMemcpyHtoDAsync_v2",
@@ -299,6 +320,7 @@ impl Driver {
             host_reg: Ok(host_reg),
             vmm: Err("the stand-in driver has no virtual memory management"),
             copies: Err("the stand-in driver has no copies"),
+            host_export: Err("the stand-in driver has no dmabuf export"),
             born: sys::fork_gen(),
         }
     }

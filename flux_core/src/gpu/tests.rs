@@ -447,6 +447,7 @@ fn child(test: &str, env: &str) -> bool {
     false
 }
 
+mod image;
 mod stand_in;
 
 /// The next chunk `flux-filler` maps into a device range fails as `cuMemMap` would: a publisher's

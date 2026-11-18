@@ -14,6 +14,7 @@ mod driver;
 #[cfg(test)]
 mod fake;
 mod fd;
+mod image;
 pub(crate) mod ledger;
 #[cfg(test)]
 mod tests;
@@ -33,6 +34,7 @@ use driver::{
     NOT_READY, SUCCESS,
 };
 pub(crate) use fd::remove_dead_endpoint;
+pub(crate) use image::{IMAGE_SLOT_ALIGN, ImageExport, ImageImport};
 pub(crate) use vmm::{
     DeviceAlloc, DeviceBuffer, DeviceImport, device_for_uuid, device_uuid, endpoint,
 };

@@ -194,12 +194,15 @@ class Publisher(_flux._Publisher):
         max_slot_size=0,
         max_slot_count=0,
         alloc_on_subscriber=False,
+        image_slots=False,
     ):
         """alloc="slot" keeps every variable-length field of a frame in its slot, where an
         integrated GPU reads it in place; a frame that does not fit is refused. "arena" puts them
         in the process's arena. With "slot", or a "cuda" publisher with no type, a size or count
         of 0 takes flux's fixed-slot default and the maxima bound the slots; alloc_on_subscriber
-        gives them memory once a subscriber attaches, and publish fails until then. fence_timeout, in seconds, bounds each commit's
+        gives them memory once a subscriber attaches, and publish fails until then. image_slots, on an
+        integrated GPU with fixed slots, makes each slot a dmabuf of its own that engines such as
+        VIC read in place, its size rounded up to 2 MiB. fence_timeout, in seconds, bounds each commit's
         wait for the stream; None waits as long as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
         work is done. mirror_to_ros also publishes every frame as its ROS 2 message on the same
         topic while a ROS 2 subscriber wants it (depth 1, best effort, volatile). aux_size gives
@@ -225,6 +228,7 @@ class Publisher(_flux._Publisher):
             max_slot_size,
             max_slot_count,
             alloc_on_subscriber,
+            image_slots,
         )
         self._set_fence_timeout(bound)
         if mirror_to_ros:

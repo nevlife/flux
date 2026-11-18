@@ -643,6 +643,66 @@ TEST_F(Gpu, AnUnregisteredFingerprintKeepsTheDevicePayload)
   EXPECT_TRUE(pub.device_backed());
 }
 
+// An image slot is a dmabuf of its own, which a CPU and a GPU subscriber both read.
+TEST_F(Gpu, AnImageSlotReachesACpuAndAGpuSubscriber)
+{
+  if (!platform_.integrated) {
+    GTEST_SKIP() << "image slots need an integrated GPU";
+  }
+  flux_publisher_config c = flux_publisher_config_default();
+  c.alloc = FLUX_ALLOC_SLOT;
+  c.slot_size = 3 << 20;
+  c.slot_count = 4;
+  c.image_slots = true;
+  const std::string name = unique_name("image");
+  auto pub = flux::detail::Channel::create_config(name, c, flux::kNoSchema);
+  flux::WriteSlot w = pub.loan();
+  ASSERT_TRUE(w);
+  EXPECT_EQ(w.capacity(), std::size_t{4} << 20);
+  std::memset(w.data(), 0x5c, 4096);
+  ASSERT_EQ(w.commit(4096), flux::Published::Ok);
+
+  flux::QoS q(4);
+  q.transient_local(4);
+  flux::detail::Watch watch(name);
+  auto cpu = flux::detail::Channel::open(watch, flux::kNoSchema, q);
+  flux::FrameView v = cpu.take();
+  ASSERT_TRUE(v);
+  EXPECT_EQ(static_cast<const unsigned char *>(v.data())[4095], 0x5c);
+  v.release();
+  auto dev =
+    flux::detail::Channel::open(watch, flux::kNoSchema, q, {}, flux::gpu::Stream::create());
+  v = dev.take();
+  ASSERT_TRUE(v);
+  ASSERT_NE(v.device_ptr(), nullptr);
+  EXPECT_TRUE(all(read_back(v.device_ptr(), 4096), 0x5c));
+}
+
+// The options carry image_slots to the publisher.
+TEST_F(Gpu, PublisherOptionsMakeImageSlots)
+{
+  if (!platform_.integrated) {
+    GTEST_SKIP() << "image slots need an integrated GPU";
+  }
+  if (!rclcpp::ok()) {
+    rclcpp::init(0, nullptr);
+  }
+  auto node = std::make_shared<rclcpp::Node>("flux_gpu_image_options");
+  flux::PublisherOptions o;
+  o.alloc = flux::Alloc::Slot;
+  o.slot_size = 3 << 20;
+  o.image_slots = true;
+  auto pub = flux::create_publisher(*node, "/gpu" + std::to_string(getpid()) + "_image", o);
+  flux::WriteSlot w = pub->loan();
+  ASSERT_TRUE(w);
+  EXPECT_EQ(w.capacity(), std::size_t{4} << 20);
+  w.abort();
+  o.alloc = flux::Alloc::Arena;
+  EXPECT_THROW(
+    flux::create_publisher(*node, "/gpu" + std::to_string(getpid()) + "_image_arena", o),
+    flux::Error);
+}
+
 // The options' device declares the stream, as the Device constructor does.
 TEST_F(Gpu, PublisherOptionsDeclareTheStreamOfTheirDevice)
 {

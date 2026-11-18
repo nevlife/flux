@@ -32,6 +32,7 @@ struct PublisherOptions
   // Alloc::Slot and device-payload publishers: slots get memory once a subscriber attaches, and
   // publish fails until then. For topics nobody may subscribe to.
   bool alloc_on_subscriber = false;
+  bool image_slots = false;  // fixed slots on an integrated GPU, each a dmabuf (docs/gpu.md)
 };
 
 // One per topic on the host: Error with FLUX_PUBLISHER_EXISTS while another is live. One call at

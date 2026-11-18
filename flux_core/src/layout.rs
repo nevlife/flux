@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64};
 
 pub const MAGIC: u32 = 0x464C_5832; // 'FLX2'
 pub const SIGNPOST_MAGIC: u32 = 0x464C_5350; // 'FLSP'
-pub const LAYOUT_VERSION: u32 = 9;
+pub const LAYOUT_VERSION: u32 = 10;
 pub const CACHE_LINE: usize = 64;
 // One page, so a subscriber can drop the payload to read-only while the headers it writes stay
 // writable. Fixed rather than read from the kernel: the layout must match across processes.
@@ -80,6 +80,8 @@ pub enum StorageKind {
     HostInline = 0,
     /// The payload is a device allocation shared by fd; the segment holds the control plane only.
     CudaIpc = 1,
+    /// Host-addressable, each slot's payload a dmabuf of its own mapped over the slot's place.
+    HostImage = 2,
 }
 
 /// Wire ABI: append only. A frame with an unknown value is refused.
@@ -292,7 +294,11 @@ impl HeaderConfig {
     }
 
     pub(crate) fn host_payload(&self) -> bool {
-        self.storage_kind == StorageKind::HostInline as u8
+        self.storage_kind == StorageKind::HostInline as u8 || self.image_payload()
+    }
+
+    pub(crate) fn image_payload(&self) -> bool {
+        self.storage_kind == StorageKind::HostImage as u8
     }
 }
 

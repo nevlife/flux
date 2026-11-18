@@ -155,6 +155,13 @@ pub struct Segment {
     /// What makes the payload device-addressable, made once for every channel on this mapping.
     device: OnceLock<DevicePayload>,
     device_init: Mutex<()>,
+    /// An image segment's slot memory: the publisher's export, or this mapping's import of it.
+    image: OnceLock<ImagePayload>,
+}
+
+pub(crate) enum ImagePayload {
+    Export(crate::gpu::ImageExport),
+    Import(crate::gpu::ImageImport),
 }
 
 // SAFETY: the mapping is shared memory accessed through atomics and the ticket/borrow protocol;
@@ -184,7 +191,8 @@ impl Segment {
             ));
         };
         // SAFETY: base is a fresh zeroed allocation of total_bytes, aligned to a page.
-        let header = unsafe { init_header(base, layout, fingerprint, None, layout.slot_count) };
+        let header =
+            unsafe { init_header(base, layout, fingerprint, None, false, layout.slot_count) };
         Ok(Segment::adopt(
             base,
             bytes,
@@ -270,6 +278,7 @@ impl Segment {
             cover: Mutex::new(()),
             device: OnceLock::new(),
             device_init: Mutex::new(()),
+            image: OnceLock::new(),
         }
     }
 
@@ -390,6 +399,30 @@ impl Segment {
         }
     }
 
+    /// The publisher's image slots, set once when the segment is made.
+    pub(crate) fn set_image_export(&self, e: crate::gpu::ImageExport) {
+        let _ = self.image.set(ImagePayload::Export(e));
+    }
+
+    /// Whether slot `s`'s payload is mapped here: always but for an image segment's subscriber,
+    /// which maps each slot's dmabuf as it comes.
+    pub(crate) fn reach_image(&self, s: u32) -> bool {
+        if !self.header.image_payload() || self.is_publisher() {
+            return true;
+        }
+        let p = self.image.get_or_init(|| {
+            ImagePayload::Import(crate::gpu::ImageImport::new(
+                &crate::gpu::endpoint(self.id),
+                self.payload(0),
+                self.layout.payload_stride(),
+            ))
+        });
+        match p {
+            ImagePayload::Import(i) => i.reach(s).is_ok(),
+            ImagePayload::Export(_) => true,
+        }
+    }
+
     /// Made by `init` on first use, then shared by every channel on this mapping.
     pub(crate) fn device_payload(
         &self,
@@ -453,6 +486,7 @@ impl Segment {
             cover: Mutex::new(()),
             device: OnceLock::new(),
             device_init: Mutex::new(()),
+            image: OnceLock::new(),
         }
     }
 
@@ -538,7 +572,12 @@ impl Segment {
             return None;
         }
         let stride = self.layout.payload_stride();
-        if self.host_payload() {
+        if self.header.image_payload() {
+            let Some(ImagePayload::Export(e)) = self.image.get() else {
+                return None;
+            };
+            e.back(s).ok()?;
+        } else if self.host_payload() {
             sys::allocate_range(
                 fd,
                 self.layout.payload_offset() + s as usize * stride,
@@ -597,6 +636,10 @@ impl Segment {
     fn cover_end(&self, slots: u32) -> usize {
         if self.is_heap() || !self.host_payload() {
             return self.bytes;
+        }
+        // An image slot is page-locked memory of its own, not the segment's pages.
+        if self.header.image_payload() {
+            return self.layout.payload_offset().min(self.bytes);
         }
         (self.layout.payload_offset() + slots as usize * self.layout.payload_stride())
             .min(self.bytes)
@@ -695,6 +738,7 @@ impl Drop for Segment {
         // Fields drop in order, `map` (the munmap) before `device`: the fd server's thread is
         // stopped and the registration undone here, while the memory is still mapped.
         drop(self.device.take());
+        drop(self.image.take());
     }
 }
 
@@ -730,6 +774,7 @@ pub(crate) unsafe fn init_header(
     layout: SegmentLayout,
     fingerprint: u64,
     device: Option<(u32, [u8; 16])>,
+    image: bool,
     ready: u32,
 ) -> HeaderConfig {
     // SAFETY: the header region is inside the allocation and nobody else reads it yet.
@@ -739,6 +784,8 @@ pub(crate) unsafe fn init_header(
     unsafe {
         let kind = if device.is_some() {
             StorageKind::CudaIpc
+        } else if image {
+            StorageKind::HostImage
         } else {
             StorageKind::HostInline
         };

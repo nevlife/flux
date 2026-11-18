@@ -274,6 +274,7 @@ fn leave(name: &str, raw: RawFd) {
 /// holds the control plane only, and the allocation is served before the epoch advertises it.
 /// The payload has memory for its first `ready` slots (at least one on a device), the rest only
 /// once `add_slot` adds them.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn open_publisher_segment(
     name: &str,
@@ -285,7 +286,51 @@ pub fn open_publisher_segment(
     device: Option<i32>,
     ready: u32,
 ) -> Result<Segment> {
+    let payload = device.map_or(SegmentPayload::Host, SegmentPayload::Device);
+    open_publisher_segment_in(
+        name,
+        slot_size,
+        slot_count,
+        max_subscribers,
+        aux_size,
+        fingerprint,
+        payload,
+        ready,
+    )
+}
+
+/// Where a publisher's segment keeps its payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SegmentPayload {
+    /// In the segment's own pages.
+    Host,
+    /// A device allocation on this ordinal, for the device-handle route.
+    Device(i32),
+    /// Image slots of an integrated GPU's context on this ordinal (`gpu::ImageExport`).
+    Image(i32),
+}
+
+/// `open_publisher_segment` with the payload's place named.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_publisher_segment_in(
+    name: &str,
+    slot_size: u32,
+    slot_count: u32,
+    max_subscribers: u32,
+    aux_size: u32,
+    fingerprint: u64,
+    payload: SegmentPayload,
+    ready: u32,
+) -> Result<Segment> {
     let layout = checked_layout(slot_size, slot_count, max_subscribers, aux_size)?;
+    let image = match payload {
+        SegmentPayload::Image(o) => Some(o),
+        _ => None,
+    };
+    let device = match payload {
+        SegmentPayload::Device(o) => Some(o),
+        _ => None,
+    };
     let device = match device {
         Some(ordinal) => Some((
             ordinal,
@@ -302,8 +347,8 @@ pub fn open_publisher_segment(
     } else {
         layout.total_bytes()
     };
-    let reserved = if device.is_some() {
-        bytes
+    let reserved = if device.is_some() || image.is_some() {
+        layout.payload_offset().min(bytes)
     } else {
         layout.payload_offset() + ready as usize * layout.payload_stride()
     };
@@ -353,20 +398,20 @@ pub fn open_publisher_segment(
         #[allow(clippy::cast_sign_loss)]
         let header_device = device.map(|(ordinal, uuid)| (ordinal as u32, uuid));
         // SAFETY: a fresh mapping of `bytes`, not yet advertised to anyone.
-        let header = unsafe { init_header(base, layout, fingerprint, header_device, ready) };
+        let header = unsafe {
+            init_header(
+                base,
+                layout,
+                fingerprint,
+                header_device,
+                image.is_some(),
+                ready,
+            )
+        };
         let mut seg = Segment::adopt_shm(base, bytes, header, seg_name, id_of(raw));
         seg.publisher = Some(live);
-        if let Some((ordinal, _)) = device {
-            // Dropping seg on failure unlinks it; nothing was advertised.
-            let alloc = gpu::DeviceAlloc::create(
-                &gpu::endpoint(seg.id()),
-                layout.payload_bytes(),
-                layout.payload_stride(),
-                ready as usize * layout.payload_stride(),
-                ordinal,
-            )?;
-            seg.device_payload(|| Ok(gpu::DevicePayload::Exported(alloc)))?;
-        }
+        // Dropping seg on failure unlinks it; nothing was advertised.
+        give_payload(&seg, payload, ready)?;
         map.sp().epoch.store(epoch, Ordering::Release); // order: sp_epoch
         // For subscriptions waiting for a publisher. Rare enough to need no gate.
         sys::futex_wake(&map.sp().epoch);
@@ -376,6 +421,36 @@ pub fn open_publisher_segment(
     Err(Error::NotReady(format!(
         "no free segment name under '{name}'"
     )))
+}
+
+/// Makes a device or image payload's memory for the first `ready` slots, served at the segment's
+/// endpoint before the epoch advertises it.
+fn give_payload(seg: &Segment, payload: SegmentPayload, ready: u32) -> Result<()> {
+    let layout = seg.layout();
+    match payload {
+        SegmentPayload::Host => {}
+        SegmentPayload::Device(ordinal) => {
+            let alloc = gpu::DeviceAlloc::create(
+                &gpu::endpoint(seg.id()),
+                layout.payload_bytes(),
+                layout.payload_stride(),
+                ready as usize * layout.payload_stride(),
+                ordinal,
+            )?;
+            seg.device_payload(|| Ok(gpu::DevicePayload::Exported(alloc)))?;
+        }
+        SegmentPayload::Image(ordinal) => {
+            let e = gpu::ImageExport::create(
+                &gpu::endpoint(seg.id()),
+                seg.payload(0),
+                layout.payload_stride(),
+                ready,
+                ordinal,
+            )?;
+            seg.set_image_export(e);
+        }
+    }
+    Ok(())
 }
 
 /// Neither 0 nor `last`, which subscribers would not see as a restart. From the clock where
@@ -521,6 +596,7 @@ pub(crate) fn map_validate(
     let device_backed = match h.storage_kind {
         k if k == StorageKind::HostInline as u8 => false,
         k if k == StorageKind::CudaIpc as u8 => true,
+        k if k == StorageKind::HostImage as u8 => false,
         _ => return reject("payload storage unknown to this build"),
     };
     // Bounded before any offset is derived from them. Within these bounds no offset wraps

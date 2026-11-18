@@ -180,6 +180,10 @@ with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stre
 
 통합 GPU(`ShmRegistered`, `ShmDirect`)에서는 슬롯이 호스트 메모리이기도 하므로 복사 없이 한 채널에서 CPU 구독과 GPU 구독이 함께 동작한다.
 
+## 이미지 슬롯(통합 GPU)
+
+Jetson에서 고정 슬롯 발행자(`Alloc::Slot`이나 GPU 메모리 채널)는 `image_slots`를 켜서 슬롯마다 따로 할당한 page-locked 메모리를 쓸 수 있다(C++ `PublisherOptions::image_slots`, Python `image_slots=True`, C `flux_publisher_config::image_slots`). 슬롯은 dmabuf로 발행자와 구독자에게 매핑되므로, CPU 구독자와 GPU 구독자는 지금처럼 복사 없이 읽고, VIC처럼 dmabuf를 받는 엔진도 슬롯을 그대로 받을 수 있다. 슬롯 크기는 2 MiB 단위로 올린다. 발행자가 먼저 끝나도 구독자가 쥔 프레임은 계속 읽힌다. 통합 GPU가 아니거나 고정 슬롯이 아니면 생성이 실패한다. 엔진에 넘기는 접근자와 이미지 형식은 아직 없다.
+
 ## 대기 상한과 해제 방식
 
 | 설정 | C++ | Python | 기본값 |

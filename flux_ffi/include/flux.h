@@ -233,6 +233,8 @@ typedef struct flux_publisher_config {
   uint32_t aux_size;
   // Slots get memory once a subscriber attaches (`FLUX_ALLOC_SLOT` and GPU memory channels).
   bool alloc_on_subscriber;
+  // Integrated GPU only: each fixed slot is a dmabuf engines read in place.
+  bool image_slots;
 } flux_publisher_config;
 
 // `replay` 0 is volatile, N is `transient_local(N)`.

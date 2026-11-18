@@ -29,7 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::arena::{self};
 use crate::discovery::{
-    SignpostMap, open_publisher_segment, segment_publisher_dead, sweep_dead_once,
+    SegmentPayload, SignpostMap, open_publisher_segment_in, segment_publisher_dead, sweep_dead_once,
 };
 use crate::error::{Error, Result};
 use crate::executor::Control;
@@ -90,6 +90,9 @@ pub struct PublisherConfig {
     /// attaches, not at creation, and loans fail until then. For a program that makes publishers
     /// for topics nobody may subscribe to.
     pub alloc_on_subscriber: bool,
+    /// Fixed slots on an integrated GPU only: each slot is a dmabuf of its own that engines such
+    /// as VIC read in place (`gpu::ImageExport`). The slot size is rounded up to 2 MiB.
+    pub image_slots: bool,
 }
 
 impl Default for PublisherConfig {
@@ -103,8 +106,35 @@ impl Default for PublisherConfig {
             max_subscribers: DEFAULT_MAX_SUBSCRIBERS,
             aux_size: 0,
             alloc_on_subscriber: false,
+            image_slots: false,
         }
     }
+}
+
+/// An image segment's payload and slot size, or why `plan` cannot have one.
+fn image_payload(plan: &sizing::Plan, stream: &Stream) -> Result<(SegmentPayload, u32)> {
+    if !plan.fixed {
+        return Err(Error::InvalidArgument(
+            "image slots are fixed slots: use Alloc::Slot or a GPU memory channel".into(),
+        ));
+    }
+    let ordinal = if stream.declared() {
+        stream.device()
+    } else {
+        0
+    };
+    let p = gpu::probe(ordinal);
+    if !p.integrated {
+        return Err(Error::Unsupported(format!(
+            "image slots need an integrated GPU, and device {ordinal} is not one ({})",
+            p.reason
+        )));
+    }
+    let size = (plan.slot_size as usize).next_multiple_of(gpu::IMAGE_SLOT_ALIGN);
+    let size = u32::try_from(size).map_err(|_| {
+        Error::InvalidArgument(format!("an image slot of {size} bytes is too large"))
+    })?;
+    Ok((SegmentPayload::Image(ordinal), size))
 }
 
 /// When a view of a channel with a stream gives its slot back.
@@ -359,14 +389,22 @@ impl Channel {
         check_slot_count(plan.slot_count)?;
         let filled = plan.fixed && filler::available();
         let later = filled && config.alloc_on_subscriber;
-        let seg = open_publisher_segment(
+        let (payload, slot_size) = if config.image_slots {
+            image_payload(&plan, &stream)?
+        } else {
+            (
+                device.map_or(SegmentPayload::Host, SegmentPayload::Device),
+                plan.slot_size,
+            )
+        };
+        let seg = open_publisher_segment_in(
             name,
-            plan.slot_size,
+            slot_size,
             plan.slot_count,
             config.max_subscribers,
             config.aux_size,
             fingerprint,
-            device,
+            payload,
             if later { 0 } else { plan.start },
         )?;
         seg.apply(mem)?;

@@ -511,13 +511,19 @@ impl ChannelShared {
         let route = gpu::require_route(stream.device())?.route;
         let mut staged = Staged::InPlace;
         // Slot by slot, as slots get memory (`SlotRegistrations`).
+        // A subscriber's image slot is registered at its first use, once `reach` has mapped it.
+        let ready = if seg.header().image_payload() && !publisher {
+            0
+        } else {
+            seg.slots_ready()
+        };
         let register = || {
             seg.device_payload(|| {
                 SlotRegistrations::new(
                     seg.payload(0),
                     seg.layout().payload_stride(),
                     seg.layout().slot_count,
-                    seg.slots_ready(),
+                    ready,
                     seg.payload_readonly(),
                     stream.device(),
                 )
@@ -693,6 +699,9 @@ impl ChannelShared {
     /// memory there, mapped or given now if not. False when the device refused or the publisher's
     /// chunks have not come: nothing was copied, so the borrow can go back.
     pub(super) fn reach(&self, slot: u32) -> bool {
+        if !self.seg.reach_image(slot) {
+            return false;
+        }
         let end = self.slot_offset(slot) + self.seg.layout().payload_stride();
         if let Some(i) = self.seg.imported()
             && i.reach(end).is_err()

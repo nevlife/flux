@@ -349,6 +349,8 @@ pub struct flux_publisher_config {
     pub aux_size: u32,
     /// Slots get memory once a subscriber attaches (`FLUX_ALLOC_SLOT` and GPU memory channels).
     pub alloc_on_subscriber: bool,
+    /// Integrated GPU only: each fixed slot is a dmabuf engines read in place.
+    pub image_slots: bool,
 }
 
 #[unsafe(no_mangle)]
@@ -363,6 +365,7 @@ pub extern "C" fn flux_publisher_config_default() -> flux_publisher_config {
         max_subscribers: d.max_subscribers,
         aux_size: d.aux_size,
         alloc_on_subscriber: d.alloc_on_subscriber,
+        image_slots: d.image_slots,
     }
 }
 
@@ -397,6 +400,7 @@ pub unsafe extern "C" fn flux_channel_create_config(
         max_subscribers: c.max_subscribers,
         aux_size: c.aux_size,
         alloc_on_subscriber: c.alloc_on_subscriber,
+        image_slots: c.image_slots,
     };
     // SAFETY: stream is NULL or a live handle.
     let stream = unsafe { stream_of(stream) };
