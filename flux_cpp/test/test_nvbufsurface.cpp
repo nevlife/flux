@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 
 namespace
@@ -114,6 +115,38 @@ TEST_F(NvBuf, VicReadsAnImageSlotThroughItsSurfaceWithoutACopy)
     }
   }
   EXPECT_EQ(surfaces.copies(), 0U);
+}
+
+// Two caches import the same slot: two surfaces, both read right, both released.
+TEST_F(NvBuf, TwoCachesOfOneSlotBothHandItToVic)
+{
+  flux_publisher_config c = flux_publisher_config_default();
+  c.alloc = FLUX_ALLOC_SLOT;
+  c.slot_count = 4;
+  c.image_encoding = FLUX_IMAGE_BGRA8;
+  c.image_width = 848;
+  c.image_height = 480;
+  const std::string name = unique_name("two");
+  auto pub = flux::detail::Channel::create_config(name, c, flux::kNoSchema);
+  flux::detail::Watch watch(name);
+  auto sub = flux::detail::Channel::open(watch, flux::kNoSchema, flux::QoS(4));
+  flux::WriteSlot w = pub.loan();
+  ASSERT_TRUE(w);
+  fill_bgra(static_cast<std::uint8_t *>(w.data()), 848, 480, w.image_layout()->pitch[0]);
+  auto mine = std::make_unique<flux::NvBufSurfaces>();
+  NvBufSurface * from_loan = mine->surface(w);
+  ASSERT_NE(from_loan, nullptr);
+  ASSERT_EQ(w.commit(w.image_layout()->bytes), flux::Published::Ok);
+  flux::FrameView v = sub.take();
+  ASSERT_TRUE(v);
+  auto theirs = std::make_unique<flux::NvBufSurfaces>();
+  NvBufSurface * from_view = theirs->surface(v);
+  ASSERT_NE(from_view, nullptr);
+  EXPECT_NE(from_view, from_loan);
+  EXPECT_EQ(vic_rgba(from_loan, 848, 480), kRgba);
+  EXPECT_EQ(vic_rgba(from_view, 848, 480), kRgba);
+  mine.reset();
+  EXPECT_EQ(vic_rgba(from_view, 848, 480), kRgba) << "the other import outlives the first";
 }
 
 TEST_F(NvBuf, AFrameOutsideAnImageSlotIsCopiedForVic)

@@ -29,8 +29,7 @@ struct ImageFormatHint
 
 // NvBufSurfaces of one channel's frames for an engine (VIC, NVENC, NVJPG). An image slot's surface
 // is imported once and is the slot itself; any other frame is copied into a surface of the
-// cache's own, counted in copies(). One cache per channel and process: a second import of a slot
-// is not tried on Orin. One thread at a time; it must not outlive the channel.
+// cache's own, counted in copies(). One thread at a time; it must not outlive the channel.
 class NvBufSurfaces
 {
 public:
