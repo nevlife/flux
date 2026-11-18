@@ -370,6 +370,7 @@ pub const FLUX_IMAGE_YUYV: u32 = 7;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct flux_image_layout {
+    pub encoding: u32,
     pub planes: u32,
     pub width: [u32; 2],
     pub height: [u32; 2],
@@ -383,6 +384,7 @@ fn image_layout_out(l: Option<flux_core::ImageLayout>, out: *mut flux_image_layo
         return false;
     };
     let c = flux_image_layout {
+        encoding: l.encoding as u32,
         planes: l.planes,
         width: l.width,
         height: l.height,

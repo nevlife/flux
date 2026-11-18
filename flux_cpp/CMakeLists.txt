@@ -115,6 +115,16 @@ if(BUILD_TESTING)
     RESULT_FILE ${_result}
     TIMEOUT 120
     ENV LD_PRELOAD=${FLUX_HEAPHOOK})
+  # flux/nvbufsurface.hpp where the Jetson Multimedia API is installed.
+  find_path(NVBUFSURFACE_INCLUDE nvbufsurface.h HINTS /usr/src/jetson_multimedia_api/include)
+  find_library(NVBUFSURFACE_LIB nvbufsurface HINTS /usr/lib/aarch64-linux-gnu/nvidia)
+  find_library(NVBUFSURFTRANSFORM_LIB nvbufsurftransform HINTS /usr/lib/aarch64-linux-gnu/nvidia)
+  if(NVBUFSURFACE_INCLUDE AND NVBUFSURFACE_LIB AND NVBUFSURFTRANSFORM_LIB)
+    ament_add_gtest(test_nvbufsurface test/test_nvbufsurface.cpp TIMEOUT 120)
+    target_include_directories(test_nvbufsurface PRIVATE ${NVBUFSURFACE_INCLUDE})
+    target_link_libraries(test_nvbufsurface flux_cpp ${NVBUFSURFACE_LIB} ${NVBUFSURFTRANSFORM_LIB})
+    target_compile_options(test_nvbufsurface PRIVATE -Wall -Wextra -Werror)
+  endif()
   ament_add_gtest(test_doc_examples test/test_doc_examples.cpp TIMEOUT 120)
   target_link_libraries(test_doc_examples flux_cpp ${sensor_msgs_TARGETS})
   target_compile_options(test_doc_examples PRIVATE -Wall -Wextra -Werror)

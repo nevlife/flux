@@ -266,6 +266,7 @@ typedef struct flux_qos {
 
 // A frame's planes in an image slot. `pitch` is the row length, the `step` a message carries.
 typedef struct flux_image_layout {
+  uint32_t encoding;
   uint32_t planes;
   uint32_t width[2];
   uint32_t height[2];

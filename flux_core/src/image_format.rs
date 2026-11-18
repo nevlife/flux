@@ -49,6 +49,7 @@ pub struct ImageFormat {
 /// Where each plane of a frame starts in its slot and how long its rows are.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ImageLayout {
+    pub encoding: ImageEncoding,
     pub planes: u32,
     pub width: [u32; 2],
     pub height: [u32; 2],
@@ -89,6 +90,7 @@ impl ImageFormat {
         };
         #[allow(clippy::cast_possible_truncation, reason = "one or two planes")]
         let mut l = ImageLayout {
+            encoding: self.encoding,
             planes: planes.len() as u32,
             ..ImageLayout::default()
         };
