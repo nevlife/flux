@@ -243,9 +243,12 @@ fn commit_and_take_carry_the_frames_stamp() {
     ));
     let mut p = Channel::with_shared(Arc::clone(&sh), MemoryPolicy::default());
     let mut s = Channel::with_shared(sh, MemoryPolicy::default());
-    let stamp = 0x1122_3344_5566_7788u64;
+    // A header stamp at byte 4 of the frame: sec, then nanosec. The trace carries it in ns.
+    let (sec, nanosec) = (1_700_000_000i32, 123_456_789u32);
+    let stamp = 1_700_000_000_123_456_789u64;
     let mut frame = [0u8; 12];
-    frame[4..].copy_from_slice(&stamp.to_le_bytes());
+    frame[4..8].copy_from_slice(&sec.to_le_bytes());
+    frame[8..].copy_from_slice(&nanosec.to_le_bytes());
     crate::trace::drain();
     assert_eq!(p.publish(&frame), Published::Ok);
     drop(s.take().unwrap());

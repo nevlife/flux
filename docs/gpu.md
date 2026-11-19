@@ -131,6 +131,7 @@ read_on_device(data.data(), data.size(), frame.stream());
 - 생성 타입의 fingerprint로 스트림을 선언한 발행자는 외장 GPU에서도 슬롯이 호스트 메모리다(`device_backed()`가 `false`, loan의 `device_ptr()`이 `0`).
 - `alloc_device__<필드>(n)`은 그 필드를 발행 프로세스의 GPU arena에 할당한다. 통합 GPU에서는 CPU와 GPU가 함께 읽는 호스트 메모리, 외장 GPU에서는 GPU 메모리다. 이 필드는 채널 스트림에서 쓰고, commit이 그 스트림을 기다린다.
 - GPU arena는 프로세스에 GPU마다 하나다. 크기는 호스트 arena와 같은 `FLUX_ARENA_BYTES`(기본값이자 최대값 16 GiB)이고, 실제 GPU 메모리는 블록이 사용하는 만큼 32 MiB 단위로 차지한다. 발행 프로세스는 GPU arena를 1 GiB 사용할 때마다 fd를 32개 사용한다. 블록은 그 프레임의 슬롯에 다음 프레임을 쓰는 시점에 해제된다.
+- 통합 GPU에서는 32 MiB 단위의 경계를 걸친 필드에 `cudaMemset` 계열(`cuMemsetD8` 등)을 쓰면 드라이버가 `CUDA_ERROR_INVALID_VALUE`로 거절한다. 32 MiB보다 큰 필드는 반드시 경계를 걸친다. 같은 범위의 복사(`cudaMemcpy`)와 커널 쓰기는 된다. 값을 채우려면 커널이나 복사를 쓴다. 이 Orin(L4T R39.2.1, 드라이버 r595, CUDA 13.2.2)에서 확인했고, 외장 GPU의 GPU 메모리에서는 memset도 된다.
 - 받는 쪽의 `<필드>__device()`는 GPU 주소와 개수를 반환한다. 구독 스트림이 발행자와 다른 GPU(UUID)에 있으면 빈 값이다.
 - arena가 활성화된 `Builder`는 슬롯의 마지막 71 B(스트림을 선언한 발행자는 135 B)를 가변 필드에 쓰지 않는다.
 

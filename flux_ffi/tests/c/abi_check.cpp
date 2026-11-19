@@ -15,6 +15,6 @@ int main(int argc, char ** argv)
   } catch (const flux::Error & e) {
     std::fprintf(stderr, "%s\n", e.what());
     const bool named = std::string(e.what()).find("ABI version") != std::string::npos;
-    return !same && e.status() == FLUX_MISMATCH && named ? 0 : 2;
+    return !same && e.status() == flux::Status::Mismatch && named ? 0 : 2;
   }
 }

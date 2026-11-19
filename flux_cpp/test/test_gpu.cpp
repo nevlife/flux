@@ -28,6 +28,7 @@ namespace
 
 using MemsetAsync = int (*)(std::uint64_t, unsigned char, std::size_t, void *);
 using CopyDtoH = int (*)(void *, std::uint64_t, std::size_t);
+using CopyHtoDAsync = int (*)(std::uint64_t, const void *, std::size_t, void *);
 using HostFn = void (*)(void *);
 using LaunchHostFunc = int (*)(void *, HostFn, void *);
 
@@ -35,6 +36,7 @@ struct Driver
 {
   MemsetAsync memset = nullptr;
   CopyDtoH copy = nullptr;
+  CopyHtoDAsync upload = nullptr;
   LaunchHostFunc host_func = nullptr;
 };
 
@@ -49,11 +51,12 @@ auto driver() -> const Driver *
     // NOLINTBEGIN(*-reinterpret-cast): dlsym hands back an untyped address.
     out.memset = reinterpret_cast<MemsetAsync>(dlsym(lib, "cuMemsetD8Async"));
     out.copy = reinterpret_cast<CopyDtoH>(dlsym(lib, "cuMemcpyDtoH_v2"));
+    out.upload = reinterpret_cast<CopyHtoDAsync>(dlsym(lib, "cuMemcpyHtoDAsync_v2"));
     out.host_func = reinterpret_cast<LaunchHostFunc>(dlsym(lib, "cuLaunchHostFunc"));
     // NOLINTEND(*-reinterpret-cast)
     return out;
   }();
-  return d.memset != nullptr && d.copy != nullptr ? &d : nullptr;
+  return d.memset != nullptr && d.copy != nullptr && d.upload != nullptr ? &d : nullptr;
 }
 
 auto addr(const void * p) -> std::uint64_t
@@ -367,7 +370,9 @@ TEST_F(Gpu, ADeviceFieldGoesThroughTheGpuArena)
     b.set__name("frame");
     const flux::wire::DeviceSpan<std::uint8_t> d = b.alloc_device__data(bytes);
     ASSERT_EQ(d.size(), bytes);
-    ASSERT_EQ(driver()->memset(addr(d.data()), fill, bytes, w.stream()), 0);
+    // A copy, not a memset: on HOST_NUMA the driver refuses a memset across two chunks.
+    const std::vector<unsigned char> src(bytes, fill);
+    ASSERT_EQ(driver()->upload(addr(d.data()), src.data(), bytes, w.stream()), 0);
     ASSERT_EQ(b.commit__(), flux::Published::Ok);
 
     flux::Frame v = gpu.take_blocking(std::chrono::nanoseconds(1'000'000'000));

@@ -6,7 +6,9 @@
 //! sweep. Returns early without a CUDA device.
 //!
 //! `FLUX_GPU_SOAK_SECS` (default 2) sets the length. Set, it also checks that the device memory no
-//! live process accounts for is back to the start, which graphics clients move a little.
+//! live process accounts for is back to the start, which graphics clients move a little. Where
+//! nvidia-smi has no memory figures (`[N/A]` on an integrated GPU), both memory checks are skipped
+//! and the summary says so.
 
 #![allow(clippy::disallowed_types, reason = "a test")]
 
@@ -138,8 +140,8 @@ fn publish_role(signpost: &str, rng: &mut Rng, stop: &AtomicBool, cu: &Cuda) {
     }
 }
 
-/// Device memory per compute process in MiB, as the driver accounts it.
-fn vram() -> Vec<(u32, u64)> {
+/// Device memory per compute process in MiB, as the driver accounts it; None where it gives none.
+fn vram() -> Option<Vec<(u32, u64)>> {
     let out = std::process::Command::new("nvidia-smi")
         .args([
             "--query-compute-apps=pid,used_memory",
@@ -149,36 +151,39 @@ fn vram() -> Vec<(u32, u64)> {
         .unwrap();
     String::from_utf8_lossy(&out.stdout)
         .lines()
-        .filter_map(|l| {
+        .map(|l| {
             let (p, m) = l.split_once(", ")?;
             Some((p.trim().parse().ok()?, m.trim().parse().ok()?))
         })
         .collect()
 }
 
-fn vram_of(pid: u32) -> u64 {
-    vram()
-        .iter()
-        .filter(|&&(p, _)| p == pid)
-        .map(|&(_, m)| m)
-        .sum()
+fn vram_of(pid: u32) -> Option<u64> {
+    Some(
+        vram()?
+            .iter()
+            .filter(|&&(p, _)| p == pid)
+            .map(|&(_, m)| m)
+            .sum(),
+    )
 }
 
 /// Used device memory no live compute process accounts for, in MiB: what a dead process's
 /// allocation kept alive by an import would add. Graphics clients move it by a few MiB.
-fn unaccounted() -> u64 {
+fn unaccounted() -> Option<u64> {
     let out = std::process::Command::new("nvidia-smi")
         .args(["--query-gpu=memory.used", "--format=csv,noheader,nounits"])
         .output()
         .unwrap();
-    let used: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
-    used.saturating_sub(vram().iter().map(|&(_, m)| m).sum())
+    let used: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    Some(used.saturating_sub(vram()?.iter().map(|&(_, m)| m).sum()))
 }
 
 fn subscribe_role(signpost: &str, rng: &mut Rng, stop: &AtomicBool, cu: &Cuda, keeper: bool) {
     let stream = Stream::create().unwrap();
     let before = vram_of(std::process::id());
     let (mut takes, mut most) = (0u64, before);
+    let mib = |m: Option<u64>| m.map_or_else(|| "-".to_owned(), |m| m.to_string());
     while !stop.load(Ordering::Relaxed) {
         let mut ch = match Channel::open_on(
             signpost,
@@ -216,12 +221,17 @@ fn subscribe_role(signpost: &str, rng: &mut Rng, stop: &AtomicBool, cu: &Cuda, k
         }
     }
     let after = vram_of(std::process::id());
-    if keeper && after > before {
-        violation(&format!(
-            "device memory {before} MiB before, {after} MiB after"
-        ));
+    if let (true, Some(b), Some(a)) = (keeper, before, after)
+        && a > b
+    {
+        violation(&format!("device memory {b} MiB before, {a} MiB after"));
     }
-    reply(&format!("{takes} {before} {most} {after}"));
+    reply(&format!(
+        "{takes} {} {} {}",
+        mib(before),
+        mib(most),
+        mib(after)
+    ));
 }
 
 /// Runs only as a child of `killed_gpu_peers_leave_frames_whole_and_memory_returned`.
@@ -340,21 +350,25 @@ fn killed_gpu_peers_leave_frames_whole_and_memory_returned() {
         .collect();
     let until = Instant::now() + Duration::from_secs(5);
     let mut used_after = unaccounted();
-    while used_after > used_before + 32 && Instant::now() < until {
+    while let (Some(b), Some(a)) = (used_before, used_after)
+        && a > b + 32
+        && Instant::now() < until
+    {
         std::thread::sleep(Duration::from_millis(100));
         used_after = unaccounted();
     }
+    let memory = match (used_before, used_after) {
+        (Some(b), Some(a)) => format!("unaccounted {b} MiB before, {a} MiB after"),
+        _ => "memory not checked: nvidia-smi gives no memory figures here".to_owned(),
+    };
     eprintln!(
         "{secs} s: {kills} kills, {} endpoints; keeper takes, MiB before, most, after: {keeper}; \
-         unaccounted {used_before} MiB before, {used_after} MiB after",
+         {memory}",
         soak.endpoints.len()
     );
     assert!(soak.violations.is_empty(), "{:?}", soak.violations);
     assert!(left.is_empty(), "endpoints left behind: {left:?}");
-    if long.is_some() {
-        assert!(
-            used_after <= used_before + 32,
-            "unaccounted device memory {used_before} -> {used_after} MiB"
-        );
+    if let (true, Some(b), Some(a)) = (long.is_some(), used_before, used_after) {
+        assert!(a <= b + 32, "unaccounted device memory {b} -> {a} MiB");
     }
 }
