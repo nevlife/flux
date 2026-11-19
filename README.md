@@ -75,9 +75,11 @@ ex.spin()
 | `flux_msgs` | bag에 프레임을 담는 `FluxFrame` 메시지 |
 | `flux_cli` | `flux` 명령 |
 | `flux_components` | 컴포넌트 컨테이너. 로드한 노드의 콜백 그룹마다 스레드 하나를 생성하고, 컴포넌트의 flux 구독도 실행한다 |
+| `flux_heaphook` | `LD_PRELOAD` 라이브러리. scope 안의 `malloc`을 발행 프로세스의 arena로 보낸다([messages.md](docs/messages.md)) |
 | `ros2/flux_bridge` | flux 채널을 DDS 토픽으로 다시 발행한다. `ros2 topic echo_flux`, `hz_flux` |
 | `ros2/flux_bag` | rosbag2 녹화, 재생. `ros2 bag record_flux`, `play_flux`, `convert_flux` |
 | `ros2/flux_tools` | rviz2 디스플레이(Image, PointCloud2, DepthCloud) |
+| `ros2/flux_wrapper` | flux 없이도 빌드되는 드라이버용 발행, 구독 API. `ENABLE_FLUX=1`이면 flux로 보낸다([ros2_tools.md](docs/ros2_tools.md)) |
 
 ## 문서
 
