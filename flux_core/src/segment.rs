@@ -19,7 +19,7 @@ use std::alloc::{self, Layout};
 use std::os::fd::RawFd;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, OnceLock};
 
 use crate::discovery::SignpostMap;
 use crate::error::{Error, Result};
@@ -29,7 +29,7 @@ use crate::layout::{
     MAX_SUBSCRIBERS, PAYLOAD_ALIGN, SegmentLayout, SlotHeader, StorageKind, layout_config_ok,
 };
 use crate::qos::MemoryPolicy;
-use crate::sys::{self, LiveFd};
+use crate::sys::{self, LiveFd, PiMutex};
 
 /// (dev, ino) of a shm object. Unlink and recreate binds a name to another object.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -151,10 +151,10 @@ pub struct Segment {
     pages_locked: AtomicBool,
     committed_to: AtomicUsize,
     locked_to: AtomicUsize,
-    cover: Mutex<()>,
+    cover: PiMutex<()>,
     /// What makes the payload device-addressable, made once for every channel on this mapping.
     device: OnceLock<DevicePayload>,
-    device_init: Mutex<()>,
+    device_init: PiMutex<()>,
     /// An image segment's slot memory: the publisher's export, or this mapping's import of it.
     image: OnceLock<ImagePayload>,
 }
@@ -275,9 +275,9 @@ impl Segment {
             pages_locked: AtomicBool::new(false),
             committed_to: AtomicUsize::new(0),
             locked_to: AtomicUsize::new(0),
-            cover: Mutex::new(()),
+            cover: PiMutex::new(()),
             device: OnceLock::new(),
-            device_init: Mutex::new(()),
+            device_init: PiMutex::new(()),
             image: OnceLock::new(),
         }
     }
@@ -448,10 +448,7 @@ impl Segment {
         if let Some(d) = self.device.get() {
             return Ok(d);
         }
-        let _g = self
-            .device_init
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let _g = self.device_init.lock();
         if let Some(d) = self.device.get() {
             return Ok(d);
         }
@@ -500,9 +497,9 @@ impl Segment {
             pages_locked: AtomicBool::new(false),
             committed_to: AtomicUsize::new(0),
             locked_to: AtomicUsize::new(0),
-            cover: Mutex::new(()),
+            cover: PiMutex::new(()),
             device: OnceLock::new(),
-            device_init: Mutex::new(()),
+            device_init: PiMutex::new(()),
             image: OnceLock::new(),
         }
     }
@@ -665,7 +662,7 @@ impl Segment {
     /// Commits or locks, as `mem` asks, the mapping up to slot `slots`'s payload, from where an
     /// earlier call stopped. A lock commits too.
     fn cover_to(&self, slots: u32, mem: MemoryPolicy) -> Result<()> {
-        let _g = self.cover.lock().unwrap_or_else(PoisonError::into_inner);
+        let _g = self.cover.lock();
         let to = self.cover_end(slots);
         if mem.lock {
             let from = self.locked_to.load(Ordering::Relaxed);

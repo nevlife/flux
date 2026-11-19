@@ -227,7 +227,7 @@ pub(crate) struct ImageImport {
     base: usize,
     stride: usize,
     mapped: AtomicU32,
-    fds: Mutex<Vec<OwnedFd>>,
+    fds: PiMutex<Vec<OwnedFd>>,
 }
 
 impl ImageImport {
@@ -237,13 +237,13 @@ impl ImageImport {
             base: base as usize,
             stride,
             mapped: AtomicU32::new(0),
-            fds: Mutex::new(Vec::new()),
+            fds: PiMutex::new(Vec::new()),
         }
     }
 
     /// Slot `slot`'s dmabuf once it is mapped, held for as long as the import.
     pub(crate) fn fd(&self, slot: u32) -> Option<c_int> {
-        let fds = self.fds.lock().unwrap_or_else(PoisonError::into_inner);
+        let fds = self.fds.lock();
         fds.get(slot as usize).map(AsRawFd::as_raw_fd)
     }
 
@@ -259,7 +259,7 @@ impl ImageImport {
             return Ok(());
         }
         let got = mail.collect(have, slot + 1)?;
-        let mut fds = self.fds.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut fds = self.fds.lock();
         let mut n = have;
         for fd in got {
             overlay(

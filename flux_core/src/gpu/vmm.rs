@@ -5,8 +5,8 @@
 
 use std::ffi::{c_int, c_void};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use super::driver::{
     AllocFlags, AllocHandle, Core, DevicePtr, Driver, MEM_ACCESS_READ, MEM_ACCESS_READ_WRITE,
@@ -118,7 +118,7 @@ struct Range {
     device: c_int,
     ctx: usize,
     born: u32,
-    handles: Mutex<Vec<AllocHandle>>,
+    handles: PiMutex<Vec<AllocHandle>>,
     backed: AtomicUsize,
 }
 
@@ -152,7 +152,7 @@ impl Range {
             device,
             ctx: ctx as usize,
             born: sys::fork_gen(),
-            handles: Mutex::new(Vec::new()),
+            handles: PiMutex::new(Vec::new()),
             backed: AtomicUsize::new(0),
         })
     }
@@ -181,7 +181,7 @@ impl Range {
             )));
         }
         let (core, vmm) = vmm()?;
-        let mut handles = self.handles.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut handles = self.handles.lock();
         let want = bytes.div_ceil(self.chunk);
         let r = core.with_context(self.ctx as *mut c_void, || {
             while handles.len() < want {
@@ -232,11 +232,7 @@ impl Drop for Range {
         let Ok((core, vmm)) = vmm() else {
             return;
         };
-        let handles = std::mem::take(
-            self.handles
-                .get_mut()
-                .unwrap_or_else(PoisonError::into_inner),
-        );
+        let handles = std::mem::take(self.handles.get_mut());
         core.with_context(self.ctx as *mut c_void, || {
             for (i, h) in handles.into_iter().enumerate() {
                 let at = self.base + (i * self.chunk) as u64;

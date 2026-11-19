@@ -827,7 +827,7 @@ pub(crate) fn registers_read_only(device: i32) -> bool {
 /// registered a piece at a time as slots are reached (`back`), so slots a publisher never adds
 /// cost nothing.
 pub(crate) struct HostBuffer {
-    regs: Mutex<Vec<HostRegistration>>,
+    regs: PiMutex<Vec<HostRegistration>>,
     registered: AtomicUsize,
     device: i32,
     base: usize,
@@ -859,7 +859,7 @@ impl HostBuffer {
             ));
         }
         let b = HostBuffer {
-            regs: Mutex::new(Vec::new()),
+            regs: PiMutex::new(Vec::new()),
             registered: AtomicUsize::new(0),
             device,
             base: p as usize,
@@ -879,7 +879,7 @@ impl HostBuffer {
         if bytes <= self.registered.load(Ordering::Acquire) {
             return Ok(());
         }
-        let mut regs = self.regs.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut regs = self.regs.lock();
         let from = self.registered.load(Ordering::Relaxed);
         if bytes <= from {
             return Ok(());
@@ -894,10 +894,7 @@ impl HostBuffer {
 
 impl Drop for HostBuffer {
     fn drop(&mut self) {
-        self.regs
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clear();
+        self.regs.get_mut().clear();
         // SAFETY: mapped in new() at this size, unregistered just above.
         unsafe { libc::munmap(self.base as *mut c_void, self.bytes) };
     }
@@ -911,7 +908,7 @@ pub(crate) struct SlotRegistrations {
     read_only: bool,
     device: i32,
     slots: Box<[OnceLock<HostRegistration>]>,
-    making: Mutex<()>,
+    making: PiMutex<()>,
 }
 
 impl SlotRegistrations {
@@ -930,7 +927,7 @@ impl SlotRegistrations {
             read_only,
             device,
             slots: (0..count).map(|_| OnceLock::new()).collect(),
-            making: Mutex::new(()),
+            making: PiMutex::new(()),
         };
         for s in 0..ready.min(count) {
             r.slot(s)?;
@@ -947,7 +944,7 @@ impl SlotRegistrations {
         if let Some(r) = cell.get() {
             return Ok(r);
         }
-        let _g = self.making.lock().unwrap_or_else(PoisonError::into_inner);
+        let _g = self.making.lock();
         if let Some(r) = cell.get() {
             return Ok(r);
         }

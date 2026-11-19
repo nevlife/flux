@@ -537,6 +537,11 @@ impl<T> PiMutex<T> {
         PiGuard(self, std::marker::PhantomData)
     }
 
+    /// The data, without locking: `&mut self` means no one else holds it.
+    pub(crate) fn get_mut(&mut self) -> &mut T {
+        self.data.get_mut()
+    }
+
     fn lock_raw(&self) {
         if self
             .word
