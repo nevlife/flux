@@ -86,6 +86,7 @@ public:
   {
     st_->entries.push_back(std::make_unique<Entry>(Entry{&src, st_.get()}));
     const flux_source s{
+      sizeof(flux_source),
       st_->entries.back().get(),
       &call<&Source::attach>,
       &call<&Source::deliver_one>,
@@ -93,7 +94,7 @@ public:
       nullptr,
       &watch_cb,
       src.endpoint()};
-    check(flux_executor_add(ex_, s, priority));
+    check(flux_executor_add(ex_, &s, priority));
   }
   [[nodiscard]] auto size() const noexcept -> std::size_t { return flux_executor_size(ex_); }
 

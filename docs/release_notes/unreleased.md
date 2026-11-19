@@ -37,7 +37,7 @@
 * `flux_tools`의 rviz2 PointCloud2 디스플레이가 점을 arena에 저장한 프레임을 표시한다
 * `flux_bridge`와 ROS 2 mirror가 필드를 arena(GPU arena 포함)에 저장한 프레임을 중계한다. view를 보유한 동안 arena의 필드까지 사본에 복사한 뒤 CDR로 바꾼다
 * `data`를 payload로, `data`를 비운 프레임을 aux로 보내는 GPU 메모리 채널(`flux::gpu_fingerprint`)을 `flux_bridge`, ROS 2 mirror, `convert_flux`, rviz2 디스플레이가 그 메시지 타입으로 읽는다. `flux_wrapper`의 `Cuda` 발행자가 이 형식으로 바뀌어 필드의 상한(`frame_id` 256 B 등)이 aux 4096 B 하나가 되었고, `mirror_to_ros`가 동작한다
-* loan에 호스트 메모리를 복사하고 프레임을 호스트 메모리로 복사한다(C `flux_loan_copy_from`, `flux_view_copy_to`, C++ `WriteSlot::copy_from`, `FrameView::copy_to`, Python `Loan.copy_from`, `Frame.copy_to_host`). GPU 메모리 슬롯이면 채널 스트림에서 복사한다. Python `flux_wrapper`의 `device="cuda"` 발행자가 `publish(msg)`로 보내고, GPU 메모리 프레임의 `to_msg()`가 동작한다. 전에는 각각 외장 GPU에서 `False`, `RuntimeError`였다
+* loan에 호스트 메모리를 복사하고 프레임을 호스트 메모리로 복사한다(C `flux_loan_copy_from`, `flux_frame_copy_to`, C++ `WriteSlot::copy_from`, `FrameView::copy_to`, Python `Loan.copy_from`, `Frame.copy_to_host`). GPU 메모리 슬롯이면 채널 스트림에서 복사한다. Python `flux_wrapper`의 `device="cuda"` 발행자가 `publish(msg)`로 보내고, GPU 메모리 프레임의 `to_msg()`가 동작한다. 전에는 각각 외장 GPU에서 `False`, `RuntimeError`였다
 * C++ `PublisherOptions`, `SubscriptionOptions`와 `flux::create_publisher`, `flux::create_subscription`. 옵션은 rclcpp처럼 구조체 필드로 채운다. 인자 순서는 rclcpp를 따르고 flux에만 있는 `fingerprint`는 맨 뒤에 둔다.
 * Python `flux.create_publisher`, `flux.create_subscription`. 인자 순서는 C++ `flux::create_publisher`, `flux::create_subscription`과 같다.
 * Python `flux_wrapper.create_publisher(node, msg_type, topic, qos, **options)`, `flux_wrapper.create_subscription(node, msg_type, topic, qos, callback, **options)`. 인자 순서는 C++ `flux_wrapper::create_publisher`, `flux_wrapper::create_subscription`과 같다.
@@ -107,17 +107,31 @@
     사용자가 고쳐야 하는 것마다 번호를 매기고, 고치기 전과 후를 코드로 보인다.
 -->
 
-1. 공유 메모리 배치 버전이 6에서 10으로, C ABI 버전이 3에서 5로 올랐다. 슬롯에 aux 영역이 생겼고, arena를 가리키는 위치의 단위가 16 B가 되었고, 헤더에 메모리가 있는 슬롯 수, 구독자 depth의 최대값, 이미지 슬롯의 형식이 생겼기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
-2. C `flux_channel_create`에 `max_subscribers` 다음 인자로 `aux_size`가 생겼다. aux가 필요 없으면 0을 준다. `flux_frame_meta.reserved0[2]`는 `uint16_t aux_len`이 되었다.
+1. 공유 메모리 배치 버전이 6에서 10으로, C ABI 버전이 3에서 6으로 올랐다. 슬롯에 aux 영역이 생겼고, arena를 가리키는 위치의 단위가 16 B가 되었고, 헤더에 메모리가 있는 슬롯 수, 구독자 depth의 최대값, 이미지 슬롯의 형식이 생겼기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
+2. C ABI가 바뀌었다. `flux_frame_meta.reserved0[2]`는 `uint16_t aux_len`이 되었다.
+   * `flux_channel_create`는 설정을 `flux_publisher_config`로 받는다. 위치 인자 판과 `_create_config`는 없어졌다. 메모리 정책은 `flux_memory_policy` 대신 `FLUX_MEMORY_*` 정수다. 생성자와 `flux_channel_open`, `_open_watched`의 `stamp_offset` 인자는 없어졌다. 라이브러리가 생성 타입이 등록한 값을 fingerprint로 찾는다.
+   * `flux_publisher_config`과 `flux_source`의 첫 필드는 `size`다. `flux_publisher_config_default()`로 채우거나 `size = sizeof(...)`로 둔다. `flux_executor_add`는 `flux_source`를 포인터로 받는다.
+   * `flux_channel_loan`과 `_loan_typed`는 `bool` 대신 `flux_published`를, `flux_channel_take`와 `_take_blocking`은 `flux_status`(`FLUX_OK`, `FLUX_NO_FRAME`, `FLUX_IN_USE`)를 돌려준다.
+   * `flux_published`의 번호가 바뀌었다. `flux_status`와 같은 뜻의 값(`INVALID_ARGUMENT` 1, `IN_USE` 9)은 그 번호를, 나머지는 16부터다. 이름으로 쓰는 코드는 고칠 것이 없다. `flux_status`에 `FLUX_BUFFER_TOO_SMALL`과 `FLUX_NO_FRAME`이 생겼고, 출력 버퍼가 작을 때 `FLUX_INVALID_ARGUMENT` 대신 `FLUX_BUFFER_TOO_SMALL`이다. `flux_schemas_load`는 읽지 못한 디렉터리에 `FLUX_IO`다.
+   * 이름: `flux_view`는 `flux_frame`(`flux_view_*`는 `flux_frame_*`, `flux_view_meta`는 `flux_frame_get_meta`), heap은 arena(`flux_heap`은 `flux_arena`, `flux_loan_heap`은 `flux_loan_arena`, `flux_heap_alloc*`·`_adopt`는 `flux_arena_alloc*`·`_adopt`, `flux_gpu_heap`은 `flux_gpu_arena`, `FLUX_HEAP_BASE`, `FLUX_GPU_HEAP_BASE`, `FLUX_GPU_HEAP_POS`는 `FLUX_ARENA_BASE`, `FLUX_GPU_ARENA_BASE`, `FLUX_GPU_ARENA_POS`)가 되었다.
+   * frame과 loan 저장소가 128 B에서 256 B가 되었다. `flux_image_layout`의 평면 배열은 4칸이다.
+   * 지운 함수: `flux_partitioned_*`, `flux_channel_wait`, `_wake_seq`, `_cursor`, `_misreleased`, `_stream`, `flux_gpu_current_device`.
 
    ```c
    // 전
+   flux_memory_policy mem = {false, false};
    flux_channel_create(name, slot_size, slot_count, max_subscribers, fingerprint, mem, stream,
                        stamp_offset, &ch);
+   if (flux_channel_take(ch, &v)) { ... }
    // 후
-   flux_channel_create(name, slot_size, slot_count, max_subscribers, 0, fingerprint, mem, stream,
-                       stamp_offset, &ch);
+   flux_publisher_config c = flux_publisher_config_default();
+   c.slot_size = slot_size;
+   c.slot_count = slot_count;
+   flux_channel_create(name, &c, fingerprint, FLUX_MEMORY_DEFAULT, stream, &ch);
+   if (flux_channel_take(ch, &v) == FLUX_OK) { ... }
    ```
+
+   C++의 `flux::MemoryPolicy`는 `enum class`(`Default`, `Precommit`, `Lock`)이고, Python은 `memory="default"|"precommit"|"lock"`이다. `flux.MemoryPolicy`는 없어졌다.
 
 3. C++ `flux::Subscription::Callback`이 `std::function<void(FrameView &&)>`가 되었다. `const flux::FrameView &`로 받는 콜백은 그대로 동작한다. const 없는 `flux::FrameView &`로 받는 콜백은 고친다. `libflux_cpp`에 링크한 바이너리는 다시 빌드한다.
 

@@ -12,7 +12,6 @@ pub mod gpu;
 mod image_format;
 mod layout;
 mod manifest;
-mod partitioned;
 mod qos;
 mod reader;
 mod segment;
@@ -38,7 +37,6 @@ pub use manifest::{
     Announcement, ChannelStats, Endpoint, ManifestEntry, Topic, enumerate_topics,
     read_channel_stats,
 };
-pub use partitioned::PartitionedExecutor;
 pub use qos::{Durability, MemoryPolicy, QoS};
 pub use segment::Mapped;
 pub use sizing::{

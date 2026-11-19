@@ -10,41 +10,41 @@ static void heap_views_and_loans(void)
   CHECK(flux_channel_new(64, 4, &ch) == FLUX_OK);
   CHECK(flux_channel_publish(ch, (const uint8_t *)"abc", 3) == FLUX_PUBLISHED_OK);
 
-  flux_view v = {0};
-  CHECK(flux_channel_take(ch, &v));
+  flux_frame v = {0};
+  CHECK(flux_channel_take(ch, &v) == FLUX_OK);
   size_t len = 0;
-  const uint8_t * data = flux_view_data(&v, &len);
+  const uint8_t * data = flux_frame_data(&v, &len);
   CHECK(len == 3 && memcmp(data, "abc", 3) == 0);
-  CHECK(flux_view_meta(&v)->dtype == FLUX_DTYPE_U8 && flux_view_meta(&v)->nbytes == 3);
-  CHECK(flux_view_ticket(&v) == 1);
-  flux_view_release(&v);
-  CHECK(!flux_view_valid(&v) && flux_view_data(&v, &len) == NULL);
+  CHECK(flux_frame_get_meta(&v)->dtype == FLUX_DTYPE_U8 && flux_frame_get_meta(&v)->nbytes == 3);
+  CHECK(flux_frame_ticket(&v) == 1);
+  flux_frame_release(&v);
+  CHECK(!flux_frame_valid(&v) && flux_frame_data(&v, &len) == NULL);
 
   flux_loan l = {0};
   const uint64_t dims[2] = {2, 3};
-  CHECK(flux_channel_loan_typed(ch, FLUX_DTYPE_U16, dims, 2, &l));
+  CHECK(flux_channel_loan_typed(ch, FLUX_DTYPE_U16, dims, 2, &l) == FLUX_PUBLISHED_OK);
   size_t cap = 0;
   uint8_t * p = flux_loan_data(&l, &cap);
   CHECK(cap == 64);
   memset(p, 9, 12);
   CHECK(flux_loan_commit(&l) == FLUX_PUBLISHED_OK);
   CHECK(!flux_loan_valid(&l));
-  CHECK(flux_channel_take(ch, &v));
-  const flux_frame_meta * m = flux_view_meta(&v);
+  CHECK(flux_channel_take(ch, &v) == FLUX_OK);
+  const flux_frame_meta * m = flux_frame_get_meta(&v);
   CHECK(m->dtype == FLUX_DTYPE_U16 && m->ndim == 2 && m->nbytes == 12 && m->shape[1] == 3);
 
-  CHECK(flux_channel_loan(ch, &l));
+  CHECK(flux_channel_loan(ch, &l) == FLUX_PUBLISHED_OK);
   memset(flux_loan_data(&l, &cap), 7, 5);
   CHECK(flux_loan_commit_len(&l, 5) == FLUX_PUBLISHED_OK);
   CHECK(flux_loan_commit(&l) == FLUX_PUBLISHED_INVALID_ARGUMENT);
 
-  CHECK(!flux_channel_loan_typed(ch, 200, dims, 2, &l));
+  CHECK(flux_channel_loan_typed(ch, 200, dims, 2, &l) == FLUX_PUBLISHED_INVALID_ARGUMENT);
   CHECK(flux_channel_publish_typed(ch, p, 1, 200, dims, 1) == FLUX_PUBLISHED_INVALID_ARGUMENT);
 
   // A view keeps its mapping alive past the channel handle.
   flux_channel_free(ch);
-  CHECK(flux_view_data(&v, &len)[0] == 9);
-  flux_view_release(&v);
+  CHECK(flux_frame_data(&v, &len)[0] == 9);
+  flux_frame_release(&v);
   flux_channel_free(NULL);
 }
 
@@ -64,7 +64,7 @@ static void failures_say_why(void)
 
   char small[4];
   size_t len = 0;
-  CHECK(flux_signpost_name("/k", 0, small, sizeof small, &len) == FLUX_INVALID_ARGUMENT);
+  CHECK(flux_signpost_name("/k", 0, small, sizeof small, &len) == FLUX_BUFFER_TOO_SMALL);
   CHECK(len > sizeof small);
 }
 
@@ -72,17 +72,12 @@ static void shm_publisher_and_subscriber(void)
 {
   char name[256];
   test_signpost("shm", name, sizeof name);
-  flux_memory_policy mem = {false, false};
+  const int32_t mem = FLUX_MEMORY_DEFAULT;
   flux_channel *p = NULL, *p2 = NULL, *s = NULL;
-  CHECK(flux_channel_open(name, 0, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_NOT_READY);
-  CHECK(
-    flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
-  CHECK(
-    flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, mem, NULL, FLUX_NO_STAMP, &p2) ==
-    FLUX_PUBLISHER_EXISTS);
-  CHECK(flux_channel_open(name, 0, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_OK);
+  CHECK(flux_channel_open(name, 0, mem, NULL, &s) == FLUX_NOT_READY);
+  CHECK(test_create(name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, &p) == FLUX_OK);
+  CHECK(test_create(name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, &p2) == FLUX_PUBLISHER_EXISTS);
+  CHECK(flux_channel_open(name, 0, mem, NULL, &s) == FLUX_OK);
   CHECK(flux_channel_payload_readonly(s));
   // A bound on fences without a declared stream: nothing to wait for, nothing fails.
   flux_channel_set_fence_timeout(p, 1000000);
@@ -91,10 +86,10 @@ static void shm_publisher_and_subscriber(void)
   CHECK(flux_channel_set_release_mode(s, FLUX_RELEASE_DEFERRED) == FLUX_OK);
   CHECK(flux_channel_set_release_mode(s, 7) == FLUX_INVALID_ARGUMENT);
   CHECK(flux_channel_publish(p, (const uint8_t *)"hi", 2) == FLUX_PUBLISHED_OK);
-  flux_view v = {0};
-  CHECK(flux_channel_take_blocking(s, 1000000000, &v));
-  CHECK(flux_view_publish_ns(&v) > 0);
-  flux_view_release(&v);
+  flux_frame v = {0};
+  CHECK(flux_channel_take_blocking(s, 1000000000, &v) == FLUX_OK);
+  CHECK(flux_frame_publish_ns(&v) > 0);
+  flux_frame_release(&v);
   CHECK(flux_channel_fence_failed(p) == 0 && flux_channel_fence_failed(s) == 0);
 
   flux_channel_stats st;
@@ -110,22 +105,19 @@ static void a_loan_carries_aux_bytes(void)
 {
   char name[256];
   test_signpost("aux", name, sizeof name);
-  flux_memory_policy mem = {false, false};
+  const int32_t mem = FLUX_MEMORY_DEFAULT;
   flux_channel *p = NULL, *s = NULL;
   CHECK(
-    flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, FLUX_MAX_AUX_SIZE + 1, 0, mem, NULL, FLUX_NO_STAMP,
-      &p) == FLUX_INVALID_ARGUMENT);
-  CHECK(
-    flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 40, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
-  CHECK(flux_channel_open(name, 0, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_OK);
+    test_create(name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, FLUX_MAX_AUX_SIZE + 1, 0, &p) ==
+    FLUX_INVALID_ARGUMENT);
+  CHECK(test_create(name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 40, 0, &p) == FLUX_OK);
+  CHECK(flux_channel_open(name, 0, mem, NULL, &s) == FLUX_OK);
   CHECK(flux_channel_aux_size(p) == 40 && flux_channel_aux_size(s) == 40);
 
   flux_loan l = {0};
   size_t cap = 0;
   CHECK(flux_loan_aux(&l, &cap) == NULL);
-  CHECK(flux_channel_loan(p, &l));
+  CHECK(flux_channel_loan(p, &l) == FLUX_PUBLISHED_OK);
   uint8_t * aux = flux_loan_aux(&l, &cap);
   CHECK(aux != NULL && cap == 40);
   memcpy(aux, "header", 6);
@@ -134,24 +126,24 @@ static void a_loan_carries_aux_bytes(void)
   memcpy(flux_loan_data(&l, &cap), "px", 2);
   CHECK(flux_loan_commit_len(&l, 2) == FLUX_PUBLISHED_OK);
 
-  flux_view v = {0};
+  flux_frame v = {0};
   size_t len = 0;
-  CHECK(flux_view_aux(&v, &len) == NULL);
-  CHECK(flux_channel_take(s, &v));
-  const uint8_t * got = flux_view_aux(&v, &len);
+  CHECK(flux_frame_aux(&v, &len) == NULL);
+  CHECK(flux_channel_take(s, &v) == FLUX_OK);
+  const uint8_t * got = flux_frame_aux(&v, &len);
   CHECK(len == 6 && memcmp(got, "header", 6) == 0);
-  CHECK(flux_view_meta(&v)->aux_len == 6);
-  CHECK(memcmp(flux_view_data(&v, &len), "px", 2) == 0 && len == 2);
-  flux_view_release(&v);
+  CHECK(flux_frame_get_meta(&v)->aux_len == 6);
+  CHECK(memcmp(flux_frame_data(&v, &len), "px", 2) == 0 && len == 2);
+  flux_frame_release(&v);
 
-  CHECK(flux_channel_loan(p, &l));
+  CHECK(flux_channel_loan(p, &l) == FLUX_PUBLISHED_OK);
   flux_loan_set_aux_len(&l, 41);
   CHECK(flux_loan_commit(&l) == FLUX_PUBLISHED_TOO_LARGE);
   CHECK(flux_channel_publish(p, (const uint8_t *)"q", 1) == FLUX_PUBLISHED_OK);
-  CHECK(flux_channel_take(s, &v));
-  flux_view_aux(&v, &len);
+  CHECK(flux_channel_take(s, &v) == FLUX_OK);
+  flux_frame_aux(&v, &len);
   CHECK(len == 0);
-  flux_view_release(&v);
+  flux_frame_release(&v);
   flux_channel_free(s);
   flux_channel_free(p);
   shm_unlink(name);
@@ -185,24 +177,22 @@ static void take_blocking_wakes_on_the_publish(void)
 {
   char name[256];
   test_signpost("wake", name, sizeof name);
-  flux_memory_policy mem = {false, false};
+  const int32_t mem = FLUX_MEMORY_DEFAULT;
   flux_channel *p = NULL, *s = NULL;
-  CHECK(
-    flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
-  CHECK(flux_channel_open(name, 0, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_OK);
+  CHECK(test_create(name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, &p) == FLUX_OK);
+  CHECK(flux_channel_open(name, 0, mem, NULL, &s) == FLUX_OK);
   enum { kRounds = 9 };
   uint64_t lat[kRounds];
   for (int i = 0; i < kRounds; ++i) {
     late_publish lp = {p, 0};
     pthread_t t;
     CHECK(pthread_create(&t, NULL, publish_late, &lp) == 0);
-    flux_view v = {0};
-    CHECK(flux_channel_take_blocking(s, 2000000000, &v));
+    flux_frame v = {0};
+    CHECK(flux_channel_take_blocking(s, 2000000000, &v) == FLUX_OK);
     const uint64_t got = now_ns();
     CHECK(pthread_join(t, NULL) == 0);
     lat[i] = got - lp.sent_ns;
-    flux_view_release(&v);
+    flux_frame_release(&v);
   }
   for (int i = 1; i < kRounds; ++i) {
     for (int j = i; j > 0 && lat[j - 1] > lat[j]; --j) {
@@ -248,8 +238,8 @@ static void a_failure_during_thread_exit_returns_its_status(void)
 
 static void * take_until_timeout(void * ch)
 {
-  flux_view v = {0};
-  CHECK(!flux_channel_take_blocking(ch, 300000000, &v));
+  flux_frame v = {0};
+  CHECK(flux_channel_take_blocking(ch, 300000000, &v) == FLUX_NO_FRAME);
   return NULL;
 }
 
@@ -263,10 +253,10 @@ static void a_second_thread_is_refused(void)
   const struct timespec nap = {0, 100000000};
   nanosleep(&nap, NULL);
   CHECK(flux_channel_publish(ch, (const uint8_t *)"a", 1) == FLUX_PUBLISHED_IN_USE);
-  flux_view v = {0};
-  CHECK(!flux_channel_take(ch, &v));
+  flux_frame v = {0};
+  CHECK(flux_channel_take(ch, &v) == FLUX_IN_USE);
   flux_loan l = {0};
-  CHECK(!flux_channel_loan(ch, &l));
+  CHECK(flux_channel_loan(ch, &l) == FLUX_PUBLISHED_IN_USE);
   CHECK(flux_channel_set_qos(ch, (flux_qos){1, 0, 2}) == FLUX_IN_USE);
   CHECK(pthread_join(t, NULL) == 0);
   CHECK(flux_channel_publish(ch, (const uint8_t *)"a", 1) == FLUX_PUBLISHED_OK);
@@ -284,19 +274,77 @@ static void a_watch_sees_the_publisher_come_up(void)
   CHECK(flux_watch_arm(w) == 0 && flux_watch_epoch(w) == 0);
   CHECK(!flux_watch_wait(w, 1000000));
   const flux_qos q = {1, 0, 2};
-  const flux_memory_policy mem = {0};
+  const int32_t mem = FLUX_MEMORY_DEFAULT;
   flux_channel * s = NULL;
-  CHECK(flux_channel_open_watched(w, 0, q, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_NOT_READY);
+  CHECK(flux_channel_open_watched(w, 0, q, mem, NULL, &s) == FLUX_NOT_READY);
   flux_channel * p = NULL;
-  CHECK(
-    flux_channel_create(
-      name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, mem, NULL, FLUX_NO_STAMP, &p) == FLUX_OK);
+  CHECK(test_create(name, 32, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, &p) == FLUX_OK);
   CHECK(flux_watch_wait(w, 0) && flux_watch_epoch(w) != 0);
-  CHECK(flux_channel_open_watched(w, 0, q, mem, NULL, FLUX_NO_STAMP, &s) == FLUX_OK);
+  CHECK(flux_channel_open_watched(w, 0, q, mem, NULL, &s) == FLUX_OK);
   CHECK(flux_channel_attach_status(s) == FLUX_OK);
   flux_channel_free(s);
   flux_channel_free(p);
   flux_watch_free(w);
+}
+
+// A config is read up to its size; a newer header's unknown bytes must be zero, and an unset size
+// is refused. A max_subscribers of 0 is the default.
+static void a_config_is_read_up_to_its_size(void)
+{
+  char name[256];
+  test_signpost("config_size", name, sizeof name);
+  struct
+  {
+    flux_publisher_config c;
+    uint64_t newer;
+  } big;
+  memset(&big, 0, sizeof big);
+  big.c = flux_publisher_config_default();
+  big.newer = 1;
+  big.c.size = sizeof big;
+  big.c.slot_size = 32;
+  big.c.slot_count = 2;
+  flux_channel * p = NULL;
+  CHECK(flux_channel_create(name, &big.c, 0, FLUX_MEMORY_DEFAULT, NULL, &p) == FLUX_UNSUPPORTED);
+  big.newer = 0;
+  big.c.max_subscribers = 0;
+  CHECK(flux_channel_create(name, &big.c, 0, FLUX_MEMORY_DEFAULT, NULL, &p) == FLUX_OK);
+  flux_channel_stats st;
+  CHECK(flux_read_channel_stats(name, &st) == FLUX_OK);
+  CHECK(st.live && st.max_subscribers == FLUX_DEFAULT_MAX_SUBSCRIBERS);
+  flux_channel_free(p);
+  flux_publisher_config unset = big.c;
+  unset.size = 0;
+  CHECK(
+    flux_channel_create(name, &unset, 0, FLUX_MEMORY_DEFAULT, NULL, &p) == FLUX_INVALID_ARGUMENT);
+  CHECK(flux_channel_create(name, &big.c, 0, 3, NULL, &p) == FLUX_INVALID_ARGUMENT);
+}
+
+// A loan says why there is none, and a take tells no frame from a frame.
+static void loans_and_takes_say_why(void)
+{
+  char name[256];
+  test_signpost("why", name, sizeof name);
+  flux_channel * p = NULL;
+  flux_channel * s = NULL;
+  CHECK(test_create(name, 16, 2, FLUX_DEFAULT_MAX_SUBSCRIBERS, 0, 0, &p) == FLUX_OK);
+  CHECK(flux_channel_open(name, 0, FLUX_MEMORY_DEFAULT, NULL, &s) == FLUX_OK);
+  flux_loan l = {0};
+  CHECK(flux_channel_loan(s, &l) == FLUX_PUBLISHED_NOT_PUBLISHER && !flux_loan_valid(&l));
+  flux_loan a = {0};
+  flux_loan b = {0};
+  CHECK(flux_channel_loan(p, &a) == FLUX_PUBLISHED_OK);
+  CHECK(flux_channel_loan(p, &b) == FLUX_PUBLISHED_OK);
+  CHECK(flux_channel_loan(p, &l) == FLUX_PUBLISHED_BACKPRESSURE && !flux_loan_valid(&l));
+  flux_loan_abort(&a);
+  flux_loan_abort(&b);
+  flux_frame v = {0};
+  CHECK(flux_channel_take(s, &v) == FLUX_NO_FRAME && !flux_frame_valid(&v));
+  CHECK(flux_channel_publish(p, (const uint8_t *)"x", 1) == FLUX_PUBLISHED_OK);
+  CHECK(flux_channel_take(s, &v) == FLUX_OK && flux_frame_valid(&v));
+  flux_frame_release(&v);
+  flux_channel_free(s);
+  flux_channel_free(p);
 }
 
 int main(void)
@@ -309,6 +357,8 @@ int main(void)
   take_blocking_wakes_on_the_publish();
   a_failure_during_thread_exit_returns_its_status();
   a_watch_sees_the_publisher_come_up();
+  a_config_is_read_up_to_its_size();
+  loans_and_takes_say_why();
   printf("ok\n");
   return 0;
 }

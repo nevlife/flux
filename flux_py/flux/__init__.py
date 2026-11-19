@@ -23,7 +23,7 @@ from ._flux import (
     FenceWait,
     Frame,
     Loan,
-    MemoryPolicy,
+    MemoryPolicy as _MemoryPolicy,
     Platform,
     Published,
     QoS,
@@ -47,7 +47,6 @@ __all__ = [
     "FenceWait",
     "Frame",
     "Loan",
-    "MemoryPolicy",
     "PartitionedExecutor",
     "Platform",
     "Published",
@@ -99,6 +98,15 @@ def _slot(alloc):
     if alloc in ("arena", "slot"):
         return alloc == "slot"
     raise ValueError(f"flux: alloc is 'arena' or 'slot', not {alloc!r}")
+
+
+_MEMORY = ("default", "precommit", "lock")
+
+
+def _memory(memory):
+    if memory in _MEMORY:
+        return _MemoryPolicy(_MEMORY.index(memory))
+    raise ValueError(f"flux: memory is one of {_MEMORY}, not {memory!r}")
 
 
 _IMAGE_SLOTS = ("auto", "off", "on")
@@ -205,7 +213,7 @@ class Publisher(_flux._Publisher):
         fingerprint=NO_SCHEMA,
         slot_size=DEFAULT_SLOT_SIZE,
         slot_count=DEFAULT_SLOT_COUNT,
-        memory=None,
+        memory="default",
         max_subscribers=DEFAULT_MAX_SUBSCRIBERS,
         device="cpu",
         fence_timeout=None,
@@ -247,7 +255,7 @@ class Publisher(_flux._Publisher):
             fingerprint,
             slot_size,
             slot_count,
-            memory if memory is not None else MemoryPolicy(),
+            _memory(memory),
             max_subscribers,
             _cuda(device),
             aux_size,
@@ -287,7 +295,7 @@ class Subscription(_flux._Subscription):
         *,
         fingerprint=NO_SCHEMA,
         qos=None,
-        memory=None,
+        memory="default",
         device="cpu",
         fence_timeout=None,
         release="wait",
@@ -316,7 +324,7 @@ class Subscription(_flux._Subscription):
             node.get_fully_qualified_name(),
             fingerprint,
             qos if qos is not None else QoS(),
-            memory if memory is not None else MemoryPolicy(),
+            _memory(memory),
             _cuda(device),
         )
         self._set_fence_timeout(bound)

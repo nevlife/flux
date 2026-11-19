@@ -33,7 +33,7 @@ C++와 Python API에 공통인 규칙이다. 언어별 사용법은 [cpp.md](cpp
 | `slot_size` | 0 | 슬롯 하나의 크기(bytes). 0이면 생성된 어댑터의 타입은 그 타입의 크기(고정 필드, 문자열 자리 4096 B, arena trailer를 4 KiB 단위로 올림)이고, 타입이 없는 호스트 발행자는 8 MiB다. `Alloc::Slot` 발행자와 GPU 메모리 채널은 4 MiB다. 생성된 어댑터가 아닌 프레임은 이 크기를 초과 불가능하다 |
 | `slot_count` | 0 | 링의 슬롯 수. 2 이상. 0이면 슬롯 크기로 상한을 정하고(256 MiB 안에서 최대 256개, 최소 2개), 필요한 만큼 늘린다. `Alloc::Slot` 발행자와 GPU 메모리 채널은 0이면 12개로 시작해 `max_slot_count`까지 늘린다. `max_slot_count` 없이 지정하면 그 수로 고정한다 |
 | `max_slot_size`, `max_slot_count` | 0 | `Alloc::Slot` 발행자와 GPU 메모리 채널의 슬롯 크기와 수의 최대. 0이면 16 MiB, 16개다. 넘는 설정은 생성이 실패한다. 슬롯 수는 최대까지 필요한 만큼 늘린다 |
-| `max_subscribers` | 16 | 구독 가능한 프로세스 수. 최대 4096 |
+| `max_subscribers` | 16 | 구독 가능한 프로세스 수. 0이면 16, 최대 4096 |
 | `aux_size` | 0 | 슬롯마다 있는 aux의 크기(bytes). 최대 32 KiB |
 
 - `slot_count`를 지정하면 링 전체(`slot_size` x `slot_count`)를 생성 시 `/dev/shm`에 예약한다. 0이면 슬롯 9개만 예약하고, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 예약한다. 늘린 슬롯은 줄이지 않는다. 타입이 없는 호스트 발행자의 기본값은 8 MiB 슬롯으로 72 MiB에서 시작해 최대 256 MiB다. `Alloc::Slot` 발행자와 GPU 메모리 채널은 만들 때 4 MiB 슬롯 12개(48 MiB)를 잡는다. 모든 슬롯이 쓰이고 있으면 그 loan은 실패하고, 별도 스레드가 최대 64 MiB(16개)까지 하나를 더한다. 발행 경로에서는 메모리를 잡지 않는다. `alloc_on_subscriber`를 켜면 만들 때 잡지 않고 구독자가 처음 붙은 뒤에 잡으며, 그 전의 loan은 실패한다. 구독자가 없을 수 있는 토픽이 많은 프로그램이 쓴다. 외장 GPU의 채널은 이때도 슬롯 하나로 시작한다. 공간이 모자라면 생성이 실패하거나 늘리지 않고, 쓰기 도중에는 SIGBUS가 발생하지 않는다.
@@ -62,10 +62,10 @@ arena는 발행 프로세스마다 하나 있는 공유 메모리다. 생성된 
 
 - 블록은 그 슬롯에 다음 프레임을 쓰는 시점에 해제된다. 따라서 채널 하나가 arena에 남기는 프레임은 슬롯 수만큼이다. 점유된 프레임의 블록은 반납 시까지 남는다.
 - 발행자를 지우면 점유되지 않은 블록은 즉시 해제되고, 점유된 블록은 발행 프로세스 종료 시까지 남는다.
-- 실제 메모리는 블록이 사용하는 만큼만 차지한다. 프레임 크기가 일정하면 처음 `slot_count`개 프레임에서 arena가 커지고, 그 뒤로는 블록이 재사용되어 커지지 않는다. 커지는 프레임의 commit에서는 페이지 폴트가 발생한다. `MemoryPolicy`의 `precommit`이나 `lock`을 사용하면 그 뒤로는 페이지 폴트가 발생하지 않는다.
+- 실제 메모리는 블록이 사용하는 만큼만 차지한다. 프레임 크기가 일정하면 처음 `slot_count`개 프레임에서 arena가 커지고, 그 뒤로는 블록이 재사용되어 커지지 않는다. 커지는 프레임의 commit에서는 페이지 폴트가 발생한다. 메모리 정책 `Precommit`이나 `Lock`을 사용하면 그 뒤로는 페이지 폴트가 발생하지 않는다.
 - arena가 활성화된 `Builder`는 슬롯의 마지막 71 B를 문자열에 쓰지 않는다.
 - 구독 측의 생성된 `View`는 arena를 읽기 전용으로 매핑하고, 구독과 `View`가 모두 사라지면 해제한다.
-- `MemoryPolicy`의 `precommit`과 `lock`은 arena 페이지에도 적용된다. arena는 프로세스에 하나이므로 한 발행자의 요청이 arena 전체에 적용된다.
+- 메모리 정책 `Precommit`과 `Lock`은 arena 페이지에도 적용된다. arena는 프로세스에 하나이므로 한 발행자의 요청이 arena 전체에 적용된다.
 - 원시 loan(`loan(dtype, shape)`), GPU 메모리 채널, arena를 만든 부모에게서 fork한 자식은 arena를 사용하지 않는다.
 - GPU에서 사용하는 필드는 GPU마다 하나 있는 GPU arena에 저장한다([gpu.md](gpu.md#생성-메시지의-gpu-필드)).
 
@@ -124,8 +124,8 @@ fork한 자식 프로세스에서는 상속받은 채널이 사용 불가능하�
 | 상황 | 할 일 |
 | --- | --- |
 | Docker의 `/dev/shm`은 기본 64 MiB라서 타입 없는 기본 채널(처음 72 MiB) 하나도 생성 불가능하다 | `--shm-size`를 채널들의 합보다 크게 설정하거나 `--ipc=host`를 사용한다 |
-| 오래 사용하지 않은 슬롯 페이지가 스왑 아웃되어(Jetson의 zram 등) 첫 접근이 느려진다 | `MemoryPolicy`의 `lock`으로 세그먼트를 잠근다(`RLIMIT_MEMLOCK` 필요). 또는 systemd 유닛에 `MemorySwapMax=0`을 설정한다 |
-| 첫 발행과 첫 take에서 페이지 폴트가 발생한다 | `MemoryPolicy`의 `precommit`으로 연결 시 페이지를 미리 채운다(Linux 5.14 이상) |
+| 오래 사용하지 않은 슬롯 페이지가 스왑 아웃되어(Jetson의 zram 등) 첫 접근이 느려진다 | 메모리 정책 `Lock`으로 세그먼트를 잠근다(`RLIMIT_MEMLOCK` 필요). 또는 systemd 유닛에 `MemorySwapMax=0`을 설정한다 |
+| 첫 발행과 첫 take에서 페이지 폴트가 발생한다 | 메모리 정책 `Precommit`으로 연결 시 페이지를 미리 채운다(Linux 5.14 이상) |
 
-- `MemoryPolicy`의 `precommit`과 `lock`이 요청한 대로 되지 않으면 생성이 실패한다.
+- 메모리 정책은 C++ `flux::MemoryPolicy::Precommit`·`Lock`, Python `memory="precommit"`·`"lock"`, C `FLUX_MEMORY_PRECOMMIT`·`FLUX_MEMORY_LOCK`이다. `Precommit`은 페이지를 만들 때 잡고, `Lock`은 잡은 뒤 RAM에 잠근다. 요청한 대로 되지 않으면 생성이 실패한다.
 - Docker 기본 seccomp와 `--ipc` private, host 설정에서 동작을 확인했다. 컨테이너 사이의 채널 공유는 지원하지 않는다.

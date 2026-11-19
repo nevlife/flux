@@ -458,7 +458,12 @@ impl Channel {
             name,
             slot_size,
             plan.slot_count,
-            config.max_subscribers,
+            // 0 is the default, as for the other settings.
+            if config.max_subscribers == 0 {
+                DEFAULT_MAX_SUBSCRIBERS
+            } else {
+                config.max_subscribers
+            },
             config.aux_size,
             fingerprint,
             payload,
@@ -686,6 +691,15 @@ impl Channel {
 
     /// The shape is checked at commit, the one place the caller already reads an outcome.
     pub fn loan_typed(&mut self, dt: DType, shape: &[u64]) -> Option<WriteSlot> {
+        self.try_loan_typed(dt, shape).ok()
+    }
+
+    /// As `loan_typed`, with why there is no loan: `NotPublisher`, `GpuWedged` or `Backpressure`.
+    pub fn try_loan_typed(
+        &mut self,
+        dt: DType,
+        shape: &[u64],
+    ) -> std::result::Result<WriteSlot, Published> {
         // A wedged GPU fails every commit, and each failed commit keeps its slot.
         let refused = if !self.can_publish() {
             trace::CLAIM_NOT_PUBLISHER
@@ -701,12 +715,16 @@ impl Channel {
                 refused,
                 1
             ));
-            return None;
+            return Err(if refused == trace::CLAIM_GPU_WEDGED {
+                Published::GpuWedged
+            } else {
+                Published::NotPublisher
+            });
         }
-        let slot = self.claim(1)?;
+        let slot = self.claim(1).ok_or(Published::Backpressure)?;
         self.order.loaned.push(slot);
         event!(flux_trace_loan(self.trace_handle(), slot));
-        Some(WriteSlot {
+        Ok(WriteSlot {
             sh: Arc::clone(&self.sh),
             slot,
             meta: meta_from(dt, shape),

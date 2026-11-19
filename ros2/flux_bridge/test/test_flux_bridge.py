@@ -117,7 +117,7 @@ def eventually(done, limit=10.0, each=None):
 HOLD = (
     "import sys\n"
     "from flux import _flux as f\n"
-    "s = f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), f.MemoryPolicy())\n"
+    "s = f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), f.MemoryPolicy.DEFAULT)\n"
     "print('ready', flush=True)\n"
     "sys.stdin.read()\n"
 )
@@ -338,7 +338,9 @@ def test_a_key_that_is_not_a_ros_name_is_skipped_not_fatal(node, bridge):
     key = f"/b{os.getpid()} bad \x1b[31m"
     # signpost_name refuses such a key, so the peer names the object as the flattening would.
     signpost = _flux.signpost_name(re.sub(r"[^A-Za-z0-9_/]", "/", key), image.FINGERPRINT__)
-    peer = _flux._Publisher(signpost, key, "", image.FINGERPRINT__, 4096, 4, flux.MemoryPolicy())
+    peer = _flux._Publisher(
+        signpost, key, "", image.FINGERPRINT__, 4096, 4, _flux.MemoryPolicy.DEFAULT
+    )
     assert eventually(lambda: "key is not a ROS topic name" in output(log))
     time.sleep(0.3)
     assert proc.poll() is None

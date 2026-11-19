@@ -52,7 +52,7 @@ def spin_until(ex, done, limit=3.0):
 HOLD = (
     "import sys\n"
     "from flux import _flux as f\n"
-    "s = f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), f.MemoryPolicy())\n"
+    "s = f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), f.MemoryPolicy.DEFAULT)\n"
     "print('ready', flush=True)\n"
     "sys.stdin.read()\n"
 )
@@ -358,8 +358,8 @@ SERVE = """
 import sys, threading, time
 from flux import _flux
 sp = _flux.signpost_name(sys.argv[1], _flux.NO_SCHEMA)
-pub = _flux._Publisher(sp, sys.argv[1], "n", _flux.NO_SCHEMA, 4096, 4, _flux.MemoryPolicy())
-sub = _flux._Subscription(sp, sys.argv[1], "n", _flux.NO_SCHEMA, _flux.QoS(), _flux.MemoryPolicy())
+pub = _flux._Publisher(sp, sys.argv[1], "n", _flux.NO_SCHEMA, 4096, 4, _flux.MemoryPolicy.DEFAULT)
+sub = _flux._Subscription(sp, sys.argv[1], "n", _flux.NO_SCHEMA, _flux.QoS(), _flux.MemoryPolicy.DEFAULT)
 ex = _flux._Executor()
 ex.add(sub, print, 0)
 threading.Thread(target=ex.serve, daemon=True).start()

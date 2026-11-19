@@ -6,13 +6,12 @@ use std::sync::Arc;
 
 use flux_core::{FrameView, GpuBlock, GpuHeap, Heap, WriteSlot};
 
-use crate::channel::{LoanCell, bytes, flux_loan, flux_view, view_ref};
+use crate::channel::{LoanCell, bytes, flux_frame, flux_loan, view_ref};
 
-/// A live loan's arena (`flux_loan_heap`): `channel` null for none, `base` null until made, `gpu`
-/// with a stream. A claim frees what `flux_heap_alloc`, `_alloc_device` (0: none), `_adopt` gave.
+/// A loan's arena: `channel` null for none, `base` null until made. A claim frees what it gave.
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct flux_heap {
+pub struct flux_arena {
     pub base: *mut u8,
     pub size: usize,
     pub channel: *const c_void,
@@ -20,19 +19,17 @@ pub struct flux_heap {
     pub gpu: bool,
 }
 
-impl flux_heap {
+impl flux_arena {
     fn core(&self) -> Option<Heap> {
         (!self.channel.is_null())
             .then(|| Heap::from_raw(self.channel, self.slot, self.base, self.size, self.gpu))
     }
 }
 
-/// A frame's fields across `PCIe` (`flux_view_gpu_heap`): the GPU arena's offset 0 (0 for none)
-/// and reach, the frame's device address with a stream, and the subscriber's copies of the
-/// `count` blocks on the other side (host for a CPU subscriber, device for a discrete GPU one),
-/// each at its position (`FLUX_GPU_HEAP_POS`).
+/// A frame's fields across `PCIe`: the GPU arena's offset 0 (0 for none) and reach, the frame's
+/// device address, and this subscriber's copies of `count` blocks (`FLUX_GPU_ARENA_POS`).
 #[repr(C)]
-pub struct flux_gpu_heap {
+pub struct flux_gpu_arena {
     pub device: u64,
     pub host: *const u8,
     pub size: usize,
@@ -56,14 +53,14 @@ const _: () = {
 };
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_loan_heap(l: *const flux_loan) -> flux_heap {
+pub unsafe extern "C" fn flux_loan_arena(l: *const flux_loan) -> flux_arena {
     // SAFETY: flux_loan is sized and aligned for LoanCell (asserted above).
     let h = unsafe { &*l.cast::<LoanCell>() }
         .slot
         .get()
         .and_then(WriteSlot::heap);
     h.map_or(
-        flux_heap {
+        flux_arena {
             base: std::ptr::null_mut(),
             size: 0,
             channel: std::ptr::null(),
@@ -72,7 +69,7 @@ pub unsafe extern "C" fn flux_loan_heap(l: *const flux_loan) -> flux_heap {
         },
         |h| {
             let (channel, slot) = h.raw();
-            flux_heap {
+            flux_arena {
                 base: h.base,
                 size: h.size,
                 channel,
@@ -84,8 +81,8 @@ pub unsafe extern "C" fn flux_loan_heap(l: *const flux_loan) -> flux_heap {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_heap_alloc(
-    h: *const flux_heap,
+pub unsafe extern "C" fn flux_arena_alloc(
+    h: *const flux_arena,
     bytes: usize,
     align: usize,
     off: *mut u64,
@@ -103,8 +100,8 @@ pub unsafe extern "C" fn flux_heap_alloc(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_heap_alloc_device(
-    h: *const flux_heap,
+pub unsafe extern "C" fn flux_arena_alloc_device(
+    h: *const flux_arena,
     bytes: usize,
     align: usize,
     off: *mut u64,
@@ -122,8 +119,8 @@ pub unsafe extern "C" fn flux_heap_alloc_device(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_heap_adopt(
-    h: *const flux_heap,
+pub unsafe extern "C" fn flux_arena_adopt(
+    h: *const flux_arena,
     p: *const u8,
     bytes: usize,
     release: unsafe extern "C" fn(*mut c_void),
@@ -143,9 +140,9 @@ pub unsafe extern "C" fn flux_heap_adopt(
     true
 }
 
-/// The arena the view's frame names, read-only while the view lives; null for none.
+/// The arena the frame names, read-only while the frame lives; null for none.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_heap(v: *const flux_view, size: *mut usize) -> *const u8 {
+pub unsafe extern "C" fn flux_frame_arena(v: *const flux_frame, size: *mut usize) -> *const u8 {
     // SAFETY: valid view storage.
     let Some(h) = unsafe { view_ref(v) }.get().and_then(FrameView::heap) else {
         return std::ptr::null();
@@ -156,7 +153,10 @@ pub unsafe extern "C" fn flux_view_heap(v: *const flux_view, size: *mut usize) -
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_gpu_heap(v: *const flux_view, out: *mut flux_gpu_heap) -> bool {
+pub unsafe extern "C" fn flux_frame_gpu_arena(
+    v: *const flux_frame,
+    out: *mut flux_gpu_arena,
+) -> bool {
     // SAFETY: valid view storage.
     let Some(GpuHeap {
         device,
@@ -172,7 +172,7 @@ pub unsafe extern "C" fn flux_view_gpu_heap(v: *const flux_view, out: *mut flux_
     let blocks = blocks.cast::<flux_gpu_block>();
     // SAFETY: out is valid for a write.
     unsafe {
-        out.write(flux_gpu_heap {
+        out.write(flux_gpu_arena {
             device,
             host,
             size,
@@ -184,7 +184,7 @@ pub unsafe extern "C" fn flux_view_gpu_heap(v: *const flux_view, out: *mut flux_
     true
 }
 
-/// Maps the arena frame bytes name, for a reader without a view, until `flux_arena_release`.
+/// Maps the arena frame bytes name, for a reader without a frame, until `flux_arena_release`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_arena_acquire(
     frame: *const u8,

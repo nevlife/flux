@@ -37,8 +37,15 @@ inline constexpr std::size_t kMaxDims = FLUX_MAX_DIMS;
 
 using Status = flux_status;
 using FrameMeta = flux_frame_meta;
-using MemoryPolicy = flux_memory_policy;
 using Refused = flux_refused;
+
+// Where a channel's payload pages come from: on first touch, reserved when made, or reserved and
+// locked in RAM.
+enum class MemoryPolicy : std::int32_t {
+  Default = FLUX_MEMORY_DEFAULT,
+  Precommit = FLUX_MEMORY_PRECOMMIT,
+  Lock = FLUX_MEMORY_LOCK,
+};
 
 class Error : public std::runtime_error
 {
@@ -85,15 +92,15 @@ void relocate(C & to, C & from) noexcept
   std::memset(&from, 0, sizeof(C));
 }
 
-inline auto raw_heap(const wire::Heap & h) noexcept -> flux_heap
+inline auto raw_heap(const wire::Heap & h) noexcept -> flux_arena
 {
   return {
     reinterpret_cast<std::uint8_t *>(h.base), h.size, h.channel, h.slot,  // NOLINT
     h.alloc_device != nullptr};
 }
 
-// A loan's flux_heap as the Writer takes it; empty when there is no arena.
-inline auto heap_of(const flux_heap & h) noexcept -> wire::Heap
+// A loan's flux_arena as the Writer takes it; empty when there is no arena.
+inline auto heap_of(const flux_arena & h) noexcept -> wire::Heap
 {
   if (h.channel == nullptr) {
     return {};
@@ -104,20 +111,20 @@ inline auto heap_of(const flux_heap & h) noexcept -> wire::Heap
   w.channel = h.channel;
   w.slot = h.slot;
   w.alloc = [](const wire::Heap & x, std::size_t n, std::size_t a, std::uint64_t * off) -> void * {
-    const flux_heap r = raw_heap(x);
-    return flux_heap_alloc(&r, n, a, off);
+    const flux_arena r = raw_heap(x);
+    return flux_arena_alloc(&r, n, a, off);
   };
   w.adopt = [](
               const wire::Heap & x, const void * p, std::size_t n, void (*release)(void *),
               void * owner, std::uint64_t * off) {
-    const flux_heap r = raw_heap(x);
-    return flux_heap_adopt(&r, static_cast<const std::uint8_t *>(p), n, release, owner, off);
+    const flux_arena r = raw_heap(x);
+    return flux_arena_adopt(&r, static_cast<const std::uint8_t *>(p), n, release, owner, off);
   };
   if (h.gpu) {
     w.alloc_device =
       [](const wire::Heap & x, std::size_t n, std::size_t a, std::uint64_t * off) -> std::uint64_t {
-      const flux_heap r = raw_heap(x);
-      return flux_heap_alloc_device(&r, n, a, off);
+      const flux_arena r = raw_heap(x);
+      return flux_arena_alloc_device(&r, n, a, off);
     };
   }
   return w;
@@ -312,7 +319,8 @@ enum class [[nodiscard]] Published : std::int32_t {
   InvalidArgument = FLUX_PUBLISHED_INVALID_ARGUMENT,
   // Another thread is in a call on the same publisher.
   InUse = FLUX_PUBLISHED_IN_USE,
-  // The declared stream could not be waited for; the slot stays claimed for good.
+  // The declared stream could not be waited for; the slot stays claimed until the work is done
+  // with a fence timeout set, else for good.
   FenceFailed = FLUX_PUBLISHED_FENCE_FAILED,
   // A sticky CUDA error wedged this process's GPU (gpu::wedged()); restart the process.
   GpuWedged = FLUX_PUBLISHED_GPU_WEDGED,
@@ -415,85 +423,88 @@ public:
   FrameView(const FrameView &) = delete;
   auto operator=(const FrameView &) -> FrameView & = delete;
 
-  [[nodiscard]] auto valid() const noexcept -> bool { return flux_view_valid(raw()); }
+  [[nodiscard]] auto valid() const noexcept -> bool { return flux_frame_valid(raw()); }
   explicit operator bool() const noexcept { return valid(); }
 
   // Null when the payload is device memory, while size() is still the frame's: use device_ptr().
   [[nodiscard]] auto data() const noexcept -> const void *
   {
     std::size_t n = 0;
-    return flux_view_data(raw(), &n);
+    return flux_frame_data(raw(), &n);
   }
   [[nodiscard]] auto size() const noexcept -> std::size_t
   {
-    const FrameMeta * m = flux_view_meta(raw());
+    const FrameMeta * m = flux_frame_get_meta(raw());
     return m != nullptr ? static_cast<std::size_t>(m->nbytes) : 0;
   }
   // Null on a host channel; read-only memory on a subscriber's mapping.
   [[nodiscard]] auto device_ptr() const noexcept -> const void *
   {
     return reinterpret_cast<const void *>(  // NOLINT(*-reinterpret-cast,performance-no-int-to-ptr)
-      static_cast<std::uintptr_t>(flux_view_device_ptr(raw())));
+      static_cast<std::uintptr_t>(flux_frame_device_ptr(raw())));
   }
   // An image slot's planes, if its publisher declared a format.
   [[nodiscard]] auto image_layout() const noexcept -> std::optional<ImageLayout>
   {
     ImageLayout l{};
-    return flux_view_image_layout(raw(), &l) ? std::optional<ImageLayout>(l) : std::nullopt;
+    return flux_frame_image_layout(raw(), &l) ? std::optional<ImageLayout>(l) : std::nullopt;
   }
   // An image slot's dmabuf, owned by the channel; -1 otherwise.
-  [[nodiscard]] auto dmabuf_fd() const noexcept -> int { return flux_view_dmabuf_fd(raw()); }
+  [[nodiscard]] auto dmabuf_fd() const noexcept -> int { return flux_frame_dmabuf_fd(raw()); }
   // The channel's cudaStream_t: queue the frame's work on it, since the release waits for it.
-  [[nodiscard]] auto stream() const noexcept -> void * { return flux_view_stream(raw()); }
+  [[nodiscard]] auto stream() const noexcept -> void * { return flux_frame_stream(raw()); }
   // Copies n bytes from byte `at` of the frame into host dst. A device payload is copied on
   // stream(), and this waits for that stream. False past size(), or when the copy failed.
   [[nodiscard]] auto copy_to(std::size_t at, void * dst, std::size_t n) const noexcept -> bool
   {
-    return flux_view_copy_to(raw(), at, static_cast<std::uint8_t *>(dst), n);
+    return flux_frame_copy_to(raw(), at, static_cast<std::uint8_t *>(dst), n);
   }
   // Orders the channel stream's next work after what s has queued, on the device: a deferred
   // release then covers work that read the frame on s.
   [[nodiscard]] auto after(const gpu::Stream & s) const noexcept -> bool
   {
-    return flux_view_after(raw(), s.raw());
+    return flux_frame_after(raw(), s.raw());
   }
   // The frame's aux bytes, in host memory whatever the payload is.
   [[nodiscard]] auto aux() const noexcept -> wire::Span<const std::uint8_t>
   {
     std::size_t n = 0;
-    const std::uint8_t * p = flux_view_aux(raw(), &n);
+    const std::uint8_t * p = flux_frame_aux(raw(), &n);
     return {p, n};
   }
   // Requires valid().
-  [[nodiscard]] auto meta() const noexcept -> const FrameMeta & { return *flux_view_meta(raw()); }
-  [[nodiscard]] auto ticket() const noexcept -> std::uint64_t { return flux_view_ticket(raw()); }
+  [[nodiscard]] auto meta() const noexcept -> const FrameMeta &
+  {
+    return *flux_frame_get_meta(raw());
+  }
+  [[nodiscard]] auto ticket() const noexcept -> std::uint64_t { return flux_frame_ticket(raw()); }
   // The channel as trace events name it (flux/trace.h).
   [[nodiscard]] auto trace_channel() const noexcept -> const void *
   {
-    return flux_view_trace_channel(raw());
+    return flux_frame_trace_channel(raw());
   }
   // CLOCK_MONOTONIC at commit.
   [[nodiscard]] auto publish_ns() const noexcept -> std::uint64_t
   {
-    return flux_view_publish_ns(raw());
+    return flux_frame_publish_ns(raw());
   }
   // The arena the frame's trailer names, read-only; empty for none.
   [[nodiscard]] auto heap() const noexcept -> wire::Span<const std::byte>
   {
     std::size_t n = 0;
-    const auto * p = flux_view_heap(raw(), &n);
+    const auto * p = flux_frame_arena(raw(), &n);
     return {reinterpret_cast<const std::byte *>(p), p != nullptr ? n : 0};  // NOLINT
   }
   // How the frame's fields are reached across PCIe, for a wire::Reader; empty for a CPU reader of
   // a frame without GPU arena blocks. The first call copies what sits on the other side.
   [[nodiscard]] auto gpu_heap() const noexcept -> wire::GpuHeap
   {
-    flux_gpu_heap g{};
-    if (!flux_view_gpu_heap(raw(), &g)) {
+    flux_gpu_arena g{};
+    if (!flux_frame_gpu_arena(raw(), &g)) {
       return {};
     }
-    static_assert(wire::kWireHeap == FLUX_HEAP_BASE && wire::kWireGpu == FLUX_GPU_HEAP_BASE);
-    static_assert(wire::kArenaUnit == FLUX_ARENA_UNIT && wire::kGpuBase == FLUX_GPU_HEAP_POS);
+    static_assert(wire::kWireHeap == FLUX_ARENA_BASE && wire::kWireGpu == FLUX_GPU_ARENA_BASE);
+    static_assert(wire::kArenaUnit == FLUX_ARENA_UNIT && wire::kGpuBase == FLUX_GPU_ARENA_POS);
     static_assert(sizeof(wire::GpuBlock) == sizeof(flux_gpu_block));
     static_assert(offsetof(wire::GpuBlock, host) == offsetof(flux_gpu_block, host));
     static_assert(offsetof(wire::GpuBlock, device) == offsetof(flux_gpu_block, device));
@@ -503,12 +514,12 @@ public:
     // NOLINTEND(*-reinterpret-cast)
   }
 
-  void release() noexcept { flux_view_release(&v_); }
+  void release() noexcept { flux_frame_release(&v_); }
 
 private:
   friend class detail::Channel;
-  [[nodiscard]] auto raw() const noexcept -> const flux_view * { return &v_; }
-  flux_view v_{};
+  [[nodiscard]] auto raw() const noexcept -> const flux_frame * { return &v_; }
+  flux_frame v_{};
 };
 
 // Commit it while no other thread is in a call on its publisher: unlike those calls, a commit is
@@ -581,7 +592,7 @@ public:
   // The loan's handle on the process arena, for a Writer; empty without one.
   [[nodiscard]] auto heap() const noexcept -> wire::Heap
   {
-    return detail::heap_of(flux_loan_heap(raw()));
+    return detail::heap_of(flux_loan_arena(raw()));
   }
 
   auto commit() noexcept -> Published { return static_cast<Published>(flux_loan_commit(&l_)); }
@@ -654,12 +665,12 @@ public:
     std::uint32_t max_subscribers = FLUX_DEFAULT_MAX_SUBSCRIBERS, const gpu::Stream & stream = {},
     std::uint32_t aux_size = 0) -> Channel
   {
-    require_abi();
-    flux_channel * ch = nullptr;
-    detail::check(flux_channel_create(
-      name.c_str(), slot_size, slot_count, max_subscribers, aux_size, fingerprint, mem,
-      stream.raw(), flux_stamp_offset(fingerprint), &ch));
-    return Channel(ch);
+    flux_publisher_config c = flux_publisher_config_default();
+    c.slot_size = slot_size;
+    c.slot_count = slot_count;
+    c.max_subscribers = max_subscribers;
+    c.aux_size = aux_size;
+    return create_config(name, c, fingerprint, mem, stream);
   }
 
   // As create, with every publisher setting in `config` (from flux_publisher_config_default()).
@@ -670,8 +681,8 @@ public:
   {
     require_abi();
     flux_channel * ch = nullptr;
-    detail::check(flux_channel_create_config(
-      name.c_str(), &config, fingerprint, mem, stream.raw(), flux_stamp_offset(fingerprint), &ch));
+    detail::check(flux_channel_create(
+      name.c_str(), &config, fingerprint, static_cast<std::int32_t>(mem), stream.raw(), &ch));
     return Channel(ch);
   }
 
@@ -683,7 +694,7 @@ public:
     require_abi();
     flux_channel * ch = nullptr;
     detail::check(flux_channel_open(
-      name.c_str(), fingerprint, mem, stream.raw(), flux_stamp_offset(fingerprint), &ch));
+      name.c_str(), fingerprint, static_cast<std::int32_t>(mem), stream.raw(), &ch));
     return Channel(ch);
   }
 
@@ -695,7 +706,7 @@ public:
   {
     flux_channel * ch = nullptr;
     detail::check(flux_channel_open_watched(
-      watch.raw(), fingerprint, qos.q_, mem, stream.raw(), flux_stamp_offset(fingerprint), &ch));
+      watch.raw(), fingerprint, qos.q_, static_cast<std::int32_t>(mem), stream.raw(), &ch));
     return Channel(ch);
   }
 
@@ -747,7 +758,7 @@ public:
   {
     WriteSlot w;
     if (ch_) {
-      flux_channel_loan(ch_, &w.l_);
+      (void)flux_channel_loan(ch_, &w.l_);
     }
     return w;
   }
@@ -756,7 +767,7 @@ public:
   {
     WriteSlot w;
     if (ch_) {
-      flux_channel_loan_typed(ch_, static_cast<std::uint8_t>(dtype), shape, ndim, &w.l_);
+      (void)flux_channel_loan_typed(ch_, static_cast<std::uint8_t>(dtype), shape, ndim, &w.l_);
     }
     return w;
   }
@@ -770,7 +781,7 @@ public:
   {
     FrameView v;
     if (ch_) {
-      flux_channel_take(ch_, &v.v_);
+      (void)flux_channel_take(ch_, &v.v_);
     }
     return v;
   }
@@ -779,7 +790,7 @@ public:
   {
     FrameView v;
     if (ch_) {
-      flux_channel_take_blocking(ch_, timeout_ns, &v.v_);
+      (void)flux_channel_take_blocking(ch_, timeout_ns, &v.v_);
     }
     return v;
   }

@@ -151,7 +151,8 @@ TEST_F(Mirror, AnUnwatchedMirrorHoldsNoReader)
   std::this_thread::sleep_for(300ms);
   const std::string script =
     "import sys; from flux import _flux as f; "
-    "f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), f.MemoryPolicy())";
+    "f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), "
+    "f.MemoryPolicy.DEFAULT)";
   std::vector<std::string> args{"python3",        "-c",
                                 script,           pub.signpost_name(),
                                 pub.topic_name(), std::to_string(Imu::kFingerprint)};

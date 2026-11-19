@@ -277,8 +277,10 @@ def test_misuse_fails_with_its_status(node):
 def test_the_publisher_sets_how_many_processes_may_subscribe(node):
     pub = flux.Publisher(node, topic("maxsubs"), max_subscribers=64, **SMALL)
     assert flux.read_channel_stats(pub.signpost_name).max_subscribers == 64
+    default = flux.Publisher(node, topic("maxdefault"), max_subscribers=0, **SMALL)
+    assert flux.read_channel_stats(default.signpost_name).max_subscribers == 16
     with pytest.raises(flux.Error) as e:
-        flux.Publisher(node, topic("maxbad"), max_subscribers=0, **SMALL)
+        flux.Publisher(node, topic("maxbad"), max_subscribers=5000, **SMALL)
     assert e.value.status == flux.Status.INVALID_ARGUMENT
 
 

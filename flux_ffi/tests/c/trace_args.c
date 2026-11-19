@@ -20,9 +20,9 @@ static int32_t attach(void * ctx)
 static int32_t deliver_one(void * ctx)
 {
   (void)ctx;
-  flux_view v = {0};
-  const bool got = flux_channel_take(sub, &v);
-  flux_view_release(&v);
+  flux_frame v = {0};
+  const bool got = flux_channel_take(sub, &v) == FLUX_OK;
+  flux_frame_release(&v);
   return got ? 1 : 0;
 }
 
@@ -49,23 +49,24 @@ int main(void)
 {
   char name[256];
   test_signpost("trace_args", name, sizeof name);
-  const flux_memory_policy mem = {false, false};
+  const int32_t mem = FLUX_MEMORY_DEFAULT;
   flux_channel * p = NULL;
-  CHECK(flux_channel_create(name, 64, 4, 4, 0, 0, mem, NULL, STAMP_AT, &p) == FLUX_OK);
-  CHECK(flux_channel_open(name, 0, mem, NULL, STAMP_AT, &sub) == FLUX_OK);
+  flux_stamp_offset_register(FLUX_NO_SCHEMA, STAMP_AT);
+  CHECK(test_create(name, 64, 4, 4, 0, 0, &p) == FLUX_OK);
+  CHECK(flux_channel_open(name, 0, mem, NULL, &sub) == FLUX_OK);
 
   const void * id = NULL;
   for (uint32_t i = 1; i <= FRAMES; ++i) {
     publish(p, i);
-    flux_view v = {0};
-    CHECK(flux_channel_take(sub, &v));
-    id = flux_view_trace_channel(&v);
-    flux_trace_py_ready(id, flux_view_ticket(&v));
-    flux_view_release(&v);
+    flux_frame v = {0};
+    CHECK(flux_channel_take(sub, &v) == FLUX_OK);
+    id = flux_frame_trace_channel(&v);
+    flux_trace_py_ready(id, flux_frame_ticket(&v));
+    flux_frame_release(&v);
   }
 
   flux_loan l = {0};
-  CHECK(flux_channel_loan(p, &l));
+  CHECK(flux_channel_loan(p, &l) == FLUX_PUBLISHED_OK);
   size_t cap = 0;
   uint8_t * d = flux_loan_data(&l, &cap);
   const uint64_t stamp = stamp_of(FRAMES + 1);
@@ -73,14 +74,15 @@ int main(void)
   memcpy(d + STAMP_AT, &stamp, sizeof stamp);
   CHECK(flux_loan_commit_len(&l, 16) == FLUX_PUBLISHED_OK);
   flux_loan_abort(&l);
-  CHECK(flux_channel_loan(p, &l));
+  CHECK(flux_channel_loan(p, &l) == FLUX_PUBLISHED_OK);
   flux_loan_abort(&l);
   uint8_t big[65] = {0};
   CHECK(flux_channel_publish(p, big, sizeof big) == FLUX_PUBLISHED_TOO_LARGE);
 
   flux_executor * ex = test_executor();
-  const flux_source src = {NULL, attach, deliver_one, channel, NULL, NULL, &endpoint};
-  CHECK(flux_executor_add(ex, src, 0) == FLUX_OK);
+  const flux_source src = {
+    sizeof(flux_source), NULL, attach, deliver_one, channel, NULL, NULL, &endpoint};
+  CHECK(test_add(ex, src, 0) == FLUX_OK);
   size_t n = 0;
   CHECK(flux_executor_dispatch(ex, &n) == FLUX_OK && n == 1);
   CHECK(flux_executor_wait_for_work(ex, 0) == FLUX_OK);

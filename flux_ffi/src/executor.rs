@@ -3,11 +3,9 @@
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
 
-use flux_core::{
-    Channel, Error, Executor, ExecutorHandle, PartitionedExecutor, PublisherWatch, Result, Source,
-};
+use flux_core::{Channel, Error, Executor, ExecutorHandle, PublisherWatch, Result, Source};
 
-use crate::channel::{flux_channel, flux_watch};
+use crate::channel::{flux_channel, flux_watch, sized};
 use crate::status::{flux_status, status};
 
 /// 0 is success; anything else ends the spin with `FLUX_CALLBACK`.
@@ -17,6 +15,7 @@ pub type flux_hook = Option<unsafe extern "C" fn(ctx: *mut c_void) -> i32>;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct flux_source {
+    pub size: u32,
     pub ctx: *mut c_void,
     /// 1 attached, 0 nothing to attach to yet, negative failed.
     pub attach: Option<unsafe extern "C" fn(ctx: *mut c_void) -> i32>,
@@ -33,10 +32,6 @@ pub struct flux_source {
 
 pub struct flux_executor {
     ex: Executor<'static>,
-}
-
-pub struct flux_partitioned {
-    px: PartitionedExecutor<'static>,
 }
 
 /// Stop, interrupt and wake from any thread. Outlives its executor: the calls then do nothing.
@@ -137,9 +132,34 @@ unsafe fn exec<'a>(p: *mut flux_executor) -> &'a mut Executor<'static> {
     unsafe { &mut (*p).ex }
 }
 
-unsafe fn part<'a>(p: *mut flux_partitioned) -> &'a mut PartitionedExecutor<'static> {
-    // SAFETY: as above.
-    unsafe { &mut (*p).px }
+/// The size at ABI 6, the first with `size`; a later field leaves it.
+const SOURCE_SIZE_V6: usize = size_of::<flux_source>();
+
+/// `src` up to its `size`, over zeroes; bytes past what this library knows must be zero. A
+/// refused one is dropped, as a failed add drops it.
+unsafe fn source_of(src: *const flux_source) -> Result<flux_source> {
+    // SAFETY: the caller's struct holds its size bytes.
+    let raw = unsafe { sized(src.cast::<u8>(), SOURCE_SIZE_V6, size_of::<flux_source>()) };
+    let Some(Ok(raw)) = raw else {
+        if raw.is_some() {
+            // SAFETY: the size covers the whole struct.
+            let s = unsafe { src.read_unaligned() };
+            if let Some(d) = s.drop {
+                // SAFETY: a C function given for this ctx, called once.
+                unsafe { d(s.ctx) };
+            }
+        }
+        return Err(Error::Unsupported(
+            "flux_source.size is below this library's, or the source sets fields it does not \
+             know"
+                .into(),
+        ));
+    };
+    let mut s = std::mem::MaybeUninit::<flux_source>::zeroed();
+    // SAFETY: raw is at most sizeof bytes and does not overlap s.
+    unsafe { std::ptr::copy_nonoverlapping(raw.as_ptr(), s.as_mut_ptr().cast::<u8>(), raw.len()) };
+    // SAFETY: the zeroed fields are NULL pointers and None, and raw wrote the caller's.
+    Ok(unsafe { s.assume_init() })
 }
 
 unsafe fn write<T>(out: *mut T, v: T) {
@@ -168,9 +188,14 @@ pub unsafe extern "C" fn flux_executor_free(ex: *mut flux_executor) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_executor_add(
     ex: *mut flux_executor,
-    src: flux_source,
+    src: *const flux_source,
     priority: i32,
 ) -> flux_status {
+    // SAFETY: src is valid for a read of its size.
+    let src = match unsafe { source_of(src) } {
+        Ok(s) => s,
+        Err(e) => return status(Err(e)),
+    };
     let (Some(attach), Some(deliver_one), Some(channel)) =
         (src.attach, src.deliver_one, src.channel)
     else {
@@ -348,94 +373,4 @@ pub unsafe extern "C" fn flux_handle_wake(h: *const flux_handle) {
 pub unsafe extern "C" fn flux_handle_is_spinning(h: *const flux_handle) -> bool {
     // SAFETY: valid handle.
     unsafe { &(*h).h }.is_spinning()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_partitioned_new(out: *mut *mut flux_partitioned) -> flux_status {
-    status(PartitionedExecutor::new().map(|px| {
-        // SAFETY: out is valid for a write.
-        unsafe { write(out, Box::into_raw(Box::new(flux_partitioned { px }))) };
-    }))
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_partitioned_free(px: *mut flux_partitioned) {
-    if !px.is_null() {
-        // SAFETY: a handle from flux_partitioned_new, freed once.
-        drop(unsafe { Box::from_raw(px) });
-    }
-}
-
-/// Takes `ex`: its handle is freed here and must not be used again. Take its `flux_handle` first.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_partitioned_add(
-    px: *mut flux_partitioned,
-    ex: *mut flux_executor,
-    index: *mut usize,
-) {
-    // SAFETY: a handle from flux_executor_new, consumed here.
-    let ex = unsafe { Box::from_raw(ex) }.ex;
-    // SAFETY: valid handle.
-    let i = unsafe { part(px) }.add(ex);
-    // SAFETY: index is valid for a write.
-    unsafe { write(index, i) };
-}
-
-/// A thread running `run` until `stop`, which may come first: `run` then returns at once.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_partitioned_add_external(
-    px: *mut flux_partitioned,
-    run: flux_hook,
-    stop: flux_hook,
-    ctx: *mut c_void,
-    index: *mut usize,
-) -> flux_status {
-    let hooks = Hook::new(run, ctx).and_then(|r| Ok((r, Hook::new(stop, ctx)?)));
-    status(hooks.map(|(r, s)| {
-        // SAFETY: valid handle.
-        let i = unsafe { part(px) }.add_external(
-            move || r.call("run"),
-            move || {
-                let _ = s.call("stop");
-            },
-        );
-        // SAFETY: index is valid for a write.
-        unsafe { write(index, i) };
-    }))
-}
-
-/// Runs on the partition's own thread before its loop, on every spin.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_partitioned_on_thread_start(
-    px: *mut flux_partitioned,
-    index: usize,
-    init: flux_hook,
-    ctx: *mut c_void,
-) -> flux_status {
-    // SAFETY: valid handle.
-    let px = unsafe { part(px) };
-    status(Hook::new(init, ctx).and_then(|h| px.on_thread_start(index, move || h.call("init"))))
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_partitioned_size(px: *mut flux_partitioned) -> usize {
-    // SAFETY: valid handle.
-    unsafe { part(px) }.size()
-}
-
-/// The first failure on any partition stops every partition and is returned here.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_partitioned_spin(
-    px: *mut flux_partitioned,
-    tick_ns: i64,
-) -> flux_status {
-    // SAFETY: valid handle.
-    status(unsafe { part(px) }.spin(tick_ns))
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_partitioned_handle(px: *mut flux_partitioned) -> *mut flux_handle {
-    // SAFETY: valid handle.
-    let h = unsafe { part(px) }.handle();
-    Box::into_raw(Box::new(flux_handle { h }))
 }

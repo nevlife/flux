@@ -73,7 +73,7 @@ def write_on_device(loan, value):
 def test_the_probe_names_the_route_and_its_attributes():
     p = flux.probe()
     assert p.route != flux.Route.NONE and p.reason == ""
-    assert flux.gpu_wedged() == 0 and flux.Published.GPU_WEDGED.value == 8
+    assert flux.gpu_wedged() == 0 and flux.Published.GPU_WEDGED.value == 20
     print(p.route, p.integrated, p.pageable_access, p.host_register, p.vmm, p.posix_fd_handle)
 
 

@@ -95,7 +95,7 @@ def play_into(sub, *args):
 HOLD = (
     "import sys\n"
     "from flux import _flux as f\n"
-    "s = f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), f.MemoryPolicy())\n"
+    "s = f._Subscription(sys.argv[1], sys.argv[2], '', int(sys.argv[3]), f.QoS(), f.MemoryPolicy.DEFAULT)\n"
     "print('ready', flush=True)\n"
     "sys.stdin.read()\n"
 )
@@ -274,7 +274,7 @@ def test_a_key_that_is_not_a_ros_name_is_skipped_not_fatal(node, tmp_path):
     bad = f"/bag{os.getpid()} bad \x1b[31m"
     # signpost_name refuses such a key, so the peer names the object as the flattening would.
     signpost = _flux.signpost_name(re.sub(r"[^A-Za-z0-9_/]", "/", bad), FINGERPRINT)
-    peer = _flux._Publisher(signpost, bad, "", FINGERPRINT, 4096, 4, flux.MemoryPolicy())
+    peer = _flux._Publisher(signpost, bad, "", FINGERPRINT, 4096, 4, _flux.MemoryPolicy.DEFAULT)
     good = flux.Publisher(node, key("good"), slot_size=4096, slot_count=4)
     rec = record(str(tmp_path / "bag"), "-a")
     time.sleep(1.0)

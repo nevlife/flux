@@ -7,14 +7,15 @@ use flux_ffi::*;
 #[test]
 fn a_second_loan_data_keeps_the_first_pointer_valid() {
     let mut ch: *mut flux_channel = std::ptr::null_mut();
-    let mut l = flux_loan { opaque: [0; 16] };
+    let mut l = flux_loan { opaque: [0; 32] };
     let mut cap = 0usize;
     let (l, cap) = (&raw mut l, &raw mut cap);
     // SAFETY: every pointer is to a live local; the loan is ended before the channel is freed.
     let made = unsafe { flux_channel_new(64, 2, &raw mut ch) };
     assert_eq!(made, flux_status::FLUX_OK);
     // SAFETY: as above.
-    assert!(unsafe { flux_channel_loan(ch, l) });
+    let loaned = unsafe { flux_channel_loan(ch, l) };
+    assert_eq!(loaned, flux_published::FLUX_PUBLISHED_OK);
     // SAFETY: as above.
     let p = unsafe { flux_loan_data(l, cap) };
     // SAFETY: the loan's capacity is 64 bytes.

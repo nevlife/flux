@@ -104,6 +104,7 @@ impl Control {
     }
 
     /// Waits for a poke up to `timeout_ns`, then counts it heard.
+    #[cfg(test)]
     pub(crate) fn wait(&self, timeout_ns: i64) {
         self.sleep(timeout_ns);
         self.drain();
@@ -159,10 +160,6 @@ impl ExecutorHandle {
 
     pub fn is_spinning(&self) -> bool {
         self.0.spinning.load(Ordering::Acquire) // order: spinning
-    }
-
-    pub(crate) fn control(&self) -> &Control {
-        &self.0
     }
 }
 

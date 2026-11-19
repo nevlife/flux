@@ -7,8 +7,8 @@ use flux_gen::cdr::{cdr_size, write_cdr};
 use flux_gen::inline::{gpu_fingerprint, has_gpu_data, inline_arena, with_data};
 use flux_gen::layout::Layout;
 
-use crate::arena::flux_gpu_heap;
-use crate::status::{flux_status, status};
+use crate::arena::flux_gpu_arena;
+use crate::status::{flux_status, status, too_small};
 
 pub struct flux_schema {
     layout: Layout,
@@ -22,12 +22,18 @@ pub struct flux_schemas {
     by_gpu: HashMap<u64, u64>,
 }
 
-/// Every .msg on `AMENT_PREFIX_PATH` that parses. `FLUX_UNSUPPORTED` if a directory is unreadable.
+/// Every .msg on `AMENT_PREFIX_PATH` that parses. `FLUX_IO` if a directory is unreadable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_schemas_load(out: *mut *mut flux_schemas) -> flux_status {
     let layouts = match installed_layouts() {
         Ok(l) => l,
-        Err(e) => return status(Err(Error::Unsupported(e.to_string()))),
+        Err(e) => {
+            return status(Err(Error::Io {
+                what: "reading the installed .msg files",
+                name: String::new(),
+                source: std::io::Error::other(e.to_string()),
+            }));
+        }
     };
     let by_fingerprint = layouts
         .into_iter()
@@ -138,7 +144,7 @@ pub unsafe extern "C" fn flux_schema_cdr_size(
     }
 }
 
-/// `*written` is the CDR size even past `cap`, which is `FLUX_INVALID_ARGUMENT` (frames change).
+/// `*written` is the CDR size even past `cap`, which is `FLUX_BUFFER_TOO_SMALL` (frames change).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_schema_write_cdr(
     s: *const flux_schema,
@@ -159,41 +165,39 @@ pub unsafe extern "C" fn flux_schema_write_cdr(
         Ok(n) => {
             // SAFETY: written is valid for a write.
             unsafe { written.write(n) };
-            status(if n > cap {
-                Err(Error::InvalidArgument(format!(
-                    "buffer of {cap} bytes is too small for a CDR message of {n}"
-                )))
+            if n > cap {
+                too_small(cap, n)
             } else {
-                Ok(())
-            })
+                flux_status::FLUX_OK
+            }
         }
         Err(e) => unreadable(&e),
     }
 }
 
-/// The frame with its arena fields (`heap`; `gpu` host copies or NULL) copied in, as `write_cdr`.
+/// The frame with its arena fields (`arena`; `gpu` host copies or NULL) copied in, as `write_cdr`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_schema_inline_arena(
     s: *const flux_schema,
     data: *const u8,
     len: usize,
-    heap: *const u8,
-    heap_len: usize,
-    gpu: *const flux_gpu_heap,
+    arena: *const u8,
+    arena_len: usize,
+    gpu: *const flux_gpu_arena,
     out: *mut u8,
     cap: usize,
     written: *mut usize,
 ) -> flux_status {
     // SAFETY: data holds len bytes while the call runs.
     let f = unsafe { frame(data, len) };
-    // SAFETY: heap holds heap_len bytes while the call runs.
-    let h = unsafe { frame(heap, heap_len) };
+    // SAFETY: arena holds arena_len bytes while the call runs.
+    let h = unsafe { frame(arena, arena_len) };
     let Some(body) = flux_core::arena::body(f) else {
         return status(Err(Error::Mismatch(
             "flux: a frame shorter than its trailer".into(),
         )));
     };
-    // SAFETY: gpu is NULL or a flux_gpu_heap whose memory is valid while the call runs.
+    // SAFETY: gpu is NULL or a flux_gpu_arena whose memory is valid while the call runs.
     let copies = unsafe { gpu_copies(gpu) };
     // SAFETY: s is a live schema.
     let v = match inline_arena(&unsafe { &*s }.layout, body, h, &copies) {
@@ -203,10 +207,7 @@ pub unsafe extern "C" fn flux_schema_inline_arena(
     // SAFETY: written is valid for a write.
     unsafe { written.write(v.len()) };
     if v.len() > cap {
-        return status(Err(Error::InvalidArgument(format!(
-            "buffer of {cap} bytes is too small for a frame of {}",
-            v.len()
-        ))));
+        return too_small(cap, v.len());
     }
     // SAFETY: out is writable for cap >= v.len() bytes and aliases nothing else.
     unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len()) };
@@ -218,7 +219,7 @@ pub unsafe extern "C" fn flux_schema_inline_arena(
 ///
 /// # Safety
 /// `gpu` is NULL or valid, with `host` and each block's `host` readable for their lengths.
-unsafe fn gpu_copies<'a>(gpu: *const flux_gpu_heap) -> Vec<(usize, &'a [u8])> {
+unsafe fn gpu_copies<'a>(gpu: *const flux_gpu_arena) -> Vec<(usize, &'a [u8])> {
     // SAFETY: the caller's contract.
     let Some(g) = (unsafe { gpu.as_ref() }) else {
         return Vec::new();
@@ -269,10 +270,7 @@ pub unsafe extern "C" fn flux_schema_with_data(
     // SAFETY: written is valid for a write.
     unsafe { written.write(v.len()) };
     if v.len() > cap {
-        return status(Err(Error::InvalidArgument(format!(
-            "buffer of {cap} bytes is too small for a frame of {}",
-            v.len()
-        ))));
+        return too_small(cap, v.len());
     }
     // SAFETY: out is writable for cap >= v.len() bytes and aliases nothing else.
     unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), out, v.len()) };

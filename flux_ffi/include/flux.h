@@ -1,8 +1,11 @@
-/* Handles from _new/_create/_open go to their _free (NULL ok); other pointers must be valid. View
- * and loan storage is caller memory, zeroed before first use; an empty one's accessors give NULL/0.
- * A view keeps its mapping past the channel handle; a commit empties its loan. timeout_ns < 0 waits
- * forever. flux_last_error() is per thread. Callbacks must not unwind. One call at a time per
- * channel: others get *_IN_USE or false; getters are unchecked, must not overlap; commits may. */
+/* Handles from _new/_create/_open go to their _free (NULL ok); pointers must be valid unless a
+ * comment says NULL. Frame and loan storage is caller memory, zeroed before first use; an empty
+ * one's accessors give NULL/0. A frame keeps its mapping past the channel handle; a commit empties
+ * its loan. timeout_ns < 0 waits forever. flux_last_error() is per thread. Callbacks must not
+ * unwind. One call at a time per channel: others get *_IN_USE; getters are unchecked, must not
+ * overlap; commits may. A struct with a `size` first is read up to that size. flux_watch_*,
+ * _open_watched, _stamp_offset*, _layout_register, _arena_acquire/_release/_scope_* and
+ * _frame_trace_channel serve flux's own bindings, not a stable API. */
 
 #ifndef FLUX_H
 #define FLUX_H
@@ -13,7 +16,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define FLUX_ABI_VERSION 5
+#define FLUX_ABI_VERSION 6
 
 #define FLUX_MAX_DIMS 8
 
@@ -44,13 +47,20 @@
 
 #define FLUX_NO_STAMP -1
 
-#define FLUX_HEAP_BASE 2147483648
+#define FLUX_ARENA_BASE 2147483648
 
-#define FLUX_GPU_HEAP_BASE 3221225472
+#define FLUX_GPU_ARENA_BASE 3221225472
 
 #define FLUX_ARENA_UNIT 16
 
-#define FLUX_GPU_HEAP_POS 19327352832
+#define FLUX_GPU_ARENA_POS 19327352832
+
+#define FLUX_MEMORY_DEFAULT 0
+
+#define FLUX_MEMORY_PRECOMMIT 1
+
+// Payload pages locked in RAM; PRECOMMIT only reserves them when made.
+#define FLUX_MEMORY_LOCK 2
 
 #define FLUX_DTYPE_U8 0
 
@@ -124,6 +134,9 @@ enum flux_status
   FLUX_CALLBACK = 7,
   FLUX_IO = 8,
   FLUX_IN_USE = 9,
+  // The output buffer is too small; the size it needs was written.
+  FLUX_BUFFER_TOO_SMALL = 10,
+  FLUX_NO_FRAME = 11,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -139,15 +152,15 @@ enum flux_published
 #endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
  {
   FLUX_PUBLISHED_OK = 0,
-  FLUX_PUBLISHED_BACKPRESSURE = 1,
-  FLUX_PUBLISHED_TOO_LARGE = 2,
-  FLUX_PUBLISHED_NOT_PUBLISHER = 3,
   // An unknown dtype, or a commit of an empty loan (already committed or aborted).
-  FLUX_PUBLISHED_INVALID_ARGUMENT = 4,
-  FLUX_PUBLISHED_IN_USE = 5,
-  // The stream could not be waited for. The slot stays claimed and is never reused.
-  FLUX_PUBLISHED_FENCE_FAILED = 7,
-  FLUX_PUBLISHED_GPU_WEDGED = 8,
+  FLUX_PUBLISHED_INVALID_ARGUMENT = 1,
+  FLUX_PUBLISHED_IN_USE = 9,
+  FLUX_PUBLISHED_BACKPRESSURE = 16,
+  FLUX_PUBLISHED_TOO_LARGE = 17,
+  FLUX_PUBLISHED_NOT_PUBLISHER = 18,
+  // The stream could not be waited for; the slot is held (`flux_channel_set_fence_timeout`).
+  FLUX_PUBLISHED_FENCE_FAILED = 19,
+  FLUX_PUBLISHED_GPU_WEDGED = 20,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -184,8 +197,6 @@ typedef struct flux_executor flux_executor;
 // Stop, interrupt and wake from any thread. Outlives its executor: the calls then do nothing.
 typedef struct flux_handle flux_handle;
 
-typedef struct flux_partitioned flux_partitioned;
-
 typedef struct flux_schema flux_schema;
 
 typedef struct flux_schemas flux_schemas;
@@ -196,27 +207,27 @@ typedef struct flux_stream flux_stream;
 // Every pointer inside stays valid until `flux_topic_list_free`.
 typedef struct flux_topic_list flux_topic_list;
 
+// A subscription's hold on a signpost while it has no publisher.
 typedef struct flux_watch flux_watch;
 
-// A live loan's arena (`flux_loan_heap`): `channel` null for none, `base` null until made, `gpu`
-// with a stream. A claim frees what `flux_heap_alloc`, `_alloc_device` (0: none), `_adopt` gave.
-typedef struct flux_heap {
+// A loan's arena: `channel` null for none, `base` null until made. A claim frees what it gave.
+typedef struct flux_arena {
   uint8_t *base;
   size_t size;
   const void *channel;
   uint32_t slot;
   bool gpu;
-} flux_heap;
+} flux_arena;
 
-// A claimed slot in caller memory, never copied. Commit it while no call is on its channel.
+// A claimed slot in caller memory, never copied. End it with `flux_loan_abort`, after a commit too.
 typedef struct flux_loan {
-  uint64_t opaque[16];
+  uint64_t opaque[32];
 } flux_loan;
 
 // A borrowed frame in caller memory, never copied. A move copies the bytes and zeroes the source.
-typedef struct flux_view {
-  uint64_t opaque[16];
-} flux_view;
+typedef struct flux_frame {
+  uint64_t opaque[32];
+} flux_frame;
 
 typedef struct flux_gpu_block {
   uint64_t off;
@@ -225,27 +236,20 @@ typedef struct flux_gpu_block {
   uint64_t device;
 } flux_gpu_block;
 
-// A frame's fields across `PCIe` (`flux_view_gpu_heap`): the GPU arena's offset 0 (0 for none)
-// and reach, the frame's device address with a stream, and the subscriber's copies of the
-// `count` blocks on the other side (host for a CPU subscriber, device for a discrete GPU one),
-// each at its position (`FLUX_GPU_HEAP_POS`).
-typedef struct flux_gpu_heap {
+// A frame's fields across `PCIe`: the GPU arena's offset 0 (0 for none) and reach, the frame's
+// device address, and this subscriber's copies of `count` blocks (`FLUX_GPU_ARENA_POS`).
+typedef struct flux_gpu_arena {
   uint64_t device;
   const uint8_t *host;
   size_t size;
   uint64_t frame;
   const struct flux_gpu_block *blocks;
   size_t count;
-} flux_gpu_heap;
-
-typedef struct flux_memory_policy {
-  bool precommit;
-  // Implies precommit.
-  bool lock;
-} flux_memory_policy;
+} flux_gpu_arena;
 
 // A publisher's settings. A size or count of 0 is the default for `alloc` (`FLUX_ALLOC_*`).
 typedef struct flux_publisher_config {
+  uint32_t size;
   int32_t alloc;
   uint32_t slot_size;
   uint32_t slot_count;
@@ -255,8 +259,7 @@ typedef struct flux_publisher_config {
   uint32_t aux_size;
   // Slots get memory once a subscriber attaches (`FLUX_ALLOC_SLOT` and GPU memory channels).
   bool alloc_on_subscriber;
-  // `FLUX_IMAGE_SLOTS_*`. Image slots, on an integrated GPU only, are fixed slots each a dmabuf
-  // engines read in place. AUTO makes them for an image format.
+  // `FLUX_IMAGE_SLOTS_*`: integrated-GPU slots, each a dmabuf engines read; AUTO with a format.
   int32_t image_slots;
   // `FLUX_IMAGE_*`: image slots in this format, the slot size defaulting to one frame.
   uint32_t image_encoding;
@@ -275,10 +278,10 @@ typedef struct flux_qos {
 typedef struct flux_image_layout {
   uint32_t encoding;
   uint32_t planes;
-  uint32_t width[2];
-  uint32_t height[2];
-  uint32_t pitch[2];
-  uint32_t offset[2];
+  uint32_t width[4];
+  uint32_t height[4];
+  uint32_t pitch[4];
+  uint32_t offset[4];
   uint32_t bytes;
 } flux_image_layout;
 
@@ -311,6 +314,7 @@ typedef struct flux_fence_wait {
 
 // `attach`, `deliver_one`, `channel` required; `drop` runs once, on release or on a failed add.
 typedef struct flux_source {
+  uint32_t size;
   void *ctx;
   // 1 attached, 0 nothing to attach to yet, negative failed.
   int32_t (*attach)(void *ctx);
@@ -379,28 +383,28 @@ extern "C" {
 
 uint32_t flux_abi_version(void);
 
-struct flux_heap flux_loan_heap(const struct flux_loan *l);
+struct flux_arena flux_loan_arena(const struct flux_loan *l);
 
-uint8_t *flux_heap_alloc(const struct flux_heap *h, size_t bytes, size_t align, uint64_t *off);
+uint8_t *flux_arena_alloc(const struct flux_arena *h, size_t bytes, size_t align, uint64_t *off);
 
-uint64_t flux_heap_alloc_device(const struct flux_heap *h,
-                                size_t bytes,
-                                size_t align,
-                                uint64_t *off);
+uint64_t flux_arena_alloc_device(const struct flux_arena *h,
+                                 size_t bytes,
+                                 size_t align,
+                                 uint64_t *off);
 
-bool flux_heap_adopt(const struct flux_heap *h,
-                     const uint8_t *p,
-                     size_t bytes,
-                     void (*release)(void*),
-                     void *ctx,
-                     uint64_t *off);
+bool flux_arena_adopt(const struct flux_arena *h,
+                      const uint8_t *p,
+                      size_t bytes,
+                      void (*release)(void*),
+                      void *ctx,
+                      uint64_t *off);
 
-// The arena the view's frame names, read-only while the view lives; null for none.
-const uint8_t *flux_view_heap(const struct flux_view *v, size_t *size);
+// The arena the frame names, read-only while the frame lives; null for none.
+const uint8_t *flux_frame_arena(const struct flux_frame *v, size_t *size);
 
-bool flux_view_gpu_heap(const struct flux_view *v, struct flux_gpu_heap *out);
+bool flux_frame_gpu_arena(const struct flux_frame *v, struct flux_gpu_arena *out);
 
-// Maps the arena frame bytes name, for a reader without a view, until `flux_arena_release`.
+// Maps the arena frame bytes name, for a reader without a frame, until `flux_arena_release`.
 const void *flux_arena_acquire(const uint8_t *frame,
                                size_t len,
                                const uint8_t **base,
@@ -415,28 +419,15 @@ void flux_arena_scope_leave(void);
 
 flux_status flux_channel_new(uint32_t slot_size, uint32_t slot_count, struct flux_channel **out);
 
-// The publisher of signpost `name` for `max_subscribers` processes, `aux_size` host bytes a slot.
-flux_status flux_channel_create(const char *name,
-                                uint32_t slot_size,
-                                uint32_t slot_count,
-                                uint32_t max_subscribers,
-                                uint32_t aux_size,
-                                uint64_t fingerprint,
-                                struct flux_memory_policy mem,
-                                const struct flux_stream *stream,
-                                int32_t stamp_offset,
-                                struct flux_channel **out);
-
 struct flux_publisher_config flux_publisher_config_default(void);
 
-// As `flux_channel_create`, with the publisher's settings in `config`.
-flux_status flux_channel_create_config(const char *name,
-                                       const struct flux_publisher_config *config,
-                                       uint64_t fingerprint,
-                                       struct flux_memory_policy mem,
-                                       const struct flux_stream *stream,
-                                       int32_t stamp_offset,
-                                       struct flux_channel **out);
+// The publisher of signpost `name`, with its settings in `config` and `FLUX_MEMORY_*` `memory`.
+flux_status flux_channel_create(const char *name,
+                                const struct flux_publisher_config *config,
+                                uint64_t fingerprint,
+                                int32_t memory,
+                                const struct flux_stream *stream,
+                                struct flux_channel **out);
 
 flux_status flux_watch_open(const char *name, struct flux_watch **out);
 
@@ -452,9 +443,8 @@ bool flux_watch_wait(const struct flux_watch *w, int64_t timeout_ns);
 flux_status flux_channel_open_watched(const struct flux_watch *w,
                                       uint64_t fingerprint,
                                       struct flux_qos q,
-                                      struct flux_memory_policy mem,
+                                      int32_t memory,
                                       const struct flux_stream *stream,
-                                      int32_t stamp_offset,
                                       struct flux_channel **out);
 
 struct flux_qos flux_qos_default(void);
@@ -462,9 +452,8 @@ struct flux_qos flux_qos_default(void);
 // A subscriber of signpost `name`. `FLUX_NOT_READY` until a publisher is up.
 flux_status flux_channel_open(const char *name,
                               uint64_t fingerprint,
-                              struct flux_memory_policy mem,
+                              int32_t memory,
                               const struct flux_stream *stream,
-                              int32_t stamp_offset,
                               struct flux_channel **out);
 
 void flux_channel_free(struct flux_channel *ch);
@@ -478,15 +467,15 @@ flux_published flux_channel_publish_typed(struct flux_channel *ch,
                                           const uint64_t *shape_,
                                           size_t ndim);
 
-// The whole slot as one u8 run. False when no slot is free, this is a subscriber, or in use.
-bool flux_channel_loan(struct flux_channel *ch, struct flux_loan *out);
+// The whole slot as one u8 run, OK with a slot in `out`. `BACKPRESSURE` when none is free.
+flux_published flux_channel_loan(struct flux_channel *ch, struct flux_loan *out);
 
-// The shape is checked at commit. False also for an unknown dtype.
-bool flux_channel_loan_typed(struct flux_channel *ch,
-                             uint8_t dtype,
-                             const uint64_t *shape_,
-                             size_t ndim,
-                             struct flux_loan *out);
+// The shape is checked at commit.
+flux_published flux_channel_loan_typed(struct flux_channel *ch,
+                                       uint8_t dtype,
+                                       const uint64_t *shape_,
+                                       size_t ndim,
+                                       struct flux_loan *out);
 
 uint8_t *flux_loan_data(struct flux_loan *l, size_t *capacity);
 
@@ -497,7 +486,6 @@ void flux_loan_set_aux_len(struct flux_loan *l, size_t len);
 
 void *flux_loan_stream(const struct flux_loan *l);
 
-// 0 when the channel declared no stream, as for `flux_view_device_ptr`.
 uint64_t flux_loan_device_ptr(const struct flux_loan *l);
 
 // False but in an image slot with a declared format.
@@ -518,48 +506,49 @@ void flux_loan_abort(struct flux_loan *l);
 
 bool flux_loan_valid(const struct flux_loan *l);
 
-// The oldest frame newer than the cursor. A view already in `out` is released first.
-bool flux_channel_take(struct flux_channel *ch, struct flux_view *out);
+// OK with the oldest frame newer than the cursor in `out`, else `NO_FRAME`; `out` is released first.
+flux_status flux_channel_take(struct flux_channel *ch,
+                              struct flux_frame *out);
 
-bool flux_channel_take_blocking(struct flux_channel *ch, int64_t timeout_ns, struct flux_view *out);
+flux_status flux_channel_take_blocking(struct flux_channel *ch,
+                                       int64_t timeout_ns,
+                                       struct flux_frame *out);
 
-const uint8_t *flux_view_data(const struct flux_view *v, size_t *len);
+const uint8_t *flux_frame_data(const struct flux_frame *v, size_t *len);
 
-bool flux_view_copy_to(const struct flux_view *v, size_t at, uint8_t *dst, size_t n);
+bool flux_frame_copy_to(const struct flux_frame *v, size_t at, uint8_t *dst, size_t n);
 
-const uint8_t *flux_view_aux(const struct flux_view *v, size_t *len);
+const uint8_t *flux_frame_aux(const struct flux_frame *v, size_t *len);
 
-void *flux_view_stream(const struct flux_view *v);
+void *flux_frame_stream(const struct flux_frame *v);
 
 // The frame's device address, 0 when the channel declared no stream.
-uint64_t flux_view_device_ptr(const struct flux_view *v);
+uint64_t flux_frame_device_ptr(const struct flux_frame *v);
 
-bool flux_view_image_layout(const struct flux_view *v, struct flux_image_layout *out);
+bool flux_frame_image_layout(const struct flux_frame *v, struct flux_image_layout *out);
 
-int32_t flux_view_dmabuf_fd(const struct flux_view *v);
+int32_t flux_frame_dmabuf_fd(const struct flux_frame *v);
 
-// Points into `v`, so moving the view moves it. Size a typed read from `dtype`, not `itemsize`.
-const struct flux_frame_meta *flux_view_meta(const struct flux_view *v);
+// Points into `v`, so moving the frame moves it. Size a typed read from `dtype`, not `itemsize`.
+const struct flux_frame_meta *flux_frame_get_meta(const struct flux_frame *v);
 
-uint64_t flux_view_ticket(const struct flux_view *v);
+uint64_t flux_frame_ticket(const struct flux_frame *v);
 
-const void *flux_view_trace_channel(const struct flux_view *v);
+// The channel as trace events name it (`flux/trace.h`), NULL for an empty frame.
+const void *flux_frame_trace_channel(const struct flux_frame *v);
 
 // `CLOCK_MONOTONIC` at commit.
-uint64_t flux_view_publish_ns(const struct flux_view *v);
+uint64_t flux_frame_publish_ns(const struct flux_frame *v);
 
-void flux_view_release(struct flux_view *v);
+void flux_frame_release(struct flux_frame *v);
 
-bool flux_view_valid(const struct flux_view *v);
+bool flux_frame_valid(const struct flux_frame *v);
 
 flux_status flux_channel_set_qos(struct flux_channel *ch, struct flux_qos q);
 
 struct flux_qos flux_channel_qos(const struct flux_channel *ch);
 
 struct flux_refused flux_channel_refused(const struct flux_channel *ch);
-
-// Releases refused because their borrow was already given back: a `flux_view` released twice.
-uint64_t flux_channel_misreleased(const struct flux_channel *ch);
 
 // Commits and releases that could not wait for the stream; each holds its slot (see `flux_channel_set_fence_timeout`).
 uint64_t flux_channel_fence_failed(const struct flux_channel *ch);
@@ -572,13 +561,11 @@ void flux_channel_set_fence_timeout(const struct flux_channel *ch, uint64_t ns);
 // `FLUX_RELEASE_DEFERRED`: a release returns at once; its slot goes back once the device is done.
 flux_status flux_channel_set_release_mode(const struct flux_channel *ch, int32_t mode);
 
-// Orders the view's channel stream after what `s` queued so far, on the device, not the host.
-bool flux_view_after(const struct flux_view *v, const struct flux_stream *s);
+// Orders the frame's channel stream after what `s` queued so far, on the device, not the host.
+bool flux_frame_after(const struct flux_frame *v, const struct flux_stream *s);
 
-// The payload is device memory: views and loans have no host bytes.
+// The payload is device memory: frames and loans have no host bytes.
 bool flux_channel_device_backed(const struct flux_channel *ch);
-
-void *flux_channel_stream(const struct flux_channel *ch);
 
 bool flux_channel_ready(const struct flux_channel *ch);
 
@@ -591,8 +578,6 @@ uint64_t flux_channel_dropped(const struct flux_channel *ch);
 // Live subscriber processes of a publisher's channel; 0 on a subscriber's channel.
 uint32_t flux_channel_subscriber_count(const struct flux_channel *ch);
 
-uint64_t flux_channel_cursor(const struct flux_channel *ch);
-
 uint32_t flux_channel_attach_generation(const struct flux_channel *ch);
 
 // Why takes find nothing until the publisher restarts: it refused us, or a slot missed our policy.
@@ -601,8 +586,6 @@ flux_status flux_channel_attach_status(struct flux_channel *ch);
 bool flux_channel_orphaned(const struct flux_channel *ch);
 
 bool flux_channel_inherited(const struct flux_channel *ch);
-
-uint32_t flux_channel_wake_seq(const struct flux_channel *ch);
 
 uint32_t flux_channel_slot_size(const struct flux_channel *ch);
 
@@ -616,11 +599,9 @@ bool flux_channel_pages_committed(const struct flux_channel *ch);
 
 bool flux_channel_pages_locked(const struct flux_channel *ch);
 
-// Sample `wake_seq` before the take that finds nothing. False only on a timeout.
-bool flux_channel_wait(const struct flux_channel *ch, uint32_t last_seq, int64_t timeout_ns);
-
 void flux_stamp_offset_register(uint64_t fingerprint, int32_t stamp_offset);
 
+// `FLUX_NO_STAMP` for a fingerprint nothing registered.
 int32_t flux_stamp_offset(uint64_t fingerprint);
 
 // A generated type's fingerprint and scalar block: its stream publishers' host slots, its slot size.
@@ -639,7 +620,9 @@ flux_status flux_executor_new(struct flux_executor **out);
 void flux_executor_free(struct flux_executor *ex);
 
 // Equal priorities start in registration order, then take turns. Not while spinning. At most 127.
-flux_status flux_executor_add(struct flux_executor *ex, struct flux_source src, int32_t priority);
+flux_status flux_executor_add(struct flux_executor *ex,
+                              const struct flux_source *src,
+                              int32_t priority);
 
 size_t flux_executor_size(struct flux_executor *ex);
 
@@ -688,33 +671,6 @@ void flux_handle_wake(const struct flux_handle *h);
 
 bool flux_handle_is_spinning(const struct flux_handle *h);
 
-flux_status flux_partitioned_new(struct flux_partitioned **out);
-
-void flux_partitioned_free(struct flux_partitioned *px);
-
-// Takes `ex`: its handle is freed here and must not be used again. Take its `flux_handle` first.
-void flux_partitioned_add(struct flux_partitioned *px, struct flux_executor *ex, size_t *index);
-
-// A thread running `run` until `stop`, which may come first: `run` then returns at once.
-flux_status flux_partitioned_add_external(struct flux_partitioned *px,
-                                          flux_hook run,
-                                          flux_hook stop,
-                                          void *ctx,
-                                          size_t *index);
-
-// Runs on the partition's own thread before its loop, on every spin.
-flux_status flux_partitioned_on_thread_start(struct flux_partitioned *px,
-                                             size_t index,
-                                             flux_hook init,
-                                             void *ctx);
-
-size_t flux_partitioned_size(struct flux_partitioned *px);
-
-// The first failure on any partition stops every partition and is returned here.
-flux_status flux_partitioned_spin(struct flux_partitioned *px, int64_t tick_ns);
-
-struct flux_handle *flux_partitioned_handle(struct flux_partitioned *px);
-
 flux_status flux_stream_create(struct flux_stream **out);
 
 // The caller's `CUstream`, outliving its channels and views; NULL is `FLUX_INVALID_ARGUMENT`.
@@ -735,8 +691,6 @@ flux_status flux_gpu_probe(int32_t device, struct flux_gpu_platform *out);
 // The sticky `CUresult` after which every GPU channel refuses until a restart; 0 while none.
 int32_t flux_gpu_wedged(void);
 
-int32_t flux_gpu_current_device(void);
-
 // Lists this endpoint until freed. A failure costs visibility only.
 flux_status flux_announce(const struct flux_manifest_entry *entry, struct flux_announcement **out);
 
@@ -754,7 +708,7 @@ const struct flux_topic_info *flux_topic_list_get(const struct flux_topic_list *
 
 void flux_topic_list_free(struct flux_topic_list *l);
 
-// Every .msg on `AMENT_PREFIX_PATH` that parses. `FLUX_UNSUPPORTED` if a directory is unreadable.
+// Every .msg on `AMENT_PREFIX_PATH` that parses. `FLUX_IO` if a directory is unreadable.
 flux_status flux_schemas_load(struct flux_schemas **out);
 
 void flux_schemas_free(struct flux_schemas *s);
@@ -777,7 +731,7 @@ flux_status flux_schema_cdr_size(const struct flux_schema *s,
                                  size_t len,
                                  size_t *out);
 
-// `*written` is the CDR size even past `cap`, which is `FLUX_INVALID_ARGUMENT` (frames change).
+// `*written` is the CDR size even past `cap`, which is `FLUX_BUFFER_TOO_SMALL` (frames change).
 flux_status flux_schema_write_cdr(const struct flux_schema *s,
                                   const uint8_t *data,
                                   size_t len,
@@ -785,13 +739,13 @@ flux_status flux_schema_write_cdr(const struct flux_schema *s,
                                   size_t cap,
                                   size_t *written);
 
-// The frame with its arena fields (`heap`; `gpu` host copies or NULL) copied in, as `write_cdr`.
+// The frame with its arena fields (`arena`; `gpu` host copies or NULL) copied in, as `write_cdr`.
 flux_status flux_schema_inline_arena(const struct flux_schema *s,
                                      const uint8_t *data,
                                      size_t len,
-                                     const uint8_t *heap,
-                                     size_t heap_len,
-                                     const struct flux_gpu_heap *gpu,
+                                     const uint8_t *arena,
+                                     size_t arena_len,
+                                     const struct flux_gpu_arena *gpu,
                                      uint8_t *out,
                                      size_t cap,
                                      size_t *written);
@@ -806,7 +760,7 @@ flux_status flux_schema_with_data(const struct flux_schema *s,
                                   size_t cap,
                                   size_t *written);
 
-// Why this thread's last failed call failed. Valid until its next failed call.
+// Why this thread's last `flux_status` failure failed; valid until the next one.
 const char *flux_last_error(void);
 
 #ifdef __cplusplus

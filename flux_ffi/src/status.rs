@@ -19,6 +19,9 @@ pub enum flux_status {
     FLUX_CALLBACK = 7,
     FLUX_IO = 8,
     FLUX_IN_USE = 9,
+    /// The output buffer is too small; the size it needs was written.
+    FLUX_BUFFER_TOO_SMALL = 10,
+    FLUX_NO_FRAME = 11,
 }
 
 thread_local! {
@@ -45,6 +48,13 @@ pub(crate) fn status_of(e: &Error) -> flux_status {
     code
 }
 
+pub(crate) fn too_small(cap: usize, need: usize) -> flux_status {
+    set_last_error(
+        CString::new(format!("buffer of {cap} bytes is too small for {need}")).unwrap_or_default(),
+    );
+    flux_status::FLUX_BUFFER_TOO_SMALL
+}
+
 pub(crate) fn in_use() -> flux_status {
     set_last_error(
         c"another thread is in a call on this channel; give each thread its own".to_owned(),
@@ -57,7 +67,7 @@ fn set_last_error(msg: CString) {
     let _ = LAST_ERROR.try_with(|l| *l.borrow_mut() = msg);
 }
 
-/// Why this thread's last failed call failed. Valid until its next failed call.
+/// Why this thread's last `flux_status` failure failed; valid until the next one.
 #[unsafe(no_mangle)]
 pub extern "C" fn flux_last_error() -> *const c_char {
     LAST_ERROR
@@ -79,14 +89,11 @@ pub(crate) unsafe fn copy_out(
     out: *mut c_char,
     cap: usize,
     len: *mut usize,
-) -> Result<()> {
+) -> flux_status {
     // SAFETY: len is valid for a write.
     unsafe { len.write(s.len()) };
     if s.len() >= cap {
-        return Err(Error::InvalidArgument(format!(
-            "buffer of {cap} bytes is too small for {} and a NUL",
-            s.len()
-        )));
+        return too_small(cap, s.len() + 1);
     }
     let out = out.cast::<u8>();
     // SAFETY: out holds cap > s.len() bytes.
@@ -95,5 +102,5 @@ pub(crate) unsafe fn copy_out(
     let nul = unsafe { out.add(s.len()) };
     // SAFETY: as above.
     unsafe { nul.write(0) };
-    Ok(())
+    flux_status::FLUX_OK
 }

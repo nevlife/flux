@@ -1,8 +1,5 @@
 #include "check.h"
 
-#include <pthread.h>
-#include <stdatomic.h>
-
 typedef struct
 {
   flux_channel * ch;
@@ -22,11 +19,11 @@ static int32_t deliver_one(void * ctx)
   if (s->fail) {
     return -5;
   }
-  flux_view v = {0};
-  if (!flux_channel_take(s->ch, &v)) {
+  flux_frame v = {0};
+  if (flux_channel_take(s->ch, &v) != FLUX_OK) {
     return 0;
   }
-  flux_view_release(&v);
+  flux_frame_release(&v);
   s->delivered++;
   return 1;
 }
@@ -43,7 +40,7 @@ static void drop_ctx(void * ctx)
 
 static flux_source source(source_ctx * s)
 {
-  flux_source src = {s, attach, deliver_one, channel, drop_ctx, NULL, NULL};
+  flux_source src = {sizeof(flux_source), s, attach, deliver_one, channel, drop_ctx, NULL, NULL};
   return src;
 }
 
@@ -55,7 +52,7 @@ static void dispatches_and_drops_once(void)
   flux_qos q = flux_qos_default();
   q.depth = 1;
   CHECK(flux_channel_set_qos(s.ch, q) == FLUX_OK);
-  CHECK(flux_executor_add(ex, source(&s), 0) == FLUX_OK);
+  CHECK(test_add(ex, source(&s), 0) == FLUX_OK);
   CHECK(flux_executor_size(ex) == 1);
   flux_channel_publish(s.ch, (const uint8_t *)"a", 1);
   flux_channel_publish(s.ch, (const uint8_t *)"b", 1);
@@ -75,8 +72,8 @@ static void a_failing_callback_ends_the_spin(void)
   CHECK(flux_channel_new(16, 4, &s.ch) == FLUX_OK);
   flux_source bad = source(&s);
   bad.deliver_one = NULL;
-  CHECK(flux_executor_add(ex, bad, 0) == FLUX_INVALID_ARGUMENT);
-  CHECK(flux_executor_add(ex, source(&s), 0) == FLUX_OK);
+  CHECK(test_add(ex, bad, 0) == FLUX_INVALID_ARGUMENT);
+  CHECK(test_add(ex, source(&s), 0) == FLUX_OK);
   flux_channel_publish(s.ch, (const uint8_t *)"a", 1);
   CHECK(flux_executor_spin(ex, 10000000) == FLUX_CALLBACK);
   CHECK(strstr(flux_last_error(), "-5") != NULL);
@@ -91,10 +88,10 @@ static void a_failed_add_drops_the_source(void)
   source_ctx s = {NULL, 0, 0, 0};
   flux_source bad = source(&s);
   bad.attach = NULL;
-  CHECK(flux_executor_add(ex, bad, 0) == FLUX_INVALID_ARGUMENT);
+  CHECK(test_add(ex, bad, 0) == FLUX_INVALID_ARGUMENT);
   CHECK(s.dropped == 1);
   int added = 0;
-  while (flux_executor_add(ex, source(&s), 0) == FLUX_OK) {
+  while (test_add(ex, source(&s), 0) == FLUX_OK) {
     added++;
   }
   CHECK(s.dropped == 2);
@@ -114,59 +111,37 @@ static void a_failing_attach_ends_the_spin(void)
   source_ctx s = {NULL, 0, 0, 0};
   flux_source src = source(&s);
   src.attach = refuse;
-  CHECK(flux_executor_add(ex, src, 0) == FLUX_OK);
+  CHECK(test_add(ex, src, 0) == FLUX_OK);
   CHECK(flux_executor_spin(ex, 10000000) == FLUX_CALLBACK);
   CHECK(strstr(flux_last_error(), "attach returned -3") != NULL);
   flux_executor_free(ex);
 }
 
-static atomic_bool stopped;
-
-static int32_t run_until_stopped(void * ctx)
-{
-  (void)ctx;
-  while (!atomic_load(&stopped)) {
-    sched_yield();
-  }
-  return 0;
-}
-
-static int32_t set_stop(void * ctx)
-{
-  (void)ctx;
-  atomic_store(&stopped, true);
-  return 0;
-}
-
-static void * spin(void * px)
-{
-  return (void *)(intptr_t)flux_partitioned_spin(px, 10000000);
-}
-
-static void a_partitioned_stop_reaches_an_external_loop(void)
+// A source is read up to its size: a newer header's unknown bytes must be zero, and a refusal
+// drops it once its size reaches drop.
+static void a_source_is_read_up_to_its_size(void)
 {
   flux_executor * ex = test_executor();
-  flux_partitioned * px = NULL;
-  size_t i = 9;
-  CHECK(flux_partitioned_new(&px) == FLUX_OK);
-  flux_partitioned_add(px, ex, &i);
-  CHECK(i == 0);
-  CHECK(flux_partitioned_add_external(px, run_until_stopped, set_stop, NULL, &i) == FLUX_OK);
-  CHECK(i == 1 && flux_partitioned_size(px) == 2);
-  CHECK(flux_partitioned_on_thread_start(px, 7, set_stop, NULL) == FLUX_INVALID_ARGUMENT);
-  flux_handle * h = flux_partitioned_handle(px);
-  pthread_t t;
-  CHECK(pthread_create(&t, NULL, spin, px) == 0);
-  while (!flux_handle_is_spinning(h)) {
-    sched_yield();
-  }
-  flux_handle_stop(h);
-  void * r = NULL;
-  pthread_join(t, &r);
-  CHECK((intptr_t)r == FLUX_OK);
-  CHECK(atomic_load(&stopped));
-  flux_handle_free(h);
-  flux_partitioned_free(px);
+  source_ctx s = {NULL, 0, 0, 0};
+  CHECK(flux_channel_new(16, 4, &s.ch) == FLUX_OK);
+  struct
+  {
+    flux_source src;
+    uint64_t newer;
+  } big;
+  memset(&big, 0, sizeof big);
+  big.src = source(&s);
+  big.src.size = sizeof big;
+  CHECK(flux_executor_add(ex, &big.src, 0) == FLUX_OK);
+  big.newer = 1;
+  CHECK(flux_executor_add(ex, &big.src, 0) == FLUX_UNSUPPORTED);
+  CHECK(s.dropped == 1);
+  flux_source small = source(&s);
+  small.size = 4;
+  CHECK(flux_executor_add(ex, &small, 0) == FLUX_UNSUPPORTED);
+  CHECK(s.dropped == 1);  // too small to reach its drop
+  flux_executor_free(ex);
+  flux_channel_free(s.ch);
 }
 
 int main(void)
@@ -175,7 +150,7 @@ int main(void)
   a_failing_callback_ends_the_spin();
   a_failing_attach_ends_the_spin();
   a_failed_add_drops_the_source();
-  a_partitioned_stop_reaches_an_external_loop();
+  a_source_is_read_up_to_its_size();
   printf("ok\n");
   return 0;
 }

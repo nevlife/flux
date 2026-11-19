@@ -58,7 +58,7 @@ public:
       const auto heap = v.heap();
       const auto * h = reinterpret_cast<const std::uint8_t *>(heap.data());  // NOLINT
       const wire::GpuHeap g = v.gpu_heap();
-      flux_gpu_heap raw{};
+      flux_gpu_arena raw{};
       raw.device = g.device;
       raw.host = reinterpret_cast<const std::uint8_t *>(g.host);  // NOLINT
       raw.size = g.size;
@@ -71,7 +71,7 @@ public:
           s_, d, v.size(), h, heap.size(), &raw, out.data(), out.size(), &n);
       };
       flux_status s = call();
-      if (s == FLUX_INVALID_ARGUMENT && n > out.size()) {
+      if (s == FLUX_BUFFER_TOO_SMALL && n > out.size()) {
         out.resize(n);
         s = call();
       }
@@ -92,7 +92,7 @@ public:
           s_, aux.data(), aux.size(), data.data(), data.size(), out.data(), out.size(), &n);
       };
       flux_status s = call();
-      if (s == FLUX_INVALID_ARGUMENT && n > out.size()) {
+      if (s == FLUX_BUFFER_TOO_SMALL && n > out.size()) {
         out.resize(n);
         s = call();
       }

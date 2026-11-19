@@ -112,11 +112,6 @@ pub extern "C" fn flux_gpu_wedged() -> i32 {
     gpu::wedged().unwrap_or(0)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn flux_gpu_current_device() -> i32 {
-    gpu::current_device()
-}
-
 pub(crate) unsafe fn stream_of(s: *const flux_stream) -> Stream {
     if s.is_null() {
         return Stream::default();

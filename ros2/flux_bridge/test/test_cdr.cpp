@@ -313,7 +313,7 @@ TEST(Cdr, AShortBufferIsRefusedInsteadOfAborting)
       type.write_cdr(f.data(), f.size, out.data(), cap);
       FAIL() << "wrote into " << cap << " bytes";
     } catch (const flux::Error & e) {
-      EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
+      EXPECT_EQ(e.status(), FLUX_BUFFER_TOO_SMALL);
     }
   }
 }

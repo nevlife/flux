@@ -43,10 +43,10 @@ static_assert(sizeof(Desc) == 8);
 constexpr std::size_t kMaxFrameBytes = 0xFFFFFFFFu;  // descriptors are uint32
 
 // A descriptor offset at or past kWireHeap is kWireHeap + an offset into the publisher's arena in
-// kArenaUnit bytes, a shm file the frame's trailer names (FLUX_HEAP_BASE); from kWireGpu up the
-// same into its GPU arena (FLUX_GPU_HEAP_BASE). Frames stay pointer-free. Readers and writers
+// kArenaUnit bytes, a shm file the frame's trailer names (FLUX_ARENA_BASE); from kWireGpu up the
+// same into its GPU arena (FLUX_GPU_ARENA_BASE). Frames stay pointer-free. Readers and writers
 // work in positions, bytes from 0: a slot's below kHeapBase, the arena's from it, the GPU
-// arena's from kGpuBase (FLUX_GPU_HEAP_POS). position() and wire() convert.
+// arena's from kGpuBase (FLUX_GPU_ARENA_POS). position() and wire() convert.
 constexpr std::uint32_t kWireHeap = std::uint32_t{1} << 31;
 constexpr std::uint32_t kWireGpu = std::uint32_t{3} << 30;
 constexpr std::size_t kArenaUnit = 16;

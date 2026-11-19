@@ -26,20 +26,25 @@ pub struct flux_channel {
     busy: AtomicBool,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct flux_memory_policy {
-    pub precommit: bool,
-    /// Implies precommit.
-    pub lock: bool,
-}
+pub const FLUX_MEMORY_DEFAULT: i32 = 0;
+pub const FLUX_MEMORY_PRECOMMIT: i32 = 1;
+/// Payload pages locked in RAM; PRECOMMIT only reserves them when made.
+pub const FLUX_MEMORY_LOCK: i32 = 2;
 
-impl From<flux_memory_policy> for MemoryPolicy {
-    fn from(m: flux_memory_policy) -> Self {
-        MemoryPolicy {
-            precommit: m.precommit,
-            lock: m.lock,
-        }
+fn memory_of(m: i32) -> flux_core::Result<MemoryPolicy> {
+    match m {
+        FLUX_MEMORY_DEFAULT => Ok(MemoryPolicy::default()),
+        FLUX_MEMORY_PRECOMMIT => Ok(MemoryPolicy {
+            precommit: true,
+            lock: false,
+        }),
+        FLUX_MEMORY_LOCK => Ok(MemoryPolicy {
+            precommit: true,
+            lock: true,
+        }),
+        m => Err(Error::InvalidArgument(format!(
+            "memory {m} is no FLUX_MEMORY_*"
+        ))),
     }
 }
 
@@ -117,15 +122,15 @@ const _: () = {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum flux_published {
     FLUX_PUBLISHED_OK = 0,
-    FLUX_PUBLISHED_BACKPRESSURE = 1,
-    FLUX_PUBLISHED_TOO_LARGE = 2,
-    FLUX_PUBLISHED_NOT_PUBLISHER = 3,
     /// An unknown dtype, or a commit of an empty loan (already committed or aborted).
-    FLUX_PUBLISHED_INVALID_ARGUMENT = 4,
-    FLUX_PUBLISHED_IN_USE = 5,
-    /// The stream could not be waited for. The slot stays claimed and is never reused.
-    FLUX_PUBLISHED_FENCE_FAILED = 7,
-    FLUX_PUBLISHED_GPU_WEDGED = 8,
+    FLUX_PUBLISHED_INVALID_ARGUMENT = 1,
+    FLUX_PUBLISHED_IN_USE = 9,
+    FLUX_PUBLISHED_BACKPRESSURE = 16,
+    FLUX_PUBLISHED_TOO_LARGE = 17,
+    FLUX_PUBLISHED_NOT_PUBLISHER = 18,
+    /// The stream could not be waited for; the slot is held (`flux_channel_set_fence_timeout`).
+    FLUX_PUBLISHED_FENCE_FAILED = 19,
+    FLUX_PUBLISHED_GPU_WEDGED = 20,
 }
 
 impl From<Published> for flux_published {
@@ -143,19 +148,19 @@ impl From<Published> for flux_published {
 
 /// A borrowed frame in caller memory, never copied. A move copies the bytes and zeroes the source.
 #[repr(C)]
-pub struct flux_view {
-    pub opaque: [u64; 16],
+pub struct flux_frame {
+    pub opaque: [u64; 32],
 }
 
-/// A claimed slot in caller memory, never copied. Commit it while no call is on its channel.
+/// A claimed slot in caller memory, never copied. End it with `flux_loan_abort`, after a commit too.
 #[repr(C)]
 pub struct flux_loan {
-    pub opaque: [u64; 16],
+    pub opaque: [u64; 32],
 }
 
 const _: () = {
-    assert!(size_of::<Stored<FrameView>>() <= size_of::<flux_view>());
-    assert!(align_of::<Stored<FrameView>>() <= align_of::<flux_view>());
+    assert!(size_of::<Stored<FrameView>>() <= size_of::<flux_frame>());
+    assert!(align_of::<Stored<FrameView>>() <= align_of::<flux_frame>());
     assert!(size_of::<LoanCell>() <= size_of::<flux_loan>());
     assert!(align_of::<LoanCell>() <= align_of::<flux_loan>());
     assert!(size_of::<flux_frame_meta>() == size_of::<FrameMeta>());
@@ -217,12 +222,12 @@ pub(crate) unsafe fn watch_ref<'a>(p: *const flux_watch) -> &'a PublisherWatch {
     unsafe { &(*p).w }
 }
 
-unsafe fn view<'a>(p: *mut flux_view) -> &'a mut Stored<FrameView> {
-    // SAFETY: flux_view is sized and aligned for Stored<FrameView> (asserted above).
+unsafe fn view<'a>(p: *mut flux_frame) -> &'a mut Stored<FrameView> {
+    // SAFETY: flux_frame is sized and aligned for Stored<FrameView> (asserted above).
     unsafe { stored(p) }
 }
 
-pub(crate) unsafe fn view_ref<'a>(p: *const flux_view) -> &'a Stored<FrameView> {
+pub(crate) unsafe fn view_ref<'a>(p: *const flux_frame) -> &'a Stored<FrameView> {
     // SAFETY: as in view.
     unsafe { stored_ref(p) }
 }
@@ -297,49 +302,11 @@ pub unsafe extern "C" fn flux_channel_new(
     }))
 }
 
-/// The publisher of signpost `name` for `max_subscribers` processes, `aux_size` host bytes a slot.
-// `stamp_offset` is where the type's `header.stamp` sits in a frame, for trace events; -1 without
-// one (`FLUX_NO_STAMP`).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_create(
-    name: *const c_char,
-    slot_size: u32,
-    slot_count: u32,
-    max_subscribers: u32,
-    aux_size: u32,
-    fingerprint: u64,
-    mem: flux_memory_policy,
-    stream: *const flux_stream,
-    stamp_offset: i32,
-    out: *mut *mut flux_channel,
-) -> flux_status {
-    // SAFETY: stream is NULL or a live handle.
-    let stream = unsafe { stream_of(stream) };
-    // SAFETY: name is a valid string.
-    let r = unsafe { text(name) }.and_then(|n| {
-        Channel::create_on(
-            n,
-            slot_size,
-            slot_count,
-            max_subscribers,
-            aux_size,
-            fingerprint,
-            mem.into(),
-            stream,
-            stamp_offset,
-            scalar_bytes_of(fingerprint),
-        )
-    });
-    status(r.map(|ch| {
-        // SAFETY: out is valid for a write.
-        unsafe { out.write(boxed(ch)) };
-    }))
-}
-
 /// A publisher's settings. A size or count of 0 is the default for `alloc` (`FLUX_ALLOC_*`).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct flux_publisher_config {
+    pub size: u32,
     pub alloc: i32,
     pub slot_size: u32,
     pub slot_count: u32,
@@ -349,8 +316,7 @@ pub struct flux_publisher_config {
     pub aux_size: u32,
     /// Slots get memory once a subscriber attaches (`FLUX_ALLOC_SLOT` and GPU memory channels).
     pub alloc_on_subscriber: bool,
-    /// `FLUX_IMAGE_SLOTS_*`. Image slots, on an integrated GPU only, are fixed slots each a dmabuf
-    /// engines read in place. AUTO makes them for an image format.
+    /// `FLUX_IMAGE_SLOTS_*`: integrated-GPU slots, each a dmabuf engines read; AUTO with a format.
     pub image_slots: i32,
     /// `FLUX_IMAGE_*`: image slots in this format, the slot size defaulting to one frame.
     pub image_encoding: u32,
@@ -373,10 +339,10 @@ pub const FLUX_IMAGE_YUYV: u32 = 7;
 pub struct flux_image_layout {
     pub encoding: u32,
     pub planes: u32,
-    pub width: [u32; 2],
-    pub height: [u32; 2],
-    pub pitch: [u32; 2],
-    pub offset: [u32; 2],
+    pub width: [u32; 4],
+    pub height: [u32; 4],
+    pub pitch: [u32; 4],
+    pub offset: [u32; 4],
     pub bytes: u32,
 }
 
@@ -384,13 +350,14 @@ fn image_layout_out(l: Option<flux_core::ImageLayout>, out: *mut flux_image_layo
     let Some(l) = l else {
         return false;
     };
+    let four = |a: [u32; 2]| [a[0], a[1], 0, 0];
     let c = flux_image_layout {
         encoding: l.encoding as u32,
         planes: l.planes,
-        width: l.width,
-        height: l.height,
-        pitch: l.pitch,
-        offset: l.offset,
+        width: four(l.width),
+        height: four(l.height),
+        pitch: four(l.pitch),
+        offset: four(l.offset),
         bytes: l.bytes,
     };
     // SAFETY: the caller passes a writable flux_image_layout.
@@ -402,6 +369,7 @@ fn image_layout_out(l: Option<flux_core::ImageLayout>, out: *mut flux_image_layo
 pub extern "C" fn flux_publisher_config_default() -> flux_publisher_config {
     let d = PublisherConfig::default();
     flux_publisher_config {
+        size: CONFIG_SIZE,
         alloc: d.alloc as i32,
         slot_size: d.slot_size,
         slot_count: d.slot_count,
@@ -417,19 +385,79 @@ pub extern "C" fn flux_publisher_config_default() -> flux_publisher_config {
     }
 }
 
-/// As `flux_channel_create`, with the publisher's settings in `config`.
+#[allow(clippy::cast_possible_truncation)]
+const CONFIG_SIZE: u32 = size_of::<flux_publisher_config>() as u32;
+/// The size at ABI 6, the first with `size`. A later field leaves it, so an older caller's smaller
+/// struct is still read, the new fields as 0.
+const CONFIG_SIZE_V6: usize = size_of::<flux_publisher_config>();
+
+/// `config` up to its `size`, over zeroes, which are the defaults. Bytes past what this library
+/// knows must be zero.
+unsafe fn config_of(
+    config: *const flux_publisher_config,
+) -> flux_core::Result<flux_publisher_config> {
+    // SAFETY: the caller's struct holds its size bytes.
+    let raw = unsafe { sized(config.cast::<u8>(), CONFIG_SIZE_V6, CONFIG_SIZE as usize) }
+        .ok_or_else(|| {
+            Error::InvalidArgument(
+                "flux_publisher_config.size is not set: fill the config from \
+                 flux_publisher_config_default()"
+                    .into(),
+            )
+        })?;
+    let raw = raw.map_err(|()| {
+        Error::Unsupported(
+            "the config sets fields this library does not know: it is older than the header".into(),
+        )
+    })?;
+    let mut c = std::mem::MaybeUninit::<flux_publisher_config>::zeroed();
+    // SAFETY: raw is at most sizeof bytes and does not overlap c.
+    unsafe { std::ptr::copy_nonoverlapping(raw.as_ptr(), c.as_mut_ptr().cast::<u8>(), raw.len()) };
+    // SAFETY: every field of the zeroed struct is valid, and raw wrote a caller's valid fields.
+    Ok(unsafe { c.assume_init() })
+}
+
+/// The first `known` bytes of a struct whose leading u32 is its size: None below `min`, Err(())
+/// when bytes past `known` are not zero.
+pub(crate) unsafe fn sized<'a>(
+    p: *const u8,
+    min: usize,
+    known: usize,
+) -> Option<Result<&'a [u8], ()>> {
+    // SAFETY: p is valid for a read of its first field.
+    let size = unsafe { p.cast::<u32>().read_unaligned() } as usize;
+    if size < min {
+        return None;
+    }
+    // SAFETY: the caller's struct holds size bytes.
+    let all = unsafe { std::slice::from_raw_parts(p, size) };
+    let (head, extra) = all.split_at(size.min(known));
+    Some(if extra.iter().any(|&b| b != 0) {
+        Err(())
+    } else {
+        Ok(head)
+    })
+}
+
+/// The publisher of signpost `name`, with its settings in `config` and `FLUX_MEMORY_*` `memory`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_create_config(
+pub unsafe extern "C" fn flux_channel_create(
     name: *const c_char,
     config: *const flux_publisher_config,
     fingerprint: u64,
-    mem: flux_memory_policy,
+    memory: i32,
     stream: *const flux_stream,
-    stamp_offset: i32,
     out: *mut *mut flux_channel,
 ) -> flux_status {
-    // SAFETY: config is valid for a read.
-    let c = unsafe { *config };
+    // SAFETY: config is valid for a read of its size.
+    let c = match unsafe { config_of(config) } {
+        Ok(c) => c,
+        Err(e) => return status_of(&e),
+    };
+    let mem = match memory_of(memory) {
+        Ok(m) => m,
+        Err(e) => return status_of(&e),
+    };
     let alloc = match c.alloc {
         FLUX_ALLOC_ARENA => Alloc::Arena,
         FLUX_ALLOC_SLOT => Alloc::Slot,
@@ -479,9 +507,9 @@ pub unsafe extern "C" fn flux_channel_create_config(
             n,
             &config,
             fingerprint,
-            mem.into(),
+            mem,
             stream,
-            stamp_offset,
+            flux_stamp_offset(fingerprint),
             scalar_bytes_of(fingerprint),
         )
     });
@@ -491,7 +519,7 @@ pub unsafe extern "C" fn flux_channel_create_config(
     }))
 }
 
-// A subscription's hold on a signpost while it has no publisher; open creates the signpost.
+/// A subscription's hold on a signpost while it has no publisher.
 pub struct flux_watch {
     w: PublisherWatch,
 }
@@ -545,9 +573,8 @@ pub unsafe extern "C" fn flux_channel_open_watched(
     w: *const flux_watch,
     fingerprint: u64,
     q: flux_qos,
-    mem: flux_memory_policy,
+    memory: i32,
     stream: *const flux_stream,
-    stamp_offset: i32,
     out: *mut *mut flux_channel,
 ) -> flux_status {
     // SAFETY: stream is NULL or a live handle.
@@ -558,9 +585,9 @@ pub unsafe extern "C" fn flux_channel_open_watched(
             unsafe { &(*w).w },
             fingerprint,
             qos,
-            mem.into(),
+            memory_of(memory)?,
             stream,
-            stamp_offset,
+            flux_stamp_offset(fingerprint),
         )
     });
     status(r.map(|ch| {
@@ -593,16 +620,22 @@ fn qos_of(q: flux_qos) -> flux_core::Result<QoS> {
 pub unsafe extern "C" fn flux_channel_open(
     name: *const c_char,
     fingerprint: u64,
-    mem: flux_memory_policy,
+    memory: i32,
     stream: *const flux_stream,
-    stamp_offset: i32,
     out: *mut *mut flux_channel,
 ) -> flux_status {
     // SAFETY: stream is NULL or a live handle.
     let stream = unsafe { stream_of(stream) };
     // SAFETY: name is a valid string.
-    let r = unsafe { text(name) }
-        .and_then(|n| Channel::open_on(n, fingerprint, mem.into(), stream, stamp_offset));
+    let r = unsafe { text(name) }.and_then(|n| {
+        Channel::open_on(
+            n,
+            fingerprint,
+            memory_of(memory)?,
+            stream,
+            flux_stamp_offset(fingerprint),
+        )
+    });
     status(r.map(|ch| {
         // SAFETY: out is valid for a write.
         unsafe { out.write(boxed(ch)) };
@@ -655,21 +688,19 @@ pub unsafe extern "C" fn flux_channel_publish_typed(
     ch.publish_typed(data, dt, sh).into()
 }
 
-/// The whole slot as one u8 run. False when no slot is free, this is a subscriber, or in use.
+/// The whole slot as one u8 run, OK with a slot in `out`. `BACKPRESSURE` when none is free.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_loan(ch: *mut flux_channel, out: *mut flux_loan) -> bool {
-    // SAFETY: valid loan storage.
-    let slot = unsafe { loan(out) };
+pub unsafe extern "C" fn flux_channel_loan(
+    ch: *mut flux_channel,
+    out: *mut flux_loan,
+) -> flux_published {
     // SAFETY: valid handle.
-    let Some(mut ch) = (unsafe { hold(ch) }) else {
-        slot.put(None);
-        return false;
-    };
-    slot.put(ch.loan());
-    slot.slot.get().is_some()
+    let size = u64::from(unsafe { chan_ref(ch) }.slot_size());
+    // SAFETY: valid handle and loan storage.
+    unsafe { flux_channel_loan_typed(ch, FLUX_DTYPE_U8, &raw const size, 1, out) }
 }
 
-/// The shape is checked at commit. False also for an unknown dtype.
+/// The shape is checked at commit.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_channel_loan_typed(
     ch: *mut flux_channel,
@@ -677,18 +708,26 @@ pub unsafe extern "C" fn flux_channel_loan_typed(
     shape_: *const u64,
     ndim: usize,
     out: *mut flux_loan,
-) -> bool {
+) -> flux_published {
     // SAFETY: valid loan storage.
     let slot = unsafe { loan(out) };
+    slot.put(None);
+    let Some(dt) = DType::from_raw(dtype) else {
+        return flux_published::FLUX_PUBLISHED_INVALID_ARGUMENT;
+    };
     // SAFETY: valid handle.
     let Some(mut ch) = (unsafe { hold(ch) }) else {
-        slot.put(None);
-        return false;
+        return flux_published::FLUX_PUBLISHED_IN_USE;
     };
     // SAFETY: ndim readable dims.
     let sh = unsafe { shape(shape_, ndim) };
-    slot.put(DType::from_raw(dtype).and_then(|dt| ch.loan_typed(dt, sh)));
-    slot.slot.get().is_some()
+    match ch.try_loan_typed(dt, sh) {
+        Ok(w) => {
+            slot.put(Some(w));
+            flux_published::FLUX_PUBLISHED_OK
+        }
+        Err(p) => p.into(),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -733,7 +772,6 @@ pub unsafe extern "C" fn flux_loan_stream(l: *const flux_loan) -> *mut c_void {
         .map_or(std::ptr::null_mut(), |w| w.stream().native())
 }
 
-/// 0 when the channel declared no stream, as for `flux_view_device_ptr`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_loan_device_ptr(l: *const flux_loan) -> u64 {
     // SAFETY: flux_loan is sized and aligned for LoanCell (asserted above).
@@ -813,39 +851,49 @@ pub unsafe extern "C" fn flux_loan_valid(l: *const flux_loan) -> bool {
     unsafe { &*l.cast::<LoanCell>() }.slot.get().is_some()
 }
 
-/// The oldest frame newer than the cursor. A view already in `out` is released first.
+fn taken(slot: &mut Stored<FrameView>, v: Option<FrameView>) -> flux_status {
+    slot.put(v);
+    if slot.get().is_some() {
+        flux_status::FLUX_OK
+    } else {
+        flux_status::FLUX_NO_FRAME
+    }
+}
+
+/// OK with the oldest frame newer than the cursor in `out`, else `NO_FRAME`; `out` is released first.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_take(ch: *mut flux_channel, out: *mut flux_view) -> bool {
-    // SAFETY: valid view storage.
+pub unsafe extern "C" fn flux_channel_take(
+    ch: *mut flux_channel,
+    out: *mut flux_frame,
+) -> flux_status {
+    // SAFETY: valid frame storage.
     let slot = unsafe { view(out) };
     slot.put(None);
     // SAFETY: valid handle.
     let Some(mut ch) = (unsafe { hold(ch) }) else {
-        return false;
+        return in_use();
     };
-    slot.put(ch.take());
-    slot.get().is_some()
+    taken(slot, ch.take())
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_channel_take_blocking(
     ch: *mut flux_channel,
     timeout_ns: i64,
-    out: *mut flux_view,
-) -> bool {
-    // SAFETY: valid view storage.
+    out: *mut flux_frame,
+) -> flux_status {
+    // SAFETY: valid frame storage.
     let slot = unsafe { view(out) };
     slot.put(None);
     // SAFETY: valid handle.
     let Some(mut ch) = (unsafe { hold(ch) }) else {
-        return false;
+        return in_use();
     };
-    slot.put(ch.take_blocking(timeout_ns));
-    slot.get().is_some()
+    taken(slot, ch.take_blocking(timeout_ns))
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_data(v: *const flux_view, len: *mut usize) -> *const u8 {
+pub unsafe extern "C" fn flux_frame_data(v: *const flux_frame, len: *mut usize) -> *const u8 {
     // SAFETY: valid view storage.
     let Some(fv) = (unsafe { view_ref(v) }).get() else {
         return std::ptr::null();
@@ -861,8 +909,8 @@ pub unsafe extern "C" fn flux_view_data(v: *const flux_view, len: *mut usize) ->
 // The frame's bytes from `at` into host `dst`, as `flux_loan_copy_from` says. False past the
 // frame's bytes, for an empty view, or when the copy or the wait failed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_copy_to(
-    v: *const flux_view,
+pub unsafe extern "C" fn flux_frame_copy_to(
+    v: *const flux_frame,
     at: usize,
     dst: *mut u8,
     n: usize,
@@ -881,7 +929,7 @@ pub unsafe extern "C" fn flux_view_copy_to(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_aux(v: *const flux_view, len: *mut usize) -> *const u8 {
+pub unsafe extern "C" fn flux_frame_aux(v: *const flux_frame, len: *mut usize) -> *const u8 {
     // SAFETY: valid view storage.
     let Some(fv) = (unsafe { view_ref(v) }).get() else {
         return std::ptr::null();
@@ -893,7 +941,7 @@ pub unsafe extern "C" fn flux_view_aux(v: *const flux_view, len: *mut usize) -> 
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_stream(v: *const flux_view) -> *mut c_void {
+pub unsafe extern "C" fn flux_frame_stream(v: *const flux_frame) -> *mut c_void {
     // SAFETY: valid view storage.
     unsafe { view_ref(v) }
         .get()
@@ -902,7 +950,7 @@ pub unsafe extern "C" fn flux_view_stream(v: *const flux_view) -> *mut c_void {
 
 /// The frame's device address, 0 when the channel declared no stream.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_device_ptr(v: *const flux_view) -> u64 {
+pub unsafe extern "C" fn flux_frame_device_ptr(v: *const flux_frame) -> u64 {
     // SAFETY: valid view storage.
     unsafe { view_ref(v) }
         .get()
@@ -910,8 +958,8 @@ pub unsafe extern "C" fn flux_view_device_ptr(v: *const flux_view) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_image_layout(
-    v: *const flux_view,
+pub unsafe extern "C" fn flux_frame_image_layout(
+    v: *const flux_frame,
     out: *mut flux_image_layout,
 ) -> bool {
     // SAFETY: valid view storage.
@@ -920,15 +968,15 @@ pub unsafe extern "C" fn flux_view_image_layout(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_dmabuf_fd(v: *const flux_view) -> i32 {
+pub unsafe extern "C" fn flux_frame_dmabuf_fd(v: *const flux_frame) -> i32 {
     // SAFETY: valid view storage.
     let f = unsafe { view_ref(v) }.get();
     f.and_then(FrameView::dmabuf_fd).unwrap_or(-1)
 }
 
-/// Points into `v`, so moving the view moves it. Size a typed read from `dtype`, not `itemsize`.
+/// Points into `v`, so moving the frame moves it. Size a typed read from `dtype`, not `itemsize`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_meta(v: *const flux_view) -> *const flux_frame_meta {
+pub unsafe extern "C" fn flux_frame_get_meta(v: *const flux_frame) -> *const flux_frame_meta {
     // SAFETY: valid view storage.
     unsafe { view_ref(v) }.get().map_or(std::ptr::null(), |fv| {
         std::ptr::from_ref(fv.meta()).cast::<flux_frame_meta>()
@@ -936,14 +984,14 @@ pub unsafe extern "C" fn flux_view_meta(v: *const flux_view) -> *const flux_fram
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_ticket(v: *const flux_view) -> u64 {
+pub unsafe extern "C" fn flux_frame_ticket(v: *const flux_frame) -> u64 {
     // SAFETY: valid view storage.
     unsafe { view_ref(v) }.get().map_or(0, FrameView::ticket)
 }
 
-// The channel as trace events name it (`flux/trace.h`), NULL for an empty view.
+/// The channel as trace events name it (`flux/trace.h`), NULL for an empty frame.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_trace_channel(v: *const flux_view) -> *const c_void {
+pub unsafe extern "C" fn flux_frame_trace_channel(v: *const flux_frame) -> *const c_void {
     // SAFETY: valid view storage.
     unsafe { view_ref(v) }
         .get()
@@ -952,7 +1000,7 @@ pub unsafe extern "C" fn flux_view_trace_channel(v: *const flux_view) -> *const 
 
 /// `CLOCK_MONOTONIC` at commit.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_publish_ns(v: *const flux_view) -> u64 {
+pub unsafe extern "C" fn flux_frame_publish_ns(v: *const flux_frame) -> u64 {
     // SAFETY: valid view storage.
     unsafe { view_ref(v) }
         .get()
@@ -960,13 +1008,13 @@ pub unsafe extern "C" fn flux_view_publish_ns(v: *const flux_view) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_release(v: *mut flux_view) {
+pub unsafe extern "C" fn flux_frame_release(v: *mut flux_frame) {
     // SAFETY: valid view storage.
     unsafe { view(v) }.put(None);
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_valid(v: *const flux_view) -> bool {
+pub unsafe extern "C" fn flux_frame_valid(v: *const flux_frame) -> bool {
     // SAFETY: valid view storage.
     unsafe { view_ref(v) }.get().is_some()
 }
@@ -998,13 +1046,6 @@ pub unsafe extern "C" fn flux_channel_refused(ch: *const flux_channel) -> flux_r
         bad_frame: r.bad_frame,
         fence: r.fence,
     }
-}
-
-/// Releases refused because their borrow was already given back: a `flux_view` released twice.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_misreleased(ch: *const flux_channel) -> u64 {
-    // SAFETY: valid handle.
-    unsafe { chan_ref(ch) }.misreleased()
 }
 
 /// Commits and releases that could not wait for the stream; each holds its slot (see `flux_channel_set_fence_timeout`).
@@ -1065,9 +1106,9 @@ pub const FLUX_IMAGE_SLOTS_AUTO: i32 = 0;
 pub const FLUX_IMAGE_SLOTS_OFF: i32 = 1;
 pub const FLUX_IMAGE_SLOTS_ON: i32 = 2;
 
-/// Orders the view's channel stream after what `s` queued so far, on the device, not the host.
+/// Orders the frame's channel stream after what `s` queued so far, on the device, not the host.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_view_after(v: *const flux_view, s: *const flux_stream) -> bool {
+pub unsafe extern "C" fn flux_frame_after(v: *const flux_frame, s: *const flux_stream) -> bool {
     // SAFETY: s is null or a live stream.
     let other = unsafe { stream_of(s) };
     // SAFETY: valid view storage.
@@ -1076,17 +1117,11 @@ pub unsafe extern "C" fn flux_view_after(v: *const flux_view, s: *const flux_str
         .is_some_and(|fv| fv.stream().after(&other))
 }
 
-/// The payload is device memory: views and loans have no host bytes.
+/// The payload is device memory: frames and loans have no host bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_channel_device_backed(ch: *const flux_channel) -> bool {
     // SAFETY: valid handle.
     unsafe { chan_ref(ch) }.device_backed()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_stream(ch: *const flux_channel) -> *mut c_void {
-    // SAFETY: valid handle.
-    unsafe { chan_ref(ch) }.stream().native()
 }
 
 #[unsafe(no_mangle)]
@@ -1121,12 +1156,6 @@ pub unsafe extern "C" fn flux_channel_subscriber_count(ch: *const flux_channel) 
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_cursor(ch: *const flux_channel) -> u64 {
-    // SAFETY: valid handle.
-    unsafe { chan_ref(ch) }.cursor()
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_channel_attach_generation(ch: *const flux_channel) -> u32 {
     // SAFETY: valid handle.
     unsafe { chan_ref(ch) }.attach_generation()
@@ -1152,12 +1181,6 @@ pub unsafe extern "C" fn flux_channel_orphaned(ch: *const flux_channel) -> bool 
 pub unsafe extern "C" fn flux_channel_inherited(ch: *const flux_channel) -> bool {
     // SAFETY: valid handle.
     unsafe { chan_ref(ch) }.inherited()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_wake_seq(ch: *const flux_channel) -> u32 {
-    // SAFETY: valid handle.
-    unsafe { chan_ref(ch) }.wake_seq()
 }
 
 #[unsafe(no_mangle)]
@@ -1196,17 +1219,6 @@ pub unsafe extern "C" fn flux_channel_pages_locked(ch: *const flux_channel) -> b
     unsafe { chan_ref(ch) }.pages_locked()
 }
 
-/// Sample `wake_seq` before the take that finds nothing. False only on a timeout.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_channel_wait(
-    ch: *const flux_channel,
-    last_seq: u32,
-    timeout_ns: i64,
-) -> bool {
-    // SAFETY: valid handle.
-    unsafe { chan_ref(ch) }.wait(last_seq, timeout_ns)
-}
-
 /// Where each generated type's `header.stamp` sits, by fingerprint: the generated code registers
 /// it as it loads, so the bindings can pass it as `stamp_offset` from the fingerprint alone.
 static STAMP_OFFSETS: Mutex<BTreeMap<u64, i32>> = Mutex::new(BTreeMap::new());
@@ -1219,7 +1231,7 @@ pub extern "C" fn flux_stamp_offset_register(fingerprint: u64, stamp_offset: i32
         .insert(fingerprint, stamp_offset);
 }
 
-// `FLUX_NO_STAMP` for a fingerprint nothing registered.
+/// `FLUX_NO_STAMP` for a fingerprint nothing registered.
 #[unsafe(no_mangle)]
 pub extern "C" fn flux_stamp_offset(fingerprint: u64) -> i32 {
     STAMP_OFFSETS
@@ -1266,5 +1278,9 @@ pub unsafe extern "C" fn flux_signpost_name(
     // SAFETY: key is a valid string.
     let r = unsafe { text(key) }.and_then(|k| signpost_name(k, fingerprint));
     // SAFETY: out holds cap bytes and len is valid for a write.
-    status(r.and_then(|name| unsafe { copy_out(&name, out, cap, len) }))
+    match r {
+        // SAFETY: out holds cap bytes and len is valid for a write.
+        Ok(name) => unsafe { copy_out(&name, out, cap, len) },
+        Err(e) => status_of(&e),
+    }
 }

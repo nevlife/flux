@@ -1611,7 +1611,9 @@ NB_MODULE(_flux, m)
     .value("UNSUPPORTED", FLUX_UNSUPPORTED)
     .value("CALLBACK", FLUX_CALLBACK)
     .value("IO", FLUX_IO)
-    .value("IN_USE", FLUX_IN_USE);
+    .value("IN_USE", FLUX_IN_USE)
+    .value("BUFFER_TOO_SMALL", FLUX_BUFFER_TOO_SMALL)
+    .value("NO_FRAME", FLUX_NO_FRAME);
 
   nb::enum_<flux::Published>(m, "Published")
     .value("OK", flux::Published::Ok)
@@ -1645,15 +1647,10 @@ NB_MODULE(_flux, m)
     .def_prop_ro("replay", &flux::QoS::replay)
     .def_prop_ro("max_borrow", &flux::QoS::borrow_limit);
 
-  nb::class_<flux::MemoryPolicy>(m, "MemoryPolicy")
-    .def(
-      "__init__",
-      [](flux::MemoryPolicy * p, bool precommit, bool lock) {
-        new (p) flux::MemoryPolicy{precommit, lock};
-      },
-      "precommit"_a = false, "lock"_a = false)
-    .def_ro("precommit", &flux::MemoryPolicy::precommit)
-    .def_ro("lock", &flux::MemoryPolicy::lock);
+  nb::enum_<flux::MemoryPolicy>(m, "MemoryPolicy")
+    .value("DEFAULT", flux::MemoryPolicy::Default)
+    .value("PRECOMMIT", flux::MemoryPolicy::Precommit)
+    .value("LOCK", flux::MemoryPolicy::Lock);
 
   nb::class_<flux::Refused>(m, "Refused")
     .def_ro("max_borrow", &flux::Refused::max_borrow)

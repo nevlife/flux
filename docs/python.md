@@ -36,7 +36,7 @@ if flux.faulted(p):
 
 ```python
 flux.create_publisher(node, topic, *, fingerprint=flux.NO_SCHEMA, slot_size=0, slot_count=0,
-                      memory=None, max_subscribers=16, device="cpu", fence_timeout=None,
+                      memory="default", max_subscribers=16, device="cpu", fence_timeout=None,
                       mirror_to_ros=False, aux_size=0, alloc="arena", max_slot_size=0,
                       max_slot_count=0, alloc_on_subscriber=False, image_slots="auto",
                       image_encoding="", image_width=0, image_height=0)
@@ -97,7 +97,7 @@ ex.spin()
 ```
 
 ```python
-flux.create_subscription(node, topic, qos, callback, *, fingerprint=flux.NO_SCHEMA, memory=None,
+flux.create_subscription(node, topic, qos, callback, *, fingerprint=flux.NO_SCHEMA, memory="default",
                          device="cpu", fence_timeout=None, release="wait")
 ```
 
