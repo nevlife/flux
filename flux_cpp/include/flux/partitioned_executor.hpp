@@ -33,7 +33,7 @@ public:
   using ThreadStart =
     std::function<void(const NodeBase::SharedPtr &, const rclcpp::CallbackGroup::SharedPtr &)>;
 
-  // Throws Error with FLUX_UNSUPPORTED where flux::Executor would.
+  // Throws Error with Status::Unsupported where flux::Executor would.
   PartitionedExecutor();
   ~PartitionedExecutor();
   PartitionedExecutor(const PartitionedExecutor &) = delete;

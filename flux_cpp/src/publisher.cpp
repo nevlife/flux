@@ -125,8 +125,6 @@ Publisher::Publisher(
   detail::trace_endpoint(this, node, topic_, signpost_, fingerprint, true);
 }
 
-Publisher::Publisher(Publisher &&) noexcept = default;
-auto Publisher::operator=(Publisher &&) noexcept -> Publisher & = default;
 Publisher::~Publisher() = default;
 
 void Publisher::mirror_to_ros()

@@ -147,7 +147,7 @@ struct GpuBlock
   std::uint64_t device = 0;
 };
 
-// How a received frame's fields are reached across PCIe (flux::FrameView::gpu_heap()). The GPU
+// How a received frame's fields are reached across PCIe (flux::Frame::gpu_heap()). The GPU
 // arena: the device and CPU addresses of its offset 0, each null where this reader has none, and
 // the bytes both cover. `frame`: the frame's own device address, for a reader with a stream. And
 // `count` copied blocks: a CPU reader's of device memory, a discrete GPU reader's of the arena.
@@ -162,7 +162,7 @@ struct GpuHeap
 };
 
 // Where a Writer puts what does not fit its slot. A loan's handle on the arena
-// (flux::WriteSlot::heap()), valid while the loan lives; empty for none. `base` is null until the
+// (flux::Loan::heap()), valid while the loan lives; empty for none. `base` is null until the
 // first alloc makes the arena; the Writer fills it in then.
 struct Heap
 {
@@ -357,13 +357,13 @@ inline auto tensor_fault(
   return nullptr;
 }
 
-// Read side of a received frame. Construct over FrameView::data()/size().
+// Read side of a received frame. Construct over Frame::data()/size().
 class Reader
 {
 public:
   Reader() = default;
-  // `heap` is the arena the frame's trailer names, if any (flux::FrameView::heap()), and `gpu`
-  // its GPU arena (flux::FrameView::gpu_heap()).
+  // `heap` is the arena the frame's trailer names, if any (flux::Frame::heap()), and `gpu`
+  // its GPU arena (flux::Frame::gpu_heap()).
   Reader(
     const void * base, std::size_t size, Span<const std::byte> heap = {},
     const GpuHeap & gpu = {}) noexcept

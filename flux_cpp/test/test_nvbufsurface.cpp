@@ -95,13 +95,13 @@ TEST_F(NvBuf, VicReadsAnImageSlotThroughItsSurfaceWithoutACopy)
   flux::NvBufSurfaces surfaces;
   NvBufSurface * first = nullptr;
   for (int k = 0; k < 2; ++k) {
-    flux::WriteSlot w = pub.loan();
+    flux::Loan w = pub.loan();
     ASSERT_TRUE(w);
     const auto l = w.image_layout();
     ASSERT_TRUE(l.has_value());
     fill_bgra(static_cast<std::uint8_t *>(w.data()), 848, 480, l->pitch[0]);
     ASSERT_EQ(w.commit(l->bytes), flux::Published::Ok);
-    flux::FrameView v = sub.take();
+    flux::Frame v = sub.take();
     ASSERT_TRUE(v);
     NvBufSurface * s = surfaces.surface(v);
     ASSERT_NE(s, nullptr);
@@ -130,14 +130,14 @@ TEST_F(NvBuf, TwoCachesOfOneSlotBothHandItToVic)
   auto pub = flux::detail::Channel::create_config(name, c, flux::kNoSchema);
   flux::detail::Watch watch(name);
   auto sub = flux::detail::Channel::open(watch, flux::kNoSchema, flux::QoS(4));
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   fill_bgra(static_cast<std::uint8_t *>(w.data()), 848, 480, w.image_layout()->pitch[0]);
   auto mine = std::make_unique<flux::NvBufSurfaces>();
   NvBufSurface * from_loan = mine->surface(w);
   ASSERT_NE(from_loan, nullptr);
   ASSERT_EQ(w.commit(w.image_layout()->bytes), flux::Published::Ok);
-  flux::FrameView v = sub.take();
+  flux::Frame v = sub.take();
   ASSERT_TRUE(v);
   auto theirs = std::make_unique<flux::NvBufSurfaces>();
   NvBufSurface * from_view = theirs->surface(v);
@@ -158,11 +158,11 @@ TEST_F(NvBuf, AFrameOutsideAnImageSlotIsCopiedForVic)
   auto pub = flux::detail::Channel::create_config(name, c, flux::kNoSchema);
   flux::detail::Watch watch(name);
   auto sub = flux::detail::Channel::open(watch, flux::kNoSchema, flux::QoS(4));
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   fill_bgra(static_cast<std::uint8_t *>(w.data()), 640, 480, 640 * 4);
   ASSERT_EQ(w.commit(std::size_t{640} * 4 * 480), flux::Published::Ok);
-  flux::FrameView v = sub.take();
+  flux::Frame v = sub.take();
   ASSERT_TRUE(v);
   flux::NvBufSurfaces surfaces;
   EXPECT_EQ(surfaces.surface(v), nullptr) << "a byte frame with no hint is nothing";

@@ -126,7 +126,7 @@ pub(crate) fn soon(mut done: impl FnMut() -> bool) -> bool {
 
 /// A loan of `p`, once the filler gave it a slot.
 #[cfg(test)]
-pub(crate) fn loan_soon(p: &mut super::Channel) -> super::WriteSlot {
+pub(crate) fn loan_soon(p: &mut super::Channel) -> super::Loan {
     let mut w = None;
     assert!(soon(|| {
         w = p.loan();

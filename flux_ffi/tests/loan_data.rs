@@ -1,4 +1,4 @@
-//! What C++ `WriteSlot` does: `data()`, then `capacity()`, then a write through the first
+//! What C++ `Loan` does: `data()`, then `capacity()`, then a write through the first
 //! pointer. Both accessors call `flux_loan_data`. Run under Miri to check the aliasing:
 //! `cargo +nightly miri test -p flux_ffi --test loan_data`.
 

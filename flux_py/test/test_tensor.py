@@ -80,7 +80,7 @@ int main(int, char ** argv)
   }
   flux::detail::Subscriber sub(name, DlTensor::kFingerprint, flux::QoS(8).transient_local(8), {});
   for (int i = 0; i < std::stoi(argv[3]); ++i) {
-    const flux::FrameView v = sub.take_blocking(5000000000LL, [] { return false; });
+    const flux::Frame v = sub.take_blocking(5000000000LL, [] { return false; });
     const DlTensor::View view(v);
     const flux::wire::Tensor t = view.as_tensor__();
     if (!view.ok__()) {

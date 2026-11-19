@@ -59,7 +59,7 @@ int main(int, char ** argv)
     return ok ? 0 : 2;
   }
   flux::detail::Subscriber sub(name, Blob::kFingerprint, flux::QoS(8).transient_local(8), {});
-  const flux::FrameView v = sub.take_blocking(5000000000LL, [] { return false; });
+  const flux::Frame v = sub.take_blocking(5000000000LL, [] { return false; });
   const Blob::View view(v);
   std::uint64_t sum = 0;
   for (const std::uint8_t x : view.data()) sum += x;

@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use flux_core::{FrameView, GpuBlock, GpuHeap, Heap, WriteSlot};
+use flux_core::{Frame, GpuBlock, GpuHeap, Heap, Loan};
 
 use crate::channel::{LoanCell, bytes, flux_frame, flux_loan, view_ref};
 
@@ -58,7 +58,7 @@ pub unsafe extern "C" fn flux_loan_arena(l: *const flux_loan) -> flux_arena {
     let h = unsafe { &*l.cast::<LoanCell>() }
         .slot
         .get()
-        .and_then(WriteSlot::heap);
+        .and_then(Loan::heap);
     h.map_or(
         flux_arena {
             base: std::ptr::null_mut(),
@@ -144,7 +144,7 @@ pub unsafe extern "C" fn flux_arena_adopt(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_frame_arena(v: *const flux_frame, size: *mut usize) -> *const u8 {
     // SAFETY: valid view storage.
-    let Some(h) = unsafe { view_ref(v) }.get().and_then(FrameView::heap) else {
+    let Some(h) = unsafe { view_ref(v) }.get().and_then(Frame::heap) else {
         return std::ptr::null();
     };
     // SAFETY: size is valid for a write.
@@ -165,7 +165,7 @@ pub unsafe extern "C" fn flux_frame_gpu_arena(
         frame,
         blocks,
         count,
-    }) = unsafe { view_ref(v) }.get().and_then(FrameView::gpu_heap)
+    }) = unsafe { view_ref(v) }.get().and_then(Frame::gpu_heap)
     else {
         return false;
     };

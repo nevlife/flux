@@ -93,12 +93,12 @@ void ChannelDisplay::unsubscribe()
   sub_.reset();
 }
 
-auto ChannelDisplay::take() -> flux::FrameView
+auto ChannelDisplay::take() -> flux::Frame
 {
   if (!sub_) {
     return {};
   }
-  flux::FrameView frame;
+  flux::Frame frame;
   try {
     frame = sub_->take();
   } catch (const std::exception & e) {

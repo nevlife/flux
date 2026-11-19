@@ -8,7 +8,7 @@ flux에서 복사가 발생하는 경우다. 읽기에는 복사가 없고, 예�
 
 | 받는 쪽 | 받는 것 |
 | --- | --- |
-| C++ | `FrameView::data()`. 슬롯 안의 주소다 |
+| C++ | `Frame::data()`. 슬롯 안의 주소다 |
 | C++ 어댑터 | `View`의 접근자. 배열 필드는 슬롯을 가리키는 `Span`이다 |
 | Python | 읽기 전용 NumPy 배열 |
 | Python 어댑터 | `View`의 속성. 배열 필드는 읽기 전용 NumPy 배열이다 |
@@ -27,7 +27,7 @@ flux에서 복사가 발생하는 경우다. 읽기에는 복사가 없고, 예�
 
 ```cpp doc:cpp_loan
 constexpr std::size_t kPoints = 1024;
-flux::WriteSlot slot = pub->loan(flux::DType::F32, {kPoints, 3});
+flux::Loan slot = pub->loan({kPoints, 3}, flux::DType::F32);
 if (slot) {
   auto * xyz = static_cast<float *>(slot.data());
   std::fill_n(xyz, kPoints * 3, 0.0F);

@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use common::{Rng, Worker, reply, violation};
 use flux_core::gpu::{Route, Stream, probe};
 use flux_core::{
-    Channel, DEFAULT_MAX_SUBSCRIBERS, Error, FrameView, MemoryPolicy, NO_SCHEMA, Published, QoS,
+    Channel, DEFAULT_MAX_SUBSCRIBERS, Error, Frame, MemoryPolicy, NO_SCHEMA, Published, QoS,
     read_channel_stats, signpost_name,
 };
 
@@ -67,7 +67,7 @@ fn byte_of(ticket: u64) -> u8 {
     (ticket.wrapping_mul(37) + 11).to_le_bytes()[0]
 }
 
-fn check(cu: &Cuda, v: &FrameView) -> Result<(), String> {
+fn check(cu: &Cuda, v: &Frame) -> Result<(), String> {
     let t = v.ticket();
     if v.meta().nbytes != len_of(t) {
         return Err(format!("ticket {t}: {} bytes", v.meta().nbytes));
@@ -197,7 +197,7 @@ fn subscribe_role(signpost: &str, rng: &mut Rng, stop: &AtomicBool, cu: &Cuda, k
         let borrow = 1 + rng.below(2);
         let q = QoS::new(1 + rng.below(SLOTS)).unwrap().max_borrow(borrow);
         ch.set_qos(q.unwrap()).unwrap();
-        let mut held: Vec<FrameView> = Vec::new();
+        let mut held: Vec<Frame> = Vec::new();
         let mut next_look = Instant::now();
         while !stop.load(Ordering::Relaxed) && (keeper || rng.below(2000) != 0) {
             if let Some(v) = ch.take_blocking(5_000_000) {

@@ -310,7 +310,7 @@ struct AuxOverflow
 // A GPU channel frame's fields but data, read from its aux; empty when the aux is not a frame of
 // the type. Each field is read once to check it, as a View built over another process's bytes.
 template <class MsgT>
-auto gpu_fields(const flux::FrameView & f) -> std::optional<typename AdapterT<MsgT>::View>
+auto gpu_fields(const flux::Frame & f) -> std::optional<typename AdapterT<MsgT>::View>
 {
   const auto aux = f.aux();
   typename AdapterT<MsgT>::View v(aux.data(), aux.size());
@@ -523,7 +523,7 @@ protected:
   explicit LoanBase(Builder && b) : builder_(std::move(b)) {}
   // The fields but data go to a Builder over the slot's aux, the data field to its payload. With no
   // free slot the Builder has no buffer, so the fields set go nowhere, as on a host loan.
-  explicit LoanBase(flux::WriteSlot && slot) noexcept : slot_(std::move(slot)), gpu_(true)
+  explicit LoanBase(flux::Loan && slot) noexcept : slot_(std::move(slot)), gpu_(true)
   {
     builder_.emplace(slot_ ? slot_.aux().data() : nullptr, slot_ ? slot_.aux().size() : 0);
   }
@@ -544,7 +544,7 @@ protected:
   }
 
   std::optional<Builder> builder_;
-  flux::WriteSlot slot_;
+  flux::Loan slot_;
   std::size_t len_ = 0;
   bool gpu_ = false;
   bool bad_ = false;
@@ -719,7 +719,7 @@ protected:
   ViewBase() = default;
 #ifdef USE_FLUX_ENABLED
   // A GPU channel frame: `fields` read from its aux, the data field its payload.
-  ViewBase(const flux::FrameView & f, const typename AdapterT<MsgT>::View & fields) noexcept
+  ViewBase(const flux::Frame & f, const typename AdapterT<MsgT>::View & fields) noexcept
   : flux_(fields),
     gpu_(true),
     host_(static_cast<const std::uint8_t *>(f.data())),
@@ -818,7 +818,7 @@ class View : public detail::ViewBase<MsgT>
 public:
   using detail::ViewBase<MsgT>::ViewBase;
 #ifdef USE_FLUX_ENABLED
-  View(const flux::FrameView & f, const typename detail::AdapterT<MsgT>::View & fields) noexcept
+  View(const flux::Frame & f, const typename detail::AdapterT<MsgT>::View & fields) noexcept
   : detail::ViewBase<MsgT>(f, fields)
   {
   }
@@ -944,7 +944,7 @@ class View<sensor_msgs::msg::Image> : public detail::ViewBase<sensor_msgs::msg::
 public:
   using ViewBase::ViewBase;
 #ifdef USE_FLUX_ENABLED
-  View(const flux::FrameView & f, const sensor_msgs::flux_msg::Image::View & fields) noexcept
+  View(const flux::Frame & f, const sensor_msgs::flux_msg::Image::View & fields) noexcept
   : ViewBase(f, fields)
   {
   }
@@ -978,7 +978,7 @@ class View<sensor_msgs::msg::PointCloud2> : public detail::ViewBase<sensor_msgs:
 public:
   using ViewBase::ViewBase;
 #ifdef USE_FLUX_ENABLED
-  View(const flux::FrameView & f, const sensor_msgs::flux_msg::PointCloud2::View & fields) noexcept
+  View(const flux::Frame & f, const sensor_msgs::flux_msg::PointCloud2::View & fields) noexcept
   : ViewBase(f, fields)
   {
   }

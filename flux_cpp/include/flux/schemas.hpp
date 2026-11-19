@@ -13,7 +13,7 @@ namespace flux
 {
 
 // Whether `v` has fields in its publisher's arenas, which Schemas::Type::inline_arena copies in.
-inline auto in_arena(const FrameView & v) -> bool
+inline auto in_arena(const Frame & v) -> bool
 {
   if (!v.heap().empty()) {
     return true;
@@ -33,7 +33,7 @@ public:
     // pkg/msg/Name, as rclcpp names a type.
     [[nodiscard]] auto ros_type() const -> std::string { return flux_schema_ros_type(s_); }
     // A frame of this type as the CDR bytes rmw publishes for the ROS message. Throws Error
-    // (FLUX_MISMATCH) for a frame that does not match the schema.
+    // (Status::Mismatch) for a frame that does not match the schema.
     auto cdr_size(const void * data, std::size_t size) const -> std::size_t
     {
       std::size_t n = 0;
@@ -51,8 +51,8 @@ public:
 
     // `v` with its fields in its publisher's arenas copied in, into `out`: a frame of this type
     // that holds them itself. GPU arena fields come from the host copies a CPU reader gets
-    // (FrameView::gpu_heap()). Throws Error (FLUX_MISMATCH) for a frame that does not match.
-    void inline_arena(const FrameView & v, std::vector<std::uint8_t> & out) const
+    // (Frame::gpu_heap()). Throws Error (Status::Mismatch) for a frame that does not match.
+    void inline_arena(const Frame & v, std::vector<std::uint8_t> & out) const
     {
       const auto * d = static_cast<const std::uint8_t *>(v.data());
       const auto heap = v.heap();
@@ -81,7 +81,7 @@ public:
 
     // A GPU memory channel's `aux` (a frame of this type with `data` empty) and `data` (its
     // payload, or a CPU reader's copy) as one frame of this type, into `out`. Throws Error
-    // (FLUX_MISMATCH) for an aux that does not match.
+    // (Status::Mismatch) for an aux that does not match.
     void with_data(
       wire::Span<const std::uint8_t> aux, wire::Span<const std::uint8_t> data,
       std::vector<std::uint8_t> & out) const
@@ -99,7 +99,7 @@ public:
       detail::check(s);
       out.resize(n);
     }
-    void with_data(const FrameView & v, std::vector<std::uint8_t> & out) const
+    void with_data(const Frame & v, std::vector<std::uint8_t> & out) const
     {
       with_data(
         v.aux(), {static_cast<const std::uint8_t *>(v.data()), v.data() != nullptr ? v.size() : 0},

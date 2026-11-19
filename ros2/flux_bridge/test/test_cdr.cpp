@@ -236,7 +236,7 @@ TEST(Cdr, AFrameThatDoesNotMatchItsSchemaIsRefused)
     type.cdr_size(f.data(), f.size - 1);
     FAIL() << "a truncated frame converted";
   } catch (const flux::Error & e) {
-    EXPECT_EQ(e.status(), FLUX_MISMATCH);
+    EXPECT_EQ(e.status(), flux::Status::Mismatch);
   }
 }
 
@@ -285,7 +285,7 @@ TEST(Cdr, AFrameThatReadsTheSameBytesTwiceIsRefused)
     type.cdr_size(f.data(), f.size);
     FAIL() << "an overlapping frame converted";
   } catch (const flux::Error & e) {
-    EXPECT_EQ(e.status(), FLUX_MISMATCH);
+    EXPECT_EQ(e.status(), flux::Status::Mismatch);
   }
 }
 
@@ -313,7 +313,7 @@ TEST(Cdr, AShortBufferIsRefusedInsteadOfAborting)
       type.write_cdr(f.data(), f.size, out.data(), cap);
       FAIL() << "wrote into " << cap << " bytes";
     } catch (const flux::Error & e) {
-      EXPECT_EQ(e.status(), FLUX_BUFFER_TOO_SMALL);
+      EXPECT_EQ(e.status(), flux::Status::BufferTooSmall);
     }
   }
 }

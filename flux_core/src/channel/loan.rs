@@ -15,7 +15,7 @@ use super::{ChannelShared, Owned, Published};
 /// A claimed slot. Dropped without commit, it is aborted, and the frame the slot held before is
 /// gone either way, since `data_mut` aliased it. It may be committed or dropped on another thread:
 /// both touch only the shared state, as the bindings' loans do.
-pub struct WriteSlot {
+pub struct Loan {
     pub(super) sh: Arc<ChannelShared>,
     pub(super) slot: u32,
     pub(super) meta: FrameMeta,
@@ -115,7 +115,7 @@ fn alloc_or_sweep(alloc: impl Fn() -> Option<u64>) -> Option<u64> {
     alloc().or_else(|| if sweep_orphans() { alloc() } else { None })
 }
 
-impl WriteSlot {
+impl Loan {
     /// Empty when the payload is device memory; write it through `device_ptr`.
     pub fn data_mut(&mut self) -> &mut [u8] {
         if !self.sh.seg.host_payload() {
@@ -297,7 +297,7 @@ impl WriteSlot {
     }
 }
 
-impl WriteSlot {
+impl Loan {
     /// Writes past the frame's `nbytes` the list of its blocks, the GPU arena's trailer when it
     /// has GPU blocks, then the host one. A list the slot has no room for goes to the arena, as a
     /// block of the frame. The frame's new length, `nbytes` when it owns no block; None when they
@@ -389,7 +389,7 @@ unsafe fn write_list(blocks: &[Owned], dst: *mut u8) {
     }
 }
 
-impl Drop for WriteSlot {
+impl Drop for Loan {
     fn drop(&mut self) {
         if !self.done {
             self.refuse();

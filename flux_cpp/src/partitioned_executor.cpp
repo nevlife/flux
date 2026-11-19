@@ -32,7 +32,8 @@ void PartitionedExecutor::add(
   Subscription & sub, const rclcpp::CallbackGroup::SharedPtr & group, std::int32_t priority)
 {
   if (!sub.has_callback()) {
-    throw std::invalid_argument("flux: a Subscription without a callback has nothing to run");
+    throw Error(
+      Status::InvalidArgument, "flux: a Subscription without a callback has nothing to run");
   }
   add(static_cast<detail::Source &>(sub), group, priority);
 }
@@ -45,12 +46,12 @@ void PartitionedExecutor::add(
     throw std::logic_error("flux: add() while spinning");
   }
   if (!group) {
-    throw std::invalid_argument("flux: add() needs a callback group");
+    throw Error(Status::InvalidArgument, "flux: add() needs a callback group");
   }
   for (const auto & entry : assigned_) {
     for (const Assigned & a : entry.second) {
       if (a.src == &src) {
-        throw std::invalid_argument("flux: source assigned twice");
+        throw Error(Status::InvalidArgument, "flux: source assigned twice");
       }
     }
   }
@@ -114,10 +115,10 @@ void PartitionedExecutor::on_thread_start(
     throw std::logic_error("flux: on_thread_start() while spinning");
   }
   if (!group || !init) {
-    throw std::invalid_argument("flux: on_thread_start() needs both");
+    throw Error(Status::InvalidArgument, "flux: on_thread_start() needs both");
   }
   if (!init_.emplace(group.get(), std::move(init)).second) {
-    throw std::invalid_argument("flux: the group already has a thread-start hook");
+    throw Error(Status::InvalidArgument, "flux: the group already has a thread-start hook");
   }
   kept_.emplace(group.get(), group);
 }
@@ -129,10 +130,10 @@ void PartitionedExecutor::on_thread_start(ThreadStart init)
     throw std::logic_error("flux: on_thread_start() while spinning");
   }
   if (!init) {
-    throw std::invalid_argument("flux: on_thread_start() needs a hook");
+    throw Error(Status::InvalidArgument, "flux: on_thread_start() needs a hook");
   }
   if (any_init_) {
-    throw std::invalid_argument("flux: every thread already has a thread-start hook");
+    throw Error(Status::InvalidArgument, "flux: every thread already has a thread-start hook");
   }
   any_init_ = std::move(init);
 }
@@ -185,13 +186,15 @@ void PartitionedExecutor::spin()
       const std::lock_guard<std::mutex> lk(m_);
       for (const auto & entry : assigned_) {
         if (claimed_.count(entry.first) == 0) {
-          throw std::invalid_argument(
+          throw Error(
+            Status::InvalidArgument,
             "flux: a group with subscriptions belongs to no node given to add_node()");
         }
       }
       for (const auto & entry : init_) {
         if (claimed_.count(entry.first) == 0) {
-          throw std::invalid_argument("flux: a thread-start hook names a group no thread serves");
+          throw Error(
+            Status::InvalidArgument, "flux: a thread-start hook names a group no thread serves");
         }
       }
       check_sync_groups();
@@ -248,7 +251,8 @@ void PartitionedExecutor::check_sync_groups()
           }
         }
       }
-      throw std::invalid_argument("flux: a synchronizer input was never assigned to a group");
+      throw Error(
+        Status::InvalidArgument, "flux: a synchronizer input was never assigned to a group");
     }
     for (const auto & entry : claimed_) {
       const auto group = entry.second.lock();
@@ -256,14 +260,16 @@ void PartitionedExecutor::check_sync_groups()
         return entry.first;
       }
     }
-    throw std::invalid_argument(
+    throw Error(
+      Status::InvalidArgument,
       "flux: a synchronizer input belongs to no group this executor serves");
   };
   for (const auto & inputs : sync_groups_) {
     const void * first = group_of(inputs.front());
     for (const SyncInput & in : inputs) {
       if (group_of(in) != first) {
-        throw std::invalid_argument(
+        throw Error(
+          Status::InvalidArgument,
           "flux: a synchronizer's inputs are in different callback groups; put them in one");
       }
     }
@@ -331,9 +337,10 @@ auto PartitionedExecutor::unserved_groups(const NodeBase::SharedPtr & node)
   });
   for (const auto & group : found) {
     if (group->type() == rclcpp::CallbackGroupType::Reentrant) {
-      throw std::invalid_argument(
+      throw Error(
+        Status::InvalidArgument,
         "flux: a Reentrant group cannot run on one thread; make it MutuallyExclusive (node " +
-        std::string(node->get_fully_qualified_name()) + ")");
+          std::string(node->get_fully_qualified_name()) + ")");
     }
   }
   return found;

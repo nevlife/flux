@@ -7,7 +7,7 @@ use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 use flux_core::{
-    Channel, DEFAULT_MAX_SUBSCRIBERS, Error, FrameView, MemoryPolicy, NO_SCHEMA, Published, QoS,
+    Channel, DEFAULT_MAX_SUBSCRIBERS, Error, Frame, MemoryPolicy, NO_SCHEMA, Published, QoS,
     flatten_key, read_channel_stats, signpost_name,
 };
 
@@ -61,7 +61,7 @@ fn subscriber(t: &Topic) -> Channel {
 }
 
 /// Takes both frames of a two-slot channel, so a publish must wait on these views.
-fn take_both(s: &mut Channel) -> (FrameView, FrameView) {
+fn take_both(s: &mut Channel) -> (Frame, Frame) {
     s.set_qos(
         QoS::new(2)
             .unwrap()

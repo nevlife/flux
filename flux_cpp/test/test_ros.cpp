@@ -90,7 +90,7 @@ auto eventually(P done, std::chrono::milliseconds limit = 2000ms) -> bool
   return true;
 }
 
-auto text(const flux::FrameView & v) -> std::string
+auto text(const flux::Frame & v) -> std::string
 {
   return std::string(static_cast<const char *>(v.data()), v.size());
 }
@@ -145,7 +145,7 @@ TEST_F(Ros, AFrameReachesTheCallback)
   std::atomic<int> got{0};
   flux::Subscription sub(
     *node_, topic("cb"), 4,
-    [&](const flux::FrameView & v) {
+    [&](const flux::Frame & v) {
       if (text(v) == "frame") {
         ++got;
       }
@@ -167,7 +167,7 @@ TEST_F(Ros, CreateFunctionsTakeTheirOptions)
   EXPECT_EQ(pub->slot_size(), kSlot);
   std::atomic<int> got{0};
   auto sub = flux::create_subscription(
-    *node_, topic("create"), 4, [&](const flux::FrameView & v) { got += text(v) == "frame"; },
+    *node_, topic("create"), 4, [&](const flux::Frame & v) { got += text(v) == "frame"; },
     flux::SubscriptionOptions(), kFp);
   ex_->add(*sub);
   const Spinning spin{*ex_};
@@ -184,7 +184,7 @@ TEST_F(Ros, ASlotPublisherThatAllocsOnSubscriberPublishesOnceOneAttaches)
   EXPECT_NE(pub->publish("frame", 5), flux::Published::Ok);
   std::atomic<int> got{0};
   auto sub = flux::create_subscription(
-    *node_, topic("on_sub"), 4, [&](const flux::FrameView & v) { got += text(v) == "frame"; });
+    *node_, topic("on_sub"), 4, [&](const flux::Frame & v) { got += text(v) == "frame"; });
   ex_->add(*sub);
   const Spinning spin{*ex_};
   EXPECT_TRUE(eventually([&] { return pub->publish("frame", 5) == flux::Published::Ok; }));
@@ -195,11 +195,11 @@ TEST_F(Ros, ASlotPublisherThatAllocsOnSubscriberPublishesOnceOneAttaches)
 TEST_F(Ros, AFrameMovedOutOfTheCallbackKeepsItsSlot)
 {
   flux::Publisher pub(*node_, topic("kept"), slots(kSlot, kSlots));
-  std::optional<flux::FrameView> kept;
+  std::optional<flux::Frame> kept;
   int seen = 0;
   flux::Subscription sub(
     *node_, topic("kept"), flux::QoS(8).max_borrow(2),
-    [&](flux::FrameView && v) {
+    [&](flux::Frame && v) {
       ++seen;
       if (!kept) {
         kept = std::move(v);
@@ -208,7 +208,7 @@ TEST_F(Ros, AFrameMovedOutOfTheCallbackKeepsItsSlot)
     {});
   for (const char c : std::string("abcdefgh")) {
     ASSERT_EQ(pub.publish(&c, 1), flux::Published::Ok);
-    ASSERT_TRUE(sub.deliver_one());
+    ASSERT_TRUE(static_cast<flux::detail::Source &>(sub).deliver_one());
   }
   EXPECT_EQ(seen, 8);
   ASSERT_TRUE(kept);
@@ -218,19 +218,19 @@ TEST_F(Ros, AFrameMovedOutOfTheCallbackKeepsItsSlot)
 TEST_F(Ros, NoFrameIsDeliveredWhileMaxBorrowFramesAreKept)
 {
   flux::Publisher pub(*node_, topic("full"), slots(kSlot, kSlots));
-  std::vector<flux::FrameView> kept;
+  std::vector<flux::Frame> kept;
   flux::Subscription sub(
     *node_, topic("full"), flux::QoS(8).max_borrow(2),
-    [&](flux::FrameView && v) { kept.push_back(std::move(v)); }, {});
+    [&](flux::Frame && v) { kept.push_back(std::move(v)); }, {});
   for (const char c : std::string("abc")) {
     ASSERT_EQ(pub.publish(&c, 1), flux::Published::Ok);
   }
-  ASSERT_TRUE(sub.deliver_one());
-  ASSERT_TRUE(sub.deliver_one());
-  EXPECT_FALSE(sub.deliver_one());
+  ASSERT_TRUE(static_cast<flux::detail::Source &>(sub).deliver_one());
+  ASSERT_TRUE(static_cast<flux::detail::Source &>(sub).deliver_one());
+  EXPECT_FALSE(static_cast<flux::detail::Source &>(sub).deliver_one());
   EXPECT_EQ(kept.size(), 2U);
   kept.erase(kept.begin());
-  ASSERT_TRUE(sub.deliver_one());
+  ASSERT_TRUE(static_cast<flux::detail::Source &>(sub).deliver_one());
   ASSERT_EQ(kept.size(), 2U);
   EXPECT_EQ(text(kept.back()), "c");
 }
@@ -244,15 +244,29 @@ TEST_F(Ros, APublisherWithFewerSlotsThanRequiredIsRefused)
     sub.require_publisher_slots(kSlots + 1);
     FAIL() << "attached to " << kSlots << " slots where " << kSlots + 1 << " are required";
   } catch (const flux::Error & e) {
-    EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
+    EXPECT_EQ(e.status(), flux::Status::InvalidArgument);
   }
+}
+
+// A take the publisher refuses is empty and says why, as under an executor; it throws only on
+// misuse.
+TEST_F(Ros, ATakeThePublisherRefusesIsEmptyAndSaysWhy)
+{
+  flux::Subscription sub(*node_, topic("refused"), flux::QoS{}, {}, {});
+  sub.require_publisher_slots(kSlots + 1);
+  flux::Publisher pub(*node_, topic("refused"), slots(kSlot, kSlots));
+  ASSERT_EQ(pub.publish("x", 1), flux::Published::Ok);
+  EXPECT_TRUE(sub.refusal().empty());
+  EXPECT_FALSE(sub.take());
+  EXPECT_NE(sub.refusal().find("slots"), std::string::npos) << sub.refusal();
+  EXPECT_FALSE(sub.take_blocking(std::chrono::nanoseconds(10'000'000)));
 }
 
 TEST_F(Ros, ASubscriptionInAGroupIsServedWithItsNode)
 {
   flux::Publisher pub(*node_, topic("member"), slots(kSlot, kSlots));
   std::atomic<int> got{0};
-  flux::Subscription sub(*node_, topic("member"), 4, [&](const flux::FrameView &) { ++got; }, {});
+  flux::Subscription sub(*node_, topic("member"), 4, [&](const flux::Frame &) { ++got; }, {});
   sub.add_to_callback_group(*node_);
   // Made after the spin starts, but it outlives the executor serving it, as `sub` does.
   std::atomic<int> late{0};
@@ -264,8 +278,7 @@ TEST_F(Ros, ASubscriptionInAGroupIsServedWithItsNode)
 
   // Found by the next rescan.
   later.emplace(
-    *node_, topic("member"), 4, [&](const flux::FrameView &) { ++late; },
-    flux::SubscriptionOptions());
+    *node_, topic("member"), 4, [&](const flux::Frame &) { ++late; }, flux::SubscriptionOptions());
   later->add_to_callback_group(*node_);
   EXPECT_TRUE(eventually([&] {
     (void)pub.publish("x", 1);
@@ -281,7 +294,7 @@ auto logged() -> std::vector<std::string> &
 
 TEST_F(Ros, AnRclcppExecutorServingAFluxSubscriptionSaysSoOnce)
 {
-  flux::Subscription sub(*node_, topic("stock"), 4, [](const flux::FrameView &) {}, {});
+  flux::Subscription sub(*node_, topic("stock"), 4, [](const flux::Frame &) {}, {});
   sub.add_to_callback_group(*node_);
   logged().clear();
   const auto previous = rcutils_logging_get_output_handler();
@@ -332,7 +345,7 @@ TEST_F(Ros, EachEndpointIsTracedOnceWithItsNode)
   EXPECT_EQ(endpoint_inits()[0].role, FLUX_TRACE_ROLE_PUBLISHER);
   EXPECT_EQ(endpoint_inits()[1].endpoint, &sub);
   EXPECT_EQ(endpoint_inits()[1].role, FLUX_TRACE_ROLE_SUBSCRIPTION);
-  EXPECT_EQ(sub.endpoint(), &sub);
+  EXPECT_EQ(static_cast<const flux::detail::Source &>(sub).endpoint(), &sub);
 }
 
 TEST_F(Ros, EndpointsAreListedWithTheirNode)
@@ -370,7 +383,7 @@ TEST_F(Ros, TakeBlockingWaitsForALatePublisher)
     std::this_thread::sleep_for(150ms);
     (void)pub->publish("hi", 2);
   });
-  const flux::FrameView v = sub.take_blocking(2'000'000'000);
+  const flux::Frame v = sub.take_blocking(std::chrono::nanoseconds(2'000'000'000));
   late.join();
   ASSERT_TRUE(v);
   EXPECT_EQ(text(v), "hi");
@@ -385,7 +398,7 @@ TEST_F(Ros, TakeBlockingWaitsForALatePublisher)
       sent = std::chrono::steady_clock::now();
       (void)pub->publish("w", 1);
     });
-    const flux::FrameView w = sub.take_blocking(2'000'000'000);
+    const flux::Frame w = sub.take_blocking(std::chrono::nanoseconds(2'000'000'000));
     const auto got = std::chrono::steady_clock::now();
     later.join();
     ASSERT_TRUE(w);
@@ -406,7 +419,9 @@ TEST_F(Ros, TakeBlockingEndsWhenTheContextShutsDown)
   flux::Subscription waiting(*other, topic("ctx_off"), flux::QoS{}, {}, {});
   ASSERT_TRUE(attached.attached());
   auto a = std::async(std::launch::async, [&] { return attached.take_blocking(); });
-  auto w = std::async(std::launch::async, [&] { return waiting.take_blocking(3'000'000'000); });
+  auto w = std::async(std::launch::async, [&] {
+    return waiting.take_blocking(std::chrono::nanoseconds(3'000'000'000));
+  });
   std::this_thread::sleep_for(150ms);
   ctx->shutdown("test");
   EXPECT_EQ(a.wait_for(1s), std::future_status::ready);
@@ -446,11 +461,11 @@ TEST_F(Ros, TakeBlockingIsEmptyAtOnceWhileMaxBorrowViewsAreHeld)
   flux::Subscription sub(*node_, topic("held"), flux::QoS(4).max_borrow(1), {}, {});
   ASSERT_EQ(pub.publish("a", 1), flux::Published::Ok);
   ASSERT_EQ(pub.publish("b", 1), flux::Published::Ok);
-  const flux::FrameView held = sub.take();
+  const flux::Frame held = sub.take();
   ASSERT_TRUE(held);
   const auto start = std::chrono::steady_clock::now();
   EXPECT_FALSE(sub.take_blocking());
-  EXPECT_FALSE(sub.take_blocking(2'000'000'000));
+  EXPECT_FALSE(sub.take_blocking(std::chrono::nanoseconds(2'000'000'000)));
   EXPECT_LT(std::chrono::steady_clock::now() - start, 500ms);
 }
 
@@ -500,7 +515,7 @@ TEST_F(Ros, ASubscriptionFollowsARestartedPublisher)
   std::optional<flux::Publisher> pub;
   pub.emplace(*node_, topic("restart"), slots(kSlot, kSlots));
   std::atomic<int> got{0};
-  flux::Subscription sub(*node_, topic("restart"), 4, [&](const flux::FrameView &) { ++got; }, {});
+  flux::Subscription sub(*node_, topic("restart"), 4, [&](const flux::Frame &) { ++got; }, {});
   const std::uint32_t first = sub.attach_generation();
   ex_->add(sub);
   const Spinning spin{*ex_};
@@ -522,7 +537,7 @@ TEST_F(Ros, RosAndFluxShareOneSpin)
   std::atomic<int> frames{0};
   std::atomic<int> msgs{0};
   std::atomic<int> ticks{0};
-  flux::Subscription sub(*node_, topic("mixed"), 4, [&](const flux::FrameView &) { ++frames; }, {});
+  flux::Subscription sub(*node_, topic("mixed"), 4, [&](const flux::Frame &) { ++frames; }, {});
   auto ros_sub = node_->create_subscription<std_msgs::msg::String>(
     topic("ros"), 10, [&](const std_msgs::msg::String &) { ++msgs; });
   auto ros_pub = node_->create_publisher<std_msgs::msg::String>(topic("ros"), 10);
@@ -543,8 +558,7 @@ TEST_F(Ros, OverloadedRosWorkDoesNotStarveFlux)
 {
   flux::Publisher pub(*node_, topic("starve"), slots(kSlot, kSlots));
   std::atomic<int> frames{0};
-  flux::Subscription sub(
-    *node_, topic("starve"), 1, [&](const flux::FrameView &) { ++frames; }, {});
+  flux::Subscription sub(*node_, topic("starve"), 1, [&](const flux::Frame &) { ++frames; }, {});
   // Always behind: a 5 ms callback on a 1 ms timer keeps ROS work ready for the whole test.
   auto busy = node_->create_wall_timer(1ms, [] { std::this_thread::sleep_for(5ms); });
   ex_->add(sub);
@@ -568,8 +582,8 @@ TEST_F(Ros, OverloadedFluxWorkDoesNotStarveRos)
   flux::Publisher pub(*node_, topic("busyflux"), slots(kSlot, kSlots));
   std::atomic<int> ticks{0};
   flux::Subscription sub(
-    *node_, topic("busyflux"), 1,
-    [](const flux::FrameView &) { std::this_thread::sleep_for(20ms); }, {});
+    *node_, topic("busyflux"), 1, [](const flux::Frame &) { std::this_thread::sleep_for(20ms); },
+    {});
   // Three cheap entities due every 10 ms: each turn between flux callbacks must run them all.
   std::vector<rclcpp::TimerBase::SharedPtr> timers;
   timers.reserve(3);
@@ -597,8 +611,7 @@ TEST_F(Ros, ACallbackExceptionLeavesTheSpin)
 {
   flux::Publisher pub(*node_, topic("throw"), slots(kSlot, kSlots));
   flux::Subscription sub(
-    *node_, topic("throw"), 4, [](const flux::FrameView &) { throw std::logic_error("callback"); },
-    {});
+    *node_, topic("throw"), 4, [](const flux::Frame &) { throw std::logic_error("callback"); }, {});
   ex_->add(sub);
   ASSERT_EQ(pub.publish("x", 1), flux::Published::Ok);
   EXPECT_THROW(ex_->spin(), std::logic_error);
@@ -610,14 +623,14 @@ TEST_F(Ros, FutureCompletionServesFluxAndSpinOnceIsRefused)
   flux::Publisher pub(*node_, topic("once"), slots(kSlot, kSlots));
   std::promise<std::string> first;
   flux::Subscription sub(
-    *node_, topic("once"), 4, [&](const flux::FrameView & v) { first.set_value(text(v)); }, {});
+    *node_, topic("once"), 4, [&](const flux::Frame & v) { first.set_value(text(v)); }, {});
   ex_->add(sub);
   ASSERT_EQ(pub.publish("one", 3), flux::Published::Ok);
   auto f = first.get_future();
   EXPECT_EQ(ex_->spin_until_future_complete(f, 2s), rclcpp::FutureReturnCode::SUCCESS);
   EXPECT_EQ(f.get(), "one");
-  EXPECT_THROW(ex_->spin_some(), std::runtime_error);
-  EXPECT_THROW(ex_->spin_once(), std::runtime_error);
+  EXPECT_THROW(ex_->spin_some(), flux::Error);
+  EXPECT_THROW(ex_->spin_once(), flux::Error);
   // A future nothing completes runs out its timeout.
   std::promise<void> never;
   EXPECT_EQ(
@@ -629,7 +642,7 @@ TEST_F(Ros, AZeroTimeoutFutureSpinRunsTheReadyWork)
   flux::Publisher pub(*node_, topic("zero"), slots(kSlot, kSlots));
   std::promise<void> got;
   flux::Subscription sub(
-    *node_, topic("zero"), 4, [&](const flux::FrameView &) { got.set_value(); }, {});
+    *node_, topic("zero"), 4, [&](const flux::Frame &) { got.set_value(); }, {});
   ex_->add(sub);
   ASSERT_EQ(pub.publish("x", 1), flux::Published::Ok);
   // As rclcpp: one pass of work before the timeout is looked at.
@@ -663,15 +676,6 @@ TEST_F(Ros, ARosTimeTimerFollowsTheRosClock)
   EXPECT_GE(ticks.load(), 150);
 }
 
-TEST_F(Ros, AMovedFromPublisherRefusesToPublish)
-{
-  flux::Publisher pub(*node_, topic("moved"), slots(kSlot, kSlots));
-  flux::Publisher moved = std::move(pub);
-  // NOLINTNEXTLINE(bugprone-use-after-move): what a moved-from publisher does is the test
-  EXPECT_EQ(pub.publish("x", 1), flux::Published::InvalidArgument);
-  EXPECT_EQ(moved.publish("x", 1), flux::Published::Ok);
-}
-
 TEST_F(Ros, MisuseIsRefusedUpFront)
 {
   flux::Publisher pub(*node_, topic("misuse"), slots(kSlot, kSlots));
@@ -679,22 +683,23 @@ TEST_F(Ros, MisuseIsRefusedUpFront)
     flux::Publisher second(*node_, topic("misuse"), slots(kSlot, kSlots));
     FAIL() << "a second publisher was accepted";
   } catch (const flux::Error & e) {
-    EXPECT_EQ(e.status(), FLUX_PUBLISHER_EXISTS);
+    EXPECT_EQ(e.status(), flux::Status::PublisherExists);
   }
   EXPECT_THROW(
     flux::Subscription(*node_, topic("misuse"), flux::QoS(2).transient_local(3), {}, {}),
     flux::Error);
   flux::Subscription pull(*node_, topic("misuse"), flux::QoS{}, {}, {});
-  EXPECT_THROW(ex_->add(pull), std::invalid_argument);
+  EXPECT_THROW(ex_->add(pull), flux::Error);
 }
 
 TEST_F(Ros, ASecondThreadInOneSubscriptionIsRefused)
 {
   flux::Subscription sub(*node_, topic("two"), flux::QoS{}, {}, {});
   // With no publisher, take_blocking stays inside the subscription until its timeout.
-  std::thread parked([&] { EXPECT_FALSE(sub.take_blocking(300'000'000)); });
+  std::thread parked(
+    [&] { EXPECT_FALSE(sub.take_blocking(std::chrono::nanoseconds(300'000'000))); });
   std::this_thread::sleep_for(100ms);
-  EXPECT_THROW(sub.take(), std::logic_error);
+  EXPECT_THROW((void)sub.take(), std::logic_error);
   parked.join();
   EXPECT_FALSE(sub.take());
 }
@@ -710,8 +715,8 @@ TEST_F(Ros, ASubscriptionAnExecutorServesRefusesTake)
     ASSERT_EQ(pub.publish("a", 1), flux::Published::Ok);
     ASSERT_TRUE(eventually([&] { return got == 1; }));
   }
-  EXPECT_THROW(sub.take(), std::logic_error);
-  EXPECT_THROW(sub.take_blocking(0), std::logic_error);
+  EXPECT_THROW((void)sub.take(), std::logic_error);
+  EXPECT_THROW((void)sub.take_blocking(std::chrono::nanoseconds(0)), std::logic_error);
 }
 
 // Another executor hooks a node this one let go; dropping this one must leave those hooks alone.

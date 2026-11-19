@@ -163,7 +163,7 @@ private:
   };
 
   // channel() cannot fail the C call, so its exception surfaces once that call returns.
-  void run(Status s)
+  void run(flux_status s)
   {
     if (st_->error) {
       std::rethrow_exception(std::exchange(st_->error, {}));

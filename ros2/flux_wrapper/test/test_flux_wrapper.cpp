@@ -145,7 +145,7 @@ protected:
     options.aux_size = flux_wrapper::detail::Gpu<MsgT>::kAuxBytes;
     flux::Publisher raw(*node_, topic, options, flux_wrapper::detail::Gpu<MsgT>::kFingerprint);
     const auto send = [&](const std::vector<std::uint8_t> & a) {
-      flux::WriteSlot w = raw.loan();
+      flux::Loan w = raw.loan();
       if (!w) {
         return;
       }
@@ -579,7 +579,7 @@ TEST_F(WrapperTest, APublisherWithNoMoreSlotsThanMaxBorrowIsRefused)
     flux_wrapper::Subscription<Image> sub(*node_, "few_slots", rclcpp::QoS(4), ignore, sub_options);
     FAIL() << "attached to 4 slots for max_borrow 4";
   } catch (const flux::Error & e) {
-    EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
+    EXPECT_EQ(e.status(), flux::Status::InvalidArgument);
   }
   sub_options.max_borrow = 3;
   const flux_wrapper::Subscription<Image> sub(

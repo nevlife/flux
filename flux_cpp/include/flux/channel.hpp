@@ -35,7 +35,21 @@ constexpr auto gpu_fingerprint(std::uint64_t base) noexcept -> std::uint64_t
 }
 inline constexpr std::size_t kMaxDims = FLUX_MAX_DIMS;
 
-using Status = flux_status;
+// Why a setup call failed (`Error::status()`); flux_status's values, which may grow.
+enum class Status : std::int32_t {
+  Ok = FLUX_OK,
+  InvalidArgument = FLUX_INVALID_ARGUMENT,
+  Mismatch = FLUX_MISMATCH,
+  NotReady = FLUX_NOT_READY,
+  PublisherExists = FLUX_PUBLISHER_EXISTS,
+  SubscribersFull = FLUX_SUBSCRIBERS_FULL,
+  Unsupported = FLUX_UNSUPPORTED,
+  Callback = FLUX_CALLBACK,
+  Io = FLUX_IO,
+  InUse = FLUX_IN_USE,
+  BufferTooSmall = FLUX_BUFFER_TOO_SMALL,
+  NoFrame = FLUX_NO_FRAME,
+};
 using FrameMeta = flux_frame_meta;
 using Refused = flux_refused;
 
@@ -51,6 +65,7 @@ class Error : public std::runtime_error
 {
 public:
   Error(Status status, const char * what) : std::runtime_error(what), status_(status) {}
+  Error(Status status, const std::string & what) : std::runtime_error(what), status_(status) {}
   [[nodiscard]] auto status() const noexcept -> Status { return status_; }
 
 private:
@@ -61,10 +76,10 @@ namespace detail
 {
 class Channel;
 
-inline void check(Status st)
+inline void check(flux_status st)
 {
   if (st != FLUX_OK) {
-    throw Error(st, flux_last_error());
+    throw Error(static_cast<Status>(st), flux_last_error());
   }
 }
 
@@ -77,10 +92,10 @@ inline void require_abi()
     return;
   }
   throw Error(
-    FLUX_MISMATCH, ("flux: the libflux_ffi loaded has ABI version " + std::to_string(lib) +
-                    ", and the flux headers this was built with need " +
-                    std::to_string(FLUX_ABI_VERSION) + "; rebuild against the installed flux")
-                     .c_str());
+    Status::Mismatch, ("flux: the libflux_ffi loaded has ABI version " + std::to_string(lib) +
+                       ", and the flux headers this was built with need " +
+                       std::to_string(FLUX_ABI_VERSION) + "; rebuild against the installed flux")
+                        .c_str());
 }
 
 // The C storage holds a Rust value, which moves by copying its bytes; zeroed storage is empty.
@@ -189,6 +204,8 @@ enum class ImageEncoding : std::uint32_t {
 };
 using ImageLayout = flux_image_layout;
 
+class Frame;
+
 namespace gpu
 {
 
@@ -271,9 +288,12 @@ public:
     return s_ ? flux_stream_device(s_.get()) : -1;
   }
   [[nodiscard]] auto wait() const noexcept -> bool { return !s_ || flux_stream_wait(s_.get()); }
-  [[nodiscard]] auto raw() const noexcept -> const flux_stream * { return s_.get(); }
 
 private:
+  friend class flux::Frame;
+  friend class flux::detail::Channel;
+  [[nodiscard]] auto raw() const noexcept -> const flux_stream * { return s_.get(); }
+
   explicit Stream(flux_stream * s) : s_(s, flux_stream_free) {}
 
   std::shared_ptr<flux_stream> s_;
@@ -398,7 +418,7 @@ public:
 
   [[nodiscard]] auto depth() const noexcept -> std::uint32_t { return q_.depth; }
   [[nodiscard]] auto replay() const noexcept -> std::uint32_t { return q_.replay; }
-  [[nodiscard]] auto borrow_limit() const noexcept -> std::uint32_t { return q_.max_borrow; }
+  [[nodiscard]] auto max_borrow() const noexcept -> std::uint32_t { return q_.max_borrow; }
 
 private:
   friend class detail::Channel;
@@ -406,13 +426,13 @@ private:
   flux_qos q_;
 };
 
-class FrameView
+class [[nodiscard]] Frame
 {
 public:
-  FrameView() = default;
-  ~FrameView() { release(); }
-  FrameView(FrameView && o) noexcept { detail::relocate(v_, o.v_); }
-  auto operator=(FrameView && o) noexcept -> FrameView &
+  Frame() = default;
+  ~Frame() { release(); }
+  Frame(Frame && o) noexcept { detail::relocate(v_, o.v_); }
+  auto operator=(Frame && o) noexcept -> Frame &
   {
     if (this != &o) {
       release();
@@ -420,8 +440,8 @@ public:
     }
     return *this;
   }
-  FrameView(const FrameView &) = delete;
-  auto operator=(const FrameView &) -> FrameView & = delete;
+  Frame(const Frame &) = delete;
+  auto operator=(const Frame &) -> Frame & = delete;
 
   [[nodiscard]] auto valid() const noexcept -> bool { return flux_frame_valid(raw()); }
   explicit operator bool() const noexcept { return valid(); }
@@ -525,13 +545,13 @@ private:
 // Commit it while no other thread is in a call on its publisher: unlike those calls, a commit is
 // not refused. Dropped without a commit, nothing is published, but the frame the slot held is gone:
 // the loan wrote over it.
-class WriteSlot
+class [[nodiscard]] Loan
 {
 public:
-  WriteSlot() = default;
-  ~WriteSlot() { abort(); }
-  WriteSlot(WriteSlot && o) noexcept { detail::relocate(l_, o.l_); }
-  auto operator=(WriteSlot && o) noexcept -> WriteSlot &
+  Loan() = default;
+  ~Loan() { abort(); }
+  Loan(Loan && o) noexcept { detail::relocate(l_, o.l_); }
+  auto operator=(Loan && o) noexcept -> Loan &
   {
     if (this != &o) {
       abort();
@@ -539,8 +559,8 @@ public:
     }
     return *this;
   }
-  WriteSlot(const WriteSlot &) = delete;
-  auto operator=(const WriteSlot &) -> WriteSlot & = delete;
+  Loan(const Loan &) = delete;
+  auto operator=(const Loan &) -> Loan & = delete;
 
   [[nodiscard]] auto valid() const noexcept -> bool { return flux_loan_valid(raw()); }
   explicit operator bool() const noexcept { return valid(); }
@@ -656,7 +676,7 @@ public:
     detail::check(flux_channel_new(slot_size, slot_count, &ch_));
   }
 
-  // Error with FLUX_PUBLISHER_EXISTS while another publisher of `name` is live.
+  // Error with Status::PublisherExists while another publisher of `name` is live.
   // A declared `stream` makes a GPU channel for its life. Each slot carries `aux_size` host bytes
   // beside its payload, up to FLUX_MAX_AUX_SIZE.
   static auto create(
@@ -686,7 +706,7 @@ public:
     return Channel(ch);
   }
 
-  // Error with FLUX_NOT_READY until a publisher is up.
+  // Error with Status::NotReady until a publisher is up.
   static auto open(
     const std::string & name, std::uint64_t fingerprint = kNoSchema, MemoryPolicy mem = {},
     const gpu::Stream & stream = {}) -> Channel
@@ -754,41 +774,41 @@ public:
   }
 
   // Empty when every slot is borrowed or this is a subscriber.
-  auto loan() noexcept -> WriteSlot
+  auto loan() noexcept -> Loan
   {
-    WriteSlot w;
+    Loan w;
     if (ch_) {
       (void)flux_channel_loan(ch_, &w.l_);
     }
     return w;
   }
   // The shape is checked at commit.
-  auto loan(DType dtype, const std::uint64_t * shape, std::size_t ndim) noexcept -> WriteSlot
+  auto loan(const std::uint64_t * shape, std::size_t ndim, DType dtype) noexcept -> Loan
   {
-    WriteSlot w;
+    Loan w;
     if (ch_) {
       (void)flux_channel_loan_typed(ch_, static_cast<std::uint8_t>(dtype), shape, ndim, &w.l_);
     }
     return w;
   }
-  auto loan(DType dtype, std::initializer_list<std::uint64_t> shape) noexcept -> WriteSlot
+  auto loan(std::initializer_list<std::uint64_t> shape, DType dtype) noexcept -> Loan
   {
-    return loan(dtype, shape.begin(), shape.size());
+    return loan(shape.begin(), shape.size(), dtype);
   }
 
   // The oldest frame newer than the cursor.
-  auto take() noexcept -> FrameView
+  auto take() noexcept -> Frame
   {
-    FrameView v;
+    Frame v;
     if (ch_) {
       (void)flux_channel_take(ch_, &v.v_);
     }
     return v;
   }
   // A negative timeout waits forever.
-  auto take_blocking(std::int64_t timeout_ns) noexcept -> FrameView
+  auto take_blocking(std::int64_t timeout_ns) noexcept -> Frame
   {
-    FrameView v;
+    Frame v;
     if (ch_) {
       (void)flux_channel_take_blocking(ch_, timeout_ns, &v.v_);
     }
@@ -798,7 +818,7 @@ public:
   void qos(const QoS & q)
   {
     if (!ch_) {
-      throw Error(FLUX_INVALID_ARGUMENT, "flux: this channel was moved from");
+      throw Error(Status::InvalidArgument, "flux: this channel was moved from");
     }
     detail::check(flux_channel_set_qos(ch_, q.q_));
   }

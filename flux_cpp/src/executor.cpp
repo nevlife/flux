@@ -93,7 +93,8 @@ Executor::~Executor()
 void Executor::add(Subscription & sub, std::int32_t priority)
 {
   if (!sub.has_callback()) {
-    throw std::invalid_argument(
+    throw Error(
+      Status::InvalidArgument,
       "flux: a Subscription without a callback gives an executor nothing to run; read it with "
       "take() instead");
   }
@@ -134,7 +135,7 @@ auto Executor::run(std::chrono::nanoseconds timeout, const std::function<bool()>
   -> rclcpp::FutureReturnCode
 {
   if (spinning.exchange(true)) {
-    throw std::runtime_error("flux: spin() while already spinning or in add()");
+    throw std::logic_error("flux: spin() while already spinning or in add()");
   }
   detail::GroupMember::in_flux_executor() = true;
   const detail::OnExit reset([this] {
@@ -170,19 +171,22 @@ auto Executor::run(std::chrono::nanoseconds timeout, const std::function<bool()>
 
 void Executor::spin_once_impl(std::chrono::nanoseconds)
 {
-  throw std::runtime_error(
+  throw Error(
+    Status::Unsupported,
     "flux: spin_once() is not supported; use spin() or spin_until_future_complete()");
 }
 
 void Executor::spin_some(std::chrono::nanoseconds)
 {
-  throw std::runtime_error(
+  throw Error(
+    Status::Unsupported,
     "flux: spin_some() is not supported; use spin() or spin_until_future_complete()");
 }
 
 void Executor::spin_all(std::chrono::nanoseconds)
 {
-  throw std::runtime_error(
+  throw Error(
+    Status::Unsupported,
     "flux: spin_all() is not supported; use spin() or spin_until_future_complete()");
 }
 

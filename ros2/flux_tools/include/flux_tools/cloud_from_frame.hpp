@@ -117,7 +117,7 @@ inline void copy_valid_points(
 // frame is refused. Every size the frame states is checked against the bytes it has before
 // anything is copied, so a frame cannot make this allocate or read more than it holds.
 // `view` over a frame and, when its fields are past its slot, its publisher's arena: a View made
-// from the FrameView maps both.
+// from the Frame maps both.
 inline auto cloud_from_frame(
   const sensor_msgs::flux_msg::PointCloud2::View & view,
   std::string & error) -> sensor_msgs::msg::PointCloud2::SharedPtr

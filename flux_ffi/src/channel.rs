@@ -12,8 +12,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use flux_core::{
-    Alloc, Channel, DType, Error, FrameMeta, FrameView, ImageSlots, Mapped, MemoryPolicy,
-    Published, PublisherConfig, PublisherWatch, QoS, ReleaseMode, WriteSlot, signpost_name,
+    Alloc, Channel, DType, Error, Frame, FrameMeta, ImageSlots, Loan, Mapped, MemoryPolicy,
+    Published, PublisherConfig, PublisherWatch, QoS, ReleaseMode, signpost_name,
 };
 
 use crate::gpu::{flux_stream, stream_of};
@@ -159,8 +159,8 @@ pub struct flux_loan {
 }
 
 const _: () = {
-    assert!(size_of::<Stored<FrameView>>() <= size_of::<flux_frame>());
-    assert!(align_of::<Stored<FrameView>>() <= align_of::<flux_frame>());
+    assert!(size_of::<Stored<Frame>>() <= size_of::<flux_frame>());
+    assert!(align_of::<Stored<Frame>>() <= align_of::<flux_frame>());
     assert!(size_of::<LoanCell>() <= size_of::<flux_loan>());
     assert!(align_of::<LoanCell>() <= align_of::<flux_loan>());
     assert!(size_of::<flux_frame_meta>() == size_of::<FrameMeta>());
@@ -222,12 +222,12 @@ pub(crate) unsafe fn watch_ref<'a>(p: *const flux_watch) -> &'a PublisherWatch {
     unsafe { &(*p).w }
 }
 
-unsafe fn view<'a>(p: *mut flux_frame) -> &'a mut Stored<FrameView> {
-    // SAFETY: flux_frame is sized and aligned for Stored<FrameView> (asserted above).
+unsafe fn view<'a>(p: *mut flux_frame) -> &'a mut Stored<Frame> {
+    // SAFETY: flux_frame is sized and aligned for Stored<Frame> (asserted above).
     unsafe { stored(p) }
 }
 
-pub(crate) unsafe fn view_ref<'a>(p: *const flux_frame) -> &'a Stored<FrameView> {
+pub(crate) unsafe fn view_ref<'a>(p: *const flux_frame) -> &'a Stored<Frame> {
     // SAFETY: as in view.
     unsafe { stored_ref(p) }
 }
@@ -236,7 +236,7 @@ pub(crate) unsafe fn view_ref<'a>(p: *const flux_frame) -> &'a Stored<FrameView>
 /// over it, until the storage is aborted or loaned again.
 #[repr(C)]
 pub(crate) struct LoanCell {
-    pub(crate) slot: Stored<WriteSlot>,
+    pub(crate) slot: Stored<Loan>,
     sent: Stored<Mapped>,
     /// Taken once per loan: a fresh `&mut` per `flux_loan_data` would invalidate the pointer an
     /// earlier call handed out.
@@ -244,7 +244,7 @@ pub(crate) struct LoanCell {
 }
 
 impl LoanCell {
-    fn put(&mut self, mut w: Option<WriteSlot>) {
+    fn put(&mut self, mut w: Option<Loan>) {
         self.sent.put(None);
         self.payload = w
             .as_mut()
@@ -253,7 +253,7 @@ impl LoanCell {
         self.slot.put(w);
     }
 
-    fn commit(&mut self, f: impl FnOnce(WriteSlot) -> Published) -> flux_published {
+    fn commit(&mut self, f: impl FnOnce(Loan) -> Published) -> flux_published {
         let Some(w) = self.slot.take() else {
             return flux_published::FLUX_PUBLISHED_INVALID_ARGUMENT;
         };
@@ -778,7 +778,7 @@ pub unsafe extern "C" fn flux_loan_device_ptr(l: *const flux_loan) -> u64 {
     unsafe { &*l.cast::<LoanCell>() }
         .slot
         .get()
-        .map_or(0, WriteSlot::device_ptr)
+        .map_or(0, Loan::device_ptr)
 }
 
 /// False but in an image slot with a declared format.
@@ -789,7 +789,7 @@ pub unsafe extern "C" fn flux_loan_image_layout(
 ) -> bool {
     // SAFETY: flux_loan is sized and aligned for LoanCell (asserted above).
     let w = unsafe { &*l.cast::<LoanCell>() }.slot.get();
-    image_layout_out(w.and_then(WriteSlot::image_layout), out)
+    image_layout_out(w.and_then(Loan::image_layout), out)
 }
 
 /// The slot's dmabuf, owned by the channel; -1 but in an image slot.
@@ -797,14 +797,14 @@ pub unsafe extern "C" fn flux_loan_image_layout(
 pub unsafe extern "C" fn flux_loan_dmabuf_fd(l: *const flux_loan) -> i32 {
     // SAFETY: flux_loan is sized and aligned for LoanCell (asserted above).
     let w = unsafe { &*l.cast::<LoanCell>() }.slot.get();
-    w.and_then(WriteSlot::dmabuf_fd).unwrap_or(-1)
+    w.and_then(Loan::dmabuf_fd).unwrap_or(-1)
 }
 
 // Host bytes into the payload at `at`: a plain copy into host memory, or a copy queued on the
 // loan's stream into device memory, which the commit waits for. Pageable `src` is read before
 // this returns; page-locked `src` must stay unchanged until the commit or abort. False past the
 // capacity, for an ended loan, or when the copy was not queued. Not in flux.h, which is at its
-// comment budget; the C++ `WriteSlot::copy_from` and `FrameView::copy_to` say the same.
+// comment budget; the C++ `Loan::copy_from` and `Frame::copy_to` say the same.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_loan_copy_from(
     l: *mut flux_loan,
@@ -828,7 +828,7 @@ pub unsafe extern "C" fn flux_loan_copy_from(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_loan_commit(l: *mut flux_loan) -> flux_published {
     // SAFETY: valid loan storage.
-    unsafe { loan(l) }.commit(WriteSlot::commit)
+    unsafe { loan(l) }.commit(Loan::commit)
 }
 
 /// Shrinks a one-dimensional loan to `nbytes`.
@@ -851,7 +851,7 @@ pub unsafe extern "C" fn flux_loan_valid(l: *const flux_loan) -> bool {
     unsafe { &*l.cast::<LoanCell>() }.slot.get().is_some()
 }
 
-fn taken(slot: &mut Stored<FrameView>, v: Option<FrameView>) -> flux_status {
+fn taken(slot: &mut Stored<Frame>, v: Option<Frame>) -> flux_status {
     slot.put(v);
     if slot.get().is_some() {
         flux_status::FLUX_OK
@@ -952,9 +952,7 @@ pub unsafe extern "C" fn flux_frame_stream(v: *const flux_frame) -> *mut c_void 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_frame_device_ptr(v: *const flux_frame) -> u64 {
     // SAFETY: valid view storage.
-    unsafe { view_ref(v) }
-        .get()
-        .map_or(0, FrameView::device_ptr)
+    unsafe { view_ref(v) }.get().map_or(0, Frame::device_ptr)
 }
 
 #[unsafe(no_mangle)]
@@ -964,14 +962,14 @@ pub unsafe extern "C" fn flux_frame_image_layout(
 ) -> bool {
     // SAFETY: valid view storage.
     let f = unsafe { view_ref(v) }.get();
-    image_layout_out(f.and_then(FrameView::image_layout), out)
+    image_layout_out(f.and_then(Frame::image_layout), out)
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_frame_dmabuf_fd(v: *const flux_frame) -> i32 {
     // SAFETY: valid view storage.
     let f = unsafe { view_ref(v) }.get();
-    f.and_then(FrameView::dmabuf_fd).unwrap_or(-1)
+    f.and_then(Frame::dmabuf_fd).unwrap_or(-1)
 }
 
 /// Points into `v`, so moving the frame moves it. Size a typed read from `dtype`, not `itemsize`.
@@ -986,7 +984,7 @@ pub unsafe extern "C" fn flux_frame_get_meta(v: *const flux_frame) -> *const flu
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_frame_ticket(v: *const flux_frame) -> u64 {
     // SAFETY: valid view storage.
-    unsafe { view_ref(v) }.get().map_or(0, FrameView::ticket)
+    unsafe { view_ref(v) }.get().map_or(0, Frame::ticket)
 }
 
 /// The channel as trace events name it (`flux/trace.h`), NULL for an empty frame.
@@ -995,16 +993,14 @@ pub unsafe extern "C" fn flux_frame_trace_channel(v: *const flux_frame) -> *cons
     // SAFETY: valid view storage.
     unsafe { view_ref(v) }
         .get()
-        .map_or(std::ptr::null(), FrameView::trace_channel)
+        .map_or(std::ptr::null(), Frame::trace_channel)
 }
 
 /// `CLOCK_MONOTONIC` at commit.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_frame_publish_ns(v: *const flux_frame) -> u64 {
     // SAFETY: valid view storage.
-    unsafe { view_ref(v) }
-        .get()
-        .map_or(0, FrameView::publish_ns)
+    unsafe { view_ref(v) }.get().map_or(0, Frame::publish_ns)
 }
 
 #[unsafe(no_mangle)]

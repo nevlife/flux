@@ -61,7 +61,7 @@ public:
     timer_(every_10ms("default")),
     sub_(
       *this, declare_parameter<std::string>("topic"), flux::QoS{},
-      [this](const flux::FrameView &) {
+      [this](const flux::Frame &) {
         probe::record(std::string(get_name()) + "/frame", frames_.get());
       },
       {})

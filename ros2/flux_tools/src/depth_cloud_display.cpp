@@ -315,7 +315,7 @@ void DepthCloudDisplay::update(float, float)
     return;
   }
 
-  const flux::FrameView frame = take();
+  const flux::Frame frame = take();
   if (!frame) {
     return;
   }

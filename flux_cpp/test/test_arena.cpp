@@ -77,7 +77,7 @@ TEST_F(Arena, AFrameLargerThanItsSlotGoesThroughTheArena)
   ASSERT_TRUE(b.ok__());
   ASSERT_EQ(b.commit__(), flux::Published::Ok);
 
-  const flux::FrameView f = sub.take();
+  const flux::Frame f = sub.take();
   ASSERT_TRUE(f.valid());
   EXPECT_LT(f.size(), kSlot);
   ASSERT_FALSE(f.heap().empty());
@@ -115,7 +115,7 @@ TEST_F(Arena, AVariableFieldGoesWhereItsKindSaysNotWhereItFits)
   items[0].alloc__ids(0);
   ASSERT_TRUE(b.ok__());
   ASSERT_EQ(b.commit__(), flux::Published::Ok);
-  const flux::FrameView f = sub.take();
+  const flux::Frame f = sub.take();
   ASSERT_TRUE(f.valid());
   // The descriptors of the scalar block: name at 0, data at 8, tags at 16, items at 24.
   const auto desc = [&](std::size_t at) {
@@ -160,7 +160,7 @@ TEST_F(Arena, AnArenaOffsetPastTheArenaIsRefused)
   auto b = Blob::build__(pub);
   b.alloc__data(kRun);
   ASSERT_EQ(b.commit__(), flux::Published::Ok);
-  const flux::FrameView f = sub.take();
+  const flux::Frame f = sub.take();
   ASSERT_TRUE(f.valid());
   // The same frame read with an arena one byte short of the run.
   const auto heap = f.heap();
@@ -205,7 +205,7 @@ TEST_F(Arena, AdoptCopiesAContainerTheHookDidNotPlace)
   auto b = Blob::build__(pub);
   EXPECT_FALSE(b.adopt__data(std::vector<std::uint8_t>(kRun, 5)));
   ASSERT_EQ(b.commit__(), flux::Published::Ok);
-  const flux::FrameView f = sub.take();
+  const flux::Frame f = sub.take();
   const Blob::View v(f);
   ASSERT_EQ(v.data().size(), kRun);
   EXPECT_EQ(v.data()[kRun - 1], 5);
@@ -232,7 +232,7 @@ TEST_F(Arena, AdoptTakesAScopesBufferWithoutACopy)
     ASSERT_EQ(b.commit__(), flux::Published::Ok);
     ASSERT_NE(h.base, nullptr);
   }
-  const flux::FrameView f = sub.take();
+  const flux::Frame f = sub.take();
   const Blob::View v(f);
   ASSERT_EQ(v.data().size(), kRun);
   EXPECT_EQ(v.data()[0], 9);

@@ -10,7 +10,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::Ordering;
 
 use crate::arena;
-use crate::channel::{Channel, FrameView};
+use crate::channel::{Channel, Frame};
 use crate::discovery::{SignpostView, map_validate, segment_name};
 use crate::gpu::arena::{CHUNK, GpuFrame};
 use crate::layout::{
@@ -228,7 +228,7 @@ pub fn borrows(signpost: &str, fingerprint: u64) -> Option<Vec<u64>> {
 }
 
 /// How many frames the view's segment committed after it.
-pub fn lag(view: &FrameView) -> u64 {
+pub fn lag(view: &Frame) -> u64 {
     view.lag()
 }
 

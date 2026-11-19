@@ -48,18 +48,18 @@ struct SubscriptionOptions
 class Subscription : public detail::Source
 {
 public:
-  using Callback = std::function<void(FrameView &&)>;
+  using Callback = std::function<void(Frame &&)>;
 
   // Throws on a QoS the channel would refuse, before anything is announced.
   Subscription(
     const NodeRef & node, const std::string & topic, const QoS & qos, Callback cb,
     const SubscriptionOptions & options, std::uint64_t fingerprint = kNoSchema);
 
-  auto take() -> FrameView { return sub_.take(); }
+  auto take() -> Frame { return sub_.take(); }
   // With no publisher yet it also waits for one. A negative timeout waits forever. Empty once the
   // node's context is shut down, as rclcpp::wait_for_message, and at once while max_borrow views
   // are held.
-  auto take_blocking(std::int64_t timeout_ns = -1) -> FrameView;
+  auto take_blocking(std::chrono::nanoseconds timeout = std::chrono::nanoseconds(-1)) -> Frame;
 
   // Served by the executor serving `group` (null: default group), which it outlives. Not add()ed.
   void add_to_callback_group(
@@ -81,6 +81,22 @@ public:
     return sub_.attach_generation();
   }
   [[nodiscard]] auto refused() const noexcept -> Refused { return sub_.refused(); }
+  // The attached publisher's slots: their size, count and aux bytes; 0 while not attached.
+  [[nodiscard]] auto slot_size() const noexcept -> std::uint32_t
+  {
+    return sub_.channel() != nullptr ? sub_.channel()->slot_size() : 0;
+  }
+  [[nodiscard]] auto slot_count() const noexcept -> std::uint32_t
+  {
+    return sub_.channel() != nullptr ? sub_.channel()->slot_count() : 0;
+  }
+  [[nodiscard]] auto aux_size() const noexcept -> std::uint32_t
+  {
+    return sub_.channel() != nullptr ? sub_.channel()->aux_size() : 0;
+  }
+  // Why the publisher refused this subscription's attach, empty when it did not. Takes are empty
+  // until the publisher restarts.
+  [[nodiscard]] auto refusal() const noexcept -> const std::string & { return sub_.refusal(); }
   // Releases that could not wait for the stream, each holding its slot; as of the last take.
   [[nodiscard]] auto fence_failed() const noexcept -> std::uint64_t { return sub_.fence_failed(); }
   [[nodiscard]] auto fence_wait() const noexcept -> gpu::FenceWait { return sub_.fence_wait(); }
@@ -90,13 +106,14 @@ public:
   // Refuses a publisher of fewer than n slots, as a message_filters input does. Before serving.
   void require_publisher_slots(std::uint32_t n) { sub_.require_slots(n); }
 
+private:
+  // The executor's, through detail::Source: a take of one's own would split the frames.
   auto attach() -> bool override;
   auto deliver_one() -> bool override;
   [[nodiscard]] auto channel() const -> const detail::Channel * override { return sub_.channel(); }
   [[nodiscard]] auto watch() const -> const detail::Watch * override { return sub_.watch(); }
   [[nodiscard]] auto endpoint() const -> const void * override { return this; }
 
-private:
   template <class Adapter>
   friend class message_filters::Subscriber;
 

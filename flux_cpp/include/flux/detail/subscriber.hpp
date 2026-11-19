@@ -43,12 +43,22 @@ public:
     return attach_held();
   }
 
-  // Refused once an executor serves this subscription: the two would split its frames.
-  auto take() -> FrameView
+  // Refused once an executor serves this subscription: the two would split its frames. An attach
+  // the publisher refuses is empty, with refusal() set, until the publisher restarts, as under an
+  // executor; only misuse throws (std::logic_error).
+  auto take() -> Frame
   {
     refuse_if_served();
     const InUse held(busy_);
-    return take_held();
+    if (left_out()) {
+      return {};
+    }
+    try {
+      return take_held();
+    } catch (const Error & e) {
+      refuse(e);
+      return {};
+    }
   }
 
   // What an executor's sources call. From then on take() and take_blocking() are refused. A
@@ -67,7 +77,7 @@ public:
       return false;
     }
   }
-  auto take_for_executor() -> FrameView
+  auto take_for_executor() -> Frame
   {
     served_.store(true, std::memory_order_relaxed);
     const InUse held(busy_);
@@ -96,7 +106,7 @@ public:
   // while max_borrow views are held. `stop` is asked after each wait of at most kSlice, and true
   // ends it empty: a futex wait does not see a ROS shutdown or a signal.
   template <class Stop>
-  auto take_blocking(std::int64_t timeout_ns, Stop stop) -> FrameView
+  auto take_blocking(std::int64_t timeout_ns, Stop stop) -> Frame
   {
     refuse_if_served();
     const InUse held(busy_);
@@ -117,17 +127,27 @@ public:
         slice = std::min(slice, left);
       }
       const auto slice_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(slice).count();
-      if (attach_held()) {
-        refuse_if_inherited();
-        FrameView v = ch_->take_blocking(slice_ns);
-        note();
-        if (v) {
-          return v;
+      bool attached = false;
+      try {
+        attached = !left_out() && attach_held();
+        if (attached) {
+          refuse_if_inherited();
+          Frame v = ch_->take_blocking(slice_ns);
+          note();
+          if (v) {
+            return v;
+          }
+          drop_if_gone();
+          if (ch_ && !ch_->can_borrow()) {
+            return {};
+          }
         }
-        drop_if_gone();
-        if (ch_ && !ch_->can_borrow()) {
-          return {};
-        }
+      } catch (const Error & e) {
+        refuse(e);
+        attached = false;
+      }
+      if (attached) {
+        // The slice ran out with no frame; take again.
       } else if (watch_) {
         // The publisher that comes up wakes the watch, which the failed attach armed.
         (void)watch_->wait(slice_ns);
@@ -139,7 +159,7 @@ public:
       }
     }
   }
-  auto take_blocking(std::int64_t timeout_ns) -> FrameView
+  auto take_blocking(std::int64_t timeout_ns) -> Frame
   {
     return take_blocking(timeout_ns, [] { return false; });
   }
@@ -304,7 +324,7 @@ private:
         }
         ch_.emplace(Channel::open(*watch_, fingerprint_, qos_, mem_, stream_));
       } catch (const Error & e) {
-        if (e.status() == FLUX_NOT_READY) {
+        if (e.status() == Status::NotReady) {
           return false;
         }
         throw;
@@ -377,19 +397,19 @@ private:
     }
     drop_channel();
     throw Error(
-      FLUX_INVALID_ARGUMENT,
+      Status::InvalidArgument,
       ("flux: " + signpost_ + " has " + std::to_string(have) +
        " slots, and its message_filters queue needs " + std::to_string(min_slots_))
         .c_str());
   }
 
-  auto take_held() -> FrameView
+  auto take_held() -> Frame
   {
     if (!attach_held()) {
       return {};
     }
     refuse_if_inherited();
-    FrameView v = ch_->take();
+    Frame v = ch_->take();
     note();
     if (!v) {
       drop_if_gone();

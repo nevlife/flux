@@ -800,7 +800,7 @@ fn an_error_from_deliver_ends_the_spin_and_leaves_it_spinnable() {
 /// Hands every view to `held`, as a callback that queues frames for a worker does.
 struct Holding {
     ch: Channel,
-    held: Arc<Mutex<Vec<flux_core::FrameView>>>,
+    held: Arc<Mutex<Vec<flux_core::Frame>>>,
 }
 
 impl Source for Holding {

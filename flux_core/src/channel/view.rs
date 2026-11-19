@@ -62,14 +62,14 @@ pub struct GpuBlock {
 
 /// A borrowed frame. While it lives, the publisher does not rewrite its slot. The header is the
 /// copy `take` checked: another process can still write the one in shared memory.
-pub struct FrameView {
+pub struct Frame {
     pub(super) sh: Arc<ChannelShared>,
     pub(super) slot: u32,
     pub(super) ticket: u64,
     pub(super) meta: FrameMeta,
 }
 
-impl FrameView {
+impl Frame {
     /// The arena the frame's trailer names, read-only. None for a frame without one.
     pub fn heap(&self) -> Option<&[u8]> {
         let data = self.data();
@@ -245,14 +245,14 @@ impl FrameView {
 }
 
 #[cfg(any(test, feature = "fuzz"))]
-impl FrameView {
+impl Frame {
     pub(crate) fn lag(&self) -> u64 {
         let latest = self.sh.seg.ctrl().latest.load(Ordering::Acquire); // order: latest
         latest.wrapping_sub(self.ticket)
     }
 }
 
-impl Drop for FrameView {
+impl Drop for Frame {
     /// A failed fence keeps the borrow on purpose: a kernel may still read the slot, and the
     /// publisher must not rewrite it. `fence_failed` shows it. The channel is kept for the
     /// process's life too, so neither its mapping nor its reader number goes before the kernel.

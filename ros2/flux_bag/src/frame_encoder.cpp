@@ -31,7 +31,7 @@ FrameEncoder::FrameEncoder(std::string flux_topic, std::uint64_t fingerprint)
 }
 
 auto FrameEncoder::encode(
-  const flux::FrameView & v, const flux::Subscription & sub, std::int64_t sent_ns,
+  const flux::Frame & v, const flux::Subscription & sub, std::int64_t sent_ns,
   FluxFrameFields & f) -> const char *
 {
   // A frame with fields in its publisher's arena holds only offsets there, which a bag cannot
@@ -53,9 +53,9 @@ auto FrameEncoder::encode(
   // A publisher restarted with other slots is a new attach: replay recreates it the same way.
   if (sub.attach_generation() != generation_) {
     generation_ = sub.attach_generation();
-    meta_.slot_size = sub.channel()->slot_size();
-    meta_.slot_count = sub.channel()->slot_count();
-    aux_size_ = sub.channel()->aux_size();
+    meta_.slot_size = sub.slot_size();
+    meta_.slot_count = sub.slot_count();
+    aux_size_ = sub.aux_size();
   }
   const flux::FrameMeta & m = v.meta();
   meta_.dtype = static_cast<flux::DType>(m.dtype);

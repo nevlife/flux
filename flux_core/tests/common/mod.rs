@@ -7,7 +7,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use flux_core::{DType, FrameView};
+use flux_core::{DType, Frame};
 
 pub const VIOLATION: i32 = 3;
 pub const REPLY: Duration = Duration::from_secs(10);
@@ -74,7 +74,7 @@ pub fn frame(seq: u64, nonce: u64, dt: DType, shape: &[u64]) -> Vec<u8> {
 }
 
 /// The frame's nonce, if the view holds whole the frame its ticket and header name.
-pub fn check(v: &FrameView) -> Result<u64, String> {
+pub fn check(v: &Frame) -> Result<u64, String> {
     let (d, m) = (v.data(), v.meta());
     if d.len() < HEAD {
         return Err(format!("ticket {}: {} bytes", v.ticket(), d.len()));

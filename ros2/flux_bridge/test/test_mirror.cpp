@@ -93,16 +93,8 @@ TEST_F(Mirror, AnUntypedPublisherIsRefused)
     pub.mirror_to_ros();
     FAIL() << "an untyped mirror was accepted";
   } catch (const flux::Error & e) {
-    EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
+    EXPECT_EQ(e.status(), flux::Status::InvalidArgument);
   }
-}
-
-TEST_F(Mirror, AMovedPublisherKeepsItsMirror)
-{
-  flux::Publisher pub(*node_, topic("moved"), slots(), Imu::kFingerprint);
-  pub.mirror_to_ros();
-  flux::Publisher moved = std::move(pub);
-  EXPECT_EQ(node_->count_publishers(moved.topic_name()), 1U);
 }
 
 auto threads() -> std::size_t

@@ -45,10 +45,10 @@ use crate::sizing;
 use crate::sys::{self};
 use crate::trace::{self, event};
 
-pub use loan::{Heap, WriteSlot};
+pub use loan::{Heap, Loan};
 use loan::{fence_failed, fits, meta_from};
 pub(crate) use shared::{ChannelShared, Owned, Waiter};
-pub use view::{FrameView, GpuBlock, GpuHeap};
+pub use view::{Frame, GpuBlock, GpuHeap};
 
 const MAX_RETRIES: u32 = 64;
 // Bounds one park inside take_blocking: the next take is what notices a publisher restart.
@@ -106,7 +106,7 @@ pub struct PublisherConfig {
     /// `On` needs fixed slots on an integrated GPU. An image slot's size is rounded up to 2 MiB.
     pub image_slots: ImageSlots,
     /// Image slots in this format: the slot size defaults to a frame's and must hold one, and
-    /// subscribers read the layout (`FrameView::image_layout`). Refused with `ImageSlots::Off`.
+    /// subscribers read the layout (`Frame::image_layout`). Refused with `ImageSlots::Off`.
     pub image_format: crate::image_format::ImageFormat,
 }
 
@@ -685,12 +685,12 @@ impl Channel {
     }
 
     /// The whole slot as one u8 run; commit the prefix written with `commit_len`.
-    pub fn loan(&mut self) -> Option<WriteSlot> {
+    pub fn loan(&mut self) -> Option<Loan> {
         self.loan_typed(DType::U8, &[u64::from(self.slot_size())])
     }
 
     /// The shape is checked at commit, the one place the caller already reads an outcome.
-    pub fn loan_typed(&mut self, dt: DType, shape: &[u64]) -> Option<WriteSlot> {
+    pub fn loan_typed(&mut self, dt: DType, shape: &[u64]) -> Option<Loan> {
         self.try_loan_typed(dt, shape).ok()
     }
 
@@ -699,7 +699,7 @@ impl Channel {
         &mut self,
         dt: DType,
         shape: &[u64],
-    ) -> std::result::Result<WriteSlot, Published> {
+    ) -> std::result::Result<Loan, Published> {
         // A wedged GPU fails every commit, and each failed commit keeps its slot.
         let refused = if !self.can_publish() {
             trace::CLAIM_NOT_PUBLISHER
@@ -724,7 +724,7 @@ impl Channel {
         let slot = self.claim(1).ok_or(Published::Backpressure)?;
         self.order.loaned.push(slot);
         event!(flux_trace_loan(self.trace_handle(), slot));
-        Ok(WriteSlot {
+        Ok(Loan {
             sh: Arc::clone(&self.sh),
             slot,
             meta: meta_from(dt, shape),
@@ -809,7 +809,7 @@ impl Channel {
     }
 
     /// The oldest frame newer than the cursor, within `depth` of the newest.
-    pub fn take(&mut self) -> Option<FrameView> {
+    pub fn take(&mut self) -> Option<Frame> {
         self.sh.reap_late();
         if !self.begin_borrow() {
             return None;
@@ -898,7 +898,7 @@ impl Channel {
                 self.lost,
                 self.sh.stamp(s, meta.nbytes),
             ));
-            return Some(FrameView {
+            return Some(Frame {
                 sh: Arc::clone(&self.sh),
                 slot: s,
                 ticket: t,
@@ -936,7 +936,7 @@ impl Channel {
     }
 
     /// `timeout_ns` < 0 waits forever.
-    pub fn take_blocking(&mut self, timeout_ns: i64) -> Option<FrameView> {
+    pub fn take_blocking(&mut self, timeout_ns: i64) -> Option<Frame> {
         let deadline = (timeout_ns >= 0).then(|| sys::monotonic_ns() + timeout_ns.unsigned_abs());
         loop {
             let seq = self.wake_seq();

@@ -21,8 +21,8 @@ use std::time::{Duration, Instant};
 
 use common::{Rng, Worker, check, frame, leftovers, reply, shape_of, violation};
 use flux_core::{
-    Channel, DEFAULT_MAX_SUBSCRIBERS, Error, FrameView, MemoryPolicy, NO_SCHEMA, Published, QoS,
-    fuzz, signpost_name,
+    Channel, DEFAULT_MAX_SUBSCRIBERS, Error, Frame, MemoryPolicy, NO_SCHEMA, Published, QoS, fuzz,
+    signpost_name,
 };
 
 const SLOT: u32 = 8192;
@@ -145,7 +145,7 @@ fn open(signpost: &str, stop: &AtomicBool) -> Option<Channel> {
     None
 }
 
-fn release(v: &FrameView, st: &mut SubStats) {
+fn release(v: &Frame, st: &mut SubStats) {
     if let Err(e) = check(v) {
         violation(&format!("rewritten while held: {e}"));
     }

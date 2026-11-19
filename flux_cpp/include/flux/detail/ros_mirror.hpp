@@ -21,7 +21,7 @@ class RosMirror
 {
 public:
   // A GPU memory channel's fingerprint (gpu_fingerprint) mirrors as its type: aux and payload
-  // become one message. Throws Error (FLUX_INVALID_ARGUMENT) for a fingerprint that names no
+  // become one message. Throws Error (Status::InvalidArgument) for a fingerprint that names no
   // installed message type that way or the plain one, or a device-backed publisher of the plain
   // one.
   RosMirror(const Channel & publisher, std::string signpost, std::uint64_t fingerprint)
@@ -45,7 +45,7 @@ public:
     if (!sub_) {
       sub_.emplace(signpost_, fingerprint_, QoS(1).max_borrow(1), MemoryPolicy{});
     }
-    FrameView frame = sub_->take_blocking(timeout_ns, stop);
+    Frame frame = sub_->take_blocking(timeout_ns, stop);
     if (!frame) {
       return 0;
     }
@@ -76,10 +76,10 @@ private:
       return s.at_gpu(fingerprint);
     }
     if (device_backed) {
-      throw Error(FLUX_INVALID_ARGUMENT, "flux: a device-backed publisher has no ROS 2 mirror");
+      throw Error(Status::InvalidArgument, "flux: a device-backed publisher has no ROS 2 mirror");
     }
     if (!s.contains(fingerprint)) {
-      throw Error(FLUX_INVALID_ARGUMENT, "flux: no installed message type has this fingerprint");
+      throw Error(Status::InvalidArgument, "flux: no installed message type has this fingerprint");
     }
     return s.at(fingerprint);
   }

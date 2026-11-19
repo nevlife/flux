@@ -103,7 +103,7 @@ private:
     rclcpp::SerializedMessage msg;
     std::vector<std::uint8_t> bytes;
     while (!stop_) {
-      flux::FrameView frame = sub_.take_blocking(kWaitNs);
+      flux::Frame frame = sub_.take_blocking(std::chrono::nanoseconds(kWaitNs));
       if (!frame) {
         continue;
       }

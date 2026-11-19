@@ -163,11 +163,11 @@ TEST_F(Filters, AFrameWhoseHeaderDoesNotReadIsCountedNotForwarded)
   auto pa = pub("bad");
   In a(*node_, topic("bad"), 4, qos());
   ASSERT_EQ(pa.publish("abc", 3), flux::Published::Ok);
-  EXPECT_TRUE(a.deliver_one());
+  EXPECT_TRUE(static_cast<flux::detail::Source &>(a).deliver_one());
   EXPECT_EQ(a.unreadable(), 1U);
   EXPECT_EQ(a.forwarded(), 0U);
   ASSERT_EQ(send(pa, 1, 1), flux::Published::Ok);
-  EXPECT_TRUE(a.deliver_one());
+  EXPECT_TRUE(static_cast<flux::detail::Source &>(a).deliver_one());
   EXPECT_EQ(a.forwarded(), 1U);
 }
 
@@ -183,7 +183,7 @@ TEST_F(Filters, TheHeaderCarriesTheFrameId)
   b.set__header__stamp(1, 0);
   b.set__header__frame_id("camera");
   ASSERT_EQ(b.commit__(), flux::Published::Ok);
-  ASSERT_TRUE(a.deliver_one());
+  ASSERT_TRUE(static_cast<flux::detail::Source &>(a).deliver_one());
   EXPECT_EQ(frame_id, "camera");
 }
 
@@ -194,10 +194,10 @@ TEST_F(Filters, ANegativeStampIsCountedNotForwarded)
   In a(*node_, topic("neg"), 4, qos());
   ::message_filters::Cache<Msg> cache(a, 4);
   ASSERT_EQ(send(pa, -1, 1), flux::Published::Ok);
-  EXPECT_TRUE(a.deliver_one());
+  EXPECT_TRUE(static_cast<flux::detail::Source &>(a).deliver_one());
   EXPECT_EQ(a.unreadable(), 1U);
   ASSERT_EQ(send(pa, 2, 2), flux::Published::Ok);
-  EXPECT_TRUE(a.deliver_one());
+  EXPECT_TRUE(static_cast<flux::detail::Source &>(a).deliver_one());
   EXPECT_EQ(a.forwarded(), 1U);
   EXPECT_EQ(cache.getLatestTime().seconds(), 2.0);
 }
@@ -215,7 +215,7 @@ TEST_F(Filters, AQueuedFrameOutlivesTheDeliveryThatQueuedIt)
     }));
   for (std::uint8_t i = 0; i < 20; ++i) {
     ASSERT_EQ(send(pa, i, i), flux::Published::Ok);
-    ASSERT_TRUE(a.deliver_one());
+    ASSERT_TRUE(static_cast<flux::detail::Source &>(a).deliver_one());
   }
   ASSERT_EQ(kept.size(), 3U);
   for (std::uint8_t i = 0; i < 3; ++i) {
@@ -230,7 +230,8 @@ TEST_F(Filters, ACacheWithTheDefaultQoSKeepsUp)
   ::message_filters::Cache<Msg> cache(a, 10);
   for (std::uint8_t i = 0; i < 30; ++i) {
     ASSERT_EQ(send(pa, i, i), flux::Published::Ok);
-    ASSERT_TRUE(a.deliver_one()) << "stalled at frame " << int{i};
+    ASSERT_TRUE(static_cast<flux::detail::Source &>(a).deliver_one())
+      << "stalled at frame " << int{i};
   }
   EXPECT_EQ(cache.getLatestTime().seconds(), 29.0);
 }
@@ -240,10 +241,10 @@ TEST_F(Filters, APublisherWithNoMoreSlotsThanTheQueueIsRefused)
   auto pa = pub("few");
   try {
     In a(*node_, topic("few"), 8);
-    a.attach();
+    static_cast<flux::detail::Source &>(a).attach();
     FAIL() << "attached to 8 slots for a queue of 8";
   } catch (const flux::Error & e) {
-    EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
+    EXPECT_EQ(e.status(), flux::Status::InvalidArgument);
   }
 }
 
@@ -287,14 +288,14 @@ TEST_F(Filters, APartitionedSynchronizerKeepsItsInputsInOneGroup)
     split.add(b, other);
     split.add_node(node_);
     split.add_sync_group(a, b);
-    EXPECT_THROW(split.spin(), std::invalid_argument);
+    EXPECT_THROW(split.spin(), flux::Error);
   }
   {
     flux::PartitionedExecutor unassigned;
     unassigned.add(a, g);
     unassigned.add_node(node_);
     unassigned.add_sync_group(a, b);
-    EXPECT_THROW(unassigned.spin(), std::invalid_argument);
+    EXPECT_THROW(unassigned.spin(), flux::Error);
   }
   ::message_filters::TimeSynchronizer<Msg, Msg> sync(4);
   sync.connectInput(a, b);

@@ -48,7 +48,7 @@ needs_cxx = pytest.mark.skipif(
 
 def _core_lib_dir(prefixes):
     """Where libflux_ffi.so is. A test that only checks syntax does not need it; one that links
-    does, because the generated Builder can own a WriteSlot and so needs its destructor. Looked up
+    does, because the generated Builder can own a Loan and so needs its destructor. Looked up
     on the install prefixes, which an isolated and a merged install both put there."""
     env = os.environ.get("FLUX_FFI_LIB_DIR")
     for d in [env] if env else [os.path.join(p, "lib") for p in prefixes.split(os.pathsep) if p]:

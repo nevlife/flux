@@ -62,7 +62,7 @@ Python에서는 배열에 대한 참조가 모두 사라져야 view가 반납된
 
 ## 빈 결과의 이유
 
-빈 결과(C++의 빈 `FrameView`, Python의 `None`)는 받을 프레임이 아직 없거나, 프레임과 관계없는 이유로 take가 거절됐다는 뜻이다. 거절 횟수는 `refused()`(Python `refused`)에 이유별로 누적된다.
+빈 결과(C++의 빈 `Frame`, Python의 `None`)는 받을 프레임이 아직 없거나, 프레임과 관계없는 이유로 take가 거절됐다는 뜻이다. 거절 횟수는 `refused()`(Python `refused`)에 이유별로 누적된다.
 
 | 필드 | 발생 조건 | 할 일 |
 | --- | --- | --- |

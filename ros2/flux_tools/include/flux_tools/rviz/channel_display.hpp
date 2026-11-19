@@ -43,13 +43,13 @@ protected:
   virtual void unsubscribe();
   // The next frame, or none. A channel that refuses this subscription is shown in the status
   // rather than thrown out of update(), which would end rviz.
-  auto take() -> flux::FrameView;
+  auto take() -> flux::Frame;
   // Counts a frame shown, in the Topic status.
   void shown();
 
   // `frame` read as its type (TypedFrames::view).
   template <class View>
-  auto view_of(const flux::FrameView & frame) -> View
+  auto view_of(const flux::Frame & frame) -> View
   {
     return frames_of_type_.view<View>(frame);
   }

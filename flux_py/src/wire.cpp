@@ -152,7 +152,7 @@ public:
   {
     // A take result reaches its arena through its channel, which maps it once, and across PCIe
     // too: its device fields, or a GPU reader's copies.
-    if (const flux::FrameView * v = flux_py::frame_of(buf, &device_)) {
+    if (const flux::Frame * v = flux_py::frame_of(buf, &device_)) {
       heap_ = v->heap();
       gpu_ = v->gpu_heap();
     }

@@ -15,7 +15,7 @@ void bind_wire(nanobind::module_ & m);
 
 namespace flux
 {
-class FrameView;
+class Frame;
 }
 
 namespace flux_py
@@ -27,7 +27,7 @@ auto device_span(
   bool readonly) -> nanobind::object;
 
 // The view a take result's array holds and its stream's device (-1 for none); null for others.
-auto frame_of(nanobind::handle buf, int * device) -> const flux::FrameView *;
+auto frame_of(nanobind::handle buf, int * device) -> const flux::Frame *;
 
 using TensorAt = std::array<std::size_t, 7>;
 

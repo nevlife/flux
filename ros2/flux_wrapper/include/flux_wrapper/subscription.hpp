@@ -259,8 +259,8 @@ private:
           o.device = device;
           flux_ = std::make_unique<flux::Subscription>(
             node, topic, q,
-            [sink](flux::FrameView && f) {
-              (*sink)(std::move(f), [](const flux::FrameView & g) {
+            [sink](flux::Frame && f) {
+              (*sink)(std::move(f), [](const flux::Frame & g) {
                 const typename Adapter::View v(g);
                 return View<MsgT>(v, v.data__device().data(), g.stream());
               });
@@ -272,8 +272,8 @@ private:
       if (!flux_) {
         flux_ = std::make_unique<flux::Subscription>(
           node, topic, q,
-          [sink](flux::FrameView && f) {
-            (*sink)(std::move(f), [](const flux::FrameView & g) {
+          [sink](flux::Frame && f) {
+            (*sink)(std::move(f), [](const flux::Frame & g) {
               return View<MsgT>(typename Adapter::View(g));
             });
           },
@@ -357,7 +357,7 @@ private:
     const SubscriptionOptions & options, flux::Device device)
   {
     rejects_ = std::make_shared<Rejects>(node.get_logger(), topic);
-    auto on_frame = [sink = std::move(sink), r = rejects_](flux::FrameView && f) {
+    auto on_frame = [sink = std::move(sink), r = rejects_](flux::Frame && f) {
       const auto fields = detail::gpu_fields<MsgT>(f);
       if (!fields) {
         if (r->count.fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -369,8 +369,7 @@ private:
         }
         return;
       }
-      (*sink)(
-        std::move(f), [&fields](const flux::FrameView & g) { return View<MsgT>(g, *fields); });
+      (*sink)(std::move(f), [&fields](const flux::Frame & g) { return View<MsgT>(g, *fields); });
     };
     flux::SubscriptionOptions o;
     o.device = device;

@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use common::{Rng, Worker, check, frame, leftovers, reply, shape_of, violation};
 use flux_core::{
-    Channel, DEFAULT_MAX_SUBSCRIBERS, DType, FrameView, MemoryPolicy, NO_SCHEMA, Published, QoS,
-    WriteSlot, fuzz, signpost_name,
+    Channel, DEFAULT_MAX_SUBSCRIBERS, DType, Frame, Loan, MemoryPolicy, NO_SCHEMA, Published, QoS,
+    fuzz, signpost_name,
 };
 
 const SLOT: u32 = 512;
@@ -156,7 +156,7 @@ struct Publisher {
     nonce: u64,
     next: u64,
     restarts: u64,
-    loans: Vec<(WriteSlot, u32)>,
+    loans: Vec<(Loan, u32)>,
 }
 
 impl Publisher {
@@ -191,7 +191,7 @@ impl Publisher {
         }
     }
 
-    fn take_loan(&mut self, k: usize) -> Option<(WriteSlot, u32)> {
+    fn take_loan(&mut self, k: usize) -> Option<(Loan, u32)> {
         (!self.loans.is_empty()).then(|| self.loans.remove(k % self.loans.len()))
     }
 
@@ -279,7 +279,7 @@ fn subscriber_role(signpost: &str, q: &[u32]) {
         .max_borrow(q[1]);
     ch.set_qos(qos.unwrap()).unwrap();
     reply("ready");
-    let mut held: Vec<FrameView> = Vec::new();
+    let mut held: Vec<Frame> = Vec::new();
     let mut nonces = BTreeMap::new();
     for line in std::io::stdin().lock().lines() {
         let line = line.unwrap();

@@ -28,7 +28,7 @@ public:
   // `f` for `v` taken by `sub`, sent at `sent_ns`; it points into `v` and this until the next
   // call. Null when filled, else why not: arena fields of a type not installed or not matched.
   auto encode(
-    const flux::FrameView & v, const flux::Subscription & sub, std::int64_t sent_ns,
+    const flux::Frame & v, const flux::Subscription & sub, std::int64_t sent_ns,
     FluxFrameFields & f) -> const char *;
 
 private:

@@ -47,7 +47,7 @@ public:
   // this object until the next call. An empty View (ok__() false at its first read) for a frame
   // that does not match.
   template <class View>
-  auto view(const flux::FrameView & frame) -> View
+  auto view(const flux::Frame & frame) -> View
   {
     if (!gpu_) {
       return View(frame);

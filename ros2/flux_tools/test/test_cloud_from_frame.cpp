@@ -107,14 +107,14 @@ TEST(CloudFromFrame, RefusesAFieldPastThePoint)
 }
 
 // A cloud larger than its 512-byte slot: its points go to the publisher's arena, and the View made
-// from the FrameView reads them there. The frame's bytes alone do not hold them.
+// from the Frame reads them there. The frame's bytes alone do not hold them.
 TEST(CloudFromFrame, ReadsAPointCloudPastItsSlotFromTheArena)
 {
   const std::string name = flux::detail::signpost_name(
     "/flux_tools_cloud" + std::to_string(getpid()), Cloud::kFingerprint);
   auto pub = flux::detail::Channel::create(name, 512, 2, Cloud::kFingerprint);
   auto sub = flux::detail::Channel::open(name, Cloud::kFingerprint);
-  flux::WriteSlot slot = pub.loan();
+  flux::Loan slot = pub.loan();
   ASSERT_TRUE(slot);
   constexpr std::size_t kPoints = 100;
   constexpr std::size_t kStep = 12;
@@ -138,7 +138,7 @@ TEST(CloudFromFrame, ReadsAPointCloudPastItsSlotFromTheArena)
   }
   ASSERT_TRUE(b.ok__());
   ASSERT_EQ(slot.commit(b.size__()), flux::Published::Ok);
-  const flux::FrameView frame = sub.take_blocking(1'000'000'000);
+  const flux::Frame frame = sub.take_blocking(1'000'000'000);
   ASSERT_TRUE(frame);
   ASSERT_FALSE(frame.heap().empty()) << "the points should be in the arena";
   std::string error;

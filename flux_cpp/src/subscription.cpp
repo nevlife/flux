@@ -33,7 +33,8 @@ void Subscription::add_to_callback_group(
   const NodeRef & node, const std::shared_ptr<rclcpp::CallbackGroup> & group, std::int32_t priority)
 {
   if (!cb_) {
-    throw std::invalid_argument("flux: a Subscription without a callback has nothing to run");
+    throw Error(
+      Status::InvalidArgument, "flux: a Subscription without a callback has nothing to run");
   }
   if (member_) {
     throw std::logic_error("flux: the subscription is already in a callback group");
@@ -41,13 +42,13 @@ void Subscription::add_to_callback_group(
   member_ = detail::join_group(node, *this, topic_, group, priority);
 }
 
-auto Subscription::take_blocking(std::int64_t timeout_ns) -> FrameView
+auto Subscription::take_blocking(std::chrono::nanoseconds timeout) -> Frame
 {
   const auto shut_down = [this] { return !context_->is_valid(); };
   if (shut_down()) {
     return {};
   }
-  return sub_.take_blocking(timeout_ns, shut_down);
+  return sub_.take_blocking(timeout.count(), shut_down);
 }
 
 auto Subscription::attach() -> bool
@@ -59,7 +60,7 @@ auto Subscription::attach() -> bool
 
 auto Subscription::deliver_one() -> bool
 {
-  FrameView v = sub_.take_for_executor();
+  Frame v = sub_.take_for_executor();
   report_refusal();
   if (!v) {
     return false;

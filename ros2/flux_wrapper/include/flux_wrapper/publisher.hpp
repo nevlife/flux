@@ -37,7 +37,7 @@ inline auto image_encoding(const std::string & e) -> flux::ImageEncoding
     }
   }
   const std::string why = "flux_wrapper: no image slot takes encoding '" + e + "'";
-  throw flux::Error(FLUX_INVALID_ARGUMENT, why.c_str());
+  throw flux::Error(flux::Status::InvalidArgument, why.c_str());
 }
 }  // namespace detail
 #endif
@@ -120,7 +120,7 @@ public:
       if (o.image_encoding != flux::ImageEncoding::None) {
         // A host message starts with its header, so the image is not where the layout says.
         throw flux::Error(
-          FLUX_INVALID_ARGUMENT, "flux_wrapper: an image format needs Device::Cuda");
+          flux::Status::InvalidArgument, "flux_wrapper: an image format needs Device::Cuda");
       }
       flux_ =
         std::make_unique<flux::Publisher>(node, topic, o, detail::AdapterT<MsgT>::kFingerprint);

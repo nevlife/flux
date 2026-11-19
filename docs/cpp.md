@@ -22,8 +22,8 @@ target_include_directories(camera_node PRIVATE ${flux_std_adapters_INCLUDE_DIRS}
 
 | 헤더 | 내용 |
 | --- | --- |
-| `flux/publisher.hpp` | `flux::Publisher`, `WriteSlot`, `Published`, `DType` |
-| `flux/subscription.hpp` | `flux::Subscription`, `FrameView`, `QoS` |
+| `flux/publisher.hpp` | `flux::Publisher`, `Loan`, `Published`, `DType` |
+| `flux/subscription.hpp` | `flux::Subscription`, `Frame`, `QoS` |
 | `flux/executor.hpp` | `flux::Executor` |
 | `flux/partitioned_executor.hpp` | `flux::PartitionedExecutor` |
 | `flux/component_manager.hpp` | `flux::ComponentManager`, `flux::run_component_container`(패키지 `flux_components`) |
@@ -57,7 +57,8 @@ auto flux::create_publisher(node, topic, const PublisherOptions & options = {},
 
 - 기본값은 `flux.h`의 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`이고, Python과 같다. `slot_size`와 `slot_count` 0의 뜻은 [concepts.md](concepts.md#발행자와-슬롯)에 있다. 타입이 없는 발행자의 크기는 `FLUX_UNTYPED_SLOT_SIZE`(8 MiB, `Alloc::Slot` 발행자와 GPU 메모리 채널은 4 MiB), 문자열 자리는 `FLUX_SLOT_STRING_BYTES`(4096 B)다.
 - `publish(data, dtype, shape)`는 배열을 슬롯에 한 번 복사한다. `publish(data, nbytes)`는 `u8[nbytes]`로 발행한다.
-- 같은 채널에 살아 있는 발행자가 있으면 생성자가 `flux::Error`(`FLUX_PUBLISHER_EXISTS`)를 던진다.
+- 같은 채널에 살아 있는 발행자가 있으면 생성자가 `flux::Error`(`Status::PublisherExists`)를 던진다.
+- `Publisher`는 복사도 이동도 불가능하다. trace와 mirror가 객체의 주소로 발행자를 가리키기 때문이다. 여러 개를 다루려면 `create_publisher`의 `shared_ptr`나 `std::optional::emplace`를 쓴다.
 
 | 멤버 | 뜻 |
 | --- | --- |
@@ -85,7 +86,7 @@ auto flux::create_publisher(node, topic, const PublisherOptions & options = {},
 
 ```cpp doc:cpp_loan
 constexpr std::size_t kPoints = 1024;
-flux::WriteSlot slot = pub->loan(flux::DType::F32, {kPoints, 3});
+flux::Loan slot = pub->loan({kPoints, 3}, flux::DType::F32);
 if (slot) {
   auto * xyz = static_cast<float *>(slot.data());
   std::fill_n(xyz, kPoints * 3, 0.0F);
@@ -95,22 +96,22 @@ if (slot) {
 }
 ```
 
-- 빈 슬롯이 없으면 `WriteSlot`이 비어 있다(`false`).
+- 빈 슬롯이 없으면 `Loan`이 비어 있다(`false`).
 - `loan()`은 shape 없이 슬롯 전체를 `u8`로 loan한다. `commit(nbytes)`는 1차원 loan을 `nbytes`로 줄여 발행한다.
-- commit하지 않은 `WriteSlot`이 소멸하거나 `abort()`를 호출하면 프레임은 발행되지 않는다. 그 슬롯의 이전 프레임은 이미 덮어쓰인 뒤다.
+- commit하지 않은 `Loan`이 소멸하거나 `abort()`를 호출하면 프레임은 발행되지 않는다. 그 슬롯의 이전 프레임은 이미 덮어쓰인 뒤다.
 - loan 중인 슬롯은 링에서 제외된다. loan을 오래 유지하면 `Backpressure`가 늘어난다.
-- `WriteSlot`과 `FrameView`는 이동만 가능하고 복사는 불가능하다.
-- 발행자를 `aux_size`와 함께 생성하면 `slot.aux()`가 슬롯의 aux 영역(`aux_size` bytes)이고, `slot.set_aux_len(n)`으로 쓴 길이를 정한다. 구독자는 `FrameView::aux()`로 그 길이만큼 읽는다. `aux_size`를 넘는 길이는 commit이 `TooLarge`로 거절한다.
+- `Loan`과 `Frame`는 이동만 가능하고 복사는 불가능하다. 두 타입은 `[[nodiscard]]`라, 받은 값을 버리면 컴파일러가 경고한다. `take()`가 돌려준 프레임을 버리면 그 프레임은 다시 받을 수 없다.
+- 타입이 있는 loan은 `pub->loan({h, w, 3}, flux::DType::U8)`처럼 shape가 먼저다. Python과 numpy의 순서다.
+- 발행자를 `aux_size`와 함께 생성하면 `slot.aux()`가 슬롯의 aux 영역(`aux_size` bytes)이고, `slot.set_aux_len(n)`으로 쓴 길이를 정한다. 구독자는 `Frame::aux()`로 그 길이만큼 읽는다. `aux_size`를 넘는 길이는 commit이 `TooLarge`로 거절한다.
 
 ## 구독과 executor
 
 구독에 콜백을 주고 executor에 넣는다.
 
 ```cpp doc:cpp_subscribe
-auto sub =
-  flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::FrameView & frame) {
-    std::cout << frame.size() << " bytes, " << unsigned{frame.meta().ndim} << " dimensions\n";
-  });
+auto sub = flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::Frame & frame) {
+  std::cout << frame.size() << " bytes, " << unsigned{frame.meta().ndim} << " dimensions\n";
+});
 
 flux::Executor ex;
 ex.add(*sub);
@@ -126,7 +127,7 @@ auto flux::create_subscription(node, topic, const QoS & qos, Callback cb,
 
 - `flux::Subscription(node, topic, qos, cb, options, fingerprint)` 생성자도 같은 인자를 받는다. 생성자에서는 `options`를 생략할 수 없다. `SubscriptionOptions`의 필드는 `device`, `stream`, `memory`이고, 선언한 `stream`이 `device`보다 우선한다.
 
-- 콜백(`Callback`)은 `std::function<void(FrameView &&)>`다. `const flux::FrameView &`로 받으면 슬롯은 호출 종료 시 반납된다. 프레임을 move해서 보유하면 그 `FrameView`의 해제 시 반납되고, 해제는 어느 스레드에서든 가능하다.
+- 콜백(`Callback`)은 `std::function<void(Frame &&)>`다. `const flux::Frame &`로 받으면 슬롯은 호출 종료 시 반납된다. 프레임을 move해서 보유하면 그 `Frame`의 해제 시 반납되고, 해제는 어느 스레드에서든 가능하다.
 - 한 구독이 동시에 보유 가능한 프레임은 QoS `max_borrow`개다. 그만큼 보유하는 동안 executor는 그 구독의 콜백을 호출하지 않고, 다음 프레임은 링에서 대기한다. depth보다 뒤처진 프레임은 `lost()`에 더해진다.
 - QoS에 거절되는 값이 있으면 생성자가 예외를 던진다([qos.md](qos.md)).
 
@@ -134,13 +135,13 @@ auto flux::create_subscription(node, topic, const QoS & qos, Callback cb,
 
 | 경우 | 동작 |
 | --- | --- |
-| 호출 시점에 이미 연결되어 있다 | `flux::Error`(`FLUX_INVALID_ARGUMENT`)를 던진다 |
+| 호출 시점에 이미 연결되어 있다 | `flux::Error`(`Status::InvalidArgument`)를 던진다 |
 | executor 아래에서 연결되는 시점 | 로그를 한 번 남기고, 발행자 재시작 시까지 그 구독을 제외한다 |
 
 - 발행자가 쓸 슬롯까지 남기려면 `n = max_borrow + 1`로 한다.
 - 같은 토픽의 다른 구독이 점유한 슬롯은 이 검사에 포함되지 않는다.
 
-`FrameView`의 멤버는 다음과 같다.
+`Frame`의 멤버는 다음과 같다.
 
 | 멤버 | 뜻 |
 | --- | --- |
@@ -156,11 +157,11 @@ auto flux::create_subscription(node, topic, const QoS & qos, Callback cb,
 
 | 멤버 | 뜻 |
 | --- | --- |
-| `add(sub, priority = 0)` | 콜백이 있는 구독을 넣는다. 콜백이 없으면 `std::invalid_argument`. 구독은 executor보다 오래 살아야 하고, 다른 executor에 넣지 않는다 |
+| `add(sub, priority = 0)` | 콜백이 있는 구독을 넣는다. 콜백이 없으면 `flux::Error`(`Status::InvalidArgument`). 구독은 executor보다 오래 살아야 하고, 다른 executor에 넣지 않는다 |
 | `add_node(node)` | rclcpp와 같다. 노드에 나중에 생긴 엔티티와, 콜백 그룹에 넣은 flux 구독([컴포넌트 컨테이너](#컴포넌트-컨테이너))도 찾는다 |
 | `spin()`, `spin_until_future_complete()` | `cancel()`, context 종료(Ctrl-C), 콜백 예외 중 하나가 발생 시까지 실행한다 |
 | `cancel()` | 어느 스레드에서든 spin을 끝낸다. spin 전에 호출하면 다음 spin이 바로 끝난다 |
-| `spin_once()`, `spin_some()`, `spin_all()` | 예외를 던진다. rclcpp wait set 기준으로 처리량을 정해 flux 구독을 건너뛰기 때문이다 |
+| `spin_once()`, `spin_some()`, `spin_all()` | `flux::Error`(`Status::Unsupported`)를 던진다. rclcpp wait set 기준으로 처리량을 정해 flux 구독을 건너뛰기 때문이다. `rclcpp::Executor &`로 받는 코드에 넘길 때도 같으므로, 그 코드가 이 셋을 부르지 않는지 확인한다 |
 
 - 우선순위가 큰 구독이 먼저 실행되고, 같은 우선순위는 한 프레임씩 번갈아 실행된다. pass마다 flux 콜백을 64개까지 실행한다.
 - ROS 작업이 준비되면 executor는 flux 콜백 사이에서 ROS 작업을 실행하고, ROS 작업을 1 ms 실행한 뒤에는 대기 중인 flux 작업에 차례를 넘긴다. 그래서 한쪽이 계속 바빠도 다른 쪽이 밀리지 않는다.
@@ -177,17 +178,19 @@ auto sub = flux::create_subscription(*node, "image", flux::QoS{}, {});
 ```
 
 ```cpp doc:cpp_take_frames
-while (flux::FrameView frame = sub->take()) {
+while (flux::Frame frame = sub->take()) {
   std::cout << "frame " << frame.ticket() << ", " << frame.size() << " bytes\n";
 }
-if (flux::FrameView frame = sub->take_blocking(100'000'000)) {
+if (flux::Frame frame = sub->take_blocking(std::chrono::milliseconds(100))) {
   std::cout << "one more, " << frame.size() << " bytes\n";
 }
 ```
 
-- `take()`는 아직 받지 않은 가장 오래된 프레임을 반환한다. 없으면 빈 `FrameView`다.
-- `take_blocking(timeout_ns)`는 프레임 도착 시까지 기다리고, 음수면 무한히 기다린다. 발행자가 없으면 발행자도 기다린다. 노드의 context가 종료되면 100 ms 안에, view를 `max_borrow`개 보유 중이면 즉시 빈 결과를 반환한다.
-- executor가 한 번이라도 처리한 구독에서 `take()`와 `take_blocking()`을 호출하면 `std::logic_error`를 던진다. executor와 사용자가 프레임을 나눠 받게 되기 때문이다.
+- `take()`는 아직 받지 않은 가장 오래된 프레임을 반환한다. 없으면 빈 `Frame`다.
+- `take_blocking(timeout)`(`std::chrono::nanoseconds`, 기본은 무한)은 프레임 도착 시까지 기다리고, 음수면 무한히 기다린다. 발행자가 없으면 발행자도 기다린다. 노드의 context가 종료되면 100 ms 안에, view를 `max_borrow`개 보유 중이면 즉시 빈 결과를 반환한다.
+- executor가 한 번이라도 처리한 구독에서 `take()`와 `take_blocking()`을 호출하면 `std::logic_error`를 던진다. executor와 사용자가 프레임을 나눠 받게 되기 때문이다. 두 스레드가 한 구독을 동시에 써도 같다. take가 던지는 예외는 이 둘뿐이다.
+- 발행자가 구독을 거절하면(구독자 자리 부족, 슬롯 수 부족, 다른 layout 등) take는 빈 결과를 돌려주고 `refusal()`이 이유를 담는다. 발행자가 재시작할 때까지 다시 붙지 않는다. executor 아래에서와 같다.
+- `slot_size()`, `slot_count()`, `aux_size()`는 연결된 발행자의 슬롯 크기, 개수, aux 크기다. 연결 전에는 0이다.
 
 구독의 상태 값은 어느 스레드에서든 읽기 가능하다.
 
@@ -253,7 +256,7 @@ if (img.ok__()) {
 }
 ```
 
-- `View` 접근자의 반환값은 슬롯을 가리키므로 `FrameView`가 살아 있는 동안만 유효하다.
+- `View` 접근자의 반환값은 슬롯을 가리키므로 `Frame`가 살아 있는 동안만 유효하다.
 - 프레임이 스키마와 맞지 않으면 `ok__()`가 `false`가 되고 이후 접근자는 빈 값을 반환한다. 읽은 뒤에 `ok__()`를 확인한다.
 
 ROS 메시지 객체는 `<pkg>/flux/<name>_ros.hpp`의 함수로 변환한다. 필드 전체를 복사한다.
@@ -278,12 +281,11 @@ ROS 2 노드도 같은 토픽을 구독해야 하면 발행자에서 `mirror_to_
 
 ```cpp doc:cpp_partitioned
 auto camera = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
-auto sub =
-  flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::FrameView & frame) {
-    std::array<char, 16> name{};
-    pthread_getname_np(pthread_self(), name.data(), name.size());
-    std::cout << name.data() << ": " << frame.size() << " bytes\n";
-  });
+auto sub = flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::Frame & frame) {
+  std::array<char, 16> name{};
+  pthread_getname_np(pthread_self(), name.data(), name.size());
+  std::cout << name.data() << ": " << frame.size() << " bytes\n";
+});
 
 flux::PartitionedExecutor ex;
 ex.add(*sub, camera);
@@ -321,9 +323,9 @@ public:
   : Node("camera", options),
     group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive))
   {
-    sub_ = flux::create_subscription(
-      *this, "image", flux::QoS{},
-      [](const flux::FrameView & frame) { std::cout << "camera: " << frame.size() << " bytes\n"; });
+    sub_ = flux::create_subscription(*this, "image", flux::QoS{}, [](const flux::Frame & frame) {
+      std::cout << "camera: " << frame.size() << " bytes\n";
+    });
     sub_->add_to_callback_group(*this, group_);
   }
 
@@ -443,18 +445,22 @@ ex.spin();
 
 ## 오류
 
-생성자와 설정 함수는 `flux::Error`(`std::runtime_error`)를 던진다. `status()`가 이유를 반환한다.
+생성자와 설정 함수의 실패는 `flux::Error`(`std::runtime_error`)를 던진다. `status()`가 이유(`flux::Status`)를 반환한다. 잘못된 사용(실행 중인 executor에 `add`, 두 스레드가 한 구독을 동시에 사용 등)은 `std::logic_error`다. publish, loan, commit, take는 결과를 반환값으로 알린다.
 
 | `status()` | 뜻 |
 | --- | --- |
-| `FLUX_INVALID_ARGUMENT` | 잘못된 인자(이름, QoS, 슬롯 수 등) |
-| `FLUX_MISMATCH` | 채널이 이 요청과 맞지 않는다. 로드한 `libflux_ffi`의 ABI 버전이 헤더와 다른 경우에도 이 값이다 |
-| `FLUX_NOT_READY` | 아직 발행자가 없다 |
-| `FLUX_PUBLISHER_EXISTS` | 같은 채널의 발행자가 이미 있다 |
-| `FLUX_SUBSCRIBERS_FULL` | 구독 프로세스 자리가 모두 찼다 |
-| `FLUX_UNSUPPORTED` | 이 호스트에서 지원하지 않는다(GPU 경로 없음 등) |
-| `FLUX_IO` | 시스템 호출이 실패했다 |
-| `FLUX_IN_USE` | 다른 스레드가 같은 객체를 사용 중이다 |
+| `Status::InvalidArgument` | 잘못된 인자(이름, QoS, 슬롯 수 등) |
+| `Status::Mismatch` | 채널이 이 요청과 맞지 않는다. 로드한 `libflux_ffi`의 ABI 버전이 헤더와 다른 경우에도 이 값이다 |
+| `Status::NotReady` | 아직 발행자가 없다 |
+| `Status::PublisherExists` | 같은 채널의 발행자가 이미 있다 |
+| `Status::SubscribersFull` | 구독 프로세스 자리가 모두 찼다 |
+| `Status::Unsupported` | 이 호스트에서 지원하지 않는다(GPU 경로 없음, `spin_some()` 등) |
+| `Status::Callback` | 콜백이 실패했다 |
+| `Status::Io` | 시스템 호출이 실패했다 |
+| `Status::InUse` | 다른 스레드가 같은 객체를 사용 중이다 |
+| `Status::BufferTooSmall` | 출력 버퍼가 작다 |
+
+- `flux::Status`는 값이 늘어날 수 있다. `switch`에 모르는 값의 처리를 둔다.
 
 ## 채널 목록
 

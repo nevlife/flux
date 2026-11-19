@@ -26,7 +26,7 @@
 namespace
 {
 
-auto text(const flux::FrameView & v) -> std::string
+auto text(const flux::Frame & v) -> std::string
 {
   return std::string(static_cast<const char *>(v.data()), v.size());
 }
@@ -43,7 +43,7 @@ auto status_of(void (*f)(const std::string &), const std::string & name) -> flux
   } catch (const flux::Error & e) {
     return e.status();
   }
-  return FLUX_OK;
+  return flux::Status::Ok;
 }
 
 TEST(Channel, TakesWhatWasPublished)
@@ -51,7 +51,7 @@ TEST(Channel, TakesWhatWasPublished)
   flux::detail::Channel ch(16, 4);
   EXPECT_FALSE(ch.take());
   EXPECT_EQ(ch.publish("abc", 3), flux::Published::Ok);
-  flux::FrameView v = ch.take();
+  flux::Frame v = ch.take();
   ASSERT_TRUE(v);
   EXPECT_EQ(text(v), "abc");
   EXPECT_EQ(v.ticket(), 1u);
@@ -65,13 +65,13 @@ TEST(Channel, AMovedViewHoldsTheBorrow)
   ch.qos(flux::QoS(2).max_borrow(2));
   ASSERT_EQ(ch.publish("a", 1), flux::Published::Ok);
   ASSERT_EQ(ch.publish("b", 1), flux::Published::Ok);
-  flux::FrameView a = ch.take();
-  flux::FrameView moved = std::move(a);
+  flux::Frame a = ch.take();
+  flux::Frame moved = std::move(a);
   EXPECT_FALSE(a);  // NOLINT(bugprone-use-after-move): a moved-from view is empty
-  flux::FrameView b = ch.take();
+  flux::Frame b = ch.take();
   EXPECT_EQ(text(moved), "a");
   EXPECT_EQ(ch.publish("c", 1), flux::Published::Backpressure);
-  moved = flux::FrameView();
+  moved = flux::Frame();
   EXPECT_EQ(ch.publish("c", 1), flux::Published::Ok);
 }
 
@@ -79,15 +79,15 @@ TEST(Channel, ALoanPublishesOnlyOnCommit)
 {
   flux::detail::Channel ch(16, 2);
   {
-    flux::WriteSlot w = ch.loan();
+    flux::Loan w = ch.loan();
     ASSERT_TRUE(w);
     EXPECT_EQ(w.capacity(), 16u);
     std::memcpy(w.data(), "dropped", 7);
   }
   EXPECT_FALSE(ch.take());
-  flux::WriteSlot w = ch.loan();
+  flux::Loan w = ch.loan();
   std::memcpy(w.data(), "hello", 5);
-  flux::WriteSlot moved = std::move(w);
+  flux::Loan moved = std::move(w);
   EXPECT_EQ(w.commit(), flux::Published::InvalidArgument);  // NOLINT(bugprone-use-after-move)
   EXPECT_EQ(moved.commit(5), flux::Published::Ok);
   EXPECT_FALSE(moved);
@@ -100,14 +100,14 @@ TEST(Channel, ATypedFrameCarriesItsShape)
   ch.qos(flux::QoS().max_borrow(2));
   const std::array<float, 6> data{};
   ASSERT_EQ(ch.publish(data.data(), flux::DType::F32, {2, 3}), flux::Published::Ok);
-  flux::FrameView v = ch.take();
+  flux::Frame v = ch.take();
   ASSERT_TRUE(v);
   EXPECT_EQ(v.size(), sizeof(float) * data.size());
   EXPECT_EQ(v.meta().ndim, 2u);
   EXPECT_EQ(v.meta().dtype, FLUX_DTYPE_F32);
   EXPECT_EQ(v.meta().shape[1], 3u);
 
-  flux::WriteSlot w = ch.loan(flux::DType::U16, {4});
+  flux::Loan w = ch.loan({4}, flux::DType::U16);
   ASSERT_TRUE(w);
   EXPECT_EQ(w.commit(), flux::Published::Ok);
   EXPECT_EQ(ch.take().meta().nbytes, 8u);
@@ -132,14 +132,14 @@ TEST(Channel, ALoansAuxBytesArriveWithItsFrame)
     name, 64, 2, flux::kNoSchema, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS, {}, 32);
   auto sub = flux::detail::Channel::open(name);
   EXPECT_EQ(sub.aux_size(), 32u);
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   ASSERT_EQ(w.aux().size(), 32u);
   std::memcpy(w.aux().data(), "header", 6);
   w.set_aux_len(6);
   std::memcpy(w.data(), "px", 2);
   ASSERT_EQ(w.commit(2), flux::Published::Ok);
-  flux::FrameView v = sub.take_blocking(1'000'000'000);
+  flux::Frame v = sub.take_blocking(1'000'000'000);
   ASSERT_TRUE(v);
   EXPECT_EQ(text(v), "px");
   const auto aux = v.aux();
@@ -155,7 +155,7 @@ TEST(Channel, ALoansAuxBytesArriveWithItsFrame)
     flux::detail::Channel::create(
       n, 64, 2, flux::kNoSchema, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS, {}, FLUX_MAX_AUX_SIZE + 1);
   };
-  EXPECT_EQ(status_of(big, unique_name("auxbad")), FLUX_INVALID_ARGUMENT);
+  EXPECT_EQ(status_of(big, unique_name("auxbad")), flux::Status::InvalidArgument);
 }
 
 TEST(Channel, FailuresCarryTheirStatus)
@@ -163,13 +163,13 @@ TEST(Channel, FailuresCarryTheirStatus)
   const std::string name = unique_name("status");
   auto open = [](const std::string & n) { flux::detail::Channel::open(n); };
   auto create = [](const std::string & n) { flux::detail::Channel::create(n, 64, 2); };
-  EXPECT_EQ(status_of(open, name), FLUX_NOT_READY);
+  EXPECT_EQ(status_of(open, name), flux::Status::NotReady);
   auto pub = flux::detail::Channel::create(name, 64, 2);
-  EXPECT_EQ(status_of(create, name), FLUX_PUBLISHER_EXISTS);
+  EXPECT_EQ(status_of(create, name), flux::Status::PublisherExists);
 
   const std::string typed = unique_name("typed", 7);
   auto pub7 = flux::detail::Channel::create(typed, 64, 2, 7);
-  EXPECT_EQ(status_of(open, typed), FLUX_MISMATCH);
+  EXPECT_EQ(status_of(open, typed), flux::Status::Mismatch);
 }
 
 TEST(Channel, ThePublisherSetsHowManyProcessesMaySubscribe)
@@ -180,7 +180,7 @@ TEST(Channel, ThePublisherSetsHowManyProcessesMaySubscribe)
   auto create = [](const std::string & n) {
     flux::detail::Channel::create(n, 64, 2, flux::kNoSchema, {}, FLUX_MAX_SUBSCRIBERS + 1);
   };
-  EXPECT_EQ(status_of(create, unique_name("maxbad")), FLUX_INVALID_ARGUMENT);
+  EXPECT_EQ(status_of(create, unique_name("maxbad")), flux::Status::InvalidArgument);
 }
 
 TEST(Channel, TheChannelChecksQoS)
@@ -189,12 +189,12 @@ TEST(Channel, TheChannelChecksQoS)
   ch.qos(flux::QoS(3).transient_local(2).max_borrow(1));
   EXPECT_EQ(ch.qos().depth(), 3u);
   EXPECT_EQ(ch.qos().replay(), 2u);
-  EXPECT_EQ(ch.qos().borrow_limit(), 1u);
+  EXPECT_EQ(ch.qos().max_borrow(), 1u);
   try {
     ch.qos(flux::QoS(2).transient_local(3));
     FAIL() << "replay deeper than depth was accepted";
   } catch (const flux::Error & e) {
-    EXPECT_EQ(e.status(), FLUX_INVALID_ARGUMENT);
+    EXPECT_EQ(e.status(), flux::Status::InvalidArgument);
     EXPECT_NE(std::string(e.what()), "");
   }
   EXPECT_EQ(ch.qos().depth(), 3u);
@@ -320,7 +320,7 @@ TEST(Subscriber, TakeBlockingWakesWhenThePublisherComesUp)
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   });
-  const flux::FrameView v = sub.take_blocking(2'000'000'000);
+  const flux::Frame v = sub.take_blocking(2'000'000'000);
   const auto got = std::chrono::steady_clock::now();
   stop = true;
   late.join();
@@ -337,7 +337,7 @@ TEST(Subscriber, TheLongestTimeoutStillWaitsForAFrame)
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     (void)pub.publish("x", 1);
   });
-  const flux::FrameView v = sub.take_blocking(std::numeric_limits<std::int64_t>::max());
+  const flux::Frame v = sub.take_blocking(std::numeric_limits<std::int64_t>::max());
   late.join();
   ASSERT_TRUE(v);
   EXPECT_EQ(text(v), "x");

@@ -48,7 +48,7 @@ PYTHON=~/venvs/flux-docs/bin/python src/flux/scripts/build_docs.sh
 ## C ABI
 
 - 헤더 `flux.h`는 cbindgen이 Rust 소스에서 생성해 저장소에 커밋한다. 빌드에는 cbindgen이 필요하지 않다.
-- 공유 라이브러리의 soname은 `libflux_ffi.so.<FLUX_ABI_VERSION>`이고 현재 버전은 6이다. `flux_abi_version()`은 실행 중인 라이브러리의 버전을 반환한다. `flux_cpp`는 처음 사용 시 이 값을 헤더와 비교하고, 다르면 `flux::Error`(`FLUX_MISMATCH`)를 던진다.
+- 공유 라이브러리의 soname은 `libflux_ffi.so.<FLUX_ABI_VERSION>`이고 현재 버전은 6이다. `flux_abi_version()`은 실행 중인 라이브러리의 버전을 반환한다. `flux_cpp`는 처음 사용 시 이 값을 헤더와 비교하고, 다르면 `flux::Error`(`Status::Mismatch`)를 던진다.
 - 핸들은 불투명 포인터이고, `_free` 함수에 `NULL`을 넘겨도 된다.
 - frame과 loan은 호출자가 마련한 256 B 저장소(`flux_frame`, `flux_loan`)에 담긴다. 0으로 채운 저장소는 빈 상태이고, 값으로 복사하지 않는다. loan 저장소는 commit한 뒤에도 `flux_loan_abort`로 끝낸다. commit한 메모리의 매핑을 그때까지 쥐고 있기 때문이다.
 - `size`가 첫 필드인 구조체(`flux_publisher_config`, `flux_source`)는 그 크기까지만 읽는다. `flux_publisher_config_default()`가 채운 값을 고쳐 쓰거나 `size = sizeof(...)`로 둔다. 나중 버전이 필드를 더해도 예전 호출자의 구조체를 읽고, 라이브러리가 모르는 필드가 0이 아니면 `FLUX_UNSUPPORTED`다.

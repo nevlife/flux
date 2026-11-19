@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::{Channel, ChannelShared, FrameView, Published};
+use super::{Channel, ChannelShared, Frame, Published};
 use crate::qos::{MemoryPolicy, QoS};
 use crate::reader::ReaderLease;
 use crate::segment::Segment;
@@ -22,8 +22,8 @@ fn pair(slots: u32) -> (Channel, Channel) {
     (p, s)
 }
 
-fn copy(v: &FrameView) -> FrameView {
-    FrameView {
+fn copy(v: &Frame) -> Frame {
+    Frame {
         sh: Arc::clone(&v.sh),
         slot: v.slot,
         ticket: v.ticket,

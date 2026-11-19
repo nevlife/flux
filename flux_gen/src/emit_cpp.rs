@@ -495,13 +495,13 @@ struct {name}
   static constexpr bool kGpuData = {gpu};{register}{tensor_at}
 {consts}{elems}
 
-  // Read side. Aliases the frame: valid only while the FrameView it came from is alive.
+  // Read side. Aliases the frame: valid only while the Frame it came from is alive.
   class View
   {{
 public:
     View() = default;
     View(const void * data, std::size_t size) noexcept : r_(data, size) {{}}
-    explicit View(const flux::FrameView & f) noexcept
+    explicit View(const flux::Frame & f) noexcept
     : r_(f.data(), f.size(), f.heap(), f.gpu_heap()) {{}}
 
     // False once any accessor has been asked for something the frame does not contain.
@@ -521,11 +521,11 @@ private:
   {{
 public:
     Builder(void * data, std::size_t capacity) noexcept : w_(data, capacity, kScalarBytes) {{}}
-    explicit Builder(flux::WriteSlot & slot) noexcept
+    explicit Builder(flux::Loan & slot) noexcept
     : ext_(&slot), w_(slot.data(), slot.capacity(), kScalarBytes, slot.heap()) {{}}
     // Owning form, for build__(). The slot travels with the Builder, so the caller has one object
     // to keep alive instead of two.
-    explicit Builder(flux::WriteSlot && slot) noexcept
+    explicit Builder(flux::Loan && slot) noexcept
     : owned_(std::move(slot)), w_(owned_->data(), owned_->capacity(), kScalarBytes, owned_->heap()) {{}}
 
     // False once a field did not fit; commit__() then refuses rather than publishing a torn frame.
@@ -539,7 +539,7 @@ public:
     // prefix is the whole statement; the schema lives in the fingerprint, not in FrameMeta.
     flux::Published commit__() noexcept
     {{
-      flux::WriteSlot * s = owned_ ? &*owned_ : ext_;
+      flux::Loan * s = owned_ ? &*owned_ : ext_;
       if (s == nullptr) {{
         return flux::Published::TooLarge;  // built into a caller's buffer: nothing to publish
       }}
@@ -555,8 +555,8 @@ public:
     }}
 
 private:
-    std::optional<flux::WriteSlot> owned_;
-    flux::WriteSlot * ext_ = nullptr;
+    std::optional<flux::Loan> owned_;
+    flux::Loan * ext_ = nullptr;
     flux::wire::Writer w_;
   }};
 

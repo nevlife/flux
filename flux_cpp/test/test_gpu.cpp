@@ -197,7 +197,7 @@ TEST_F(Gpu, AFrameWrittenOnTheDeviceReachesHostAndDeviceSubscribers)
   auto pub = flux::detail::Channel::create(
     name, 1 << 16, 4, flux::kNoSchema, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
     flux::gpu::Stream::create());
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   ASSERT_NE(w.device_ptr(), nullptr);
   ASSERT_EQ(driver()->memset(addr(w.device_ptr()), 0x6b, 4096, w.stream()), 0);
@@ -208,7 +208,7 @@ TEST_F(Gpu, AFrameWrittenOnTheDeviceReachesHostAndDeviceSubscribers)
   q.transient_local(4);
   flux::detail::Watch watch(name);
   auto cpu = flux::detail::Channel::open(watch, flux::kNoSchema, q);
-  flux::FrameView v = cpu.take();
+  flux::Frame v = cpu.take();
   ASSERT_TRUE(v);
   EXPECT_EQ(v.device_ptr(), nullptr);
   EXPECT_EQ(static_cast<const unsigned char *>(v.data())[4095], 0x6b);
@@ -237,7 +237,7 @@ TEST_F(Gpu, HostBytesCopiedIntoALoanAreCopiedBackByBothKindsOfSubscriber)
   for (std::size_t i = 0; i < want.size(); ++i) {
     want[i] = static_cast<unsigned char>(i * 7);
   }
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   EXPECT_FALSE(w.copy_from(w.capacity() - 1, want.data(), 2));
   ASSERT_TRUE(w.copy_from(0, want.data(), 1000));
@@ -250,7 +250,7 @@ TEST_F(Gpu, HostBytesCopiedIntoALoanAreCopiedBackByBothKindsOfSubscriber)
   for (const bool device : {false, true}) {
     auto sub = flux::detail::Channel::open(
       watch, flux::kNoSchema, q, {}, device ? flux::gpu::Stream::create() : flux::gpu::Stream{});
-    flux::FrameView v = sub.take();
+    flux::Frame v = sub.take();
     ASSERT_TRUE(v);
     std::vector<unsigned char> got(want.size());
     ASSERT_TRUE(v.copy_to(0, got.data(), got.size()));
@@ -272,7 +272,7 @@ TEST_F(Gpu, AnAbortedLoanWithWorkQueuedDoesNotOutliveItsMemory)
     auto pub = flux::detail::Channel::create_config(
       unique_name("abort") + std::to_string(i), c, flux::kNoSchema, {},
       flux::gpu::Stream::create());
-    flux::WriteSlot w = pub.loan();
+    flux::Loan w = pub.loan();
     ASSERT_TRUE(w);
     ASSERT_NE(w.device_ptr(), nullptr);
     for (int k = 0; k < 20; ++k) {
@@ -291,7 +291,7 @@ TEST_F(Gpu, AuxBytesReachHostAndDeviceSubscribers)
   auto pub = flux::detail::Channel::create(
     name, 1 << 16, 4, flux::kNoSchema, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
     flux::gpu::Stream::create(), 64);
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   ASSERT_EQ(w.aux().size(), 64u);
   std::memset(w.aux().data(), 0x5a, 10);
@@ -305,7 +305,7 @@ TEST_F(Gpu, AuxBytesReachHostAndDeviceSubscribers)
   for (const bool device : {false, true}) {
     auto sub = flux::detail::Channel::open(
       watch, flux::kNoSchema, q, {}, device ? flux::gpu::Stream::create() : flux::gpu::Stream{});
-    flux::FrameView v = sub.take();
+    flux::Frame v = sub.take();
     ASSERT_TRUE(v);
     const auto aux = v.aux();
     ASSERT_EQ(aux.size(), 10u);
@@ -326,11 +326,11 @@ TEST_F(Gpu, PublisherAndSubscriptionTakeADevice)
   flux::QoS q(4);
   q.transient_local(4);
   flux::Subscription sub(*node, topic, q, {}, cuda_subscription());
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   ASSERT_EQ(driver()->memset(addr(w.device_ptr()), 0x11, 64, w.stream()), 0);
   ASSERT_EQ(w.commit(64), flux::Published::Ok);
-  flux::FrameView v = sub.take_blocking(1'000'000'000);
+  flux::Frame v = sub.take_blocking(std::chrono::nanoseconds(1'000'000'000));
   ASSERT_TRUE(v);
   EXPECT_TRUE(all(read_back(v.device_ptr(), 64), 0x11));
   EXPECT_NE(v.stream(), nullptr);
@@ -361,7 +361,7 @@ TEST_F(Gpu, ADeviceFieldGoesThroughTheGpuArena)
   // The second frame reaches past the chunks the subscriber imported for the first.
   for (const auto & [bytes, fill] :
        {std::pair<std::size_t, unsigned char>{3 << 20, 0x41}, {40 << 20, 0x42}}) {
-    flux::WriteSlot w = pub.loan();
+    flux::Loan w = pub.loan();
     ASSERT_TRUE(w);
     Blob::Builder b(w);
     b.set__name("frame");
@@ -370,7 +370,7 @@ TEST_F(Gpu, ADeviceFieldGoesThroughTheGpuArena)
     ASSERT_EQ(driver()->memset(addr(d.data()), fill, bytes, w.stream()), 0);
     ASSERT_EQ(b.commit__(), flux::Published::Ok);
 
-    flux::FrameView v = gpu.take_blocking(1'000'000'000);
+    flux::Frame v = gpu.take_blocking(std::chrono::nanoseconds(1'000'000'000));
     ASSERT_TRUE(v);
     const Blob::View m(v);
     EXPECT_EQ(m.name(), "frame");
@@ -380,7 +380,7 @@ TEST_F(Gpu, ADeviceFieldGoesThroughTheGpuArena)
     EXPECT_TRUE(m.ok__());
     v.release();
 
-    flux::FrameView c = cpu.take_blocking(1'000'000'000);
+    flux::Frame c = cpu.take_blocking(std::chrono::nanoseconds(1'000'000'000));
     ASSERT_TRUE(c);
     const Blob::View h(c);
     EXPECT_EQ(h.name(), "frame");
@@ -402,7 +402,7 @@ TEST_F(Gpu, EveryDeviceBlockOfAFrameReachesACpuReader)
   auto pub = flux::detail::Channel::create(
     name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
     flux::gpu::Stream::create());
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   Blob::Builder b(w);
   const auto data = b.alloc_device__data(5000);
@@ -420,7 +420,7 @@ TEST_F(Gpu, EveryDeviceBlockOfAFrameReachesACpuReader)
   q.transient_local(4);
   flux::detail::Watch watch(name);
   auto cpu = flux::detail::Channel::open(watch, Blob::kFingerprint, q);
-  flux::FrameView v = cpu.take();
+  flux::Frame v = cpu.take();
   ASSERT_TRUE(v);
   const Blob::View m(v);
   ASSERT_EQ(m.data().size(), 5000u);
@@ -448,7 +448,7 @@ TEST_F(Gpu, EveryDeviceBlockOfAFrameReachesAGpuReader)
   auto pub = flux::detail::Channel::create(
     name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
     flux::gpu::Stream::create());
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   Blob::Builder b(w);
   const auto data = b.alloc_device__data(5000);
@@ -467,7 +467,7 @@ TEST_F(Gpu, EveryDeviceBlockOfAFrameReachesAGpuReader)
   flux::detail::Watch watch(name);
   const flux::gpu::Stream stream = flux::gpu::Stream::create();
   auto gpu = flux::detail::Channel::open(watch, Blob::kFingerprint, q, {}, stream);
-  flux::FrameView v = gpu.take();
+  flux::Frame v = gpu.take();
   ASSERT_TRUE(v);
   const Blob::View m(v);
   const auto d = m.data__device();
@@ -502,7 +502,7 @@ void late_work_does_not_reach_the_next_owner(bool refused)
   Gate gate(first);
   const void * aborted = nullptr;
   {
-    flux::WriteSlot w = a.loan();
+    flux::Loan w = a.loan();
     ASSERT_TRUE(w);
     Blob::Builder build(w);
     const auto d = build.alloc_device__data(kBytes);
@@ -514,10 +514,10 @@ void late_work_does_not_reach_the_next_owner(bool refused)
   }
   // The next claim of that slot frees its block; an aborted slot waits behind the empty ones.
   for (int i = 0; i < 4; ++i) {
-    const flux::WriteSlot again = a.loan();
+    const flux::Loan again = a.loan();
   }
 
-  flux::WriteSlot w = b.loan();
+  flux::Loan w = b.loan();
   ASSERT_TRUE(w);
   Blob::Builder build(w);
   const auto d = build.alloc_device__data(kBytes);
@@ -532,7 +532,7 @@ void late_work_does_not_reach_the_next_owner(bool refused)
   q.transient_local(4);
   flux::detail::Watch watch(b_name);
   auto cpu = flux::detail::Channel::open(watch, Blob::kFingerprint, q);
-  const flux::FrameView v = cpu.take();
+  const flux::Frame v = cpu.take();
   ASSERT_TRUE(v);
   const Blob::View m(v);
   ASSERT_EQ(m.data().size(), kBytes);
@@ -560,7 +560,7 @@ TEST_F(Gpu, DeviceBlocksGoBackWithTheirSlots)
     name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS,
     flux::gpu::Stream::create());
   for (int i = 0; i < 40; ++i) {
-    flux::WriteSlot w = pub.loan();
+    flux::Loan w = pub.loan();
     ASSERT_TRUE(w);
     Blob::Builder b(w);
     ASSERT_EQ(b.alloc_device__data(std::size_t{40} << 20).size(), std::size_t{40} << 20) << i;
@@ -578,7 +578,7 @@ void expect_cpu_fields_on_device(
   flux::detail::Channel & pub, const std::string & name, bool in_slot)
 {
   using Blob = flux_test::flux_msg::Blob;
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   Blob::Builder b(w);
   const auto data = b.alloc__data(std::size_t{3} << 20);
@@ -600,7 +600,7 @@ void expect_cpu_fields_on_device(
   flux::detail::Watch watch(name);
   const flux::gpu::Stream stream = flux::gpu::Stream::create();
   auto gpu = flux::detail::Channel::open(watch, Blob::kFingerprint, q, {}, stream);
-  flux::FrameView v = gpu.take();
+  flux::Frame v = gpu.take();
   ASSERT_TRUE(v);
   EXPECT_EQ(v.heap().empty(), in_slot);
   const Blob::View m(v);
@@ -646,9 +646,9 @@ TEST_F(Gpu, ArenaFieldsFurtherInReachAGpuReader)
   auto gpu =
     flux::detail::Channel::open(watch, Blob::kFingerprint, flux::QoS(4).max_borrow(3), {}, stream);
   const std::array<std::size_t, 3> mib{1, 3, 9};
-  std::vector<flux::FrameView> views;
+  std::vector<flux::Frame> views;
   for (const std::size_t n : mib) {
-    flux::WriteSlot w = pub.loan();
+    flux::Loan w = pub.loan();
     ASSERT_TRUE(w);
     Blob::Builder b(w);
     const auto data = b.alloc__data(n << 20);
@@ -706,7 +706,7 @@ TEST_F(Gpu, AnImageSlotReachesACpuAndAGpuSubscriber)
   c.image_slots = FLUX_IMAGE_SLOTS_ON;
   const std::string name = unique_name("image");
   auto pub = flux::detail::Channel::create_config(name, c, flux::kNoSchema);
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   EXPECT_EQ(w.capacity(), std::size_t{4} << 20);
   std::memset(w.data(), 0x5c, 4096);
@@ -716,7 +716,7 @@ TEST_F(Gpu, AnImageSlotReachesACpuAndAGpuSubscriber)
   q.transient_local(4);
   flux::detail::Watch watch(name);
   auto cpu = flux::detail::Channel::open(watch, flux::kNoSchema, q);
-  flux::FrameView v = cpu.take();
+  flux::Frame v = cpu.take();
   ASSERT_TRUE(v);
   EXPECT_EQ(static_cast<const unsigned char *>(v.data())[4095], 0x5c);
   v.release();
@@ -742,7 +742,7 @@ TEST_F(Gpu, AnImageFormatReachesTheSubscriber)
   c.image_height = 1200;
   const std::string name = unique_name("image_fmt");
   auto pub = flux::detail::Channel::create_config(name, c, flux::kNoSchema);
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   const auto l = w.image_layout();
   ASSERT_TRUE(l.has_value());
@@ -755,7 +755,7 @@ TEST_F(Gpu, AnImageFormatReachesTheSubscriber)
   q.transient_local(4);
   flux::detail::Watch watch(name);
   auto sub = flux::detail::Channel::open(watch, flux::kNoSchema, q);
-  flux::FrameView v = sub.take();
+  flux::Frame v = sub.take();
   ASSERT_TRUE(v);
   ASSERT_TRUE(v.image_layout().has_value());
   EXPECT_EQ(v.image_layout()->bytes, l->bytes);
@@ -780,7 +780,7 @@ TEST_F(Gpu, PublisherOptionsMakeImageSlots)
   o.slot_size = 3 << 20;
   o.image_slots = flux::ImageSlots::On;
   auto pub = flux::create_publisher(*node, "/gpu" + std::to_string(getpid()) + "_image", o);
-  flux::WriteSlot w = pub->loan();
+  flux::Loan w = pub->loan();
   ASSERT_TRUE(w);
   EXPECT_EQ(w.capacity(), std::size_t{4} << 20);
   EXPECT_FALSE(w.image_layout().has_value());
@@ -790,7 +790,7 @@ TEST_F(Gpu, PublisherOptionsMakeImageSlots)
   o.image_width = 848;
   o.image_height = 480;
   auto bgra = flux::create_publisher(*node, "/gpu" + std::to_string(getpid()) + "_image_bgra", o);
-  flux::WriteSlot b = bgra->loan();
+  flux::Loan b = bgra->loan();
   ASSERT_TRUE(b);
   ASSERT_TRUE(b.image_layout().has_value());
   EXPECT_EQ(b.image_layout()->pitch[0], 3584U);
@@ -819,13 +819,13 @@ TEST_F(Gpu, PublisherOptionsDeclareTheStreamOfTheirDevice)
   o.slot_count = 4;
   o.device = flux::Device::Cuda;
   auto cuda = flux::create_publisher(*node, topic + "_cuda", o);
-  flux::WriteSlot w = cuda->loan();
+  flux::Loan w = cuda->loan();
   ASSERT_TRUE(w);
   EXPECT_NE(w.device_ptr(), nullptr);
   w.abort();
   o.device = flux::Device::Cpu;
   auto host = flux::create_publisher(*node, topic + "_host", o);
-  flux::WriteSlot h = host->loan();
+  flux::Loan h = host->loan();
   ASSERT_TRUE(h);
   EXPECT_EQ(h.device_ptr(), nullptr);
 }
@@ -843,11 +843,11 @@ TEST_F(Gpu, ABoundedFenceWaitsForWorkThatEndsInTime)
   q.transient_local(4);
   flux::Subscription sub(*node, topic, q, {}, cuda_subscription());
   sub.set_fence_timeout(std::chrono::seconds(5));
-  flux::WriteSlot w = pub.loan();
+  flux::Loan w = pub.loan();
   ASSERT_TRUE(w);
   ASSERT_EQ(driver()->memset(addr(w.device_ptr()), 0x22, 64, w.stream()), 0);
   ASSERT_EQ(w.commit(64), flux::Published::Ok);
-  flux::FrameView v = sub.take_blocking(1'000'000'000);
+  flux::Frame v = sub.take_blocking(std::chrono::nanoseconds(1'000'000'000));
   ASSERT_TRUE(v);
   EXPECT_TRUE(all(read_back(v.device_ptr(), 64), 0x22));
   v.release();
@@ -871,17 +871,17 @@ TEST_F(Gpu, ADeferredReleaseReturnsTheSlotOnceTheDeviceIsDone)
   flux::Subscription sub(*node, topic, q, {}, cuda_subscription());
   sub.set_release_mode(flux::gpu::ReleaseMode::Deferred);
   for (const unsigned char b : {0x31, 0x32}) {
-    flux::WriteSlot w = pub.loan();
+    flux::Loan w = pub.loan();
     ASSERT_TRUE(w);
     ASSERT_EQ(driver()->memset(addr(w.device_ptr()), b, 64, w.stream()), 0);
     ASSERT_EQ(w.commit(64), flux::Published::Ok);
   }
-  flux::FrameView v = sub.take_blocking(1'000'000'000);
+  flux::Frame v = sub.take_blocking(std::chrono::nanoseconds(1'000'000'000));
   ASSERT_TRUE(v);
   EXPECT_TRUE(all(read_back(v.device_ptr(), 64), 0x31));
   v.release();
   // max_borrow 1: the second take needs the first slot back, which the take reaps once done.
-  flux::FrameView next = sub.take_blocking(1'000'000'000);
+  flux::Frame next = sub.take_blocking(std::chrono::nanoseconds(1'000'000'000));
   ASSERT_TRUE(next);
   EXPECT_TRUE(all(read_back(next.device_ptr(), 64), 0x32));
   EXPECT_EQ(sub.fence_wait().release_waits, 0U);

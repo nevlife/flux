@@ -15,8 +15,8 @@
 namespace flux
 {
 
-// Fields as rclcpp::PublisherOptions. A declared `stream` takes precedence over `device`. A size or
-// count of 0 is flux's default; the maxima bound an Alloc::Slot or device-payload publisher.
+// A declared `stream` takes precedence over `device`. A size or count of 0 is flux's default; the
+// maxima bound an Alloc::Slot or device-payload publisher.
 struct PublisherOptions
 {
   Alloc alloc = Alloc::Arena;
@@ -41,9 +41,8 @@ struct PublisherOptions
   std::uint32_t image_height = 0;
 };
 
-// One per topic on the host: Error with FLUX_PUBLISHER_EXISTS while another is live. One call at
-// a time: a publish or loan that meets another thread's call gives Published::InUse or an empty
-// WriteSlot.
+// One per topic on the host: Error with Status::PublisherExists while another is live. A publish
+// or loan that meets another thread's call gives Published::InUse or an empty Loan.
 class Publisher
 {
 public:
@@ -52,8 +51,9 @@ public:
     std::uint64_t fingerprint = kNoSchema);
   Publisher(const Publisher &) = delete;
   auto operator=(const Publisher &) -> Publisher & = delete;
-  Publisher(Publisher &&) noexcept;
-  auto operator=(Publisher &&) noexcept -> Publisher &;
+  // Not movable: trace events and the mirror name it by its address.
+  Publisher(Publisher &&) = delete;
+  auto operator=(Publisher &&) -> Publisher & = delete;
   ~Publisher();
 
   // Also publishes each frame as its ROS 2 message on this topic while a ROS 2 subscriber wants it.
@@ -76,14 +76,14 @@ public:
     return ch_.publish(data, dtype, shape);
   }
   // The slot is out of the ring until the loan is committed or destroyed.
-  auto loan() noexcept -> WriteSlot { return ch_.loan(); }
-  auto loan(DType dtype, const std::uint64_t * shape, std::size_t ndim) noexcept -> WriteSlot
+  auto loan() noexcept -> Loan { return ch_.loan(); }
+  auto loan(const std::uint64_t * shape, std::size_t ndim, DType dtype) noexcept -> Loan
   {
-    return ch_.loan(dtype, shape, ndim);
+    return ch_.loan(shape, ndim, dtype);
   }
-  auto loan(DType dtype, std::initializer_list<std::uint64_t> shape) noexcept -> WriteSlot
+  auto loan(std::initializer_list<std::uint64_t> shape, DType dtype) noexcept -> Loan
   {
-    return ch_.loan(dtype, shape);
+    return ch_.loan(shape, dtype);
   }
 
   [[nodiscard]] auto dropped() const noexcept -> std::uint64_t { return ch_.dropped(); }

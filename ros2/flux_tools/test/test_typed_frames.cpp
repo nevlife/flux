@@ -41,7 +41,7 @@ TEST(TypedFrames, ReadAGpuMemoryChannelAsItsType)
   ASSERT_FALSE(listed.empty());
   EXPECT_EQ(frames.fingerprint_for(listed), gpu);
 
-  flux::WriteSlot slot = pub.loan();
+  flux::Loan slot = pub.loan();
   ASSERT_TRUE(slot);
   constexpr std::size_t kPoints = 10;
   constexpr std::size_t kStep = 12;
@@ -66,7 +66,7 @@ TEST(TypedFrames, ReadAGpuMemoryChannelAsItsType)
   slot.set_aux_len(b.size__());
   ASSERT_EQ(slot.commit(kPoints * kStep), flux::Published::Ok);
 
-  const flux::FrameView frame = sub.take_blocking(1'000'000'000);
+  const flux::Frame frame = sub.take_blocking(1'000'000'000);
   ASSERT_TRUE(frame);
   std::string error;
   const auto msg = flux_tools::cloud_from_frame(frames.view<Cloud::View>(frame), error);

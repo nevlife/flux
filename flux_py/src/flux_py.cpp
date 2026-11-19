@@ -212,30 +212,30 @@ auto descr_of(flux::DType d) -> nb::object
   return flux_py::own(PyArray_DescrFromType(flux_py::npy_type(d)));
 }
 
-// Names the capsule a host view's array holds its FrameView in, so aux_of can find it.
+// Names the capsule a host view's array holds its Frame in, so aux_of can find it.
 constexpr const char * kViewCapsule = "flux.view";
 // And the one a Frame's arrays hold its FrameHold in, so a wire Reader can find the view.
 constexpr const char * kFrameCapsule = "flux.frame";
 
 // The core's take already checked that the shape covers exactly the frame's bytes.
-auto view_of(flux::FrameView && v) -> nb::object
+auto view_of(flux::Frame && v) -> nb::object
 {
   const flux::FrameMeta m = v.meta();
   std::array<npy_intp, flux::kMaxDims> shape{};
   for (std::size_t i = 0; i < m.ndim; ++i) {
     shape.at(i) = static_cast<npy_intp>(m.shape[i]);
   }
-  auto held = std::make_unique<flux::FrameView>(std::move(v));
+  auto held = std::make_unique<flux::Frame>(std::move(v));
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): numpy's signature; the view is read-only
   void * data = const_cast<void *>(held->data());
   const nb::capsule owner(held.release(), kViewCapsule, [](void * p) noexcept {
-    const std::unique_ptr<flux::FrameView> gone(static_cast<flux::FrameView *>(p));
+    const std::unique_ptr<flux::Frame> gone(static_cast<flux::Frame *>(p));
   });
   const nb::object descr = descr_of(static_cast<flux::DType>(m.dtype));
   return flux_py::numpy_view(data, m.ndim, shape.data(), flux_py::as_descr(descr), owner, false);
 }
 
-auto view_or_none(flux::FrameView && v) -> nb::object
+auto view_or_none(flux::Frame && v) -> nb::object
 {
   if (!v) {
     return nb::none();
@@ -387,7 +387,7 @@ auto wait_all(const std::vector<flux::gpu::Stream> & streams) -> bool
 // fails keeps the borrow, as a failed fence does.
 struct FrameHold
 {
-  flux::FrameView v;
+  flux::Frame v;
   std::vector<flux::gpu::Stream> streams;
   // The channel defers releases: the consumer streams are ordered before the channel's on the
   // device instead, and the view's own release returns at once.
@@ -399,7 +399,7 @@ struct FrameHold
   auto operator=(const FrameHold &) -> FrameHold & = delete;
   FrameHold(FrameHold &&) = delete;
   auto operator=(FrameHold &&) -> FrameHold & = delete;
-  FrameHold(flux::FrameView && view, bool defer, int dev)
+  FrameHold(flux::Frame && view, bool defer, int dev)
   : v(std::move(view)), deferred(defer), device(dev)
   {
   }
@@ -412,7 +412,7 @@ struct FrameHold
       return;
     }
     // NOLINTNEXTLINE(bugprone-unused-return-value)
-    std::make_unique<flux::FrameView>(std::move(v)).release();
+    std::make_unique<flux::Frame>(std::move(v)).release();
   }
   [[nodiscard]] auto ordered() const -> bool
   {
@@ -438,7 +438,7 @@ auto shape_of(const flux::FrameMeta & m) -> std::vector<std::size_t>
 class Frame
 {
 public:
-  Frame(flux::FrameView && v, int device, bool scoped, bool deferred)
+  Frame(flux::Frame && v, int device, bool scoped, bool deferred)
   : meta_(v.meta()),
     stream_(addr_of(v.stream())),
     held_(std::make_shared<FrameHold>(std::move(v), deferred, device)),
@@ -491,7 +491,7 @@ public:
   // Holds the frame as a DLPack tensor does.
   auto host() -> nb::object
   {
-    const flux::FrameView & v = host_view();
+    const flux::Frame & v = host_view();
     const nb::object descr = descr_of(flux::DType::U8);
     return flux_py::numpy_view(v.data(), v.size(), flux_py::as_descr(descr), hold(), false);
   }
@@ -500,7 +500,7 @@ public:
   // device address is where the frame's data field is on the device.
   auto tensor_dlpack(const flux_py::TensorAt & at, const nb::kwargs & kw) -> nb::object
   {
-    const flux::FrameView & v = host_view();
+    const flux::Frame & v = host_view();
     const flux::wire::Reader r(v.data(), v.size(), v.heap(), v.gpu_heap());
     const flux_py::TensorFields f = flux_py::read_tensor(r, at);
     const auto host = r.span<std::uint8_t>(at[6]);
@@ -587,7 +587,7 @@ private:
 
   // The host mapping a generated View reads a frame's fields through, which a route without one
   // (DeviceHandle) cannot give.
-  [[nodiscard]] auto host_view() const -> const flux::FrameView &
+  [[nodiscard]] auto host_view() const -> const flux::Frame &
   {
     in_scope();
     if (held_->v.data() == nullptr) {
@@ -625,7 +625,7 @@ private:
   bool cai_out_ = false;
 };
 
-auto frame_or_none(flux::FrameView && v, int device, bool deferred) -> nb::object
+auto frame_or_none(flux::Frame && v, int device, bool deferred) -> nb::object
 {
   if (!v) {
     return nb::none();
@@ -644,7 +644,7 @@ auto aux_of(nb::handle taken) -> nb::object
   if (base == nullptr || PyCapsule_IsValid(base, kViewCapsule) == 0) {
     throw nb::type_error("flux: aux() takes a frame that a subscription's take returned");
   }
-  const auto * v = static_cast<const flux::FrameView *>(PyCapsule_GetPointer(base, kViewCapsule));
+  const auto * v = static_cast<const flux::Frame *>(PyCapsule_GetPointer(base, kViewCapsule));
   const auto a = v->aux();
   const nb::object descr = descr_of(flux::DType::U8);
   return flux_py::numpy_view(a.data(), a.size(), flux_py::as_descr(descr), taken, false);
@@ -693,12 +693,12 @@ auto flux_py::device_span(
   return nb::cast(DeviceSpan({addr_of(p), dtype_named(dtype), {n}, device, readonly}, owner));
 }
 
-auto flux_py::frame_of(nb::handle buf, int * device) -> const flux::FrameView *
+auto flux_py::frame_of(nb::handle buf, int * device) -> const flux::Frame *
 {
   PyObject * base = PyArray_Check(buf.ptr()) != 0 ? PyArray_BASE(flux_py::as_array(buf)) : nullptr;
   if (base != nullptr && PyCapsule_IsValid(base, kViewCapsule) != 0) {
     *device = -1;
-    return static_cast<const flux::FrameView *>(PyCapsule_GetPointer(base, kViewCapsule));
+    return static_cast<const flux::Frame *>(PyCapsule_GetPointer(base, kViewCapsule));
   }
   if (base != nullptr && PyCapsule_IsValid(base, kFrameCapsule) != 0) {
     const auto * h =
@@ -717,7 +717,7 @@ namespace
 class Loan
 {
 public:
-  Loan(flux::WriteSlot && w, flux::DType dtype, const std::vector<std::size_t> & shape, int device)
+  Loan(flux::Loan && w, flux::DType dtype, const std::vector<std::size_t> & shape, int device)
   : w_(std::move(w)),
     dtype_(dtype),
     shape_(shape.begin(), shape.end()),
@@ -888,7 +888,7 @@ private:
       return true;
     }
     // NOLINTNEXTLINE(bugprone-unused-return-value)
-    std::make_unique<flux::WriteSlot>(std::move(w_)).release();
+    std::make_unique<flux::Loan>(std::move(w_)).release();
     return false;
   }
 
@@ -918,7 +918,7 @@ private:
     issued_.clear();
   }
 
-  flux::WriteSlot w_;
+  flux::Loan w_;
   flux::DType dtype_;
   std::vector<npy_intp> shape_;
   std::size_t loaned_;  // a 1-D loan's items as loaned, the most resize() takes
@@ -1011,7 +1011,7 @@ public:
                               .c_str());
     }
     const std::vector<std::uint64_t> wide(dims.begin(), dims.end());
-    flux::WriteSlot w = ch_.loan(d, wide.data(), wide.size());
+    flux::Loan w = ch_.loan(wide.data(), wide.size(), d);
     if (!w) {
       return std::nullopt;
     }
@@ -1067,7 +1067,7 @@ public:
         return true;
       }
     };
-    flux::FrameView v;
+    flux::Frame v;
     if (!stop()) {
       Unlocked unlocked;
       v = sub_.take_blocking(timeout_ns, [&] { return unlocked.with_gil(stop); });
@@ -1079,7 +1079,7 @@ public:
   }
 
   // A numpy view, or a Frame on a channel that declared a stream.
-  auto wrap(flux::FrameView && v) -> nb::object
+  auto wrap(flux::Frame && v) -> nb::object
   {
     const flux::gpu::Stream & s = sub_.stream();
     const bool deferred = sub_.release_mode() == flux::gpu::ReleaseMode::Deferred;
@@ -1261,7 +1261,7 @@ public:
   }
   auto deliver_one() -> bool override
   {
-    flux::FrameView v = core_->take_for_executor();
+    flux::Frame v = core_->take_for_executor();
     report_refusal();
     if (!v) {
       return false;
@@ -1602,18 +1602,18 @@ NB_MODULE(_flux, m)
   });
 
   nb::enum_<flux::Status>(m, "Status")
-    .value("OK", FLUX_OK)
-    .value("INVALID_ARGUMENT", FLUX_INVALID_ARGUMENT)
-    .value("MISMATCH", FLUX_MISMATCH)
-    .value("NOT_READY", FLUX_NOT_READY)
-    .value("PUBLISHER_EXISTS", FLUX_PUBLISHER_EXISTS)
-    .value("SUBSCRIBERS_FULL", FLUX_SUBSCRIBERS_FULL)
-    .value("UNSUPPORTED", FLUX_UNSUPPORTED)
-    .value("CALLBACK", FLUX_CALLBACK)
-    .value("IO", FLUX_IO)
-    .value("IN_USE", FLUX_IN_USE)
-    .value("BUFFER_TOO_SMALL", FLUX_BUFFER_TOO_SMALL)
-    .value("NO_FRAME", FLUX_NO_FRAME);
+    .value("OK", flux::Status::Ok)
+    .value("INVALID_ARGUMENT", flux::Status::InvalidArgument)
+    .value("MISMATCH", flux::Status::Mismatch)
+    .value("NOT_READY", flux::Status::NotReady)
+    .value("PUBLISHER_EXISTS", flux::Status::PublisherExists)
+    .value("SUBSCRIBERS_FULL", flux::Status::SubscribersFull)
+    .value("UNSUPPORTED", flux::Status::Unsupported)
+    .value("CALLBACK", flux::Status::Callback)
+    .value("IO", flux::Status::Io)
+    .value("IN_USE", flux::Status::InUse)
+    .value("BUFFER_TOO_SMALL", flux::Status::BufferTooSmall)
+    .value("NO_FRAME", flux::Status::NoFrame);
 
   nb::enum_<flux::Published>(m, "Published")
     .value("OK", flux::Published::Ok)
@@ -1645,7 +1645,7 @@ NB_MODULE(_flux, m)
       "depth"_a = nb::none(), "replay"_a = nb::none(), "max_borrow"_a = nb::none())
     .def_prop_ro("depth", &flux::QoS::depth)
     .def_prop_ro("replay", &flux::QoS::replay)
-    .def_prop_ro("max_borrow", &flux::QoS::borrow_limit);
+    .def_prop_ro("max_borrow", [](const flux::QoS & q) { return q.max_borrow(); });
 
   nb::enum_<flux::MemoryPolicy>(m, "MemoryPolicy")
     .value("DEFAULT", flux::MemoryPolicy::Default)

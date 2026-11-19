@@ -119,7 +119,7 @@ TEST_F(Doc, PublishAndLoan)
   // [doc:/cpp_publish]
   EXPECT_EQ(p, flux::Published::Ok);
   flux::Subscription image(*node, "image", flux::QoS(1).transient_local(1), {}, {});
-  const flux::FrameView sent = image.take();
+  const flux::Frame sent = image.take();
   ASSERT_TRUE(sent);
   EXPECT_EQ(sent.meta().shape[2], 3U);
 
@@ -132,7 +132,7 @@ TEST_F(Doc, PublishAndLoan)
     const std::shared_ptr<flux::Publisher> & pub = points_pub;
     // [doc:cpp_loan]
     constexpr std::size_t kPoints = 1024;
-    flux::WriteSlot slot = pub->loan(flux::DType::F32, {kPoints, 3});
+    flux::Loan slot = pub->loan({kPoints, 3}, flux::DType::F32);
     if (slot) {
       auto * xyz = static_cast<float *>(slot.data());
       std::fill_n(xyz, kPoints * 3, 0.0F);
@@ -142,7 +142,7 @@ TEST_F(Doc, PublishAndLoan)
     }
     // [doc:/cpp_loan]
   }
-  const flux::FrameView v = check.take();
+  const flux::Frame v = check.take();
   ASSERT_TRUE(v);
   EXPECT_EQ(v.size(), std::size_t{1024} * 3 * sizeof(float));
 }
@@ -154,7 +154,7 @@ TEST_F(Doc, ReadmeLoan)
 
   constexpr std::size_t kHeight = 480;
   constexpr std::size_t kWidth = 640;
-  flux::WriteSlot slot = pub->loan(flux::DType::U8, {kHeight, kWidth, 3});
+  flux::Loan slot = pub->loan({kHeight, kWidth, 3}, flux::DType::U8);
   if (slot) {
     auto * pixels = static_cast<std::uint8_t *>(slot.data());
     std::fill_n(pixels, kHeight * kWidth * 3, std::uint8_t{0});
@@ -164,7 +164,7 @@ TEST_F(Doc, ReadmeLoan)
   }
   // [doc:/readme_loan]
   flux::Subscription image(*node, "image", flux::QoS(1).transient_local(1), {}, {});
-  const flux::FrameView sent = image.take();
+  const flux::Frame sent = image.take();
   ASSERT_TRUE(sent);
   EXPECT_EQ(sent.meta().shape[0], kHeight);
   EXPECT_EQ(sent.size(), kHeight * kWidth * 3);
@@ -176,10 +176,9 @@ TEST_F(Doc, SubscribeWithAnExecutor)
   testing::internal::CaptureStdout();
 
   // [doc:cpp_subscribe]
-  auto sub =
-    flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::FrameView & frame) {
-      std::cout << frame.size() << " bytes, " << unsigned{frame.meta().ndim} << " dimensions\n";
-    });
+  auto sub = flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::Frame & frame) {
+    std::cout << frame.size() << " bytes, " << unsigned{frame.meta().ndim} << " dimensions\n";
+  });
 
   flux::Executor ex;
   ex.add(*sub);
@@ -205,10 +204,10 @@ TEST_F(Doc, TakeWithoutAnExecutor)
   ASSERT_EQ(pub.publish("a", 1), flux::Published::Ok);
   ASSERT_EQ(pub.publish("b", 1), flux::Published::Ok);
   // [doc:cpp_take_frames]
-  while (flux::FrameView frame = sub->take()) {
+  while (flux::Frame frame = sub->take()) {
     std::cout << "frame " << frame.ticket() << ", " << frame.size() << " bytes\n";
   }
-  if (flux::FrameView frame = sub->take_blocking(100'000'000)) {
+  if (flux::Frame frame = sub->take_blocking(std::chrono::milliseconds(100))) {
     std::cout << "one more, " << frame.size() << " bytes\n";
   }
   // [doc:/cpp_take_frames]
@@ -228,7 +227,7 @@ TEST_F(Doc, Qos)
   const flux::QoS qos = flux::QoS(4).transient_local(2).max_borrow(2);
   auto sub = flux::create_subscription(*node, "cmd", qos, {});
   // [doc:/cpp_qos]
-  const flux::FrameView first = sub->take();
+  const flux::Frame first = sub->take();
   ASSERT_TRUE(first);
   EXPECT_EQ(*static_cast<const char *>(first.data()), 'b');
 }
@@ -260,7 +259,7 @@ TEST_F(Doc, Adapter)
   flux::Subscription sub(
     *node, "image", flux::QoS(1).transient_local(1), {}, {}, Image::kFingerprint);
   testing::internal::CaptureStdout();
-  if (flux::FrameView frame = sub.take()) {
+  if (flux::Frame frame = sub.take()) {
     // [doc:cpp_adapter_read]
     const Image::View img(frame);
     const std::string_view encoding = img.encoding();
@@ -294,7 +293,7 @@ TEST_F(Doc, RosMessageBridge)
     }
     // [doc:/cpp_ros_bridge_publish]
   }
-  const flux::FrameView frame = sub.take();
+  const flux::Frame frame = sub.take();
   ASSERT_TRUE(frame);
   // [doc:cpp_ros_bridge_read]
   const sensor_msgs::msg::Image copy = sensor_msgs::flux_msg::frame_to_msg(Image::View(frame));
@@ -310,12 +309,11 @@ TEST_F(Doc, Partitioned)
 
   // [doc:cpp_partitioned]
   auto camera = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
-  auto sub =
-    flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::FrameView & frame) {
-      std::array<char, 16> name{};
-      pthread_getname_np(pthread_self(), name.data(), name.size());
-      std::cout << name.data() << ": " << frame.size() << " bytes\n";
-    });
+  auto sub = flux::create_subscription(*node, "image", flux::QoS{}, [](const flux::Frame & frame) {
+    std::array<char, 16> name{};
+    pthread_getname_np(pthread_self(), name.data(), name.size());
+    std::cout << name.data() << ": " << frame.size() << " bytes\n";
+  });
 
   flux::PartitionedExecutor ex;
   ex.add(*sub, camera);
@@ -337,9 +335,9 @@ public:
   : Node("camera", options),
     group_(create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive))
   {
-    sub_ = flux::create_subscription(
-      *this, "image", flux::QoS{},
-      [](const flux::FrameView & frame) { std::cout << "camera: " << frame.size() << " bytes\n"; });
+    sub_ = flux::create_subscription(*this, "image", flux::QoS{}, [](const flux::Frame & frame) {
+      std::cout << "camera: " << frame.size() << " bytes\n";
+    });
     sub_->add_to_callback_group(*this, group_);
   }
 
@@ -424,7 +422,7 @@ TEST_F(Doc, Gpu)
   options.device = flux::Device::Cuda;
   auto pub = flux::create_publisher(*node, "depth", options);
 
-  flux::WriteSlot slot = pub->loan(flux::DType::F32, {480, 640});
+  flux::Loan slot = pub->loan({480, 640}, flux::DType::F32);
   if (slot) {
     launch_my_kernel(slot.device_ptr(), slot.capacity(), slot.stream());
     if (flux::faulted(slot.commit())) {
@@ -437,7 +435,7 @@ TEST_F(Doc, Gpu)
   auto sub =
     flux::create_subscription(*node, "depth", flux::QoS(1).transient_local(1), {}, sub_options);
   // [doc:cpp_gpu_read]
-  if (flux::FrameView frame = sub->take()) {
+  if (flux::Frame frame = sub->take()) {
     read_on_device(frame.device_ptr(), frame.size(), frame.stream());
   }
   // [doc:/cpp_gpu_read]

@@ -23,7 +23,7 @@ namespace flux::message_filters
 template <class Adapter>
 struct StampedFrame
 {
-  std::shared_ptr<const FrameView> frame;
+  std::shared_ptr<const Frame> frame;
   std_msgs::msg::Header header;
 
   [[nodiscard]] auto view() const -> typename Adapter::View
@@ -33,7 +33,7 @@ struct StampedFrame
 };
 
 // A flux topic as a message_filters input. `Adapter` names the schema: `kFingerprint`, and a
-// `View(const FrameView &)` with `header__sec()`, `header__nanosec()`, `header__frame_id()` and
+// `View(const Frame &)` with `header__sec()`, `header__nanosec()`, `header__frame_id()` and
 // `ok__()`.
 //
 // `queue` is the synchronizer's or Cache's size. Every queued frame holds a slot and a filter
@@ -70,10 +70,12 @@ public:
   // Frames whose header did not read or has a negative stamp, dropped rather than forwarded.
   [[nodiscard]] auto unreadable() const noexcept -> std::uint64_t { return unreadable_; }
 
+private:
+  // The executor's, through detail::Source.
   auto attach() -> bool override { return sub_.attach(); }
   auto deliver_one() -> bool override
   {
-    FrameView f = sub_.sub_.take_for_executor();
+    Frame f = sub_.sub_.take_for_executor();
     sub_.report_refusal();
     if (!f) {
       return false;
@@ -85,16 +87,15 @@ public:
   [[nodiscard]] auto watch() const -> const detail::Watch * override { return sub_.sub_.watch(); }
   [[nodiscard]] auto endpoint() const -> const void * override { return sub_.endpoint(); }
 
-private:
   static auto covering(QoS qos, std::uint32_t queue) -> QoS
   {
-    if (qos.borrow_limit() <= queue) {
+    if (qos.max_borrow() <= queue) {
       qos.max_borrow(queue + 1);
     }
     return qos;
   }
 
-  void forward(FrameView && f)
+  void forward(Frame && f)
   {
     auto m = std::make_shared<Message>();
     {
@@ -109,7 +110,7 @@ private:
         return;
       }
     }
-    m->frame = std::make_shared<const FrameView>(std::move(f));
+    m->frame = std::make_shared<const Frame>(std::move(f));
     ++forwarded_;
     this->signalMessage(m);
   }

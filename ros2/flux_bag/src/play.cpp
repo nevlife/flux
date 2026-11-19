@@ -459,7 +459,7 @@ private:
     if (pub == nullptr) {
       return;
     }
-    flux::WriteSlot w = pub->loan(meta.dtype, meta.shape.data(), meta.ndim);
+    flux::Loan w = pub->loan(meta.shape.data(), meta.ndim, meta.dtype);
     if (!w) {
       return;
     }

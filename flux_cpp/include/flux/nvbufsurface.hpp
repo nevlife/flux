@@ -51,7 +51,7 @@ public:
 
   // The slot's surface, or for another frame a copy as `hint` describes it. Null when neither
   // applies or the library refused.
-  auto surface(const FrameView & v, const ImageFormatHint & hint = {}) -> NvBufSurface *
+  auto surface(const Frame & v, const ImageFormatHint & hint = {}) -> NvBufSurface *
   {
     if (NvBufSurface * s = slot(v.dmabuf_fd(), v.image_layout())) {
       return s;
@@ -60,10 +60,7 @@ public:
   }
 
   // A loan's image slot, for an engine that writes the frame. Null outside an image slot.
-  auto surface(const WriteSlot & w) -> NvBufSurface *
-  {
-    return slot(w.dmabuf_fd(), w.image_layout());
-  }
+  auto surface(const Loan & w) -> NvBufSurface * { return slot(w.dmabuf_fd(), w.image_layout()); }
 
   [[nodiscard]] auto copies() const noexcept -> std::uint64_t { return copies_; }
 
