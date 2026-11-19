@@ -20,13 +20,14 @@
 
 use std::ffi::{CStr, c_void};
 use std::io;
-use std::os::fd::{AsRawFd, RawFd};
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
 use crate::discovery::name_still_bound;
 use crate::error::{Error, Result};
+use crate::gpu::MappingRegistration;
 use crate::layout::LAYOUT_VERSION;
 use crate::qos::MemoryPolicy;
 use crate::sys::{self, LiveFd, PiMutex};
@@ -420,6 +421,10 @@ pub struct ArenaMap {
     name: [u8; NAME_BYTES],
     base: NonNull<u8>,
     size: usize,
+    /// The file, which a registration with a GPU maps again.
+    fd: OwnedFd,
+    /// Its registration with the device of the first subscriber that reads it in place.
+    gpu: OnceLock<MappingRegistration>,
 }
 
 // SAFETY: a read-only mapping, fixed while it lives.
@@ -440,6 +445,18 @@ impl ArenaMap {
             .checked_sub(TRAILER_BYTES)
             .and_then(|at| frame.get(at..))
             .is_some_and(|t| has_magic(t) && t[MAGIC.len()..MAGIC.len() + NAME_BYTES] == self.name)
+    }
+
+    /// The device address of the mapping's start with its first `bytes` registered with
+    /// `device`; 0 when they could not be, and for a device other than the first one asked.
+    pub(crate) fn device_reach(&self, bytes: usize, device: i32) -> u64 {
+        let r = self
+            .gpu
+            .get_or_init(|| MappingRegistration::new(self.size, device));
+        if r.device() != device {
+            return 0;
+        }
+        r.reach(self.fd.as_raw_fd(), bytes)
     }
 }
 
@@ -489,6 +506,8 @@ pub fn map_for(frame: &[u8]) -> Option<Arc<ArenaMap>> {
         name: key,
         base,
         size: st.size,
+        fd,
+        gpu: OnceLock::new(),
     });
     maps.push(Arc::downgrade(&m));
     Some(m)

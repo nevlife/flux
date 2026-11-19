@@ -479,8 +479,6 @@ def _cpu_fields_reach_a_gpu_reader(node, blob, name, **publisher):
 
 
 def test_every_cpu_field_of_a_frame_reaches_a_gpu_reader(node, blob):
-    if flux.probe().route != flux.Route.DEVICE_HANDLE:
-        pytest.skip("an integrated GPU has no device address for the arena yet")
     _cpu_fields_reach_a_gpu_reader(node, blob, "cpu_fields", **SMALL)
 
 

@@ -143,7 +143,7 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
 
 - `publish(std::unique_ptr<Msg>)`와 `publish(const Msg &)`는 이미 만든 ROS 메시지를 보낸다. flux 경로에서는 슬롯과 arena로 한 번 복사한다. 메시지를 계속 사용하는 쪽은 `const Msg &`를 사용한다. ROS 경로에서 복사본을 만들지 않는다.
 - `get_subscription_count()`는 ROS 경로에서 rclcpp 값을, flux 경로에서 `subscriber_count()`를 반환한다.
-- `PublisherOptions::alloc`(Python `alloc="arena"|"slot"`)은 flux 경로의 `Host` 발행자에만 적용된다. 기본 `Arena`는 `data`를 발행 프로세스의 arena에 저장한다. `Slot`은 `data`까지 모두 슬롯 안에 두고, 슬롯(기본 4 MiB)에 들어가지 않는 메시지는 보내지 않는다. Jetson 같은 통합 GPU에서 `Device::Cuda` 구독은 `Slot` 발행자의 `data`를 복사 없이 GPU에서 읽는다. `Arena` 발행자의 `data`는 통합 GPU에서 GPU 구독에 도달하지 않는다.
+- `PublisherOptions::alloc`(Python `alloc="arena"|"slot"`)은 flux 경로의 `Host` 발행자에만 적용된다. 기본 `Arena`는 `data`를 발행 프로세스의 arena에 저장한다. `Slot`은 `data`까지 모두 슬롯 안에 두고, 슬롯(기본 4 MiB)에 들어가지 않는 메시지는 보내지 않는다. Jetson 같은 통합 GPU에서 `Device::Cuda` 구독은 두 발행자의 `data`를 모두 복사 없이 GPU에서 읽는다. `Arena` 발행자의 `data`는 구독 프로세스가 arena를 GPU에 등록해서 읽는다([gpu.md](gpu.md)).
 - `flux_wrapper::create_publisher<Msg>(node, topic, qos, options)`와 `flux_wrapper::create_subscription<Msg>(node, topic, qos, callback, options)`는 `rclcpp`처럼 `shared_ptr`를 반환한다. 생성자도 그대로 쓸 수 있다.
 - `PublisherOptions`의 `slot_size`, `slot_count`, `max_slot_size`, `max_slot_count`, `mirror_to_ros`는 flux 경로에만 적용되고, flux 발행자에게 그대로 넘어간다([concepts.md](concepts.md)). 0이면 flux의 기본값이다. `Arena` 발행자의 슬롯 크기는 타입에서 정하고, `data`는 크기와 상관없이 발행 프로세스의 arena에 저장한다. `Cuda` 발행자는 슬롯에 `data`를 담으므로 `slot_size`가 `data`의 최대 크기다(기본 4 MiB, 최대 `max_slot_size`). `alloc_on_subscriber`는 `Slot`이나 `Cuda` 발행자가 구독자가 처음 붙은 뒤에 슬롯을 잡게 하고, 그 전의 `publish()`는 `false`다. `image_slots`(C++ `ImageSlots::Auto`, `Off`, `On`, Python `"auto"`, `"off"`, `"on"`), `image_encoding`(`"bgra8"`, `"nv12"` 등 sensor_msgs/Image 인코딩), `image_width`, `image_height`는 flux 발행자의 이미지 슬롯 설정으로 그대로 넘어간다([gpu.md](gpu.md)). 형식은 `Cuda` 발행자만 받는다. 호스트 메시지는 헤더가 슬롯 앞에 오므로 이미지가 배치가 말하는 자리에 있지 않다. `step`은 배치의 행 간격(256바이트 배수)이어야 한다. 다르면 `publish()`가 `false`를 반환하고, 처음 한 번 두 값을 오류 로그로 남긴다. 메시지 자신의 문자열(`header.frame_id`, `encoding`)이 슬롯을 넘으면 publish가 `false`를 반환하고, 발행자마다 처음 한 번 그 필드와 크기를 오류 로그로 남긴다. `Image`와 `PointCloud2`가 아닌 타입은 `set_from()`이 필드를 한 번에 쓰므로 필드 이름은 남기지 않고, 슬롯(`Cuda`면 aux)의 크기와 그 앞까지 쓴 크기를 남긴다. mirror는 기본 비활성화이고, 그 상태에서는 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
 
@@ -187,7 +187,6 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
   | `device="cuda"` | `flux.Frame` |
   | `"cpu"` | `flux.wire.DeviceSpan`(`__dlpack__`, `__cuda_array_interface__`, `nbytes`). `data`와 `to_msg()`도 호스트 메모리에서 읽힌다. 외장 GPU에서는 구독자가 GPU로 한 번 복사한다 |
 
-- 통합 GPU에서는 슬롯을 넘어 arena에 저장된 `data`에 GPU 주소가 없어 `on_device`가 거짓이다.
 - `"cuda"`를 사용 불가능하면 경고를 한 번 남기고 `"cpu"`로 바뀐다(발행자는 `uses_device`로 안다).
 
 - `device="cuda"` 발행자의 `publish(msg)`는 메시지의 `data`를 슬롯으로 복사해 보낸다. GPU 메모리에 있는 프레임의 `to_msg()`는 `data`를 호스트로 복사하고, 그 복사가 끝날 때까지 기다린다.

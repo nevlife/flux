@@ -140,7 +140,7 @@ CPU와 GPU가 서로의 필드를 읽는 경우는 다음과 같다.
 | --- | --- | --- |
 | `alloc_device__` → CPU 구독자의 일반 접근자 | 복사 없음 | 그 프레임의 첫 `View` 생성 시 GPU 필드만 호스트 버퍼로 복사하고 완료를 기다린다. 같은 프레임의 다음 `View`는 그 복사본을 읽는다 |
 | `alloc__`(슬롯 안) → GPU 구독자의 `__device()` | 복사 없음 | take가 만든 프레임 복사본에 있다 |
-| `alloc__`(arena) → GPU 구독자의 `__device()` | 빈 값 | 그 프레임의 첫 `View` 생성 시 GPU 버퍼로 복사한다. 복사는 구독 스트림에 걸리고 기다리지 않는다 |
+| `alloc__`(arena) → GPU 구독자의 `__device()` | 복사 없음. 구독 프로세스가 발행자의 arena를 GPU에 등록하고, 프레임이 더 먼 곳을 가리키면 다시 등록한다. 그 `View` 생성이 등록하는 동안 멈추고, 등록한 페이지는 쓰이지 않아도 RAM을 차지한다 | 그 프레임의 첫 `View` 생성 시 GPU 버퍼로 복사한다. 복사는 구독 스트림에 걸리고 기다리지 않는다 |
 
 Python에서는 같은 필드가 DLPack 객체로 오간다. GPU 필드는 loan의 스트림에서 쓴다.
 
@@ -162,7 +162,7 @@ with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stre
 - `<필드>__device`와 `alloc_device__<필드>`는 `flux.wire.DeviceSpan`을 반환한다. `DeviceSpan`은 `__dlpack__`, `__cuda_array_interface__`, `nbytes`, `dtype`을 갖고, 받는 쪽 것은 읽기 전용이다. `<필드>__device`는 GPU 주소가 없으면 None이다.
 - 생성된 `View`는 `device="cuda"` 구독의 `Frame`도 받는다. 이 `View`는 그 `with` 블록 안에서만 생성한다.
 - GPU를 선언하지 않은 발행자의 `alloc_device__<필드>`는 `WireError`이고, 그 `Builder`의 `commit__()`은 `TOO_LARGE`다.
-- data가 arena에 있는 tensor 메시지의 `__dlpack__`은 외장 GPU에서 위의 복사본을 반환한다. 통합 GPU에서는 `RuntimeError`다.
+- data가 arena에 있는 tensor 메시지의 `__dlpack__`은 외장 GPU에서 위의 복사본을, 통합 GPU에서 등록한 arena의 주소를 반환한다. 등록이 거절되면 `RuntimeError`다.
 
 ## GPU 메모리 채널(`DeviceHandle`)
 

@@ -23,6 +23,8 @@ mod vmm;
 use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::fmt;
+use std::os::fd::RawFd;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 
@@ -41,7 +43,7 @@ pub(crate) use vmm::{
 
 use crate::error::{Error, Result};
 use crate::executor::Control;
-use crate::sys;
+use crate::sys::{self, PiMutex};
 use crate::trace::event;
 
 /// How a host's GPU reaches a channel's payload. Judged per device, first match wins.
@@ -962,6 +964,102 @@ impl SlotRegistrations {
     /// Slot `s`'s device address, 0 when it could not be registered.
     pub(crate) fn device_ptr(&self, s: u32) -> DevicePtr {
         self.slot(s).map_or(0, HostRegistration::device_base)
+    }
+}
+
+/// The most a mapping's registration takes past the frame that made it, as each page it pins is
+/// in RAM from then on, used or not.
+const REGISTER_AHEAD: usize = 64 << 20;
+
+/// A read-only file another process fills, a publisher's arena, mapped again and registered whole
+/// for an integrated GPU that reads it in place, as far as frames reach into it. CUDA refuses a
+/// copy across two registrations, so a frame past the newest one maps the file afresh, to where it
+/// reaches or twice as far as before (at most `REGISTER_AHEAD` past it), and registers that; the
+/// older ones stay, as views may hold their addresses, until this goes. A refusal ends it: the
+/// file has no device address from then on.
+pub(crate) struct MappingRegistration {
+    bytes: usize,
+    device: i32,
+    state: PiMutex<Reach>,
+}
+
+#[derive(Default)]
+struct Reach {
+    maps: Vec<Mapped>,
+    refused: bool,
+}
+
+/// One read-only mapping of the file's first `bytes` and its registration.
+struct Mapped {
+    reg: Option<HostRegistration>,
+    base: NonNull<u8>,
+    bytes: usize,
+}
+
+// SAFETY: a read-only mapping this owns; the registration is plain data.
+unsafe impl Send for Mapped {}
+
+impl Drop for Mapped {
+    fn drop(&mut self) {
+        drop(self.reg.take());
+        // SAFETY: mapped in reach at this size, unregistered just above; no reference into it is
+        // held.
+        unsafe { sys::munmap(self.base, self.bytes) };
+    }
+}
+
+impl MappingRegistration {
+    /// For a file of `bytes`; nothing is mapped or registered until `reach` asks.
+    pub(crate) fn new(bytes: usize, device: i32) -> MappingRegistration {
+        MappingRegistration {
+            bytes,
+            device,
+            state: PiMutex::new(Reach::default()),
+        }
+    }
+
+    pub(crate) fn device(&self) -> i32 {
+        self.device
+    }
+
+    /// The device address of offset 0 of a registration that covers the file `fd`'s first
+    /// `bytes`; 0 when they are past the file, or the registration ended.
+    pub(crate) fn reach(&self, fd: RawFd, bytes: usize) -> DevicePtr {
+        let mut st = self.state.lock();
+        if let Some(m) = st.maps.last().filter(|m| bytes <= m.bytes) {
+            return m.reg.as_ref().map_or(0, HostRegistration::device_base);
+        }
+        if st.refused || bytes > self.bytes {
+            return 0;
+        }
+        let last = st.maps.last().map_or(0, |m| m.bytes);
+        let to = bytes
+            .max((last * 2).min(bytes + REGISTER_AHEAD))
+            .next_multiple_of(HOST_PIECE)
+            .min(self.bytes);
+        let made = sys::map_readonly(fd, to)
+            .map_err(|e| Error::io("mmap", "the publisher's arena", e))
+            .and_then(|base| {
+                let mut m = Mapped {
+                    reg: None,
+                    base,
+                    bytes: to,
+                };
+                m.reg = Some(HostRegistration::new(base.as_ptr(), to, true, self.device)?);
+                Ok(m)
+            });
+        match made {
+            Ok(m) => {
+                let d = m.reg.as_ref().map_or(0, HostRegistration::device_base);
+                st.maps.push(m);
+                d
+            }
+            Err(e) => {
+                eprintln!("flux: the publisher's arena was not registered with the GPU: {e}");
+                st.refused = true;
+                0
+            }
+        }
     }
 }
 

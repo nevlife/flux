@@ -572,7 +572,8 @@ namespace
 {
 
 // A CPU publisher's fields, in its slot and wherever its Alloc puts the rest, reach a GPU reader
-// on the device. A discrete GPU reads its copies, which the take and the View made.
+// on the device. A discrete GPU reads its copies, which the take and the View made; an integrated
+// GPU reads the slot and the arena in place, through their registrations.
 void expect_cpu_fields_on_device(
   flux::detail::Channel & pub, const std::string & name, bool in_slot)
 {
@@ -626,13 +627,45 @@ void expect_cpu_fields_on_device(
 TEST_F(Gpu, EveryCpuFieldOfAFrameReachesAGpuReader)
 {
   using Blob = flux_test::flux_msg::Blob;
-  if (platform_.route != flux::gpu::Route::DeviceHandle) {
-    GTEST_SKIP() << "an integrated GPU has no device address for the arena yet";
-  }
   const std::string name = unique_name("cpu_fields");
   auto pub = flux::detail::Channel::create(
     name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS);
   expect_cpu_fields_on_device(pub, name, false);
+}
+
+// Frames whose arena fields sit further and further in reach a GPU reader; on an integrated GPU
+// the arena is registered again, further, and the views taken before still read theirs.
+TEST_F(Gpu, ArenaFieldsFurtherInReachAGpuReader)
+{
+  using Blob = flux_test::flux_msg::Blob;
+  const std::string name = unique_name("cpu_fields_further");
+  auto pub = flux::detail::Channel::create(
+    name, 1 << 16, 4, Blob::kFingerprint, {}, FLUX_DEFAULT_MAX_SUBSCRIBERS);
+  const flux::gpu::Stream stream = flux::gpu::Stream::create();
+  flux::detail::Watch watch(name);
+  auto gpu =
+    flux::detail::Channel::open(watch, Blob::kFingerprint, flux::QoS(4).max_borrow(3), {}, stream);
+  const std::array<std::size_t, 3> mib{1, 3, 9};
+  std::vector<flux::FrameView> views;
+  for (const std::size_t n : mib) {
+    flux::WriteSlot w = pub.loan();
+    ASSERT_TRUE(w);
+    Blob::Builder b(w);
+    const auto data = b.alloc__data(n << 20);
+    ASSERT_EQ(data.size(), n << 20);
+    std::memset(data.data(), static_cast<int>(n), data.size());
+    ASSERT_EQ(b.commit__(), flux::Published::Ok);
+    views.push_back(gpu.take());
+    ASSERT_TRUE(views.back()) << n;
+    EXPECT_FALSE(views.back().heap().empty()) << n;
+  }
+  for (std::size_t i = 0; i < views.size(); ++i) {
+    const Blob::View m(views[i]);
+    const auto d = m.data__device();
+    ASSERT_EQ(d.size(), mib.at(i) << 20) << i;
+    ASSERT_TRUE(stream.wait());
+    EXPECT_TRUE(all(read_back(d.data(), d.size()), static_cast<unsigned char>(mib.at(i)))) << i;
+  }
 }
 
 // Alloc::Slot keeps every field in the slot, which an integrated GPU reads in place.

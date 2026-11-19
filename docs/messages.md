@@ -197,4 +197,4 @@ uint8[] data
 - 모든 원소가 `data` 안에 있어야 하고, 첫 원소가 원소 크기에 맞게 정렬되어 있어야 한다. 어기면 Python은 `WireError`, C++는 빈 결과와 `ok__() == false`다.
 - 받는 dtype은 정수와 부호 없는 정수 8~64-bit, float 16, 32, 64-bit, complex 64, 128-bit, bool 8-bit, bfloat16, float8 계열이다.
 - `Builder`는 `data`를 64 B 경계에 정렬한다.
-- GPU 구독(`device="cuda"`)의 `Frame`을 View에 넘기면 `__dlpack__`이 GPU 텐서를 제공한다. 외장 GPU에서는 data가 arena에 있어도 같다([gpu.md](gpu.md)).
+- GPU 구독(`device="cuda"`)의 `Frame`을 View에 넘기면 `__dlpack__`이 GPU 텐서를 제공한다. data가 arena에 있어도 같다([gpu.md](gpu.md)).

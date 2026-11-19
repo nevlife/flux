@@ -128,13 +128,19 @@ impl FrameView {
         }
         if stream.is_some() {
             h.frame = self.device_ptr();
-            // shortcut: an integrated GPU subscriber has no device address for host arena
-            // fields; register the arena mapping once it is tried on such a board.
-            if let Some(heap) = self.heap().filter(|_| self.sh.stages_to_device()) {
+            if let Some(heap) = self.heap() {
                 let list = arena::blocks(data, Some(heap))?;
-                let c = self
-                    .sh
-                    .copy_host_blocks(self.slot, self.ticket, heap, list)?;
+                // A discrete GPU copies the host arena blocks to the device; registered host
+                // slots read them in place, and without a registration their fields have no
+                // device address.
+                let c = if self.sh.stages_to_device() {
+                    self.sh
+                        .copy_host_blocks(self.slot, self.ticket, heap, list)?
+                } else {
+                    self.sh
+                        .map_host_blocks(self.slot, self.ticket, list)
+                        .unwrap_or_default()
+                };
                 h.blocks = c.blocks;
                 h.count = c.count;
             }

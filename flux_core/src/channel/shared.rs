@@ -406,6 +406,67 @@ impl ChannelShared {
         })
     }
 
+    /// The frame `ticket` in `slot` with its host arena blocks (from `list`) read in place by this
+    /// subscriber of registered host slots, an integrated GPU's: each block's device address in
+    /// the arena's registration, which is made to reach as far as the blocks do. The registration
+    /// is made with `copies` let go, so no lock is held under another. None for another
+    /// subscriber, when the list names bytes outside the mapping, or the arena has no device
+    /// address.
+    pub(super) fn map_host_blocks(&self, slot: u32, ticket: u64, list: &[u8]) -> Option<GpuHeap> {
+        let g = self
+            .gpu
+            .as_ref()
+            .filter(|g| matches!(g.staged, Staged::Registered))?;
+        let m = self.arena_map.get()?;
+        if self.inherited() {
+            return None;
+        }
+        let size = m.bytes().len();
+        let entries = || arena::entries_in(list, arena::HEAP_POS, arena::GPU_POS, size);
+        let held = |copies: &mut Vec<SlotCopy>| {
+            if copies.is_empty() {
+                copies.resize_with(self.seg.layout().slot_count as usize, SlotCopy::default);
+            }
+            let c = copies.get(slot as usize)?;
+            (c.ticket == ticket).then(|| GpuHeap {
+                blocks: c.blocks.as_ptr(),
+                count: c.blocks.len(),
+                ..GpuHeap::default()
+            })
+        };
+        if let Some(h) = held(&mut self.copies.lock()) {
+            return Some(h);
+        }
+        let end = entries()?
+            .map(|(off, len)| off - arena::HEAP_POS + len)
+            .max();
+        let base = m.device_reach(usize::try_from(end.unwrap_or(0)).ok()?, g.stream.device());
+        if base == 0 {
+            return None;
+        }
+        let mut copies = self.copies.lock();
+        if let Some(h) = held(&mut copies) {
+            return Some(h);
+        }
+        let c = copies.get_mut(slot as usize)?;
+        c.ticket = 0;
+        c.blocks.clear();
+        for (off, len) in entries()? {
+            c.blocks.push(GpuBlock {
+                off,
+                len,
+                host: std::ptr::null(),
+                device: base + (off - arena::HEAP_POS),
+            });
+        }
+        c.ticket = ticket;
+        Some(GpuHeap {
+            blocks: c.blocks.as_ptr(),
+            count: c.blocks.len(),
+            ..GpuHeap::default()
+        })
+    }
+
     /// A publisher's GPU arena: host slots on a channel that declared a stream. None elsewhere,
     /// and when the arena is off or could not be made.
     pub(super) fn gpu_arena(&self) -> Option<&'static GpuArena> {

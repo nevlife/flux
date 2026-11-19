@@ -507,8 +507,8 @@ public:
     const auto dev = r.device<std::uint8_t>(at[6]);
     if (dev.data() == nullptr) {
       throw std::runtime_error(
-        "flux: this subscriber has no device address for the tensor's data (an integrated GPU "
-        "reads a field in the publisher's arena on the host only)");
+        "flux: this subscriber has no device address for the tensor's data (the publisher's "
+        "arena was not registered with this GPU)");
     }
     remember_stream(held_->streams, kw);
     const auto addr = addr_of(dev.data() + (f.data - host.data()));

@@ -458,7 +458,7 @@ public:
       size = b != nullptr ? static_cast<std::size_t>(b->len) : 0;
       bad_ = bad_ || base == 0;
     } else if (d.off >= kHeapBase) {
-      base = 0;  // shortcut: an integrated GPU reader has no device address for the arena yet
+      base = 0;  // a reader whose arena was not registered with its GPU
     }
     if (bad_ || base == 0) {
       return {};
