@@ -52,6 +52,7 @@ TEST(FluxFrameCdr, MatchesRmwByteForByte)
   f.frame_id = "cam";
   f.flux_topic = "/cam/left";
   f.fingerprint = 0x0123456789abcdefULL;
+  f.ros_type = "sensor_msgs/msg/Image";
   f.codec = "raw";
   f.meta = meta.data();
   f.meta_size = meta.size();
@@ -59,11 +60,13 @@ TEST(FluxFrameCdr, MatchesRmwByteForByte)
   f.data_size = payload.size();
 
   flux_msgs::msg::FluxFrame m;
+  m.format_version = flux_bag::kFormatVersion;
   m.header.stamp.sec = f.sec;
   m.header.stamp.nanosec = f.nanosec;
   m.header.frame_id = "cam";
   m.flux_topic = "/cam/left";
   m.fingerprint = f.fingerprint;
+  m.ros_type = "sensor_msgs/msg/Image";
   m.codec = "raw";
   m.meta.assign(meta.begin(), meta.end());
   m.data.assign(payload.begin(), payload.end());
@@ -117,6 +120,7 @@ TEST(FluxFrameCdr, ReadIsTheInverseOfWrite)
   f.frame_id = "id";
   f.flux_topic = "/t";
   f.fingerprint = 9;
+  f.ros_type = "pkg/msg/T";
   f.codec = "raw";
   f.meta = "m";
   f.meta_size = 1;
@@ -132,24 +136,39 @@ TEST(FluxFrameCdr, ReadIsTheInverseOfWrite)
   EXPECT_EQ(back.frame_id, "id");
   EXPECT_EQ(back.flux_topic, "/t");
   EXPECT_EQ(back.fingerprint, 9u);
+  EXPECT_EQ(back.ros_type, "pkg/msg/T");
   EXPECT_EQ(back.codec, "raw");
   EXPECT_EQ(std::string(static_cast<const char *>(back.meta), back.meta_size), "m");
   EXPECT_EQ(std::string(static_cast<const char *>(back.data), back.data_size), payload);
 
-  // Truncated anywhere: refused, never read past the end.
+  // Truncated anywhere: refused, never read past the end. Cut right after `data` it is a bag from
+  // before format 1, read as version 0.
+  std::vector<std::size_t> read;
   for (std::size_t n = 0; n < bytes.size(); ++n) {
-    EXPECT_FALSE(flux_bag::FluxFrameCdr::read(bytes.data(), n, back)) << n;
+    if (flux_bag::FluxFrameCdr::read(bytes.data(), n, back)) {
+      read.push_back(n);
+    }
   }
+  ASSERT_EQ(read.size(), 1u);
+  ASSERT_TRUE(flux_bag::FluxFrameCdr::read(bytes.data(), read[0], back));
+  EXPECT_EQ(back.format_version, 0u);
+  EXPECT_EQ(back.ros_type, "");
+  EXPECT_EQ(std::string(static_cast<const char *>(back.data), back.data_size), payload);
 }
 
 TEST(FluxFrameCdr, ReadRefusesRmwBytesOfTheWrongShape)
 {
   flux_msgs::msg::FluxFrame m;
+  m.format_version = flux_bag::kFormatVersion;
   m.data = {1, 2, 3};
   const auto bytes = rmw_bytes(m);
   flux_bag::FluxFrameFields back;
   ASSERT_TRUE(flux_bag::FluxFrameCdr::read(bytes.data(), bytes.size(), back));
   EXPECT_EQ(back.data_size, 3u);
+  // A later format than this reader knows is refused.
+  m.format_version = flux_bag::kFormatVersion + 1;
+  const auto later = rmw_bytes(m);
+  EXPECT_FALSE(flux_bag::FluxFrameCdr::read(later.data(), later.size(), back));
   std::vector<std::uint8_t> big_endian = bytes;
   big_endian[1] = 0x00;
   EXPECT_FALSE(flux_bag::FluxFrameCdr::read(big_endian.data(), big_endian.size(), back));

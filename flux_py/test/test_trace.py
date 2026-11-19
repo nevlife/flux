@@ -61,8 +61,8 @@ def test_endpoints_frames_and_the_gil_are_traced(tmp_path):
     ]
     stamps = [(e[0], int(e[3])) for e in events if e[0] in ("commit", "take")]
     assert stamps == [
-        ("commit", 7 | 250 << 32),
-        ("take", 7 | 250 << 32),
+        ("commit", 7 * 10**9 + 250),
+        ("take", 7 * 10**9 + 250),
         ("commit", 0),
         ("take", 0),
     ]

@@ -945,7 +945,8 @@ impl ChannelShared {
 
     /// The `header.stamp` bytes of the frame in `slot`, 0 when the type has none or the frame is
     /// too short or in device memory. The caller owns the slot: claimed or borrowed.
-    pub(super) fn stamp(&self, slot: u32, nbytes: u64) -> u64 {
+    /// The frame's `header.stamp` in nanoseconds, 0 without one.
+    pub(super) fn stamp(&self, slot: u32, nbytes: u64) -> i64 {
         let Ok(at) = usize::try_from(self.stamp_offset) else {
             return 0;
         };
@@ -958,7 +959,10 @@ impl ChannelShared {
         // SAFETY: at + 8 <= nbytes <= slot_size: inside the slot.
         let p = unsafe { base.add(at) };
         // SAFETY: the caller owns the slot, so nobody writes it meanwhile.
-        u64::from_le_bytes(unsafe { std::ptr::read_unaligned(p.cast::<[u8; 8]>()) })
+        let b = unsafe { std::ptr::read_unaligned(p.cast::<[u8; 8]>()) };
+        let sec = i64::from(i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let nanosec = i64::from(u32::from_le_bytes([b[4], b[5], b[6], b[7]]));
+        sec.saturating_mul(1_000_000_000).saturating_add(nanosec)
     }
 
     pub(super) fn inherited(&self) -> bool {

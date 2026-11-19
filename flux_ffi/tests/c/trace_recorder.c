@@ -61,18 +61,18 @@ void flux_trace_loan_end(const void * channel, uint32_t slot, int32_t result)
 
 void flux_trace_commit(
   const void * channel, uint64_t ticket, uint32_t slot, uint64_t nbytes, int32_t woke,
-  uint64_t stamp)
+  int64_t stamp)
 {
   LOG(
-    "commit %" PRIu64 " %" PRIu64 " %u %" PRIu64 " %d %" PRIu64, P(channel), ticket, slot, nbytes,
+    "commit %" PRIu64 " %" PRIu64 " %u %" PRIu64 " %d %" PRId64, P(channel), ticket, slot, nbytes,
     woke, stamp);
 }
 
 void flux_trace_take(
-  const void * channel, uint64_t ticket, uint32_t slot, uint64_t lost, uint64_t stamp)
+  const void * channel, uint64_t ticket, uint32_t slot, uint64_t lost, int64_t stamp)
 {
   LOG(
-    "take %" PRIu64 " %" PRIu64 " %u %" PRIu64 " %" PRIu64, P(channel), ticket, slot, lost, stamp);
+    "take %" PRIu64 " %" PRIu64 " %u %" PRIu64 " %" PRId64, P(channel), ticket, slot, lost, stamp);
 }
 
 void flux_trace_release(const void * channel, uint64_t ticket, int32_t held)
@@ -138,7 +138,7 @@ void flux_trace_record_drop(const void * channel, uint64_t ticket, uint32_t coun
   LOG("record_drop %" PRIu64 " %" PRIu64 " %u %d", P(channel), ticket, count, reason);
 }
 
-void flux_trace_contract_2(void)
+void flux_trace_contract_3(void)
 {
-  LOG("contract_2");
+  LOG("contract_3");
 }

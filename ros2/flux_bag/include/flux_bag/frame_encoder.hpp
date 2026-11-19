@@ -34,6 +34,7 @@ public:
 private:
   std::string flux_topic_;
   std::uint64_t fingerprint_;
+  std::string ros_type_;
   std::uint32_t generation_ = 0;
   RawMeta meta_;
   std::uint32_t aux_size_ = 0;

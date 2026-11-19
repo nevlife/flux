@@ -124,7 +124,7 @@ def write_bag_channels(path, channels, step_ns=100_000_000):
         )
         # A sixth item is the aux tail after the raw meta.
         for i, (slot_size, slot_count, dtype, shape, data, *tail) in enumerate(frame_list):
-            f = FluxFrame()
+            f = FluxFrame(format_version=1)
             f.flux_topic = topic
             f.fingerprint = FINGERPRINT
             f.codec = "raw"
@@ -343,7 +343,7 @@ def test_a_frame_of_another_codec_is_skipped(node, tmp_path):
         )
     )
     for i, codec in enumerate(["raw", "jpeg", "raw"]):
-        f = FluxFrame()
+        f = FluxFrame(format_version=1)
         f.flux_topic, f.fingerprint, f.codec = k, FINGERPRINT, codec
         f.meta = struct.pack("<IIBBQ", 4096, 4, 0, 1, 16)
         f.data = bytes([i]) * 16
@@ -835,7 +835,7 @@ def write_bag_with_ros(path, k, topic, count, frame_after_ns=0):
     for i in range(count):
         at = 1_000_000_000 + i * 100_000_000
         writer.write(topic, serialize_message(Int32(data=i)), at)
-        f = FluxFrame()
+        f = FluxFrame(format_version=1)
         f.flux_topic, f.fingerprint, f.codec = k, FINGERPRINT, "raw"
         f.meta = struct.pack("<IIBBQ", 4096, 4, 0, 1, 16)
         f.data = bytes([i]) * 16

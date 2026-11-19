@@ -1,4 +1,4 @@
-/* flux trace contract 2: the events libflux_ffi exports for collectors to attach to by
+/* flux trace contract 3: the events libflux_ffi exports for collectors to attach to by
  * name. Each function does nothing. flux_core/src/trace.rs defines them; the bindings call the
  * ones about endpoints, the GIL and recording. Strings are NUL-terminated and live until the call
  * returns; pointers other than strings are identities, never read. */
@@ -57,9 +57,9 @@ void flux_trace_loan(const void * channel, uint32_t slot);
 void flux_trace_loan_end(const void * channel, uint32_t slot, int32_t result);
 void flux_trace_commit(
   const void * channel, uint64_t ticket, uint32_t slot, uint64_t nbytes, int32_t woke,
-  uint64_t stamp);
+  int64_t stamp);
 void flux_trace_take(
-  const void * channel, uint64_t ticket, uint32_t slot, uint64_t lost, uint64_t stamp);
+  const void * channel, uint64_t ticket, uint32_t slot, uint64_t lost, int64_t stamp);
 void flux_trace_release(const void * channel, uint64_t ticket, int32_t held);
 void flux_trace_refused(const void * channel, int32_t reason);
 void flux_trace_gpu_wedged(int32_t result);
@@ -75,7 +75,7 @@ void flux_trace_endpoint_init(
 void flux_trace_py_gil(int32_t phase);
 void flux_trace_py_ready(const void * channel, uint64_t ticket);
 void flux_trace_record_drop(const void * channel, uint64_t ticket, uint32_t count, int32_t reason);
-void flux_trace_contract_2(void);
+void flux_trace_contract_3(void);
 
 #ifdef __cplusplus
 }

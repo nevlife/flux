@@ -187,8 +187,7 @@ pub extern "C" fn flux_trace_loan_end(channel: *const c_void, slot: u32, result:
     emit!("loan_end", channel, slot, result);
 }
 
-/// `stamp` is the payload's `header.stamp` bytes as a little-endian u64 (sec low, nanosec high),
-/// 0 without one.
+/// `stamp` is the payload's `header.stamp` in nanoseconds (`sec * 1e9 + nanosec`), 0 without one.
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub extern "C" fn flux_trace_commit(
@@ -197,7 +196,7 @@ pub extern "C" fn flux_trace_commit(
     slot: u32,
     nbytes: u64,
     woke: i32,
-    stamp: u64,
+    stamp: i64,
 ) {
     emit!("commit", channel, ticket, slot, nbytes, woke, stamp);
 }
@@ -209,7 +208,7 @@ pub extern "C" fn flux_trace_take(
     ticket: u64,
     slot: u32,
     lost: u64,
-    stamp: u64,
+    stamp: i64,
 ) {
     emit!("take", channel, ticket, slot, lost, stamp);
 }
@@ -330,8 +329,8 @@ pub extern "C" fn flux_trace_record_drop(
 /// event's name or arguments change.
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub extern "C" fn flux_trace_contract_2() {
-    emit!("contract_2");
+pub extern "C" fn flux_trace_contract_3() {
+    emit!("contract_3");
 }
 
 #[cfg(test)]

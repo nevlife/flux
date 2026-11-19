@@ -48,14 +48,14 @@ void flux_trace_py_ready(const void * channel, std::uint64_t ticket)
 
 void flux_trace_commit(
   const void * channel, std::uint64_t ticket, std::uint32_t, std::uint64_t, std::int32_t,
-  std::uint64_t stamp)
+  std::int64_t stamp)
 {
-  line("commit %p %" PRIu64 " %" PRIu64 "\n", channel, ticket, stamp);
+  line("commit %p %" PRIu64 " %" PRId64 "\n", channel, ticket, stamp);
 }
 
 void flux_trace_take(
-  const void * channel, std::uint64_t ticket, std::uint32_t, std::uint64_t, std::uint64_t stamp)
+  const void * channel, std::uint64_t ticket, std::uint32_t, std::uint64_t, std::int64_t stamp)
 {
-  line("take %p %" PRIu64 " %" PRIu64 "\n", channel, ticket, stamp);
+  line("take %p %" PRIu64 " %" PRId64 "\n", channel, ticket, stamp);
 }
 }

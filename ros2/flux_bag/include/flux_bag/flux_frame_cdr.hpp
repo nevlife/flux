@@ -12,13 +12,18 @@ namespace flux_bag
 
 // The fields of one flux_msgs/msg/FluxFrame, referenced rather than owned, so the frame bytes
 // go from the flux slot into the serialized buffer with one copy and no message object.
+// The FluxFrame layout this writes and reads.
+inline constexpr std::uint32_t kFormatVersion = 1;
+
 struct FluxFrameFields
 {
+  std::uint32_t format_version = kFormatVersion;
   std::int32_t sec = 0;
   std::uint32_t nanosec = 0;
   std::string_view frame_id;
   std::string_view flux_topic;
   std::uint64_t fingerprint = 0;
+  std::string_view ros_type;
   std::string_view codec;
   const void * meta = nullptr;
   std::size_t meta_size = 0;
@@ -42,16 +47,25 @@ public:
   }
 
   // The inverse: the string and sequence fields of `f` point into `in`, which must outlive
-  // them. False when `in` is not a well-formed little-endian FluxFrame.
+  // them. False when `in` is not a well-formed little-endian FluxFrame, or one of a later format.
+  // A bag from before format 1 has neither format_version nor ros_type: 0 and "" here.
   static auto read(const std::uint8_t * in, std::size_t size, FluxFrameFields & f) -> bool
   {
     if (size < 4 || in[0] != 0x00 || in[1] != 0x01) {
       return false;
     }
     Reader r{in + 4, size - 4};
-    return r.scalar(f.sec) && r.scalar(f.nanosec) && r.string(f.frame_id) &&
-           r.string(f.flux_topic) && r.scalar(f.fingerprint) && r.string(f.codec) &&
-           r.sequence(f.meta, f.meta_size) && r.sequence(f.data, f.data_size);
+    if (!(r.scalar(f.sec) && r.scalar(f.nanosec) && r.string(f.frame_id) &&
+          r.string(f.flux_topic) && r.scalar(f.fingerprint) && r.string(f.codec) &&
+          r.sequence(f.meta, f.meta_size) && r.sequence(f.data, f.data_size))) {
+      return false;
+    }
+    f.format_version = 0;
+    f.ros_type = {};
+    if (r.pos == r.size) {
+      return true;
+    }
+    return r.scalar(f.format_version) && r.string(f.ros_type) && f.format_version <= kFormatVersion;
   }
 
 private:
@@ -162,6 +176,8 @@ private:
     c.string(f.codec);
     c.sequence(f.meta, f.meta_size);
     c.sequence(f.data, f.data_size);
+    c.scalar(f.format_version);
+    c.string(f.ros_type);
     return kEncapsulation.size() + c.pos;
   }
 };

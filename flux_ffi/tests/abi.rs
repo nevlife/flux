@@ -217,7 +217,7 @@ const TRACE_EVENTS: [&str; 18] = [
     "py_gil",
     "py_ready",
     "record_drop",
-    "contract_2",
+    "contract_3",
 ];
 
 /// Collectors attach uprobes to these by name. Two events at one address would make a probe on one

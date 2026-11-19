@@ -227,7 +227,11 @@ uint8[] meta             # raw: slot_size u32, slot_count u32, dtype u8, ndim u8
                          # aux가 있는 채널: 위 meta 뒤에 version u32(1), aux_size u32,
                          #   aux_len u32, aux u8[aux_len]
 uint8[] data             # raw: 슬롯에 있던 프레임 bytes 그대로
+uint32 format_version    # 이 메시지의 배치, 지금 1. 이 필드가 없는 예전 bag은 0으로 읽는다
+string ros_type          # fingerprint가 가리키는 설치된 타입(sensor_msgs/msg/Image 등), 없으면 ""
 ```
+
+- 새 필드는 끝에 더한다. 예전 `flux_bag`은 모르는 끝 필드를 무시하고 읽는다. `play_flux`와 `convert_flux`는 자기보다 나중 `format_version`의 bag을 거절한다.
 
 | 옵션 | flux 채널에서 |
 | --- | --- |

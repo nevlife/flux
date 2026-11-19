@@ -45,9 +45,30 @@ const MAX_EPOCH_TRIES: u32 = 64;
 const SKEW_PROBE_NS: u64 = 100_000_000;
 
 const _: () = {
-    // "flux.v<ver>." key ".<fp16>" ".e<epoch>", each at its widest.
-    assert!(6 + 10 + 1 + MAX_KEY_LEN + 17 + 2 + 10 <= NAME_MAX);
+    // "flux.v<ver>." "d<domain>." key ".<fp16>" ".e<epoch>", each at its widest.
+    assert!(6 + 10 + 1 + 12 + MAX_KEY_LEN + 17 + 2 + 10 <= NAME_MAX);
 };
+
+/// The ROS domain channels are scoped to, as DDS scopes topics: `ROS_DOMAIN_ID`, 0 when unset.
+/// Read once per process. shortcut: a domain set through rcl init options instead is not seen;
+/// take it from the node's context once a user sets it there.
+pub fn domain() -> u32 {
+    static DOMAIN: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *DOMAIN.get_or_init(|| match std::env::var("ROS_DOMAIN_ID") {
+        Err(_) => 0,
+        Ok(v) if v.trim().is_empty() => 0,
+        Ok(v) => v.trim().parse().unwrap_or_else(|_| {
+            eprintln!("flux: ROS_DOMAIN_ID={v:?} is not a number; flux channels use domain 0");
+            0
+        }),
+    })
+}
+
+/// `flux.v<layout>.d<domain>.`, the start of every channel object of this process's domain.
+pub(crate) fn channel_prefix() -> &'static str {
+    static PREFIX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREFIX.get_or_init(|| format!("flux.v{LAYOUT_VERSION}.d{}.", domain()))
+}
 
 /// Every byte but alnum and '_' becomes '.'. '_' stays so `/cam_left` and `/cam/left` differ.
 pub fn flatten_key(key: &str) -> String {
@@ -61,8 +82,8 @@ fn key_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '/'
 }
 
-/// Layout version and fingerprint are both in the name: an object written under another value of
-/// either is never opened. A key with a byte `flatten_key` would merge with '/' is refused, so two
+/// Layout version, domain and fingerprint are all in the name: an object written under another
+/// value of any is never opened. A key with a byte `flatten_key` would merge with '/' is refused, so two
 /// keys never share a channel.
 pub fn signpost_name(key: &str, fingerprint: u64) -> Result<String> {
     if key.len() > MAX_KEY_LEN {
@@ -77,7 +98,8 @@ pub fn signpost_name(key: &str, fingerprint: u64) -> Result<String> {
         )));
     }
     Ok(format!(
-        "/flux.v{LAYOUT_VERSION}.{}.{fingerprint:016x}",
+        "/{}{}.{fingerprint:016x}",
+        channel_prefix(),
         flatten_key(key)
     ))
 }
@@ -470,6 +492,8 @@ fn other_layout(signpost: &str) -> Option<u32> {
         names: Vec::new(),
     });
     let ours = signpost.strip_prefix(&format!("/flux.v{LAYOUT_VERSION}."))?;
+    // Layouts before 11 had no domain in the name.
+    let ours_bare = ours.split_once('.').map_or(ours, |(_, k)| k);
     sys::fork_safe(|| {
         let mut l = LISTING.lock().unwrap_or_else(PoisonError::into_inner);
         let now = sys::monotonic_ns();
@@ -489,7 +513,7 @@ fn other_layout(signpost: &str) -> Option<u32> {
         }
         l.names
             .iter()
-            .find(|(_, rest)| rest == ours)
+            .find(|(v, rest)| rest == if *v < 11 { ours_bare } else { ours })
             .map(|&(v, _)| v)
     })
 }
@@ -767,11 +791,11 @@ mod tests {
     #[test]
     fn a_publisher_of_another_layout_is_reported() {
         let name = signpost_name(&format!("/d{}_skew", std::process::id()), NO_SCHEMA).unwrap();
-        let theirs = name.replacen(
-            &format!("v{LAYOUT_VERSION}."),
-            &format!("v{}.", LAYOUT_VERSION - 1),
-            1,
-        );
+        // Layout 10, the last without the domain in the name.
+        let bare = name
+            .strip_prefix(&format!("/{}", super::channel_prefix()))
+            .unwrap();
+        let theirs = format!("/flux.v{}.{bare}", LAYOUT_VERSION - 1);
         let planted = crate::sys::shm_open(&theirs, libc::O_CREAT | libc::O_RDWR).unwrap();
         // In use, as the other build holds it; a sweep would remove it otherwise.
         assert!(crate::sys::lock_read(

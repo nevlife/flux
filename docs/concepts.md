@@ -12,14 +12,14 @@ C++와 Python API에 공통인 규칙이다. 언어별 사용법은 [cpp.md](cpp
 | fingerprint | 메시지 스키마의 64-bit 해시. `flux_gen`이 만든 어댑터의 `kFingerprint`(Python은 `FINGERPRINT__`)를 넘긴다. 타입 없이 배열을 보내면 `kNoSchema`(0)다 |
 
 - ROS 2처럼 한 이름에 fingerprint가 다른 채널이 공존 가능하다.
-- flux는 `ROS_DOMAIN_ID`를 읽지 않는다. domain이 달라도 같은 채널이다.
+- 채널은 ROS domain(`ROS_DOMAIN_ID`, 없으면 0)마다 따로다. DDS처럼 domain이 다른 프로세스끼리는 같은 이름이어도 만나지 않고, 목록에도 보이지 않는다. rcl의 init option으로 준 domain은 읽지 않는다.
 - 이름은 185자까지이고 `A-Z a-z 0-9 _ /`만 사용 가능하다. 다른 문자가 있으면 생성자가 `INVALID_ARGUMENT`를 낸다.
 
 채널은 `/dev/shm`에 파일 두 종류를 만든다. 이름의 `/`는 `.`으로 바뀐다. 죽은 프로세스가 남긴 파일은 다음에 시작하는 flux 프로세스가 지운다.
 
 | 파일 | 이름 | 개수 |
 | --- | --- | --- |
-| signpost | `flux.v<버전>.<이름>.<fingerprint>`, 16 KiB | 채널마다 하나 |
+| signpost | `flux.v<버전>.d<domain>.<이름>.<fingerprint>`, 16 KiB | 채널마다 하나 |
 | 세그먼트 | `<signpost>.e<epoch>` | 발행자 시작마다 하나 |
 
 ## 발행자와 슬롯

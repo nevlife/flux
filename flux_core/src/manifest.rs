@@ -222,9 +222,10 @@ pub(crate) fn read_entry(e: &RosterEntry) -> std::result::Result<Option<Endpoint
     Err(Busy)
 }
 
-/// `flux.v<ver>.<flattened key>.<fp16>`. Segments end in `.e<epoch>` and fail here.
+/// `flux.v<ver>.d<domain>.<flattened key>.<fp16>` of this domain. Segments end in `.e<epoch>`
+/// and fail here.
 pub(crate) fn parse_signpost(entry: &str) -> Option<(String, u64)> {
-    let rest = entry.strip_prefix(&format!("flux.v{LAYOUT_VERSION}."))?;
+    let rest = entry.strip_prefix(crate::discovery::channel_prefix())?;
     let (key, fp) = rest.rsplit_once('.')?;
     if fp.len() != 16 {
         return None;

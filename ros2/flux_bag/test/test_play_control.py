@@ -69,7 +69,7 @@ def write_bag(path, topic, n, step_ns, nbytes=16, ros_topic=None):
                 id=1, name=ros_topic, type="std_msgs/msg/Int32", serialization_format="cdr"
             )
         )
-    f = FluxFrame()
+    f = FluxFrame(format_version=1)
     f.flux_topic = topic
     f.fingerprint = FINGERPRINT
     f.codec = "raw"

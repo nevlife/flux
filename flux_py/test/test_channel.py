@@ -465,3 +465,17 @@ def test_a_second_thread_in_one_subscription_is_refused(node):
         sub.take()
     t.join()
     assert sub.take() is None
+
+
+def test_a_channel_is_seen_only_in_its_ros_domain(node):
+    """As DDS keeps ROS domains apart, flux keeps their channels apart: names carry the domain."""
+    domain = int(os.environ.get("ROS_DOMAIN_ID") or 0)
+    pub = flux.Publisher(node, topic("domain"), **SMALL)
+    assert f".d{domain}." in pub.signpost_name
+    look = "import flux, sys; print(sys.argv[1] in [t.key for t in flux.enumerate_topics()])"
+    for d, seen in ((domain, "True"), (domain + 1, "False")):
+        env = dict(os.environ, ROS_DOMAIN_ID=str(d))
+        out = subprocess.run(
+            [sys.executable, "-c", look, pub.topic_name], env=env, capture_output=True, text=True
+        )
+        assert out.stdout.strip() == seen, (d, out.stderr)

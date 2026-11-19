@@ -8,12 +8,26 @@
 
 namespace flux_bag
 {
+namespace
+{
+
+// Every .msg on AMENT_PREFIX_PATH, read once by the first typed channel that needs it.
+auto installed() -> const flux::Schemas &
+{
+  static const flux::Schemas schemas;
+  return schemas;
+}
+
+}  // namespace
 
 FrameEncoder::FrameEncoder(std::string flux_topic, std::uint64_t fingerprint)
 : flux_topic_(std::move(flux_topic)),
   fingerprint_(fingerprint),
   meta_bytes_(RawMeta::kMaxSize + AuxTail::kMaxSize)
 {
+  if (fingerprint_ != flux::kNoSchema && installed().contains(fingerprint_)) {
+    ros_type_ = installed().at(fingerprint_).ros_type();
+  }
 }
 
 auto FrameEncoder::encode(
@@ -25,13 +39,11 @@ auto FrameEncoder::encode(
   const void * data = v.data();
   std::size_t size = v.size();
   if (flux::in_arena(v)) {
-    // Every .msg on AMENT_PREFIX_PATH, read once by the first channel that needs it.
-    static const flux::Schemas schemas;
-    if (!schemas.contains(fingerprint_)) {
+    if (!installed().contains(fingerprint_)) {
       return "its type is not installed";
     }
     try {
-      schemas.at(fingerprint_).inline_arena(v, inlined_);
+      installed().at(fingerprint_).inline_arena(v, inlined_);
     } catch (const flux::Error &) {
       return "it does not match its type";
     }
@@ -69,6 +81,7 @@ auto FrameEncoder::encode(
   f.nanosec = static_cast<std::uint32_t>(sent_ns % 1'000'000'000);
   f.flux_topic = flux_topic_;
   f.fingerprint = fingerprint_;
+  f.ros_type = ros_type_;
   f.codec = "raw";
   f.meta = meta_bytes_.data();
   f.meta_size = meta_.write(meta_bytes_.data());

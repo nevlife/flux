@@ -107,7 +107,7 @@
     사용자가 고쳐야 하는 것마다 번호를 매기고, 고치기 전과 후를 코드로 보인다.
 -->
 
-1. 공유 메모리 배치 버전이 6에서 10으로, C ABI 버전이 3에서 6으로 올랐다. 슬롯에 aux 영역이 생겼고, arena를 가리키는 위치의 단위가 16 B가 되었고, 헤더에 메모리가 있는 슬롯 수, 구독자 depth의 최대값, 이미지 슬롯의 형식이 생겼기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
+1. 공유 메모리 배치 버전이 6에서 11로, C ABI 버전이 3에서 6으로 올랐다. 슬롯에 aux 영역이 생겼고, arena를 가리키는 위치의 단위가 16 B가 되었고, 헤더에 메모리가 있는 슬롯 수, 구독자 depth의 최대값, 이미지 슬롯의 형식이 생겼고, 이름에 ROS domain이 들어갔기 때문이다. 버전이 다른 프로세스는 서로의 채널을 찾지 못하므로, 한 호스트의 flux 프로그램을 모두 다시 빌드한다. `libflux_ffi.so.3`에 링크한 바이너리도 다시 빌드한다.
 2. C ABI가 바뀌었다. `flux_frame_meta.reserved0[2]`는 `uint16_t aux_len`이 되었다.
    * `flux_channel_create`는 설정을 `flux_publisher_config`로 받는다. 위치 인자 판과 `_create_config`는 없어졌다. 메모리 정책은 `flux_memory_policy` 대신 `FLUX_MEMORY_*` 정수다. 생성자와 `flux_channel_open`, `_open_watched`의 `stamp_offset` 인자는 없어졌다. 라이브러리가 생성 타입이 등록한 값을 fingerprint로 찾는다.
    * `flux_publisher_config`과 `flux_source`의 첫 필드는 `size`다. `flux_publisher_config_default()`로 채우거나 `size = sizeof(...)`로 둔다. `flux_executor_add`는 `flux_source`를 포인터로 받는다.
@@ -133,7 +133,10 @@
 
    C++의 `flux::MemoryPolicy`는 `enum class`(`Default`, `Precommit`, `Lock`)이고, Python은 `memory="default"|"precommit"|"lock"`이다. `flux.MemoryPolicy`는 없어졌다.
 
-3. C++ `flux::Subscription::Callback`이 `std::function<void(FrameView &&)>`가 되었다. `const flux::FrameView &`로 받는 콜백은 그대로 동작한다. const 없는 `flux::FrameView &`로 받는 콜백은 고친다. `libflux_cpp`에 링크한 바이너리는 다시 빌드한다.
+3. 채널이 ROS domain(`ROS_DOMAIN_ID`, 없으면 0)마다 따로다. 전에는 domain이 달라도 같은 이름이면 연결되었다. domain이 다른 프로세스끼리 flux로 주고받던 구성은 같은 `ROS_DOMAIN_ID`로 맞춘다. `flux topic list`와 bag, bridge도 자기 domain의 채널만 본다.
+4. trace 계약이 2에서 3(`flux_trace_contract_3`)으로 올랐다. `commit`, `take`의 `stamp`가 `header.stamp`의 바이트를 묶은 `uint64`에서 나노초 `int64`가 되었다. 수집기는 계약 3을 찾도록 고친다.
+
+5. C++ `flux::Subscription::Callback`이 `std::function<void(FrameView &&)>`가 되었다. `const flux::FrameView &`로 받는 콜백은 그대로 동작한다. const 없는 `flux::FrameView &`로 받는 콜백은 고친다. `libflux_cpp`에 링크한 바이너리는 다시 빌드한다.
 
    ```cpp
    // 전
@@ -142,7 +145,7 @@
    auto sub = flux::create_subscription(*node, "image", flux::QoS{}, [](flux::FrameView && f) {});
    ```
 
-4. arena가 기본으로 활성화된다. 생성된 어댑터의 배열과 메시지 배열은 크기와 상관없이 arena에 저장된다. 전에는 슬롯에 들어가지 않으면 `commit__()`이 `TooLarge`였다. 메시지 자신의 문자열은 슬롯에 남고, 넘치면 전처럼 `TooLarge`다. arena가 활성화된 `Builder`는 슬롯의 마지막 71 B를 문자열에 쓰지 않는다. `flux_bridge`, ROS 2 mirror, `record_flux`는 그 필드를 프레임 안으로 복사한 사본을 다룬다. 사본을 만들려면 그 타입이 설치되어 있어야 한다. 전처럼 동작하게 하려면 arena를 비활성화한다.
+6. arena가 기본으로 활성화된다. 생성된 어댑터의 배열과 메시지 배열은 크기와 상관없이 arena에 저장된다. 전에는 슬롯에 들어가지 않으면 `commit__()`이 `TooLarge`였다. 메시지 자신의 문자열은 슬롯에 남고, 넘치면 전처럼 `TooLarge`다. arena가 활성화된 `Builder`는 슬롯의 마지막 71 B를 문자열에 쓰지 않는다. `flux_bridge`, ROS 2 mirror, `record_flux`는 그 필드를 프레임 안으로 복사한 사본을 다룬다. 사본을 만들려면 그 타입이 설치되어 있어야 한다. 전처럼 동작하게 하려면 arena를 비활성화한다.
 
    ```bash
    # 전: 설정 없음
@@ -150,9 +153,9 @@
    export FLUX_ARENA_BYTES=0
    ```
 
-5. C++에서 생성된 어댑터 헤더를 포함한 프로세스가 그 타입의 fingerprint로 `Device::Cuda`(또는 `gpu::Stream`)를 선언해 발행자를 만들면, 외장 GPU에서도 슬롯이 호스트 메모리다. 전에는 GPU 메모리 채널이었고, `Builder`는 사용 불가능했지만 원시 loan의 `device_ptr()`은 GPU 주소였다. 이제 그 loan의 `device_ptr()`은 0이다. 원시 GPU loan에는 `kNoSchema`나 생성 타입이 아닌 fingerprint를 쓴다. Python도 생성 모듈을 import한 프로세스에서 같다. 그 타입의 `device="cuda"` 발행자는 `device_backed`가 false이고 `mirror_to_ros=True`를 받는다. 전에는 `flux.Error`였다.
+7. C++에서 생성된 어댑터 헤더를 포함한 프로세스가 그 타입의 fingerprint로 `Device::Cuda`(또는 `gpu::Stream`)를 선언해 발행자를 만들면, 외장 GPU에서도 슬롯이 호스트 메모리다. 전에는 GPU 메모리 채널이었고, `Builder`는 사용 불가능했지만 원시 loan의 `device_ptr()`은 GPU 주소였다. 이제 그 loan의 `device_ptr()`은 0이다. 원시 GPU loan에는 `kNoSchema`나 생성 타입이 아닌 fingerprint를 쓴다. Python도 생성 모듈을 import한 프로세스에서 같다. 그 타입의 `device="cuda"` 발행자는 `device_backed`가 false이고 `mirror_to_ros=True`를 받는다. 전에는 `flux.Error`였다.
 
-6. 발행자의 `slot_size` 기본값이 0이 되었다(`FLUX_DEFAULT_SLOT_SIZE`, `flux.DEFAULT_SLOT_SIZE`). 생성된 어댑터 타입의 발행자는 그 타입의 크기(고정 필드, 문자열 자리 4096 B, arena trailer를 4 KiB 단위로 올림)를 받는다. 예를 들어 `sensor_msgs/Image`는 8 KiB다. 타입이 없는 발행자는 전처럼 8 MiB(`FLUX_UNTYPED_SLOT_SIZE`)다. arena를 비활성화하고 생성된 어댑터 타입을 기본 슬롯 크기로 발행하던 코드는 배열이 들어가지 않으므로 `slot_size`를 지정한다.
+8. 발행자의 `slot_size` 기본값이 0이 되었다(`FLUX_DEFAULT_SLOT_SIZE`, `flux.DEFAULT_SLOT_SIZE`). 생성된 어댑터 타입의 발행자는 그 타입의 크기(고정 필드, 문자열 자리 4096 B, arena trailer를 4 KiB 단위로 올림)를 받는다. 예를 들어 `sensor_msgs/Image`는 8 KiB다. 타입이 없는 발행자는 전처럼 8 MiB(`FLUX_UNTYPED_SLOT_SIZE`)다. arena를 비활성화하고 생성된 어댑터 타입을 기본 슬롯 크기로 발행하던 코드는 배열이 들어가지 않으므로 `slot_size`를 지정한다.
 
    ```cpp
    // 전: 8 MiB 슬롯
@@ -163,22 +166,22 @@
    auto pub = flux::create_publisher(*node, "image", options, Image::kFingerprint);
    ```
 
-7. 발행자의 `slot_count` 기본값이 16에서 0이 되었다(`FLUX_DEFAULT_SLOT_COUNT`, `flux.DEFAULT_SLOT_COUNT`). 0이면 슬롯 크기로 상한을 정한다. 호스트 메모리 슬롯은 256 MiB 안에서 최대 256개다. 발행자는 9개 슬롯에만 메모리를 잡고 시작해, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 늘린다. 그래서 타입이 없는 8 MiB 발행자는 `/dev/shm`을 72 MiB로 시작해 최대 256 MiB까지 쓴다. GPU 메모리 채널과 `Alloc::Slot` 발행자는 이 규칙 대신 11번의 고정 슬롯 기본값을 쓴다. 늘리는 프레임의 loan은 그 슬롯의 메모리를 잡는 만큼 길어진다(호스트 8 MiB 슬롯에서 약 1.4 ms). `slot_count`를 지정하면 전처럼 그 개수를 처음부터 모두 잡고 늘리지 않는다. `play_flux`는 bag에 개수나 크기가 0으로 기록된 채널을 기본값으로 만들지 않고 건너뛴다.
-8. 발행 결과 `WrongDevice`(C `FLUX_PUBLISHED_WRONG_DEVICE`, Python `Published.WRONG_DEVICE`)와 trace 값 `FLUX_TRACE_CLAIM_WRONG_DEVICE`를 지웠다. GPU 메모리 채널의 `publish()`가 호스트 배열을 복사해 발행하게 된 뒤로 돌려주는 경로가 없었다. 다른 값의 번호는 그대로다. 이 값을 다루던 `switch`와 비교는 지운다
-9. `record_flux`, `play_flux`의 옵션이 `ros2 bag record`, `ros2 bag play`의 것이 되었다. flux 프레임을 쓰기 전에 모아 두던 녹화기의 큐(`--max-cache-size`, 기본 1 GiB)가 없어졌다. flux 프레임은 ROS 메시지처럼 rosbag2 writer로 바로 가고, `--max-cache-size`는 rosbag2 writer cache의 크기(버퍼 하나당, 기본 100 MiB)다. cache가 차서 버려진 메시지는 rosbag2가 세고, 녹화기는 녹화하는 동안 그 수를 토픽별로 로그에 남긴다. 채널별 종료 로그는 큐에 넣은 수와 큐가 차서 버린 수 대신 rosbag2에 넘긴 수를 남긴다. 녹화기와 재생기의 노드 이름은 `flux_bag_record`, `flux_bag_play`에서 rosbag2와 같은 `rosbag2_recorder`, `rosbag2_player`가 되었다. `-a`는 서비스도 녹화한다. 위치 인자로 준 토픽은 `ros2 bag record`처럼 deprecated 경고를 낸다.
+9. 발행자의 `slot_count` 기본값이 16에서 0이 되었다(`FLUX_DEFAULT_SLOT_COUNT`, `flux.DEFAULT_SLOT_COUNT`). 0이면 슬롯 크기로 상한을 정한다. 호스트 메모리 슬롯은 256 MiB 안에서 최대 256개다. 발행자는 9개 슬롯에만 메모리를 잡고 시작해, 구독자의 depth가 그보다 크거나 모든 슬롯이 점유되면 상한까지 하나씩 늘린다. 그래서 타입이 없는 8 MiB 발행자는 `/dev/shm`을 72 MiB로 시작해 최대 256 MiB까지 쓴다. GPU 메모리 채널과 `Alloc::Slot` 발행자는 이 규칙 대신 13번의 고정 슬롯 기본값을 쓴다. 늘리는 프레임의 loan은 그 슬롯의 메모리를 잡는 만큼 길어진다(호스트 8 MiB 슬롯에서 약 1.4 ms). `slot_count`를 지정하면 전처럼 그 개수를 처음부터 모두 잡고 늘리지 않는다. `play_flux`는 bag에 개수나 크기가 0으로 기록된 채널을 기본값으로 만들지 않고 건너뛴다.
+10. 발행 결과 `WrongDevice`(C `FLUX_PUBLISHED_WRONG_DEVICE`, Python `Published.WRONG_DEVICE`)와 trace 값 `FLUX_TRACE_CLAIM_WRONG_DEVICE`를 지웠다. GPU 메모리 채널의 `publish()`가 호스트 배열을 복사해 발행하게 된 뒤로 돌려주는 경로가 없었다. 다른 값의 번호는 그대로다. 이 값을 다루던 `switch`와 비교는 지운다
+11. `record_flux`, `play_flux`의 옵션이 `ros2 bag record`, `ros2 bag play`의 것이 되었다. flux 프레임을 쓰기 전에 모아 두던 녹화기의 큐(`--max-cache-size`, 기본 1 GiB)가 없어졌다. flux 프레임은 ROS 메시지처럼 rosbag2 writer로 바로 가고, `--max-cache-size`는 rosbag2 writer cache의 크기(버퍼 하나당, 기본 100 MiB)다. cache가 차서 버려진 메시지는 rosbag2가 세고, 녹화기는 녹화하는 동안 그 수를 토픽별로 로그에 남긴다. 채널별 종료 로그는 큐에 넣은 수와 큐가 차서 버린 수 대신 rosbag2에 넘긴 수를 남긴다. 녹화기와 재생기의 노드 이름은 `flux_bag_record`, `flux_bag_play`에서 rosbag2와 같은 `rosbag2_recorder`, `rosbag2_player`가 되었다. `-a`는 서비스도 녹화한다. 위치 인자로 준 토픽은 `ros2 bag record`처럼 deprecated 경고를 낸다.
 
-   ```bash
-   # 전
-   ros2 bag record_flux /cam --max-cache-size 2000000000
-   ros2 service call /flux_bag_record/pause rosbag2_interfaces/srv/Pause
-   # 후
-   ros2 bag record_flux --topics /cam --max-cache-size 1000000000   # 버퍼 두 개, 최대 2 GB
-   ros2 service call /rosbag2_recorder/pause rosbag2_interfaces/srv/Pause
-   ```
+    ```bash
+    # 전
+    ros2 bag record_flux /cam --max-cache-size 2000000000
+    ros2 service call /flux_bag_record/pause rosbag2_interfaces/srv/Pause
+    # 후
+    ros2 bag record_flux --topics /cam --max-cache-size 1000000000   # 버퍼 두 개, 최대 2 GB
+    ros2 service call /rosbag2_recorder/pause rosbag2_interfaces/srv/Pause
+    ```
 
-10. trace 값 `FLUX_TRACE_RECORD_CACHE_FULL`을 지웠다. 9의 큐가 없어져 `record_drop`이 이 값을 내는 곳이 없다. 다른 `RECORD_*` 값의 번호는 그대로이고 0은 비워 둔다. 이 값을 다루던 `switch`와 비교는 지운다. 이전 `record_flux`가 기록한 trace에는 0이 남아 있을 수 있다
+12. trace 값 `FLUX_TRACE_RECORD_CACHE_FULL`을 지웠다. 11의 큐가 없어져 `record_drop`이 이 값을 내는 곳이 없다. 다른 `RECORD_*` 값의 번호는 그대로이고 0은 비워 둔다. 이 값을 다루던 `switch`와 비교는 지운다. 이전 `record_flux`가 기록한 trace에는 0이 남아 있을 수 있다
 
-11. GPU 메모리 채널(C++ `Device::Cuda`나 stream을 준 타입 없는 발행자, `flux_wrapper`의 `Device::Cuda`)의 기본 슬롯이 8 MiB, 최대 32개에서 4 MiB 12개(최대 16개)가 되었다. `flux_wrapper`의 `max_device_data_size`(기본 10 MiB)는 `slot_size`가 되었다. 4 MiB보다 큰 `data`는 `slot_size`를 준다(최대 16 MiB, 더 크면 `max_slot_size`도 준다). 이 채널과 `Alloc::Slot` 발행자는 모든 슬롯이 쓰이고 있으면 슬롯을 더할 때까지 loan이 실패한다. 슬롯은 별도 스레드가 더한다.
+13. GPU 메모리 채널(C++ `Device::Cuda`나 stream을 준 타입 없는 발행자, `flux_wrapper`의 `Device::Cuda`)의 기본 슬롯이 8 MiB, 최대 32개에서 4 MiB 12개(최대 16개)가 되었다. `flux_wrapper`의 `max_device_data_size`(기본 10 MiB)는 `slot_size`가 되었다. 4 MiB보다 큰 `data`는 `slot_size`를 준다(최대 16 MiB, 더 크면 `max_slot_size`도 준다). 이 채널과 `Alloc::Slot` 발행자는 모든 슬롯이 쓰이고 있으면 슬롯을 더할 때까지 loan이 실패한다. 슬롯은 별도 스레드가 더한다.
 
     ```cpp
     // 전
@@ -187,7 +190,7 @@
     options.slot_size = 10 << 20;
     ```
 
-12. C++ `flux::Publisher`와 `flux::Subscription`의 인자를 순서대로 받던 생성자를 지웠다. 발행자는 `PublisherOptions`, 구독은 `SubscriptionOptions`를 받는 `create_publisher`, `create_subscription`이나 같은 인자의 생성자로 만든다. 인자 순서는 rclcpp를 따라 fingerprint가 맨 뒤에 온다. 콜백 없는 구독은 콜백에 `{}`를 준다. 그 생성자의 기본값이던 `Publisher::kDefaultSlotSize`, `kDefaultSlotCount`, `kDefaultMaxSubscribers`도 지웠다. 같은 값은 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`다.
+14. C++ `flux::Publisher`와 `flux::Subscription`의 인자를 순서대로 받던 생성자를 지웠다. 발행자는 `PublisherOptions`, 구독은 `SubscriptionOptions`를 받는 `create_publisher`, `create_subscription`이나 같은 인자의 생성자로 만든다. 인자 순서는 rclcpp를 따라 fingerprint가 맨 뒤에 온다. 콜백 없는 구독은 콜백에 `{}`를 준다. 그 생성자의 기본값이던 `Publisher::kDefaultSlotSize`, `kDefaultSlotCount`, `kDefaultMaxSubscribers`도 지웠다. 같은 값은 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_MAX_SUBSCRIBERS`다.
 
     ```cpp
     // 전
@@ -202,7 +205,7 @@
       flux::create_subscription(*node, "image", flux::QoS(4), {}, {}, Image::kFingerprint);
     ```
 
-13. Python `flux.Publisher`는 `topic` 뒤의 인자를, `flux.Subscription`은 `callback` 뒤의 인자를 이름으로만 받는다. 순서대로 넘기던 코드는 `TypeError`가 난다.
+15. Python `flux.Publisher`는 `topic` 뒤의 인자를, `flux.Subscription`은 `callback` 뒤의 인자를 이름으로만 받는다. 순서대로 넘기던 코드는 `TypeError`가 난다.
 
     ```python
     # 전

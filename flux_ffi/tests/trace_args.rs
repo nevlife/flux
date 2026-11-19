@@ -81,8 +81,10 @@ fn num(s: &str) -> i128 {
     s.parse().unwrap_or_else(|_| panic!("{s} is not a number"))
 }
 
-fn stamp_of(i: u64) -> u64 {
-    i | ((i * 1000) << 32)
+/// The trace's `header.stamp` in nanoseconds for what `trace_args.c` writes: `sec` i, `nanosec`
+/// 1000 i.
+fn stamp_ns(i: u64) -> i128 {
+    i128::from(i) * 1_000_000_000 + i128::from(i * 1000)
 }
 
 fn check(ev: &[(String, Vec<String>)], how: &str) {
@@ -110,7 +112,7 @@ fn check(ev: &[(String, Vec<String>)], how: &str) {
         "py_ready",
         "record_drop",
         "gpu_wedged",
-        "contract_2",
+        "contract_3",
     ] {
         assert!(names.contains(name), "{how}: no {name}");
     }
@@ -126,7 +128,7 @@ fn check(ev: &[(String, Vec<String>)], how: &str) {
         assert_eq!(&c[0], publisher, "{how}");
         assert_eq!(num(&c[1]), ticket.into(), "{how}");
         assert_eq!(num(&c[3]), 16, "{how}");
-        assert_eq!(num(&c[5]), stamp_of(ticket).into(), "{how}");
+        assert_eq!(num(&c[5]), stamp_ns(ticket), "{how}");
     }
     let takes = of("take");
     assert_eq!(takes.len(), 6, "{how}");
@@ -134,7 +136,7 @@ fn check(ev: &[(String, Vec<String>)], how: &str) {
         let ticket = i as u64 + 1;
         assert_eq!(&t[0], subscriber, "{how}");
         assert_eq!(num(&t[1]), ticket.into(), "{how}");
-        assert_eq!(num(&t[4]), stamp_of(ticket).into(), "{how}");
+        assert_eq!(num(&t[4]), stamp_ns(ticket), "{how}");
     }
     for r in of("release") {
         assert_eq!((&r[0], r[2].as_str()), (subscriber, "0"), "{how}");

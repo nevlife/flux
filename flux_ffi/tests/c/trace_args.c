@@ -94,7 +94,7 @@ int main(void)
   flux_trace_py_gil(1);
   flux_trace_record_drop(id, 0, 3, FLUX_TRACE_RECORD_OVERRUN);
   flux_trace_gpu_wedged(700);
-  flux_trace_contract_2();
+  flux_trace_contract_3();
 
   flux_channel_free(sub);
   flux_channel_free(p);

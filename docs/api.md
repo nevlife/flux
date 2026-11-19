@@ -60,7 +60,12 @@ PYTHON=~/venvs/flux-docs/bin/python src/flux/scripts/build_docs.sh
 
 ## trace
 
-`libflux_ffi.so`는 수집기(uprobe, `LD_PRELOAD`, LTTng)가 이름으로 연결하는 빈 함수 `flux_trace_*`를 export한다. 연결된 수집기가 없으면 비용은 이벤트당 0.7~2.6 ns다(Jetson AGX Orin). 이벤트 이름, 인자, 상수는 설치 헤더 `flux/trace.h`에 선언되어 있고, 계약 버전은 `flux_trace_contract_2`다.
+`libflux_ffi.so`는 수집기(uprobe, `LD_PRELOAD`, LTTng)가 이름으로 연결하는 빈 함수 `flux_trace_*`를 export한다. 연결된 수집기가 없으면 비용은 이벤트당 0.7~2.6 ns다(Jetson AGX Orin). 이벤트 이름, 인자, 상수는 설치 헤더 `flux/trace.h`에 선언되어 있고, 계약 버전은 `flux_trace_contract_3`이다. 수집기는 이 심볼을 export하는 라이브러리에만 연결한다. 인자의 이름이나 뜻이 바뀌면 번호가 오른다. 상수에는 값이 더해질 수 있으므로 모르는 값을 오류로 다루지 않는다. 지운 값의 번호는 다시 쓰지 않는다.
+
+- `commit`, `take`의 `stamp`는 메시지 최상위 `std_msgs/Header`의 `header.stamp`를 나노초로 바꾼 값(`sec * 10^9 + nanosec`)이다. Header가 없는 타입과 타입 없는 채널은 0이다. ROS 2 trace의 `rmw_publish`처럼 `int64`다.
+- `channel`, `endpoint`, executor 인자는 객체의 주소로, 같은 객체의 이벤트를 잇는 데만 쓴다. 객체가 사라지면 같은 주소가 다른 객체에 다시 쓰일 수 있다.
+- `ticket`은 발행자의 commit 순번이고 세그먼트(발행자 시작)마다 1부터 센다.
+- `endpoint_init`의 label이 `/`로 시작하면 노드의 이름(fully qualified name)이다.
 
 | 이벤트 | 시점 |
 | --- | --- |
