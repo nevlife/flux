@@ -176,6 +176,7 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
 ### Python
 
 - Python 모듈 `flux_wrapper`도 같은 구조다. 다만 `max_borrow`와 `HeldCallback`은 없다. `create_publisher(node, msg_type, topic, qos, **options)`, `create_subscription(node, msg_type, topic, qos, callback, **options)`는 C++과 같은 순서이고, 클래스 생성자 `Subscription(node, msg_type, topic, callback, qos, ...)`는 rclpy 순서다. `ENABLE_FLUX=1`이고, 패키지를 flux와 함께 빌드했고(C++와 같은 조건), `flux`를 import 가능하면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`하고, spin은 `cancel()`로 끝낸다.
+- flux 경로에서는 View와 그 `data`가 참조되는 동안 슬롯을 잡는다. Python 구독은 한 번에 하나를 잡으므로(C++ `max_borrow` 1과 같다), 콜백 뒤에 View를 남기면 그것이 사라질 때까지 다음 프레임이 발행자의 링에서 기다린다. 남길 값은 `to_msg()`로 복사한다. ROS 경로의 View는 메시지를 잡을 뿐이라 구독이 멈추지 않는다.
 - flux 경로에서는 메시지 타입의 rosidl 모듈 이름(`my_msgs.msg._foo`)으로 어댑터 모듈 `my_msgs_flux.foo`와 `my_msgs_flux.foo_ros`를 찾고, `foo_ros.MESSAGE`가 그 타입인지 확인한다. 찾지 못하면 찾은 모듈 이름과 함께 `TypeError`를 던진다. include는 필요 없다.
 - loan에 쓰는 방법은 C++와 같다. `Image`와 `PointCloud2`는 필드를 ROS 메시지의 이름으로 대입하고, `loan.set_from(msg)`로 `data`를 뺀 필드를 한 번에 쓴다. 그 밖의 타입은 `loan.set_from(msg)`로 쓰고, 최상위 header가 있으면 `loan.header`만 따로 대입한다(C++ `set_header()`). 다른 필드를 대입하면 `AttributeError`다.
 - flux 경로에서는 쓰는 즉시 슬롯에 쓰므로, 슬롯에 들어가지 않는 필드가 있으면 그 자리에서 loan이 `False`가 되고 `publish()`가 거짓인 `PublishResult`(`status`는 `"too_large"`)를 반환한다.

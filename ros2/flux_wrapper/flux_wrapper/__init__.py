@@ -588,7 +588,8 @@ class Publisher:
 
 class View:
     """The fields of a received message. On the flux path `data` and the View alias the slot and
-    are valid only during the callback; copy out (to_msg()) what is kept longer.
+    hold it while referenced; a subscription holds one, so a View kept past its callback stops
+    the next frames until it goes. Copy out (to_msg()) what is kept longer.
 
     A field is read as an attribute of its ROS name. Image and PointCloud2 read each from the
     frame; any other type reads its fields from without_data(), made once per View, so that its
