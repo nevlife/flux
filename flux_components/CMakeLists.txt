@@ -45,14 +45,21 @@ if(BUILD_TESTING)
   add_library(flux_components_test_nodes SHARED test/components.cpp)
   target_link_libraries(flux_components_test_nodes
     flux_components_test_probe flux_cpp::flux_cpp rclcpp::rclcpp rclcpp_components::component)
+  # Built as if against another flux release, which a container must refuse.
+  add_library(flux_components_test_other_abi SHARED test/other_abi.cpp)
+  target_link_libraries(flux_components_test_other_abi
+    flux_cpp::flux_cpp rclcpp::rclcpp rclcpp_components::component)
   ament_add_gtest(test_component_container test/test_component_container.cpp TIMEOUT 120)
   target_link_libraries(test_component_container flux_components flux_components_test_probe
     ${composition_interfaces_TARGETS} ${rosgraph_msgs_TARGETS})
   target_compile_definitions(test_component_container PRIVATE
     FLUX_TEST_COMPONENTS="$<TARGET_FILE:flux_components_test_nodes>"
+    FLUX_TEST_OTHER_ABI="$<TARGET_FILE:flux_components_test_other_abi>"
     FLUX_CONTAINER="$<TARGET_FILE:component_container>")
-  add_dependencies(test_component_container flux_components_test_nodes component_container)
-  foreach(t flux_components_test_probe flux_components_test_nodes test_component_container)
+  add_dependencies(test_component_container
+    flux_components_test_nodes flux_components_test_other_abi component_container)
+  foreach(t flux_components_test_probe flux_components_test_nodes flux_components_test_other_abi
+      test_component_container)
     target_compile_options(${t} PRIVATE -Wall -Wextra -Werror)
   endforeach()
 endif()

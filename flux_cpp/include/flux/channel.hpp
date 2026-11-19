@@ -84,10 +84,11 @@ inline void check(flux_status st)
 }
 
 // The library loaded at run time must be the one these headers describe: another lays out views,
-// loans and sources differently and writes past them. Asked of the library once per process.
-inline void require_abi()
+// loans and sources differently and writes past them. Hidden and uncached, so each binary checks
+// with its own headers: in a container, the container's copy would answer for every component.
+[[gnu::visibility("hidden")]] inline void require_abi()
 {
-  static const std::uint32_t lib = flux_abi_version();
+  const std::uint32_t lib = flux_abi_version();
   if (lib == FLUX_ABI_VERSION) {
     return;
   }

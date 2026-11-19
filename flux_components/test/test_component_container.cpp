@@ -71,6 +71,7 @@ public:
     for (const char * name : {"Plain", "FluxSub", "Late", "Reentrant", "Clocked"}) {
       found.emplace_back(std::string("flux_components_test::") + name, FLUX_TEST_COMPONENTS);
     }
+    found.emplace_back("flux_components_test::OtherAbi", FLUX_TEST_OTHER_ABI);
     return found;
   }
 
@@ -268,6 +269,15 @@ TEST_F(Container, AReentrantGroupRefusesTheLoad)
   std::this_thread::sleep_for(50ms);
   EXPECT_TRUE(events("reentrant", "reentrant").empty());
   EXPECT_TRUE(probe::events("hook/reentrant" + tag_).empty());
+}
+
+// The container's own flux code is of the loaded library; the component's ABI check must still be
+// its own, or a component built against another release would get through.
+TEST_F(Container, AComponentBuiltForAnotherAbiIsRefused)
+{
+  const auto loaded = load("OtherAbi", "other_abi");
+  EXPECT_FALSE(loaded->success);
+  EXPECT_NE(loaded->error_message.find("need 0"), std::string::npos) << loaded->error_message;
 }
 
 // rclcpp's TimeSource serves /clock on a thread and group of its own, which the container must

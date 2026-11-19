@@ -49,6 +49,8 @@
 
 ### 버그 수정
 
+* flux 컨테이너(`flux_components`의 `component_container`)에 다른 ABI의 flux로 빌드한 컴포넌트를 올리면, ABI 검사가 컨테이너의 값으로 비교되어 통과했다. 이제 컴포넌트가 자기 헤더의 값으로 검사해 `flux::Error`(`Status::Mismatch`)로 거절된다
+
 * `FLUX_ARENA_BYTES`에 숫자가 아닌 값(`16G` 등)을 주면 arena가 아무 말 없이 꺼졌다. 이제 메시지를 남기고 기본값을 쓴다. seccomp가 `futex_waitv`를 막아 executor 생성이 실패할 때, 오류가 `FLUX_DISABLE_FUTEX_WAITV=1`을 알려 준다
 
 * Python `Builder`가 빈 슬롯이 없을 때(`NullWriter`) `adopt__<name>`에서 `AttributeError`를 냈다. 이제 쓰지 않고 `False`를 돌려준다
