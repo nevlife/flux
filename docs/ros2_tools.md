@@ -162,7 +162,7 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
 - flux 경로에서는 `data`를 payload로, 나머지 필드를 aux로 보내는 GPU 메모리 채널([gpu.md](gpu.md#gpu-메모리-채널devicehandle))로 보낸다. ROS 경로에서는 wrapper가 GPU 버퍼를 하나 생성하고, publish 시 호스트로 복사해 ROS 메시지로 보낸다.
 - `data` 밖의 필드는 aux 4096 B에 들어가야 한다. 넘으면 loan이 `false`가 되고 publish가 `false`를 반환한다. 발행자마다 처음 한 번, 들어가지 않은 첫 필드와 그 크기, 그 앞까지 쓴 크기, 메시지의 `header.stamp`를 오류 로그로 남긴다.
 
-- `Cuda`를 사용 불가능하면(CUDA 없이 빌드했거나, GPU 경로나 GPU가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Host`로 바뀐다. 발행자는 `uses_device()`가 실제로 사용하는 쪽을 알려 준다. 구독에는 이것이 없다. `mirror_to_ros`를 켜면 mirror가 ROS 2 구독자가 있는 동안 `data`를 호스트로 복사해 발행한다.
+- `Cuda`를 사용 불가능하면(CUDA 없이 빌드했거나, GPU 경로나 GPU가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Host`로 바뀐다. 발행자와 구독의 `uses_device()`가 실제로 사용하는 쪽을 알려 준다. `mirror_to_ros`를 켜면 mirror가 ROS 2 구독자가 있는 동안 `data`를 호스트로 복사해 발행한다.
 - 구독은 flux 경로에서 `Cuda` 발행자의 프레임도 받는다. `SubscriptionOptions::device`가 `Host`(기본)면 `data()`가 호스트 메모리다(외장 GPU에서는 take 시 한 번 복사한다). aux가 잘못된 프레임은 건너뛰고 `rejected()`로 센다.
 - 구독의 `device`가 `Cuda`면 발행자가 어느 쪽이든 `data`가 GPU 메모리에 있다. `on_device()`, `device_ptr()`, `size()`, `stream()`으로 읽고, GPU 작업은 `stream()`에 올린다. `Host` 발행자의 프레임은 외장 GPU에서 take 시 GPU로 한 번 복사하고, 통합 GPU에서는 복사하지 않는다. 호스트 메모리에도 있는 프레임은 `data()`로도 읽힌다.
 - ROS 경로의 `Cuda` 구독은 구독마다 GPU 버퍼를 `max_borrow`개 생성하고, 메시지 수신마다 빈 버퍼로 복사한다. 버퍼마다 스트림이 따로 있다.
@@ -187,7 +187,7 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
   | `device="cuda"` | `flux.Frame` |
   | `"cpu"` | `flux.wire.DeviceSpan`(`__dlpack__`, `__cuda_array_interface__`, `nbytes`). `data`와 `to_msg()`도 호스트 메모리에서 읽힌다. 외장 GPU에서는 구독자가 GPU로 한 번 복사한다 |
 
-- `"cuda"`를 사용 불가능하면 경고를 한 번 남기고 `"cpu"`로 바뀐다(발행자는 `uses_device`로 안다).
+- `"cuda"`를 사용 불가능하면 경고를 한 번 남기고 `"cpu"`로 바뀐다(발행자와 구독의 `uses_device`로 안다).
 
 - `device="cuda"` 발행자의 `publish(msg)`는 메시지의 `data`를 슬롯으로 복사해 보낸다. GPU 메모리에 있는 프레임의 `to_msg()`는 `data`를 호스트로 복사하고, 그 복사가 끝날 때까지 기다린다.
 

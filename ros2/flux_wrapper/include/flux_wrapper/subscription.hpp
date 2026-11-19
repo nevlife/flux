@@ -217,6 +217,9 @@ public:
 #endif
   }
 
+  // Device::Cuda was asked for and is used.
+  [[nodiscard]] auto uses_device() const noexcept -> bool { return device_; }
+
   // Frames of a Device::Cuda publisher skipped for a bad aux header; the first is logged.
   [[nodiscard]] auto rejected() const noexcept -> std::uint64_t
   {
@@ -263,6 +266,7 @@ private:
               });
             },
             o, Adapter::kFingerprint);
+          device_ = true;
         }
       }
       if (!flux_) {
@@ -320,6 +324,7 @@ private:
                 });
             },
             ros_options);
+          device_ = true;
           return;
         }
         RCLCPP_WARN(
@@ -380,6 +385,7 @@ private:
   std::unique_ptr<flux::Subscription> gpu_;
 #endif
   typename rclcpp::Subscription<MsgT>::SharedPtr ros_;
+  bool device_ = false;
 };
 
 // As rclcpp::create_subscription. The callback takes a View or a shared_ptr to one to hold.

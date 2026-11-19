@@ -269,6 +269,7 @@ def gpu_round_trip(node, msg_type, topic, want, write):
     host_sub = flux_wrapper.Subscription(node, msg_type, topic, on_host, 4)
     pub = flux_wrapper.Publisher(node, msg_type, topic, 4, device="cuda")
     assert pub.uses_device
+    assert device_sub.uses_device and not host_sub.uses_device
 
     def publish_once():
         if write is None:
@@ -554,7 +555,7 @@ def test_cuda_that_cannot_be_had_is_cpu(node):
 
     sub = flux_wrapper.Subscription(node, PointCloud2, "fallback", on_cloud, 4, device="cuda")
     pub = flux_wrapper.Publisher(node, PointCloud2, "fallback", 4, device="cuda")
-    assert not pub.uses_device
+    assert not pub.uses_device and not sub.uses_device
     want = cloud(1)
 
     def publish_once():
@@ -908,7 +909,7 @@ def test_cuda_on_a_type_without_data_is_cpu(node, monkeypatch):
 
     sub = flux_wrapper.Subscription(node, Bar, "bar_cuda", on_bar, 4, device="cuda")
     pub = flux_wrapper.Publisher(node, Bar, "bar_cuda", 4, device="cuda")
-    assert not pub.uses_device
+    assert not pub.uses_device and not sub.uses_device
     want = bar(2)
     run_until(node, sub, done, lambda: pub.publish(want))
     assert got and got[0] == (False, want)
@@ -934,6 +935,7 @@ def test_cuda_any_type_in_every_device_pairing(node, pub_device, sub_device):
     sub = flux_wrapper.Subscription(node, Foo, topic, on_foo, 4, device=sub_device)
     pub = flux_wrapper.Publisher(node, Foo, topic, 4, device=pub_device)
     assert pub.uses_device == (pub_device == "cuda")
+    assert sub.uses_device == (sub_device == "cuda")
 
     def publish_once():
         loan = pub.loan()

@@ -840,6 +840,7 @@ TEST_F(WrapperTest, CudaSubscriptionGetsAHostImageOnTheDevice)
     sub_options);
   flux_wrapper::Publisher<Image> pub(*node_, "host_image", rclcpp::QoS(4));
   ASSERT_FALSE(pub.uses_device());
+  ASSERT_TRUE(sub.uses_device());
 
   const Image want = image(4, {11, 22, 33, 44, 55, 66});
   run_until(done, [&] { EXPECT_TRUE(pub.publish(want)); });
@@ -1279,6 +1280,7 @@ TEST_F(WrapperTest, CudaThatCannotBeHadIsHost)
   options.device = flux_wrapper::Device::Cuda;
   flux_wrapper::Publisher<PointCloud2> pub(*node_, "fallback", rclcpp::QoS(4), options);
   EXPECT_EQ(pub.uses_device(), cuda);
+  EXPECT_EQ(sub.uses_device(), cuda);
 
   const PointCloud2 want = cloud(1, 2);
   run_until(done, [&] { EXPECT_TRUE(pub.publish(want)); });

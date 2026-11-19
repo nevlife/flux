@@ -649,6 +649,7 @@ class Subscription:
         self._rejects = [0]
         logger = node.get_logger()
         cuda = _cuda_usable(logger, topic, device, msg_type)
+        self._cuda = cuda
         if use_flux():
             adapter = _adapter(msg_type)[0]
             q = _flux.QoS(depth=_depth(qos))
@@ -706,6 +707,11 @@ class Subscription:
     @property
     def uses_flux(self):
         return self._flux is not None
+
+    @property
+    def uses_device(self):
+        """device="cuda" was asked for and is used."""
+        return self._cuda
 
     @property
     def rejected(self):
