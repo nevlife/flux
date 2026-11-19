@@ -39,6 +39,8 @@ if(FLUX_WRAPPER_WITH_FLUX)
   target_include_directories(flux_wrapper INTERFACE ${flux_std_adapters_INCLUDE_DIRS})
   target_compile_definitions(flux_wrapper INTERFACE USE_FLUX_ENABLED)
   set(flux_dependencies flux_cpp flux_std_adapters)
+  # Python reads the build's choice here, so it takes the flux path exactly when C++ does.
+  ament_index_register_resource(flux_wrapper_with_flux CONTENT "1")
 endif()
 
 # Device::Cuda works only in a build that found the CUDA toolkit; elsewhere it falls back to Host.

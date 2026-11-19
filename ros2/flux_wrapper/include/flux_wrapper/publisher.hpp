@@ -21,6 +21,31 @@
 namespace flux_wrapper
 {
 
+// Why a message did not go out; Ok when it did. Values may be added.
+enum class Published {
+  Ok,
+  Backpressure,  // no free slot: this message is dropped
+  TooLarge,      // a field did not fit the slot, or a Device::Cuda message its aux
+  InvalidArgument,
+  InUse,
+  NotPublisher,
+  FenceFailed,
+  GpuWedged,
+  DeviceError,  // a CUDA copy failed, or an image's step is not its slot's pitch
+};
+
+// What publish() gives: true when the message went out, status() why not otherwise.
+class [[nodiscard]] PublishResult
+{
+public:
+  explicit PublishResult(Published p) noexcept : p_(p) {}
+  explicit operator bool() const noexcept { return p_ == Published::Ok; }
+  [[nodiscard]] auto status() const noexcept -> Published { return p_; }
+
+private:
+  Published p_;
+};
+
 #ifdef USE_FLUX_ENABLED
 namespace detail
 {
@@ -68,8 +93,8 @@ struct PublisherOptions
   bool mirror_to_ros = false;
   // Cuda: Loan::alloc_buffer() hands out device memory (see Device). On the flux path a slot of a
   // discrete GPU is device memory; on the ROS path publish() copies the buffer to the message. A
-  // type without a root data is Host, with a warning.
-  Device device = Device::Host;
+  // type without a root data is Cpu, with a warning.
+  Device device = Device::Cpu;
 };
 
 // One topic over flux or over ROS, chosen once per process by use_flux(). Writing a message is
@@ -112,20 +137,30 @@ public:
             std::make_unique<flux::Publisher>(node, topic, o, detail::Gpu<MsgT>::kFingerprint);
           device_ = true;
           if (options.mirror_to_ros) {
-            flux_->mirror_to_ros();
+            flux_->mirror_to_ros(qos);
           }
           return;
         }
       }
       if (o.image_encoding != flux::ImageEncoding::None) {
-        // A host message starts with its header, so the image is not where the layout says.
-        throw flux::Error(
-          flux::Status::InvalidArgument, "flux_wrapper: an image format needs Device::Cuda");
+        // A host message starts with its header, so the image is not where the layout says. Asked
+        // of Cpu it is a mistake; of a Cuda that could not be had, the fallback drops it.
+        if (options.device != Device::Cuda) {
+          throw flux::Error(
+            flux::Status::InvalidArgument, "flux_wrapper: an image format needs Device::Cuda");
+        }
+        RCLCPP_WARN(
+          node.get_logger(), "%s: Device::Cuda could not be had, so its image format is dropped",
+          topic.c_str());
+        o.image_encoding = flux::ImageEncoding::None;
+        o.image_width = 0;
+        o.image_height = 0;
+        o.image_slots = flux::ImageSlots::Auto;
       }
       flux_ =
         std::make_unique<flux::Publisher>(node, topic, o, detail::AdapterT<MsgT>::kFingerprint);
       if (options.mirror_to_ros) {
-        flux_->mirror_to_ros();
+        flux_->mirror_to_ros(qos);
       }
       return;
     }
@@ -142,7 +177,7 @@ public:
         device_ = true;
       } else {
         RCLCPP_WARN(
-          logger_, "%s: Device::Cuda: no CUDA stream could be created; using Host", topic.c_str());
+          logger_, "%s: Device::Cuda: no CUDA stream could be created; using Cpu", topic.c_str());
       }
     }
 #endif
@@ -175,7 +210,7 @@ public:
   }
 
   // False when nothing went out: no free slot, a field that did not fit, or a fault (logged).
-  auto publish(Loan<MsgT> && loan) -> bool
+  auto publish(Loan<MsgT> && loan) -> PublishResult
   {
 #ifdef USE_FLUX_ENABLED
     if constexpr (detail::kRootData<MsgT>) {
@@ -187,28 +222,28 @@ public:
       if (!loan.builder_->ok__() && loan.over_.field != nullptr) {
         (void)loan.builder_->commit__();  // refused: the slot goes back
         overflow(loan.over_, "", "slot", flux_->slot_size());
-        return false;
+        return PublishResult(Published::TooLarge);
       }
       return report(loan.builder_->commit__());
     }
 #endif
     if (!loan.msg_) {
-      return false;
+      return PublishResult(Published::Backpressure);
     }
 #ifdef FLUX_WRAPPER_CUDA
     if constexpr (detail::kRootData<MsgT>) {
       if (loan.staged_ && !staging_->download(loan.msg_->data.data(), loan.msg_->data.size())) {
         device_error("the device to host copy failed");
-        return false;
+        return PublishResult(Published::DeviceError);
       }
     }
 #endif
     ros_->publish(std::move(loan.msg_));
-    return true;
+    return PublishResult(Published::Ok);
   }
 
   // For a message already built as a ROS message. The flux path copies it into a slot once.
-  auto publish(std::unique_ptr<MsgT> msg) -> bool
+  auto publish(std::unique_ptr<MsgT> msg) -> PublishResult
   {
 #ifdef USE_FLUX_ENABLED
     if constexpr (detail::kRootData<MsgT>) {
@@ -221,11 +256,11 @@ public:
     }
 #endif
     ros_->publish(std::move(msg));
-    return true;
+    return PublishResult(Published::Ok);
   }
 
   // For a message the caller keeps. The flux path copies it into a slot once.
-  auto publish(const MsgT & msg) -> bool
+  auto publish(const MsgT & msg) -> PublishResult
   {
 #ifdef USE_FLUX_ENABLED
     if constexpr (detail::kRootData<MsgT>) {
@@ -238,7 +273,7 @@ public:
     }
 #endif
     ros_->publish(msg);
-    return true;
+    return PublishResult(Published::Ok);
   }
 
   // The flux path counts subscribing processes, and a mirror counts as one while a ROS
@@ -277,10 +312,10 @@ private:
 #endif
 
 #ifdef USE_FLUX_ENABLED
-  auto commit_gpu(Loan<MsgT> & loan) -> bool
+  auto commit_gpu(Loan<MsgT> & loan) -> PublishResult
   {
     if (!loan.slot_) {
-      return false;
+      return PublishResult(Published::Backpressure);
     }
     // The slot is the subscribers' after the commit, and the slot of nobody after an abort.
     if (loan.bad_ || !loan.builder_ || !loan.builder_->ok__()) {
@@ -292,7 +327,7 @@ private:
       } else {
         device_error(detail::Gpu<MsgT>::kOverCap);
       }
-      return false;
+      return PublishResult(Published::TooLarge);
     }
     if constexpr (std::is_same_v<MsgT, sensor_msgs::msg::Image>) {
       if (const auto l = loan.slot_.image_layout(); l && loan.step_ != l->pitch[0]) {
@@ -300,7 +335,7 @@ private:
         device_error(("step " + std::to_string(loan.step_) + " is not the image slot's pitch " +
                       std::to_string(l->pitch[0]))
                        .c_str());
-        return false;
+        return PublishResult(Published::DeviceError);
       }
     }
     loan.slot_.set_aux_len(loan.builder_->size__());
@@ -343,11 +378,11 @@ private:
   }
 
   // As a Loan filled from msg, so a field that does not fit is logged as one set by hand is.
-  auto publish_host(const MsgT & msg) -> bool
+  auto publish_host(const MsgT & msg) -> PublishResult
   {
     Loan<MsgT> l = loan();
     if (!l) {
-      return false;
+      return PublishResult(Published::Backpressure);
     }
     l.set_from(msg);
     if constexpr (detail::kRootData<MsgT>) {
@@ -359,7 +394,7 @@ private:
     return publish(std::move(l));
   }
 
-  auto publish_gpu(const MsgT & msg) -> bool
+  auto publish_gpu(const MsgT & msg) -> PublishResult
   {
     Loan<MsgT> l = loan();
     l.set_from(msg);
@@ -367,12 +402,12 @@ private:
     const Buffer b = l.alloc_buffer(msg.data.size());
     if (b && !b.copy_from(msg.data.data(), msg.data.size())) {
       device_error("the host to device copy failed");
-      return false;
+      return PublishResult(Published::DeviceError);
     }
     return commit_gpu(l);
   }
 
-  auto report(flux::Published p) -> bool
+  auto report(flux::Published p) -> PublishResult
   {
     if (flux::faulted(p) && !fault_logged_) {
       fault_logged_ = true;
@@ -380,7 +415,25 @@ private:
         logger_, "flux publish on %s failed: %s (slot %u bytes); later failures are not logged",
         flux_->topic_name().c_str(), flux::to_string(p), flux_->slot_size());
     }
-    return p == flux::Published::Ok;
+    switch (p) {
+      case flux::Published::Ok:
+        return PublishResult(Published::Ok);
+      case flux::Published::Backpressure:
+        return PublishResult(Published::Backpressure);
+      case flux::Published::TooLarge:
+        return PublishResult(Published::TooLarge);
+      case flux::Published::InUse:
+        return PublishResult(Published::InUse);
+      case flux::Published::NotPublisher:
+        return PublishResult(Published::NotPublisher);
+      case flux::Published::FenceFailed:
+        return PublishResult(Published::FenceFailed);
+      case flux::Published::GpuWedged:
+        return PublishResult(Published::GpuWedged);
+      case flux::Published::InvalidArgument:
+        break;
+    }
+    return PublishResult(Published::InvalidArgument);
   }
 
   std::unique_ptr<flux::Publisher> flux_;

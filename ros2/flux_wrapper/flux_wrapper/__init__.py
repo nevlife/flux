@@ -12,11 +12,33 @@ import keyword
 import os
 
 import numpy as np
+from ament_index_python.packages import PackageNotFoundError as _PackageNotFoundError
+from ament_index_python.resources import has_resource as _has_resource_in
 from rclpy.executors import SingleThreadedExecutor
 from sensor_msgs.msg import Image
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs.msg import PointField
 from std_msgs.msg import Header
+
+__all__ = [
+    "Executor",
+    "Loan",
+    "PublishResult",
+    "Publisher",
+    "Subscription",
+    "View",
+    "create_publisher",
+    "create_subscription",
+    "use_flux",
+]
+
+
+def _has_resource(kind, name):
+    try:
+        return _has_resource_in(kind, name)
+    except _PackageNotFoundError:
+        return False
+
 
 try:
     import flux as _flux
@@ -26,13 +48,22 @@ except ImportError:
 
 @functools.cache
 def use_flux():
-    """True when this process's publishers and subscriptions go over flux."""
+    """True when this process's publishers and subscriptions go over flux: ENABLE_FLUX=1 at run
+    time and flux_wrapper built with flux, as the C++ side decides."""
     requested = os.environ.get("ENABLE_FLUX") == "1"
-    if requested and _flux is None:
-        import warnings
+    if not requested:
+        return False
+    import warnings
 
+    if not _has_resource("flux_wrapper_with_flux", "flux_wrapper"):
+        warnings.warn(
+            "ENABLE_FLUX=1, but flux_wrapper was built without flux: ROS path", stacklevel=2
+        )
+        return False
+    if _flux is None:
         warnings.warn("ENABLE_FLUX=1, but the flux module does not import: ROS path", stacklevel=2)
-    return requested and _flux is not None
+        return False
+    return True
 
 
 @functools.cache
@@ -146,6 +177,27 @@ def _cuda_usable(logger, topic, device, msg_type):
         logger.warning(f'{topic}: device="cuda": no flux GPU route ({p.reason}); using "cpu"')
         return False
     return True
+
+
+class PublishResult:
+    """What publish() gives: truthy when the message went out, `status` why not otherwise, one of
+    "ok", "backpressure" (no free slot), "too_large", "invalid_argument", "in_use",
+    "not_publisher", "fence_failed", "gpu_wedged" and "device_error", as C++ flux_wrapper::Published.
+    """
+
+    __slots__ = ("status",)
+
+    def __init__(self, status):
+        self.status = status
+
+    def __bool__(self):
+        return self.status == "ok"
+
+    def __repr__(self):
+        return f"PublishResult({self.status!r})"
+
+
+_OK = PublishResult("ok")
 
 
 class Loan:
@@ -316,13 +368,13 @@ class Publisher:
     """One topic over flux or ROS. On the flux path `slot_size`, `slot_count`, `max_slot_size` and
     `max_slot_count` are as flux.Publisher's, 0 being flux's default: with device="cuda" the slot
     holds the data field (4 MiB by default); with alloc="arena" on "cpu" the data field goes to the
-    publisher's arena, whatever its size. `mirror_to_ros` also publishes each one as its ROS message while a ROS subscriber
-    wants it. A type other than Image and PointCloud2 needs its flux adapter on the flux path.
+    publisher's arena, whatever its size. `mirror_to_ros` also publishes each one as its ROS message,
+    with `qos` as the ROS path would, while a ROS subscriber wants it. A type other than Image and PointCloud2 needs its flux adapter on the flux path.
 
     device="cuda" puts the root data field in GPU memory (Loan.alloc_buffer()), on a flux GPU
     channel that the C++ flux_wrapper shares. Where that cannot be had (a type without a root data,
     no flux GPU route, the ROS path) the publisher is "cpu", with a warning; uses_device says which.
-    mirror_to_ros is ignored then.
+
 
     alloc="slot" keeps every variable-length field of a "cpu" message in its flux slot, where an
     integrated GPU subscriber reads it in place; a message past the slot is refused.
@@ -362,7 +414,14 @@ class Publisher:
         self._cuda = _cuda_usable(self._logger, topic, device, msg_type)
         if use_flux():
             if image_encoding and not self._cuda:
-                raise ValueError("flux_wrapper: an image format needs device='cuda'")
+                # Asked of "cpu" it is a mistake; of a "cuda" that could not be had, the fallback
+                # drops it.
+                if device != "cuda":
+                    raise ValueError("flux_wrapper: an image format needs device='cuda'")
+                self._logger.warning(
+                    f'{topic}: device="cuda" could not be had, so its image format is dropped'
+                )
+                image_encoding, image_width, image_height, image_slots = "", 0, 0, "auto"
             self._adapter = _adapter(msg_type)[0]
             fingerprint, aux_size = self._adapter.FINGERPRINT__, 0
             if self._cuda:
@@ -376,6 +435,7 @@ class Publisher:
                 max_slot_size=max_slot_size,
                 max_slot_count=max_slot_count,
                 mirror_to_ros=mirror_to_ros,
+                mirror_qos=qos,
                 device="cuda" if self._cuda else "cpu",
                 aux_size=aux_size,
                 alloc=alloc,
@@ -407,8 +467,8 @@ class Publisher:
         return Loan(self._type, msg=self._type())
 
     def publish(self, msg):
-        """Publish a Loan or a ROS message (the flux path copies it into a slot once). False when
-        nothing went out."""
+        """Publish a Loan or a ROS message (the flux path copies it into a slot once). A
+        PublishResult, false when nothing went out."""
         if isinstance(msg, Loan):
             loan = msg
             if loan._gpu:
@@ -417,16 +477,16 @@ class Publisher:
                 if not loan._builder and loan._over is not None:
                     loan._builder.commit__()  # refused
                     self._overflow("", "slot", self._flux.slot_size, loan)
-                    return False
+                    return PublishResult("too_large")
                 return self._report(loan._builder.commit__())
             self._ros.publish(loan._msg)
-            return True
+            return _OK
         if self._cuda:
             return self._publish_gpu(msg)
         if self._flux is not None:
             return self._publish_host(msg)
         self._ros.publish(msg)
-        return True
+        return _OK
 
     def get_subscription_count(self):
         """The flux path counts subscribing processes."""
@@ -437,7 +497,7 @@ class Publisher:
     def _commit_gpu(self, loan):
         slot = loan._slot
         if not slot:
-            return False
+            return PublishResult("backpressure")
         # The slot is the subscribers' after the commit, and the slot of nobody after an abort.
         if loan._too_large or not loan._builder:
             slot.abort()
@@ -447,12 +507,12 @@ class Publisher:
                 self._report(_flux.Published.TOO_LARGE)  # data past the slot, as publish(msg)
             else:
                 self._device_error(_GPU_OVER)
-            return False
+            return PublishResult("too_large")
         pitch = slot._image_pitch
         if pitch and loan._step != pitch:
             slot.abort()
             self._device_error(f"step {loan._step} is not the image slot's pitch {pitch}")
-            return False
+            return PublishResult("device_error")
         slot.aux_len = loan._builder.size__
         return self._report(slot.commit(nbytes=loan._len))
 
@@ -466,7 +526,7 @@ class Publisher:
         if buf is not None and not buf.copy_from(np.frombuffer(data, np.uint8)):
             buf.abort()
             self._device_error("the host to device copy failed")
-            return False
+            return PublishResult("device_error")
         return self._commit_gpu(loan)
 
     def _device_error(self, what):
@@ -506,7 +566,7 @@ class Publisher:
         """As a Loan filled from msg, so a field that does not fit is logged as one set by hand is."""
         loan = self.loan()
         if not loan:
-            return False
+            return PublishResult("backpressure")
         loan.set_from(msg)
         if _root_data(self._type):
             data = _data_bytes(msg.data)
@@ -523,7 +583,7 @@ class Publisher:
                 f"flux publish on {self._flux.topic_name} failed: {p} (slot "
                 f"{self._flux.slot_size} bytes); later failures are not logged"
             )
-        return p == _flux.Published.OK
+        return PublishResult(p.name.lower())
 
 
 class View:

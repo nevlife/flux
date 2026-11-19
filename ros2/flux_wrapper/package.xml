@@ -23,6 +23,7 @@
   <depend condition="$ENABLE_FLUX == 1">flux_std_adapters</depend>
 
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend condition="$ENABLE_FLUX == 1">flux_py</exec_depend>
 

@@ -264,3 +264,12 @@
     # 후
     b.pose__position__x = 1.0
     ```
+
+19. `flux_wrapper`를 다듬었다.
+    * `Device::Host`는 `Device::Cpu`가 되었다(flux 코어와 Python `"cpu"`에 맞춤).
+    * `publish()`는 `bool` 대신 `PublishResult`(C++와 Python)를 반환한다. `if (!pub.publish(m))`는 그대로 쓴다. `bool ok = pub.publish(m);`는 `const bool ok = static_cast<bool>(pub.publish(m));`나 `auto r = pub.publish(m);`로 고친다.
+    * `View`는 복사할 수 없다. 콜백 뒤에도 쓰려면 `HeldCallback`을 쓴다.
+    * `flux_wrapper::PartitionedExecutor` 별칭을 지웠다. flux 빌드에서는 `flux::PartitionedExecutor`를 직접 쓴다.
+    * mirror(`mirror_to_ros`)는 발행자에 준 QoS로 발행한다. 전에는 best-effort depth 1이라 기본 QoS(reliable)의 ROS 구독자가 받지 못했다.
+    * Python `flux_wrapper.Executor.stop()`은 `cancel()`이 되었다. Python도 C++처럼, 패키지를 flux와 함께 빌드했을 때만 flux 경로를 쓴다.
+    * CUDA 없이 빌드해도 `Buffer::stream()`, `View::stream()`, `View::after()`가 있다.

@@ -24,11 +24,10 @@ class Publisher::RosMirror
 public:
   RosMirror(
     const NodeRef & node, const detail::Channel & ch, const std::string & topic,
-    const std::string & signpost, std::uint64_t fingerprint)
+    const std::string & signpost, std::uint64_t fingerprint, const rclcpp::QoS & qos)
   : topic_(topic),
-    core_(ch, signpost, fingerprint),
-    pub_(rclcpp::create_generic_publisher(
-      node.topics(), topic, core_.ros_type(), rclcpp::QoS(1).best_effort().durability_volatile())),
+    core_(ch, signpost, fingerprint, static_cast<std::uint32_t>(qos.depth())),
+    pub_(rclcpp::create_generic_publisher(node.topics(), topic, core_.ros_type(), qos)),
     logger_(node.logging()->get_logger()),
     thread_([this] { run(); })
   {
@@ -127,10 +126,10 @@ Publisher::Publisher(
 
 Publisher::~Publisher() = default;
 
-void Publisher::mirror_to_ros()
+void Publisher::mirror_to_ros(const rclcpp::QoS & qos)
 {
   if (!mirror_) {
-    mirror_ = std::make_unique<RosMirror>(node_, ch_, topic_, signpost_, fingerprint_);
+    mirror_ = std::make_unique<RosMirror>(node_, ch_, topic_, signpost_, fingerprint_, qos);
   }
 }
 

@@ -24,9 +24,14 @@ public:
   // become one message. Throws Error (Status::InvalidArgument) for a fingerprint that names no
   // installed message type that way or the plain one, or a device-backed publisher of the plain
   // one.
-  RosMirror(const Channel & publisher, std::string signpost, std::uint64_t fingerprint)
+  // `depth` frames of the channel are kept for a conversion that falls behind, as a ROS 2
+  // publisher's history keeps that many.
+  RosMirror(
+    const Channel & publisher, std::string signpost, std::uint64_t fingerprint,
+    std::uint32_t depth = 1)
   : signpost_(std::move(signpost)),
     fingerprint_(fingerprint),
+    depth_(depth == 0 ? 1 : depth),
     gpu_(schemas_.contains_gpu(fingerprint)),
     type_(find(schemas_, fingerprint, gpu_, publisher.device_backed()))
   {
@@ -43,7 +48,7 @@ public:
   auto next(std::int64_t timeout_ns, Stop stop, Out out) -> std::size_t
   {
     if (!sub_) {
-      sub_.emplace(signpost_, fingerprint_, QoS(1).max_borrow(1), MemoryPolicy{});
+      sub_.emplace(signpost_, fingerprint_, QoS(depth_).max_borrow(1), MemoryPolicy{});
     }
     Frame frame = sub_->take_blocking(timeout_ns, stop);
     if (!frame) {
@@ -86,6 +91,7 @@ private:
 
   std::string signpost_;
   std::uint64_t fingerprint_;
+  std::uint32_t depth_;
   Schemas schemas_;
   bool gpu_;
   Schemas::Type type_;

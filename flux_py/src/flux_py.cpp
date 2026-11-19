@@ -1100,8 +1100,10 @@ private:
 class RosMirror
 {
 public:
-  RosMirror(Publisher & publisher, const std::string & signpost, std::uint64_t fingerprint)
-  : core_(publisher.channel(), signpost, fingerprint)
+  RosMirror(
+    Publisher & publisher, const std::string & signpost, std::uint64_t fingerprint,
+    std::uint32_t depth)
+  : core_(publisher.channel(), signpost, fingerprint, depth)
   {
   }
 
@@ -1817,8 +1819,8 @@ NB_MODULE(_flux, m)
 
   nb::class_<RosMirror>(m, "_RosMirror")
     .def(
-      nb::init<Publisher &, const std::string &, std::uint64_t>(), "publisher"_a, "signpost"_a,
-      "fingerprint"_a)
+      nb::init<Publisher &, const std::string &, std::uint64_t, std::uint32_t>(), "publisher"_a,
+      "signpost"_a, "fingerprint"_a, "depth"_a = 1)
     .def("next", &RosMirror::next, "timeout_ns"_a)
     .def("detach", &RosMirror::detach)
     .def_prop_ro("ros_type", &RosMirror::ros_type);

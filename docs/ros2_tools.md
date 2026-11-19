@@ -142,14 +142,17 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
 ### 발행
 
 - `publish(std::unique_ptr<Msg>)`와 `publish(const Msg &)`는 이미 만든 ROS 메시지를 보낸다. flux 경로에서는 슬롯과 arena로 한 번 복사한다. 메시지를 계속 사용하는 쪽은 `const Msg &`를 사용한다. ROS 경로에서 복사본을 만들지 않는다.
+- `publish()`는 `flux_wrapper::PublishResult`를 반환한다. 메시지가 나갔으면 참이고(`if (!pub.publish(m))`), 아니면 `status()`가 이유(`Published::Backpressure`는 빈 슬롯 없음, `TooLarge`는 필드가 슬롯이나 aux에 들어가지 않음, `DeviceError`는 CUDA 복사 실패나 이미지의 step과 슬롯 pitch 불일치 등)다. 결과를 버리면 컴파일러가 경고한다. Python은 `PublishResult`(참과 거짓, `status`는 `"backpressure"` 같은 문자열)다.
+- mirror는 발행자에 준 QoS로 ROS 2 토픽을 발행한다. ROS 경로와 같으므로, 기본 QoS(reliable)로 만든 일반 ROS 노드도 받는다. QoS의 depth만큼 mirror가 변환이 밀린 프레임을 기다린다.
 - `get_subscription_count()`는 ROS 경로에서 rclcpp 값을, flux 경로에서 `subscriber_count()`를 반환한다.
-- `PublisherOptions::alloc`(Python `alloc="arena"|"slot"`)은 flux 경로의 `Host` 발행자에만 적용된다. 기본 `Arena`는 `data`를 발행 프로세스의 arena에 저장한다. `Slot`은 `data`까지 모두 슬롯 안에 두고, 슬롯(기본 4 MiB)에 들어가지 않는 메시지는 보내지 않는다. Jetson 같은 통합 GPU에서 `Device::Cuda` 구독은 두 발행자의 `data`를 모두 복사 없이 GPU에서 읽는다. `Arena` 발행자의 `data`는 구독 프로세스가 arena를 GPU에 등록해서 읽는다([gpu.md](gpu.md)).
+- `PublisherOptions::alloc`(Python `alloc="arena"|"slot"`)은 flux 경로의 `Cpu` 발행자에만 적용된다. 기본 `Arena`는 `data`를 발행 프로세스의 arena에 저장한다. `Slot`은 `data`까지 모두 슬롯 안에 두고, 슬롯(기본 4 MiB)에 들어가지 않는 메시지는 보내지 않는다. Jetson 같은 통합 GPU에서 `Device::Cuda` 구독은 두 발행자의 `data`를 모두 복사 없이 GPU에서 읽는다. `Arena` 발행자의 `data`는 구독 프로세스가 arena를 GPU에 등록해서 읽는다([gpu.md](gpu.md)).
 - `flux_wrapper::create_publisher<Msg>(node, topic, qos, options)`와 `flux_wrapper::create_subscription<Msg>(node, topic, qos, callback, options)`는 `rclcpp`처럼 `shared_ptr`를 반환한다. 생성자도 그대로 쓸 수 있다.
 - `PublisherOptions`의 `slot_size`, `slot_count`, `max_slot_size`, `max_slot_count`, `mirror_to_ros`는 flux 경로에만 적용되고, flux 발행자에게 그대로 넘어간다([concepts.md](concepts.md)). 0이면 flux의 기본값이다. `Arena` 발행자의 슬롯 크기는 타입에서 정하고, `data`는 크기와 상관없이 발행 프로세스의 arena에 저장한다. `Cuda` 발행자는 슬롯에 `data`를 담으므로 `slot_size`가 `data`의 최대 크기다(기본 4 MiB, 최대 `max_slot_size`). `alloc_on_subscriber`는 `Slot`이나 `Cuda` 발행자가 구독자가 처음 붙은 뒤에 슬롯을 잡게 하고, 그 전의 `publish()`는 `false`다. `image_slots`(C++ `ImageSlots::Auto`, `Off`, `On`, Python `"auto"`, `"off"`, `"on"`), `image_encoding`(`"bgra8"`, `"nv12"` 등 sensor_msgs/Image 인코딩), `image_width`, `image_height`는 flux 발행자의 이미지 슬롯 설정으로 그대로 넘어간다([gpu.md](gpu.md)). 형식은 `Cuda` 발행자만 받는다. 호스트 메시지는 헤더가 슬롯 앞에 오므로 이미지가 배치가 말하는 자리에 있지 않다. `step`은 배치의 행 간격(256바이트 배수)이어야 한다. 다르면 `publish()`가 `false`를 반환하고, 처음 한 번 두 값을 오류 로그로 남긴다. 메시지 자신의 문자열(`header.frame_id`, `encoding`)이 슬롯을 넘으면 publish가 `false`를 반환하고, 발행자마다 처음 한 번 그 필드와 크기를 오류 로그로 남긴다. `Image`와 `PointCloud2`가 아닌 타입은 `set_from()`이 필드를 한 번에 쓰므로 필드 이름은 남기지 않고, 슬롯(`Cuda`면 aux)의 크기와 그 앞까지 쓴 크기를 남긴다. mirror는 기본 비활성화이고, 그 상태에서는 flux 경로의 토픽을 rviz2나 `ros2 bag`이 받지 못한다.
 
 ### 구독
 
-- 구독은 `SubscriptionOptions`로 callback group을 받는다. flux 경로의 구독은 그 그룹을 실행하는 flux executor가 처리한다. `flux_wrapper::Executor`는 flux로 빌드했으면 `flux::Executor`, 아니면 `rclcpp::executors::SingleThreadedExecutor`다.
+- 구독은 `SubscriptionOptions`로 callback group을 받는다. flux 경로의 구독은 그 그룹을 실행하는 flux executor가 처리한다. `flux_wrapper::Executor`는 flux로 빌드했으면 `flux::Executor`, 아니면 `rclcpp::executors::SingleThreadedExecutor`다. `flux::Executor`의 `spin_some()`과 `spin_once()`는 예외를 던지므로 `spin()`을 쓴다. 그룹마다 스레드를 두는 `flux::PartitionedExecutor`는 flux 빌드에만 있다. rclcpp 실행기와 API가 달라 wrapper에 별칭을 두지 않는다.
+- `View`는 복사할 수 없다. 복사본이 슬롯보다 오래 남지 않게 하기 위해서다. 콜백 뒤에도 쓰려면 아래의 `HeldCallback`을 쓴다.
 - 콜백이 `std::shared_ptr<const View<Msg>>`를 받으면(`HeldCallback`) 콜백 뒤에도 View를 보유 가능하다. 포인터가 살아 있는 동안 View가 읽는 메시지가 남고, flux 경로에서는 슬롯도 남는다. 마지막 포인터가 사라지는 시점에 반납되며, 반납하는 스레드는 무관하다.
 - `SubscriptionOptions::max_borrow`(기본 1)는 한 구독에서 동시에 살아 있는 View의 최대 수다. 콜백 안의 View와 보유한 View를 합한다. 0이면 생성자가 `std::invalid_argument`를 던진다.
 - flux 경로에서는 View를 `max_borrow`개 보유한 동안 다음 프레임이 발행자의 링에서 기다린다. 슬롯이 `max_borrow`개 이하인 발행자는 거절한다. 생성자에서 연결 시에는 `flux::Error`를 던지고, executor 아래에서는 로그를 한 번 남기고 발행자 재시작 시까지 그 구독을 제외한다.
@@ -158,23 +161,24 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
 
 ### GPU(C++)
 
-- `PublisherOptions::device = flux_wrapper::Device::Cuda`면 메시지의 `data`를 GPU 메모리째 보낸다. `data`가 있는 타입만 지원한다. 없는 타입은 발행자와 구독 모두 토픽 이름과 함께 경고를 남기고 `Host`가 된다. `loan.alloc_buffer(n)`이 데이터 자리를 할당하고, `on_device()`가 GPU 메모리인지 알려 준다. `copy_from(src, n)`은 원본이 호스트 메모리든 GPU 메모리든 받는다. 커널이 직접 쓰는 경우에는 `device_ptr()`와 `stream()`을 사용하고, publish가 그 스트림의 작업이 완료된 뒤 발행한다.
+- `PublisherOptions::device = flux_wrapper::Device::Cuda`면 메시지의 `data`를 GPU 메모리째 보낸다. `data`가 있는 타입만 지원한다. 없는 타입은 발행자와 구독 모두 토픽 이름과 함께 경고를 남기고 `Cpu`가 된다. `loan.alloc_buffer(n)`이 데이터 자리를 할당하고, `on_device()`가 GPU 메모리인지 알려 준다. `copy_from(src, n)`은 원본이 호스트 메모리든 GPU 메모리든 받는다. 커널이 직접 쓰는 경우에는 `device_ptr()`와 `stream()`을 사용하고, publish가 그 스트림의 작업이 완료된 뒤 발행한다.
 - flux 경로에서는 `data`를 payload로, 나머지 필드를 aux로 보내는 GPU 메모리 채널([gpu.md](gpu.md#gpu-메모리-채널devicehandle))로 보낸다. ROS 경로에서는 wrapper가 GPU 버퍼를 하나 생성하고, publish 시 호스트로 복사해 ROS 메시지로 보낸다.
 - `data` 밖의 필드는 aux 4096 B에 들어가야 한다. 넘으면 loan이 `false`가 되고 publish가 `false`를 반환한다. 발행자마다 처음 한 번, 들어가지 않은 첫 필드와 그 크기, 그 앞까지 쓴 크기, 메시지의 `header.stamp`를 오류 로그로 남긴다.
 
-- `Cuda`를 사용 불가능하면(CUDA 없이 빌드했거나, GPU 경로나 GPU가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Host`로 바뀐다. 발행자와 구독의 `uses_device()`가 실제로 사용하는 쪽을 알려 준다. `mirror_to_ros`를 켜면 mirror가 ROS 2 구독자가 있는 동안 `data`를 호스트로 복사해 발행한다.
-- 구독은 flux 경로에서 `Cuda` 발행자의 프레임도 받는다. `SubscriptionOptions::device`가 `Host`(기본)면 `data()`가 호스트 메모리다(외장 GPU에서는 take 시 한 번 복사한다). aux가 잘못된 프레임은 건너뛰고 `rejected()`로 센다.
-- 구독의 `device`가 `Cuda`면 발행자가 어느 쪽이든 `data`가 GPU 메모리에 있다. `on_device()`, `device_ptr()`, `size()`, `stream()`으로 읽고, GPU 작업은 `stream()`에 올린다. `Host` 발행자의 프레임은 외장 GPU에서 take 시 GPU로 한 번 복사하고, 통합 GPU에서는 복사하지 않는다. 호스트 메모리에도 있는 프레임은 `data()`로도 읽힌다.
+- `Cuda`를 사용 불가능하면(CUDA 없이 빌드했거나, GPU 경로나 GPU가 없으면) 그 발행자나 구독이 토픽 이름과 함께 경고를 남기고 `Cpu`로 바뀐다. 발행자와 구독의 `uses_device()`가 실제로 사용하는 쪽을 알려 준다. `mirror_to_ros`를 켜면 mirror가 ROS 2 구독자가 있는 동안 `data`를 호스트로 복사해 발행한다.
+- 구독은 flux 경로에서 `Cuda` 발행자의 프레임도 받는다. `SubscriptionOptions::device`가 `Cpu`(기본)면 `data()`가 호스트 메모리다(외장 GPU에서는 take 시 한 번 복사한다). aux가 잘못된 프레임은 건너뛰고 `rejected()`로 센다.
+- 구독의 `device`가 `Cuda`면 발행자가 어느 쪽이든 `data`가 GPU 메모리에 있다. `on_device()`, `device_ptr()`, `size()`, `stream()`으로 읽고, GPU 작업은 `stream()`에 올린다. `Cpu` 발행자의 프레임은 외장 GPU에서 take 시 GPU로 한 번 복사하고, 통합 GPU에서는 복사하지 않는다. 호스트 메모리에도 있는 프레임은 `data()`로도 읽힌다.
 - ROS 경로의 `Cuda` 구독은 구독마다 GPU 버퍼를 `max_borrow`개 생성하고, 메시지 수신마다 빈 버퍼로 복사한다. 버퍼마다 스트림이 따로 있다.
 - GPU 메모리 프레임을 `stream()`이 아닌 스트림 `s`에서 읽으면, 반납 전에 `View::after(s)`를 호출한다. `stream()`이 `s`에 지금까지 올린 작업 뒤에 오게 해서, 슬롯이나 GPU 버퍼가 그 작업이 완료된 뒤 반납된다. 호출하지 않으면 그 작업이 완료되기 전에 발행자가 슬롯에 새 프레임을 쓸 가능성이 있다.
-- GPU 기능은 CMake가 CUDAToolkit을 찾은 경우에 컴파일된다. 찾지 못해도 `Device::Cuda`는 있으므로 코드는 그대로 빌드된다.
+- GPU 기능은 CMake가 CUDAToolkit을 찾은 경우에 컴파일된다. 찾지 못해도 `Device::Cuda`, `stream()`, `after()`는 있으므로 코드는 그대로 빌드된다. 그 빌드에서 `stream()`은 null이고 `after()`는 참이다.
+- 이미지 형식을 준 `Cuda` 발행자가 `Cuda`를 쓰지 못하면, 경고를 남기고 형식을 버린 `Cpu` 발행자가 된다. `Cpu`를 요청하면서 형식을 주면 생성자가 `flux::Error`를 던진다.
 
 ### Python
 
-- Python 모듈 `flux_wrapper`도 같은 구조다. 다만 `max_borrow`와 `HeldCallback`은 없다. `create_publisher(node, msg_type, topic, qos, **options)`, `create_subscription(node, msg_type, topic, qos, callback, **options)`는 C++과 같은 순서이고, 클래스 생성자 `Subscription(node, msg_type, topic, callback, qos, ...)`는 rclpy 순서다. `flux`를 import 가능하고 `ENABLE_FLUX=1`이면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`한다.
+- Python 모듈 `flux_wrapper`도 같은 구조다. 다만 `max_borrow`와 `HeldCallback`은 없다. `create_publisher(node, msg_type, topic, qos, **options)`, `create_subscription(node, msg_type, topic, qos, callback, **options)`는 C++과 같은 순서이고, 클래스 생성자 `Subscription(node, msg_type, topic, callback, qos, ...)`는 rclpy 순서다. `ENABLE_FLUX=1`이고, 패키지를 flux와 함께 빌드했고(C++와 같은 조건), `flux`를 import 가능하면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`하고, spin은 `cancel()`로 끝낸다.
 - flux 경로에서는 메시지 타입의 rosidl 모듈 이름(`my_msgs.msg._foo`)으로 어댑터 모듈 `my_msgs_flux.foo`와 `my_msgs_flux.foo_ros`를 찾고, `foo_ros.MESSAGE`가 그 타입인지 확인한다. 찾지 못하면 찾은 모듈 이름과 함께 `TypeError`를 던진다. include는 필요 없다.
 - loan에 쓰는 방법은 C++와 같다. `Image`와 `PointCloud2`는 필드를 ROS 메시지의 이름으로 대입하고, `loan.set_from(msg)`로 `data`를 뺀 필드를 한 번에 쓴다. 그 밖의 타입은 `loan.set_from(msg)`로 쓰고, 최상위 header가 있으면 `loan.header`만 따로 대입한다(C++ `set_header()`). 다른 필드를 대입하면 `AttributeError`다.
-- flux 경로에서는 쓰는 즉시 슬롯에 쓰므로, 슬롯에 들어가지 않는 필드가 있으면 그 자리에서 loan이 `False`가 되고 `publish()`가 `False`를 반환한다.
+- flux 경로에서는 쓰는 즉시 슬롯에 쓰므로, 슬롯에 들어가지 않는 필드가 있으면 그 자리에서 loan이 `False`가 되고 `publish()`가 거짓인 `PublishResult`(`status`는 `"too_large"`)를 반환한다.
 - loan마다 새 메시지에서 시작하므로, 쓰지 않은 필드는 직전 loan의 값이 아니다. ROS 경로에서는 새 메시지의 값이고, flux 경로에서는 0, 빈 문자열, 빈 배열이다. C++도 같다.
 - View에서는 필드를 ROS 메시지의 이름의 속성으로 읽는다. `Image`와 `PointCloud2`가 아닌 타입의 View는 필드를 읽을 때 View마다 한 번 `without_data()`를 만든다. `view.without_data()`는 C++와 같다.
 - ROS 경로의 `byte[] data`는 rclpy가 1바이트 `bytes`의 list로 받으므로 `View.data`가 복사본이다.

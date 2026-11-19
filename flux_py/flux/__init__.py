@@ -192,18 +192,20 @@ def _timeout_ns(seconds):
     return max(1, int(seconds * 1e9))
 
 
-def _start_mirror(publisher, node):
+def _start_mirror(publisher, node, qos):
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from rosidl_runtime_py.utilities import get_message
 
-    mirror = _flux._RosMirror(publisher, publisher.signpost_name, publisher._fingerprint)
-    ros_pub = node.create_publisher(
-        get_message(mirror.ros_type),
-        publisher.topic_name,
-        QoSProfile(
+    if qos is None:
+        qos = QoSProfile(
             depth=1, reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE
-        ),
+        )
+    elif isinstance(qos, int):
+        qos = QoSProfile(depth=qos)
+    mirror = _flux._RosMirror(
+        publisher, publisher.signpost_name, publisher._fingerprint, depth=max(1, qos.depth)
     )
+    ros_pub = node.create_publisher(get_message(mirror.ros_type), publisher.topic_name, qos)
     stop = threading.Event()
     # The thread holds the mirror, not the publisher, so dropping the publisher stops it.
     weakref.finalize(publisher, stop.set)
@@ -252,6 +254,7 @@ class Publisher(_flux._Publisher):
         device="cpu",
         fence_timeout=None,
         mirror_to_ros=False,
+        mirror_qos=None,
         aux_size=0,
         alloc="arena",
         max_slot_size=0,
@@ -274,7 +277,8 @@ class Publisher(_flux._Publisher):
         row pitch of a multiple of 256 bytes. fence_timeout, in seconds, bounds each commit's
         wait for the stream; None waits as long as it takes. A commit that runs out is FENCE_FAILED, and its slot comes back once the
         work is done. mirror_to_ros also publishes every frame as its ROS 2 message on the same
-        topic while a ROS 2 subscriber wants it (depth 1, best effort, volatile). aux_size gives
+        topic while a ROS 2 subscriber wants it, with mirror_qos (default depth 1, best effort,
+        volatile; an rclpy QoSProfile or a depth). aux_size gives
         each slot that many bytes of host memory beside its payload: a loan writes them through
         loan.aux and loan.aux_len, and flux.aux(frame) reads them."""
         bound = _timeout_ns(fence_timeout)
@@ -304,7 +308,7 @@ class Publisher(_flux._Publisher):
         )
         self._set_fence_timeout(bound)
         if mirror_to_ros:
-            _start_mirror(self, node)
+            _start_mirror(self, node, mirror_qos)
 
     def publish(self, array):
         """A host array. A device array is refused: loan() a slot and write it on the device."""

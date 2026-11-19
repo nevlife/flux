@@ -5,6 +5,8 @@
 #include "flux/detail/manifest.hpp"
 #include "flux/node_ref.hpp"
 
+#include <rclcpp/qos.hpp>
+
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -56,8 +58,9 @@ public:
   auto operator=(Publisher &&) -> Publisher & = delete;
   ~Publisher();
 
-  // Also publishes each frame as its ROS 2 message on this topic while a ROS 2 subscriber wants it.
-  void mirror_to_ros();
+  // Also publishes each frame as its ROS 2 message on this topic, with `qos`, while a ROS 2
+  // subscriber wants it; `qos.depth()` frames wait for a conversion that falls behind.
+  void mirror_to_ros(const rclcpp::QoS & qos = rclcpp::QoS(1).best_effort().durability_volatile());
 
   // Backpressure while every slot is borrowed: the frame is dropped.
   auto publish(const void * data, std::size_t nbytes) noexcept -> Published

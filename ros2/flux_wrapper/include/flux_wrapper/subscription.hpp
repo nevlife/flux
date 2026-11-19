@@ -33,9 +33,9 @@ struct SubscriptionOptions
   // Cuda: every frame's data field is in device memory (View::on_device()), whatever the
   // publisher's device. Where the GPU cannot read a host publisher's frame in place, flux copies it
   // to the device at take; on the ROS path each message is copied to one of max_borrow device
-  // buffers of the subscription's. With Host, frames of a Device::Cuda publisher on a discrete GPU
-  // are copied to host memory at take. A type without a root data is Host, with a warning.
-  Device device = Device::Host;
+  // buffers of the subscription's. With Cpu, frames of a Device::Cuda publisher on a discrete GPU
+  // are copied to host memory at take. A type without a root data is Cpu, with a warning.
+  Device device = Device::Cpu;
   // Views alive at once: the one in a callback and those a HeldCallback keeps. Over flux a frame
   // past it waits in the publisher's ring, and a publisher of max_borrow slots or fewer is refused,
   // with flux::Error at construction or, under an executor, logged once and left out until it
@@ -328,7 +328,7 @@ private:
           return;
         }
         RCLCPP_WARN(
-          node.get_logger(), "%s: Device::Cuda: no CUDA stream could be created; using Host",
+          node.get_logger(), "%s: Device::Cuda: no CUDA stream could be created; using Cpu",
           topic.c_str());
       }
     }

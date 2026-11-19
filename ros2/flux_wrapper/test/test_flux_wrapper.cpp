@@ -492,7 +492,7 @@ TEST_F(WrapperTest, AMessageLargerThanItsSlotGoesOut)
   run_until(done, [&] {
     auto loan = pub.loan();
     if (loan && loan.alloc_data(kBytes).size() == kBytes) {
-      pub.publish(std::move(loan));
+      (void)pub.publish(std::move(loan));
     }
   });
   EXPECT_TRUE(done);
@@ -512,6 +512,26 @@ TEST_F(WrapperTest, RosSubscriberReceives)
   options.mirror_to_ros = true;
   flux_wrapper::Publisher<Image> pub(*node_, "mirrored", rclcpp::QoS(4), options);
 
+  run_until(done, [&] {
+    auto loan = pub.loan();
+    loan.set_header(header(1, "camera"));
+    loan.set_encoding("rgb8");
+    loan.alloc_data(3);
+    EXPECT_TRUE(pub.publish(std::move(loan)));
+  });
+  EXPECT_TRUE(done);
+}
+
+// The mirror publishes with the driver's QoS, as the ROS path does: a reliable ROS subscriber, the
+// rclcpp default, gets it too.
+TEST_F(WrapperTest, AReliableRosSubscriberReceivesTheMirror)
+{
+  std::atomic<bool> done{false};
+  auto ros_sub = node_->create_subscription<Image>(
+    "mirrored_reliable", rclcpp::QoS(10), [&](const Image::ConstSharedPtr &) { done = true; });
+  flux_wrapper::PublisherOptions options;
+  options.mirror_to_ros = true;
+  flux_wrapper::Publisher<Image> pub(*node_, "mirrored_reliable", rclcpp::QoS(4), options);
   run_until(done, [&] {
     auto loan = pub.loan();
     loan.set_header(header(1, "camera"));
@@ -915,7 +935,7 @@ TEST_F(WrapperTest, ACudaImagePublisherWithAFormatReachesASubscriber)
     flux_wrapper::create_publisher<Image>(*node_, "image_off", rclcpp::QoS(4), options),
     flux::Error);
   options.image_slots = flux_wrapper::ImageSlots::Auto;
-  options.device = flux_wrapper::Device::Host;
+  options.device = flux_wrapper::Device::Cpu;
   options.alloc = flux_wrapper::Alloc::Slot;
   EXPECT_THROW(
     flux_wrapper::create_publisher<Image>(*node_, "image_host", rclcpp::QoS(4), options),
@@ -1710,7 +1730,7 @@ TEST_F(WrapperTest, ATypeWithoutDataIsSetAndReadWhole)
 TEST_F(WrapperTest, ALoanStartsFromAnEmptyMessage)
 {
   for (const flux_wrapper::Device device :
-       {flux_wrapper::Device::Host, flux_wrapper::Device::Cuda}) {
+       {flux_wrapper::Device::Cpu, flux_wrapper::Device::Cuda}) {
     const bool cuda = device == flux_wrapper::Device::Cuda;
     const std::string topic = cuda ? "foo_fresh_cuda" : "foo_fresh_host";
     std::optional<Foo> got;
@@ -1882,8 +1902,8 @@ TEST_F(WrapperTest, CudaAnyTypeInEveryDevicePairing)
 #ifdef FLUX_WRAPPER_CUDA
   using flux_wrapper::Device;
   std::int32_t sec = 0;
-  for (const Device pub_device : {Device::Host, Device::Cuda}) {
-    for (const Device sub_device : {Device::Host, Device::Cuda}) {
+  for (const Device pub_device : {Device::Cpu, Device::Cuda}) {
+    for (const Device sub_device : {Device::Cpu, Device::Cuda}) {
       ++sec;
       const std::string topic = "foo_pair" + std::to_string(sec);
       const Foo want = foo(sec, {3, 1, 4, 1, 5, static_cast<std::uint8_t>(sec)});
@@ -1994,7 +2014,7 @@ TEST_F(WrapperTest, ALoanWithNoFreeSlotIsHarmlessToFill)
     GTEST_SKIP() << "the slots are flux's";
   }
   for (const flux_wrapper::Device device :
-       {flux_wrapper::Device::Host, flux_wrapper::Device::Cuda}) {
+       {flux_wrapper::Device::Cpu, flux_wrapper::Device::Cuda}) {
     flux_wrapper::PublisherOptions options;
     options.device = device;
     options.slot_count = 2;
@@ -2011,7 +2031,9 @@ TEST_F(WrapperTest, ALoanWithNoFreeSlotIsHarmlessToFill)
     image_loan.set_from(image(1, {1}));
     EXPECT_FALSE(image_loan.alloc_buffer(1));
     EXPECT_FALSE(image_loan);
-    EXPECT_FALSE(images.publish(std::move(image_loan)));
+    const flux_wrapper::PublishResult r = images.publish(std::move(image_loan));
+    EXPECT_FALSE(r);
+    EXPECT_EQ(r.status(), flux_wrapper::Published::Backpressure);
     auto foo_loan = foos.loan();
     foo_loan.set_from(foo(1, {1}));
     EXPECT_FALSE(foo_loan.alloc_buffer(1));
@@ -2048,7 +2070,7 @@ TEST_F(WrapperTest, AFalseLoanHandsOutNoData)
   if (!expect_flux()) {
     GTEST_SKIP() << "the slots are flux's";
   }
-  std::vector<flux_wrapper::Device> devices{flux_wrapper::Device::Host};
+  std::vector<flux_wrapper::Device> devices{flux_wrapper::Device::Cpu};
 #ifdef FLUX_WRAPPER_CUDA
   if (no_cuda().empty()) {
     devices.push_back(flux_wrapper::Device::Cuda);

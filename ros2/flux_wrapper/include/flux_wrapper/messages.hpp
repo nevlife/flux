@@ -23,6 +23,10 @@
 
 #ifdef FLUX_WRAPPER_CUDA
 #include <cuda_runtime_api.h>
+#else
+// The CUDA runtime's stream type, so stream() and after() exist in a build without CUDA too.
+struct CUstream_st;
+using cudaStream_t = CUstream_st *;
 #endif
 
 #include <array>
@@ -71,8 +75,8 @@ private:
 
 // Where a publisher's frames are produced or a subscription's are consumed. Cuda is used only
 // where this build has CUDA and the host a CUDA device (on the flux path, a flux GPU route);
-// otherwise Host, with a warning.
-enum class Device { Host, Cuda };
+// otherwise Cpu, with a warning.
+enum class Device { Cpu, Cuda };
 
 // flux only: where a publisher puts a message's variable-length fields, as flux::Alloc. Slot keeps
 // them all in the slot, where an integrated GPU subscriber reads them in place; a message past the
@@ -106,13 +110,11 @@ public:
     return host_ != nullptr ? Span<std::uint8_t>(host_, size_) : Span<std::uint8_t>();
   }
   [[nodiscard]] auto device_ptr() const noexcept -> void * { return device_; }
-#ifdef FLUX_WRAPPER_CUDA
-  // Queue the producing work here: the publish waits for this stream.
+  // Queue the producing work here: the publish waits for this stream. Null on the host.
   [[nodiscard]] auto stream() const noexcept -> cudaStream_t
   {
     return static_cast<cudaStream_t>(stream_);
   }
-#endif
 
   // n bytes from host or device memory. A device buffer's copy is queued on stream(), so src must
   // stay unchanged until publish() returns.
@@ -216,22 +218,22 @@ struct HasRootHeader<MsgT, std::void_t<decltype(MsgT::header)>>
 template <class MsgT>
 inline constexpr bool kRootHeader = HasRootHeader<MsgT>::value;
 
-// Never throws: a Cuda that cannot be had is Host, with the reason logged for this topic.
+// Never throws: a Cuda that cannot be had is Cpu, with the reason logged for this topic.
 template <class MsgT>
 auto cuda_usable(const rclcpp::Logger & logger, const std::string & topic, Device requested) -> bool
 {
-  if (requested == Device::Host) {
+  if (requested == Device::Cpu) {
     return false;
   }
   if constexpr (!kRootData<MsgT>) {
     RCLCPP_WARN(
-      logger, "%s: Device::Cuda, but the type has no root uint8[] data to put there; using Host",
+      logger, "%s: Device::Cuda, but the type has no root uint8[] data to put there; using Cpu",
       topic.c_str());
     return false;
   }
 #ifndef FLUX_WRAPPER_CUDA
   RCLCPP_WARN(
-    logger, "%s: Device::Cuda, but flux_wrapper was built without CUDA; using Host", topic.c_str());
+    logger, "%s: Device::Cuda, but flux_wrapper was built without CUDA; using Cpu", topic.c_str());
   return false;
 #else
 #ifdef USE_FLUX_ENABLED
@@ -239,7 +241,7 @@ auto cuda_usable(const rclcpp::Logger & logger, const std::string & topic, Devic
     const flux::gpu::Platform p = flux::gpu::probe();
     if (p.route == flux::gpu::Route::None) {
       RCLCPP_WARN(
-        logger, "%s: Device::Cuda: no flux GPU route (%s); using Host", topic.c_str(),
+        logger, "%s: Device::Cuda: no flux GPU route (%s); using Cpu", topic.c_str(),
         p.reason.c_str());
       return false;
     }
@@ -250,7 +252,7 @@ auto cuda_usable(const rclcpp::Logger & logger, const std::string & topic, Devic
   const cudaError_t e = cudaGetDeviceCount(&n);
   if (e != cudaSuccess || n == 0) {
     RCLCPP_WARN(
-      logger, "%s: Device::Cuda: no CUDA device (%s); using Host", topic.c_str(),
+      logger, "%s: Device::Cuda: no CUDA device (%s); using Cpu", topic.c_str(),
       e != cudaSuccess ? cudaGetErrorString(e) : "none found");
     return false;
   }
@@ -585,6 +587,12 @@ public:
   {
   }
 #endif
+  // Not copyable: a copy would outlive the slot it reads. A HeldCallback keeps one.
+  ViewBase(const ViewBase &) = delete;
+  auto operator=(const ViewBase &) -> ViewBase & = delete;
+  ViewBase(ViewBase &&) noexcept = default;
+  auto operator=(ViewBase &&) noexcept -> ViewBase & = default;
+  ~ViewBase() = default;
 
   template <class M = MsgT, std::enable_if_t<kRootHeader<M>, int> = 0>
   [[nodiscard]] auto stamp() const noexcept -> builtin_interfaces::msg::Time
@@ -646,7 +654,6 @@ public:
 #endif
     return data().size();
   }
-#ifdef FLUX_WRAPPER_CUDA
   // Queue the frame's work here: the slot goes back, or the subscription's device buffer is
   // written again, only after it. Null when not on_device().
   template <class M = MsgT, std::enable_if_t<kRootData<M>, int> = 0>
@@ -663,6 +670,7 @@ public:
     if (!on_device()) {
       return true;
     }
+#ifdef FLUX_WRAPPER_CUDA
     cudaEvent_t e = nullptr;
     if (cudaEventCreateWithFlags(&e, cudaEventDisableTiming) != cudaSuccess) {
       return false;
@@ -672,8 +680,11 @@ public:
       cudaEventRecord(e, s) == cudaSuccess && cudaStreamWaitEvent(stream(), e, 0) == cudaSuccess;
     (void)cudaEventDestroy(e);
     return ok;
-  }
+#else
+    (void)s;
+    return true;  // never on the device without CUDA
 #endif
+  }
 
   // The message itself on the ROS path, for code that keeps it; null on the flux path.
   [[nodiscard]] auto ros_message() const noexcept -> const MsgT * { return msg_; }
