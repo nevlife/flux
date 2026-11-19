@@ -4,7 +4,8 @@ import sys
 import numpy as np
 import pytest
 
-from flux import wire
+import flux
+from flux import _wire as wire
 
 
 def test_a_dtype_a_frame_cannot_hold_is_refused():
@@ -118,5 +119,5 @@ def test_string_array_entries_that_share_bytes_are_refused():
     struct.pack_into("<II", buf, 0, 8, n)
     for i in range(n):
         struct.pack_into("<II", buf, 8 + 8 * i, blob, 256)
-    with pytest.raises(wire.WireError, match="same bytes"):
+    with pytest.raises(flux.WireError, match="same bytes"):
         wire.Reader(buf).strings(0)

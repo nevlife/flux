@@ -214,24 +214,6 @@ pub fn build_block(leaves: &[Leaf]) -> Block {
     }
 }
 
-fn check_names(block: &Block, path: &str) -> Result<(), LayoutError> {
-    let mut seen = Vec::<String>::new();
-    for p in &block.placed {
-        let name = p.name();
-        if seen.contains(&name) {
-            return Err(LayoutError(format!(
-                "{path}{name}: two fields flatten to the same name -- nesting is joined with \
-                 '_', so 'a_b' and 'a.b' collide"
-            )));
-        }
-        if let Some(elem) = &p.elem {
-            check_names(elem, &format!("{path}{name}[]."))?;
-        }
-        seen.push(name);
-    }
-    Ok(())
-}
-
 /// Element class names camel-case their field path, which erases the '_' vs '.' boundary; two
 /// distinct paths landing on one class silently alias in Python and fail to compile in C++. The
 /// message's own name must not be one of them either, nor View or Builder: the C++ adapter nests
@@ -286,7 +268,6 @@ pub fn build_layout(flat: &FlatResult) -> Result<Layout, LayoutError> {
         )));
     }
     let root = build_block(&flat.leaves);
-    check_names(&root, "")?;
     check_class_names(&root, &flat.name)?;
     Ok(Layout {
         name: flat.name.clone(),

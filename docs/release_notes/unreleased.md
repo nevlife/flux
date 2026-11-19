@@ -253,3 +253,14 @@
     frame = sub.take_blocking(0.1)
     ex.cancel()
     ```
+
+18. 생성된 어댑터의 중첩 필드 이름이 `_` 대신 `__`로 이어진다. `pose.position.x`는 `pose_position_x`에서 `pose__position__x`가 되었다(C++ `set__pose__position__x`). 최상위 Header와 Time의 접근자는 그대로다. 메시지 패키지를 다시 빌드해 어댑터를 다시 생성한다. ROS 필드 이름에는 `__`가 올 수 없어, 펼친 이름끼리 겹친다는 이유로 생성을 거절하던 경우가 없어졌다.
+    * 생성된 Python 모듈은 import할 때 flux와 어댑터 ABI가 맞는지 확인하고, 다르면 `ImportError`다. 다른 flux로 생성한 모듈이 프레임을 읽다가 깨지는 대신 import에서 멈춘다.
+    * `flux.wire`에는 `DeviceSpan`, `Tensor`, `WireError`만 남았다. 생성 코드가 쓰는 `Reader`, `Writer`, `ElemArray`, `NullWriter`는 비공개 모듈로 옮겼다. `WireError`는 `flux.WireError`로도 쓴다.
+
+    ```python
+    # 전
+    b.pose_position_x = 1.0
+    # 후
+    b.pose__position__x = 1.0
+    ```

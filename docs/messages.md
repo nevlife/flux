@@ -111,10 +111,10 @@ geometry_msgs/Pose pose
 | `string label` | `v.label()` -> `string_view` | `v.label` -> `str` | `b.set__label(s)` | `b.label = s` |
 | `string[] tags` | `v.tags__size()`, `v.tags(i)` | `v.tags` -> list | `b.alloc__tags(n)`, `b.set__tags(i, s)` | `b.tags = [...]` |
 | `Point[] pts` | `v.pts__size()`, `v.pts(i).x()` | `v.pts[i].x` | `b.alloc__pts(n)[i].set__x(v)` | `b.alloc__pts(n)[i].x = v` |
-| `Pose pose` | `v.pose_position_x()` | `v.pose_position_x` | `b.set__pose_position_x(v)` | `b.pose_position_x = v` |
+| `Pose pose` | `v.pose__position__x()` | `v.pose__position__x` | `b.set__pose__position__x(v)` | `b.pose__position__x = v` |
 | `Header header` | `v.header__sec()`, `v.header__nanosec()`, `v.header__frame_id()` | `v.header__stamp`(튜플), `v.header__frame_id` | `b.set__header__stamp(s, ns)`, `b.set__header__frame_id(f)` | `b.set__header__stamp(s, ns)`, `b.header__frame_id = f` |
 
-- 중첩된 메시지는 이름을 `_`로 이어 펼친다. `pose.position.x`는 `pose_position_x`다. 최상위의 `std_msgs/Header`와 `builtin_interfaces/Time` 필드는 `__`로 잇는다(`header__sec`, `stamp__sec`, Python `stamp__stamp`). 더 깊은 곳에서는 다른 메시지처럼 펼친다.
+- 중첩된 메시지는 이름을 `__`로 이어 펼친다. `pose.position.x`는 `pose__position__x`다. ROS 필드 이름에는 `__`가 올 수 없으므로(rosidl 규칙) 펼친 이름끼리 겹치지 않는다. 최상위의 `std_msgs/Header`와 `builtin_interfaces/Time` 필드는 시각을 한 번에 읽는 접근자가 따로 있다(C++ `header__sec()`, `stamp__sec()`, Python `header__stamp`, `stamp__stamp`). 더 깊은 곳의 Header는 다른 메시지처럼 펼친다(`target__header__frame_id`).
 - 가변 배열은 `alloc__<name>(n)`이 슬롯 안에, 들어가지 않으면 arena에 할당한다([concepts.md](concepts.md#arena)). 반환한 자리에 바로 쓰면 복사가 없다. 호출 순서는 상관없다.
 - 고정 길이 배열은 `alloc__` 없이 바로 쓴다.
 - 숫자 가변 배열은 `alloc_device__<name>(n)`으로 GPU에서 쓰고 `<name>__device`(C++는 `<name>__device()`)로 GPU에서 읽는 것도 가능하다([gpu.md](gpu.md#생성-메시지의-gpu-필드)).

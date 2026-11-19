@@ -100,12 +100,13 @@ impl Leaf {
         }
     }
 
+    /// The path joined with `__`, which no ROS field name holds, so no two paths share a name.
     pub fn name(&self) -> String {
         self.path
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
-            .join("_")
+            .join("__")
     }
 }
 

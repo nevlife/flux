@@ -15,7 +15,7 @@ from rclpy.callback_groups import CallbackGroup, ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 
-from . import _flux
+from . import _flux, wire  # noqa: F401  flux.wire is public
 from ._flux import _register_layout, _register_stamp_offset  # noqa: F401  generated code calls
 from ._flux import (
     NO_SCHEMA,
@@ -95,6 +95,19 @@ DEFAULT_SLOT_COUNT = _flux.DEFAULT_SLOT_COUNT
 # Subscribing processes, not subscriptions; each adds a counter that every publish reads.
 DEFAULT_MAX_SUBSCRIBERS = _flux.DEFAULT_MAX_SUBSCRIBERS
 _TICK_NS = _flux.DEFAULT_TICK_NS
+# What generated modules expect of flux._wire and the names they import; raised with any change
+# to those, so a module generated against another flux fails at import, not in a frame.
+_ADAPTER_ABI = 1
+
+
+def _check_adapter(version):
+    if version != _ADAPTER_ABI:
+        raise ImportError(
+            f"flux: this adapter was generated for adapter ABI {version}, and this flux is "
+            f"{_ADAPTER_ABI}; regenerate it (rebuild its message package) against this flux"
+        )
+
+
 # rclpy raises it, not ExternalShutdownException, when the context shuts down as it builds a wait set.
 _RCLError = _rclpy.RCLError
 _InvalidHandle = _rclpy.InvalidHandle

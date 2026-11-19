@@ -410,8 +410,8 @@ def test_a_typed_channel_converts_to_its_ros_message(node, tmp_path):
     for i in range(20):
         b = FluxImu.build__(pub)
         b.header__frame_id = "imu"
-        b.orientation_w = float(i)
-        b.linear_acceleration_z = 9.8
+        b.orientation__w = float(i)
+        b.linear_acceleration__z = 9.8
         assert b.commit__() == flux.Published.OK
         chatter.publish(String(data=f"hi {i}"))
         time.sleep(0.02)
@@ -983,7 +983,7 @@ def test_a_message_compressed_bag_records_plays_and_converts(node, tmp_path):
         time.sleep(0.05)
     for i in range(10):
         b = FluxImu.build__(pub)
-        b.orientation_w = float(i)
+        b.orientation__w = float(i)
         assert b.commit__() == flux.Published.OK
         ros_pub.publish(Int32(data=i))
         time.sleep(0.02)
@@ -1000,7 +1000,7 @@ def test_a_message_compressed_bag_records_plays_and_converts(node, tmp_path):
         played = play_into(sub, bag, "-d", "0.5")
         time.sleep(0.2)
         ros_played = [m.data for _, m in list(msgs)]
-    assert [FluxImu.View(a).orientation_w for _, _, a in played] == [float(i) for i in range(10)]
+    assert [FluxImu.View(a).orientation__w for _, _, a in played] == [float(i) for i in range(10)]
     assert ros_played == list(range(10))
 
     convert(bag, out)

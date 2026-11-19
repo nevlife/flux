@@ -20,7 +20,7 @@ type Golden = (&'static str, usize, &'static [(&'static str, usize)]);
 
 const GOLDEN: &[Golden] = &[
     ("Vec3", 24, &[("x", 0), ("y", 8), ("z", 16)]),
-    ("Pose", 48, &[("position_x", 0), ("orientation_z", 40)]),
+    ("Pose", 48, &[("position__x", 0), ("orientation__z", 40)]),
     (
         "PointCloud",
         32,
@@ -156,9 +156,8 @@ fn nesting_does_not_move_a_byte() {
 }
 
 #[test]
-fn colliding_flattened_names_are_rejected() {
-    // Nesting is joined with '_', so `a.b` and a sibling literally named `a_b` land on one
-    // accessor. Rejecting beats emitting a header that will not compile.
+fn a_nested_field_and_an_underscored_sibling_keep_their_own_names() {
+    // Nesting is joined with '__', which no ROS field name holds, so `a.b` and `a_b` stay apart.
     let mut reg = test_registry();
     let inner = message(
         "Inner",
@@ -174,8 +173,9 @@ fn colliding_flattened_names_are_rejected() {
         ],
         Some("test"),
     );
-    let err = try_build(&msg, &reg).unwrap_err().to_string();
-    assert!(err.contains("collide"), "{err}");
+    let layout = try_build(&msg, &reg).unwrap();
+    let names: Vec<String> = layout.root.placed.iter().map(Placed::name).collect();
+    assert_eq!(names, ["a__b", "a_b"]);
 }
 
 #[test]

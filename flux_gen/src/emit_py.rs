@@ -395,9 +395,11 @@ import numpy as np
 
 from flux import Frame as _Frame
 from flux import Published as _Published
-from flux import _register_layout, _register_stamp_offset
-from flux.wire import ElemArray as _ElemArray, NullWriter as _NullWriter
-from flux.wire import Reader as _Reader, Writer as _Writer
+from flux import _check_adapter, _register_layout, _register_stamp_offset
+from flux._wire import ElemArray as _ElemArray, NullWriter as _NullWriter
+from flux._wire import Reader as _Reader, Writer as _Writer
+
+_check_adapter(1)
 
 # Private names, so that no field or message name can rebind what the classes below call.
 _property = property

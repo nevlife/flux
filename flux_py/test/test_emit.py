@@ -223,14 +223,14 @@ def test_record_round_trip(built):
     buf = bytearray(4096)
     b = m.Builder(buf)
     poses = b.alloc__poses(2)
-    poses[0].position_x = 1.0
-    poses[1].orientation_z = 2.0
+    poses[0].position__x = 1.0
+    poses[1].orientation__z = 2.0
 
     v = m.View(memoryview(buf)[: b.size__])
     assert len(v.poses) == 2
-    assert v.poses[0].position_x == 1.0
-    assert v.poses[1].orientation_z == 2.0
-    assert v.poses[0].orientation_z == 0.0  # element blocks start zeroed
+    assert v.poses[0].position__x == 1.0
+    assert v.poses[1].orientation__z == 2.0
+    assert v.poses[0].orientation__z == 0.0  # element blocks start zeroed
 
 
 def test_received_views_are_read_only(built):
@@ -302,7 +302,7 @@ def test_py_bridge_raises_on_a_fixed_length_mismatch(built):
         def frame(n_names, n_pair):
             # The Builder now refuses a wrong length, so a mismatched frame -- what a foreign
             # or older writer could still produce -- is crafted on the raw Writer.
-            from flux.wire import Writer
+            from flux._wire import Writer
 
             buf = bytearray(8192)
             w = Writer(buf, m.SCALAR_BYTES__)

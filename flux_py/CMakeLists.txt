@@ -44,7 +44,7 @@ target_link_libraries(_flux PRIVATE flux::ffi)
 target_compile_options(_flux PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 install(TARGETS _flux LIBRARY DESTINATION "${PYTHON_INSTALL_DIR}/flux")
-install(FILES flux/__init__.py flux/message_filters.py flux/wire.py DESTINATION "${PYTHON_INSTALL_DIR}/flux")
+install(FILES flux/__init__.py flux/message_filters.py flux/wire.py flux/_wire.py DESTINATION "${PYTHON_INSTALL_DIR}/flux")
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
