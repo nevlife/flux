@@ -84,7 +84,7 @@ def play_into(sub, *args):
     while True:
         frame = sub.take_blocking(0.05)
         if frame is not None:
-            got.append((frame.dtype, frame.shape, frame.copy()))
+            got.append((frame.dtype, frame.shape, frame.array.copy()))
         elif play.poll() is not None:
             break
     assert play.returncode == 0
@@ -495,7 +495,7 @@ def taker(sub, into):
         frame = sub.take_blocking(0.05)
         if frame is None:
             return False
-        into.append((frame.copy(), bytes(flux.aux(frame))))
+        into.append((frame.array.copy(), bytes(flux.aux(frame))))
         return True
 
     return take
@@ -782,7 +782,7 @@ def test_play_loops_the_flux_frames(node, tmp_path):
     while len(got) < 12 and time.monotonic() < end:
         frame = sub.take_blocking(0.05)
         if frame is not None:
-            got.append(int(frame.copy()[0]))
+            got.append(int(frame.array.copy()[0]))
     play.send_signal(signal.SIGINT)
     assert play.wait(timeout=30) == 0
     assert got == [0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1]
@@ -865,7 +865,7 @@ def test_play_loops_the_ros_topics_and_the_flux_channels_together(node, tmp_path
         while len(events) < 12 and time.monotonic() < end:
             frame = sub.take_blocking(0.02)
             if frame is not None:
-                events.append((time.monotonic(), f"F{int(frame.copy()[0])}"))
+                events.append((time.monotonic(), f"F{int(frame.array.copy()[0])}"))
         play.send_signal(signal.SIGINT)
         assert play.wait(timeout=30) == 0
         events += [(t, f"R{m.data}") for t, m in list(msgs)]
@@ -894,7 +894,7 @@ def test_play_publishes_the_clock_while_the_flux_frames_play(node, tmp_path):
         while True:
             frame = sub.take_blocking(0.02)
             if frame is not None:
-                arrivals.append((time.monotonic(), int(frame.copy()[0])))
+                arrivals.append((time.monotonic(), int(frame.array.copy()[0])))
             elif play.poll() is not None:
                 break
         assert play.returncode == 0

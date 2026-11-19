@@ -2,7 +2,7 @@
 
 flux는 같은 호스트의 ROS 2 노드끼리 큰 데이터(이미지, 포인트 클라우드, 텐서)를 복사 없이 주고받게 하는 C++, Python 라이브러리다. 새 미들웨어가 아니므로 rmw를 바꾸지 않고 데몬도 없다. 기존 `rclcpp`, `rclpy` 노드 안에서 flux로 보낼 토픽만 고르고, 나머지 토픽은 지금처럼 DDS로 오간다.
 
-구독자는 직렬화와 복사 없이 발행자가 쓴 슬롯을 읽는다. 받는 것은 C++에서는 `Frame`, Python에서는 읽기 전용 numpy 배열이다. CUDA GPU에서 만든 프레임도 같은 API로 보낸다([GPU](docs/gpu.md)). 다만 외장 GPU에서 CPU와 GPU 사이로 보내면 받는 쪽이 프레임마다 한 번 복사한다. CPU 메모리와 GPU 메모리가 물리적으로 분리되어 있기 때문이다.
+구독자는 직렬화와 복사 없이 발행자가 쓴 슬롯을 읽는다. 받는 것은 C++와 Python 모두 `Frame`이고, Python에서는 `frame.array`가 읽기 전용 numpy 배열이다. CUDA GPU에서 만든 프레임도 같은 API로 보낸다([GPU](docs/gpu.md)). 다만 외장 GPU에서 CPU와 GPU 사이로 보내면 받는 쪽이 프레임마다 한 번 복사한다. CPU 메모리와 GPU 메모리가 물리적으로 분리되어 있기 때문이다.
 
 ## 지원 환경
 
@@ -46,7 +46,7 @@ if (slot) {
 
 이미 만들어진 배열은 `pub->publish(pixels.data(), flux::DType::U8, {kHeight, kWidth, 3})`로 보내고, 이 경우 슬롯으로 한 번 복사한다([복사 모델](docs/copy_model.md)).
 
-Python 노드가 같은 프레임을 numpy 배열로 받는다.
+Python 노드가 같은 프레임을 받는다. `frame.array`가 numpy 배열이다.
 
 ```python doc:py_subscribe
 def on_frame(frame):

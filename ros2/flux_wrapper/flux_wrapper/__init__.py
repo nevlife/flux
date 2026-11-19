@@ -603,7 +603,7 @@ class View:
         self._type = msg_type
         self._msg = msg
         self._v = flux_view
-        # A GPU channel's frame, with its fields in _msg: a host array, or a flux.Frame.
+        # A GPU channel's flux.Frame, on the host or the device, with its fields in _msg.
         self._frame = frame
         # A "cpu" publisher's data on the device, for a device="cuda" subscription.
         self._device = device
@@ -640,7 +640,7 @@ class View:
         if not _root_data(self._type):
             return self.__getattr__("data")
         if self._frame is not None:
-            return None if self.on_device else self._frame
+            return None if self.on_device else self._frame.array
         if self._msg is not None:
             return np.frombuffer(_data_bytes(self._msg.data), np.uint8)
         return self._v.data
@@ -649,7 +649,7 @@ class View:
     def on_device(self):
         if self._device is not None:
             return True
-        return self._frame is not None and not isinstance(self._frame, np.ndarray)
+        return self._frame is not None and self._frame.on_device
 
     @property
     def device_data(self):
@@ -673,7 +673,7 @@ class View:
         """The message with its data in host memory: a frame on the device is copied to the host,
         which waits for its stream."""
         if self._frame is not None:
-            data = self._frame.copy_to_host() if self.on_device else self._frame
+            data = self._frame.copy_to_host() if self.on_device else self._frame.array
             m = _copy_but_data(self._msg)
             _set_data(m, data.tobytes())
             return m
@@ -716,7 +716,7 @@ class Subscription:
 
             def on_typed(f):
                 v = adapter.View(f)
-                if isinstance(f, _flux.Frame):
+                if f.on_device:
                     callback(View(msg_type, flux_view=v, device=v.data__device, stream=f.stream))
                 else:
                     callback(View(msg_type, flux_view=v))

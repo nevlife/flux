@@ -64,7 +64,7 @@ def test_a_frame_reads_back_as_a_read_only_view(node):
     assert got.dtype == np.float32 and got.shape == (3, 4)
     np.testing.assert_array_equal(got, sent)
     with pytest.raises(ValueError):
-        got[0, 0] = 1
+        got.array[0, 0] = 1
     assert sub.take() is None
 
 

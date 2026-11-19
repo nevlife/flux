@@ -1,6 +1,6 @@
 # Python 사용법
 
-`flux_py`는 rclpy 노드에서 사용하는 Python 모듈 `flux`다. 받은 프레임은 공유 메모리를 가리키는 읽기 전용 numpy 배열이다. 채널, 슬롯, 전달 규칙은 [concepts.md](concepts.md)에 있다.
+`flux_py`는 rclpy 노드에서 사용하는 Python 모듈 `flux`다. 받은 프레임은 `flux.Frame`이고, `frame.array`가 공유 메모리를 가리키는 읽기 전용 numpy 배열이다. 채널, 슬롯, 전달 규칙은 [concepts.md](concepts.md)에 있다.
 
 ## 패키지 설정
 
@@ -103,8 +103,9 @@ flux.create_subscription(node, topic, qos, callback, *, fingerprint=flux.NO_SCHE
 
 - 인자 순서는 C++ `flux::create_subscription`과 같다. `qos`가 `None`이면 `flux.QoS()`이고, `callback`이 `None`이면 `take()`로 받는다. `callback` 뒤의 인자는 이름으로만 받는다. `flux.Subscription(node, topic, callback=None, *, qos=None, ...)` 생성자도 같은 인자를 받는다.
 
-- 콜백은 읽기 전용 numpy 배열 하나를 받는다. `bfloat16` 프레임은 bit가 같은 `uint16` 배열로 읽힌다.
-- 배열(과 그 slice, view)이 남아 있는 동안 구독은 그 슬롯을 점유한다. 콜백 밖에서 쓸 값은 `np.array(frame)`처럼 복사한다. 동시에 보유 가능한 배열 수는 QoS `max_borrow`(기본 1)다.
+- 콜백과 `take()`는 `flux.Frame`을 준다. `frame.array`는 슬롯을 가리키는 읽기 전용 numpy 배열이다. `np.asarray(frame)`도 같은 배열이고, `bytes(frame)`은 복사본이다. `shape`, `dtype`, `nbytes`, `aux`(aux 바이트)도 읽는다. `bfloat16` 프레임은 bit가 같은 `uint16` 배열로 읽힌다.
+- Frame이나 그 배열(과 slice, view)이 남아 있는 동안 구독은 그 슬롯을 점유한다. `frame.release()`나 `with frame:` 블록의 끝에서 Frame은 슬롯을 놓지만, 이미 내준 배열은 자기가 사라질 때까지 슬롯을 점유한다. 콜백 밖에서 쓸 값은 `frame.array.copy()`처럼 복사한다. 동시에 보유 가능한 프레임 수는 QoS `max_borrow`(기본 1)다.
+- CPU 구독의 Frame은 `__dlpack__`을 거절한다. numpy 1.x와 같은 이유로, DLPack은 메모리가 읽기 전용임을 표시하지 못한다. `frame.array`를 거쳐 넘긴다. GPU 구독의 Frame은 [gpu.md](gpu.md)에 있다.
 - QoS에 거절되는 값이 있으면 생성자가 `flux.Error`를 던진다.
 
 ### flux.Executor
@@ -139,7 +140,7 @@ frame = sub.take_blocking(0.1)
 ```
 
 - `take()`는 아직 받지 않은 가장 오래된 프레임을 반환하고, 없으면 `None`이다.
-- 루프의 `del frame`은 필수다. 변수가 앞 프레임을 점유한 채로 다음 `take()`를 호출하면 `max_borrow`(기본 1)에 걸려 `None`이 나온다.
+- 루프의 `del frame`(또는 `frame.release()`)은 필수다. 변수가 앞 프레임을 점유한 채로 다음 `take()`를 호출하면 `max_borrow`(기본 1)에 걸려 `None`이 나온다.
 - executor가 처리하는 구독의 `take()`는 `flux.UsageError`(`RuntimeError`)를 던진다.
 
 `take_blocking(timeout_sec=None)`은 프레임 도착 시까지 GIL을 해제하고 기다린다. 초 단위이고 `None`이면 무한히 기다린다(rclpy의 `timeout_sec`과 같다). 발행자가 아직 없으면 발행자도 기다린다.

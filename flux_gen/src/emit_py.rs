@@ -300,18 +300,19 @@ class {cls}Builder:
     }
 }
 
-/// A View also takes a CUDA Frame, whose fields are read through the host mapping.
+/// A View takes a Frame (a CUDA one's fields are read through the host mapping) or its array.
 const VIEW_INIT: &str = r#"    __slots__ = ("_r",)
 
     def __init__(self, frame):
         self._r = _Reader(frame._host() if isinstance(frame, _Frame) else frame)"#;
 
-/// A tensor message's View keeps the Frame: `data` goes out on the device.
+/// A tensor message's View keeps a CUDA Frame: `data` goes out on the device.
 const TENSOR_VIEW_INIT: &str = r#"    __slots__ = ("_r", "_frame")
 
     def __init__(self, frame):
-        self._frame = frame if isinstance(frame, _Frame) else None
-        self._r = _Reader(frame if self._frame is None else frame._host())"#;
+        is_frame = isinstance(frame, _Frame)
+        self._frame = frame if is_frame and frame.on_device else None
+        self._r = _Reader(frame._host() if is_frame else frame)"#;
 
 /// The module constant, View methods and Builder method of a tensor message; empty for the rest.
 fn tensor(layout: &Layout) -> (String, String, String) {

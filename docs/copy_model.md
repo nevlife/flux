@@ -10,7 +10,7 @@ flux에서 복사가 발생하는 경우다. 읽기에는 복사가 없고, 예�
 | --- | --- |
 | C++ | `Frame::data()`. 슬롯 안의 주소다 |
 | C++ 어댑터 | `View`의 접근자. 배열 필드는 슬롯을 가리키는 `Span`이다 |
-| Python | 읽기 전용 NumPy 배열 |
+| Python | `flux.Frame`. `frame.array`가 읽기 전용 NumPy 배열이다 |
 | Python 어댑터 | `View`의 속성. 배열 필드는 읽기 전용 NumPy 배열이다 |
 | GPU 구독 | GPU 주소(`device_ptr()`). Python은 `Frame`의 `__dlpack__`, `__cuda_array_interface__`([gpu.md](gpu.md)) |
 

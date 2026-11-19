@@ -184,8 +184,9 @@ def in_place(t, frame):
     """t aliases shared memory, not a copy: the frame's slot or, where the Writer puts arrays when
     there is one, the publisher's arena."""
     path = shm_path(t.ctypes.data) or ""
-    lo = frame.ctypes.data
-    in_slot = np.shares_memory(t, frame) and lo <= t.ctypes.data < lo + frame.nbytes
+    payload = frame.array
+    lo = payload.ctypes.data
+    in_slot = np.shares_memory(t, payload) and lo <= t.ctypes.data < lo + payload.nbytes
     return path.startswith("/dev/shm/") and (in_slot or ".arena-" in path)
 
 

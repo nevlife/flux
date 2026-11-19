@@ -212,36 +212,8 @@ auto descr_of(flux::DType d) -> nb::object
   return flux_py::own(PyArray_DescrFromType(flux_py::npy_type(d)));
 }
 
-// Names the capsule a host view's array holds its Frame in, so aux_of can find it.
-constexpr const char * kViewCapsule = "flux.view";
-// And the one a Frame's arrays hold its FrameHold in, so a wire Reader can find the view.
+// The capsule a Frame's arrays hold its FrameHold in, so a wire Reader can find the view.
 constexpr const char * kFrameCapsule = "flux.frame";
-
-// The core's take already checked that the shape covers exactly the frame's bytes.
-auto view_of(flux::Frame && v) -> nb::object
-{
-  const flux::FrameMeta m = v.meta();
-  std::array<npy_intp, flux::kMaxDims> shape{};
-  for (std::size_t i = 0; i < m.ndim; ++i) {
-    shape.at(i) = static_cast<npy_intp>(m.shape[i]);
-  }
-  auto held = std::make_unique<flux::Frame>(std::move(v));
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): numpy's signature; the view is read-only
-  void * data = const_cast<void *>(held->data());
-  const nb::capsule owner(held.release(), kViewCapsule, [](void * p) noexcept {
-    const std::unique_ptr<flux::Frame> gone(static_cast<flux::Frame *>(p));
-  });
-  const nb::object descr = descr_of(static_cast<flux::DType>(m.dtype));
-  return flux_py::numpy_view(data, m.ndim, shape.data(), flux_py::as_descr(descr), owner, false);
-}
-
-auto view_or_none(flux::Frame && v) -> nb::object
-{
-  if (!v) {
-    return nb::none();
-  }
-  return view_of(std::move(v));
-}
 
 // Device addresses travel as integers through both GPU protocols.
 auto addr_of(const void * p) noexcept -> std::uintptr_t
@@ -430,11 +402,11 @@ auto shape_of(const flux::FrameMeta & m) -> std::vector<std::size_t>
   return {m.shape, m.shape + m.ndim};
 }
 
-// A frame of a channel that declared a stream. Its device memory is handed out only inside a
-// `with` block or a callback, and the release waits for the stream where the scope ends, unless
-// the memory is still held: a DLPack tensor holds it until the tensor goes, and a CUDA array
-// interface consumer, which holds the Frame itself, until the Frame goes. Shape, dtype and stream
-// are the frame's and the channel's, readable at any time.
+// A taken frame. On a channel that declared a stream (device >= 0) its device memory is handed
+// out only inside a `with` block or a callback, and the release waits for the stream where the
+// scope ends, unless the memory is still held: a DLPack tensor holds it until the tensor goes, and
+// a CUDA array interface consumer, which holds the Frame itself, until the Frame goes. A host
+// frame (device -1) hands out `array` at any time and holds its slot while it or an array lives.
 class Frame
 {
 public:
@@ -476,6 +448,9 @@ public:
 
   auto cai() -> nb::dict
   {
+    if (!on_device()) {
+      throw nb::attribute_error("flux: a host frame has no __cuda_array_interface__");
+    }
     nb::dict d = cuda_array_interface(array());
     cai_out_ = true;
     return d;
@@ -483,6 +458,11 @@ public:
 
   auto dlpack(const nb::kwargs & kw) -> nb::object
   {
+    if (!on_device()) {
+      // As numpy does for a read-only array: DLPack cannot say the memory is read-only.
+      throw nb::buffer_error(
+        "flux: a host frame is read-only, which DLPack cannot signal; use frame.array");
+    }
     const DeviceArray a = array();
     remember_stream(held_->streams, kw);
     return dlpack_of(a, hold());
@@ -518,7 +498,32 @@ public:
 
   [[nodiscard]] auto dlpack_device() const -> nb::tuple
   {
+    if (!on_device()) {
+      return nb::make_tuple(nb::device::cpu::value, 0);
+    }
     return nb::make_tuple(nb::device::cuda::value, device_);
+  }
+
+  // A host frame's payload in its dtype and shape, read-only, holding the slot.
+  [[nodiscard]] auto host_array() const -> nb::object
+  {
+    if (on_device()) {
+      throw flux_py::UsageError(
+        "flux: a CUDA frame's payload is on the device; read it through __dlpack__, "
+        "__cuda_array_interface__ or copy_to_host()");
+    }
+    if (!valid()) {
+      throw flux_py::UsageError("flux: the frame is already released");
+    }
+    std::array<npy_intp, flux::kMaxDims> shape{};
+    for (std::size_t i = 0; i < meta_.ndim; ++i) {
+      shape.at(i) = static_cast<npy_intp>(meta_.shape[i]);
+    }
+    const nb::object descr = descr_of(static_cast<flux::DType>(meta_.dtype));
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): numpy's signature; read-only
+    void * data = const_cast<void *>(held_->v.data());
+    return flux_py::numpy_view(
+      data, meta_.ndim, shape.data(), flux_py::as_descr(descr), hold(), false);
   }
 
   // A new host array of the frame's dtype and shape, copied from wherever the payload is; a
@@ -575,6 +580,7 @@ public:
   }
   [[nodiscard]] auto nbytes() const noexcept -> std::uint64_t { return meta_.nbytes; }
   [[nodiscard]] auto stream() const noexcept -> std::uintptr_t { return stream_; }
+  [[nodiscard]] auto on_device() const noexcept -> bool { return device_ >= 0; }
 
 private:
   [[nodiscard]] auto hold() const -> nb::capsule
@@ -604,7 +610,7 @@ private:
     if (!valid()) {
       throw flux_py::UsageError("flux: the frame is already released");
     }
-    if (!scoped_) {
+    if (!scoped_ && on_device()) {
       throw flux_py::UsageError(
         "flux: a CUDA frame's memory is handed out only inside `with frame:` or a "
         "callback, since its release waits for the stream");
@@ -635,18 +641,17 @@ auto frame_or_none(flux::Frame && v, int device, bool deferred) -> nb::object
   return nb::cast(Frame(std::move(v), device, false, deferred));
 }
 
-// The aux bytes of what a take returned, a host view or a Frame: read-only uint8, holding it.
+// The aux bytes of a taken Frame, or of an array one handed out: read-only uint8, holding it.
 auto aux_of(nb::handle taken) -> nb::object
 {
   if (nb::isinstance<Frame>(taken)) {
     return nb::inst_ptr<Frame>(taken)->aux();
   }
-  PyObject * base =
-    PyArray_Check(taken.ptr()) != 0 ? PyArray_BASE(flux_py::as_array(taken)) : nullptr;
-  if (base == nullptr || PyCapsule_IsValid(base, kViewCapsule) == 0) {
+  int device = -1;
+  const flux::Frame * v = flux_py::frame_of(taken, &device);
+  if (v == nullptr) {
     throw nb::type_error("flux: aux() takes a frame that a subscription's take returned");
   }
-  const auto * v = static_cast<const flux::Frame *>(PyCapsule_GetPointer(base, kViewCapsule));
   const auto a = v->aux();
   const nb::object descr = descr_of(flux::DType::U8);
   return flux_py::numpy_view(a.data(), a.size(), flux_py::as_descr(descr), taken, false);
@@ -698,10 +703,6 @@ auto flux_py::device_span(
 auto flux_py::frame_of(nb::handle buf, int * device) -> const flux::Frame *
 {
   PyObject * base = PyArray_Check(buf.ptr()) != 0 ? PyArray_BASE(flux_py::as_array(buf)) : nullptr;
-  if (base != nullptr && PyCapsule_IsValid(base, kViewCapsule) != 0) {
-    *device = -1;
-    return static_cast<const flux::Frame *>(PyCapsule_GetPointer(base, kViewCapsule));
-  }
   if (base != nullptr && PyCapsule_IsValid(base, kFrameCapsule) != 0) {
     const auto * h =
       static_cast<const std::shared_ptr<FrameHold> *>(PyCapsule_GetPointer(base, kFrameCapsule));
@@ -1080,13 +1081,12 @@ public:
     return wrap(std::move(v));
   }
 
-  // A numpy view, or a Frame on a channel that declared a stream.
+  // A Frame of the stream's device on a channel that declared one, else a host Frame.
   auto wrap(flux::Frame && v) -> nb::object
   {
     const flux::gpu::Stream & s = sub_.stream();
     const bool deferred = sub_.release_mode() == flux::gpu::ReleaseMode::Deferred;
-    return s.declared() ? frame_or_none(std::move(v), s.device(), deferred)
-                        : view_or_none(std::move(v));
+    return frame_or_none(std::move(v), s.declared() ? s.device() : -1, deferred);
   }
 
   auto core() noexcept -> flux::detail::Subscriber & { return sub_; }
@@ -1274,16 +1274,16 @@ public:
     const void * channel = v.trace_channel();
     const std::uint64_t ticket = v.ticket();
     const flux::gpu::Stream & s = core_->stream();
+    const bool deferred = core_->release_mode() == flux::gpu::ReleaseMode::Deferred;
+    const nb::object frame =
+      nb::cast(Frame(std::move(v), s.declared() ? s.device() : -1, true, deferred));
+    flux_trace_py_ready(channel, ticket);
     if (!s.declared()) {
-      const nb::object view = view_of(std::move(v));
-      flux_trace_py_ready(channel, ticket);
-      cb_(view);
+      // A host frame holds its slot while it is referenced, as a numpy array would.
+      cb_(frame);
       return true;
     }
-    // The callback is the frame's scope, as a `with` block is for take().
-    const bool deferred = core_->release_mode() == flux::gpu::ReleaseMode::Deferred;
-    const nb::object frame = nb::cast(Frame(std::move(v), s.device(), true, deferred));
-    flux_trace_py_ready(channel, ticket);
+    // The callback is a device frame's scope, as a `with` block is for take().
     try {
       cb_(frame);
     } catch (...) {
@@ -1730,6 +1730,17 @@ NB_MODULE(_flux, m)
       [](Frame & f, const flux_py::TensorAt & at, const nb::kwargs & kw) {
         return f.tensor_dlpack(at, kw);
       })
+    .def_prop_ro("array", &Frame::host_array)
+    .def(
+      "__array__",
+      [](const Frame & f, const nb::object & dtype, const nb::object &) {
+        nb::object a = f.host_array();
+        return dtype.is_none() ? a : a.attr("astype")(dtype);
+      },
+      "dtype"_a = nb::none(), "copy"_a = nb::none())
+    .def("__bytes__", [](const Frame & f) { return f.host_array().attr("tobytes")(); })
+    .def_prop_ro("aux", &Frame::aux)
+    .def_prop_ro("on_device", &Frame::on_device)
     .def_prop_ro("valid", &Frame::valid)
     .def("__bool__", &Frame::valid)
     .def_prop_ro("shape", &Frame::shape)

@@ -277,3 +277,8 @@
     * CUDA 없이 빌드해도 `Buffer::stream()`, `View::stream()`, `View::after()`가 있다.
 
 20. `flux topic hz`의 `--window`를 지웠다. 1초마다 출력한다. 같은 이름의 `ros2 topic hz -w`는 메시지 개수를 받아, 같은 옵션 이름이 다른 뜻이었다. 구독 쪽 속도와 간격 통계는 `ros2 topic hz_flux`로 본다.
+
+21. Python CPU 구독도 numpy 배열 대신 `flux.Frame`을 준다. GPU 구독과 같은 타입이다.
+    * 배열은 `frame.array`(읽기 전용)다. `np.asarray(frame)`, `bytes(frame)`, `frame.shape`, `frame.dtype`은 그대로 쓴다. `frame[0]`, `frame.sum()`, `frame.copy()` 같은 numpy 연산은 `frame.array`에 한다.
+    * `frame.release()`나 `with frame:`으로 슬롯을 일찍 돌려준다. 하지 않으면 전처럼 Frame과 그 배열이 사라질 때 돌려준다.
+    * 생성된 `View(frame)`, `flux.aux(frame)`, `frame.aux`는 Frame과 그 배열을 모두 받는다.

@@ -551,4 +551,4 @@ def test_a_view_kept_by_a_callback_stays_readable(node):
     # Three of the four slots are kept, so these all go through the fourth.
     for i in range(8):
         assert pub.publish(np.full(4, 100 + i, np.int32))
-    assert [int(v[0]) for v in kept] == [0, 1, 2]
+    assert [int(v.array[0]) for v in kept] == [0, 1, 2]

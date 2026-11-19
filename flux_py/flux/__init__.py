@@ -1,8 +1,9 @@
 """flux for rclpy nodes: zero-copy frames between processes on one host.
 
-A Subscription hands its callback a read-only numpy view of the frame in shared memory. The view
-holds the frame's slot until it is garbage: copy out what is kept long, or the publisher runs
-out of slots (QoS max_borrow).
+A Subscription hands its callback a Frame; on the host, frame.array is a read-only numpy view of
+the slot in shared memory. The Frame and its arrays hold the slot until they are garbage or the
+Frame is released: copy out what is kept long, or the publisher runs out of slots (QoS
+max_borrow).
 """
 
 import atexit
@@ -338,7 +339,7 @@ class Subscription(_flux._Subscription):
         fence_timeout=None,
         release="wait",
     ):
-        """device="cuda" hands out Frames instead of numpy views: their memory is reachable
+        """device="cuda" hands out Frames whose device memory is reachable only
         inside `with frame:` or the callback, and leaving either waits for the
         subscription's stream before the slot goes back. fence_timeout, in seconds, bounds that
         wait; None waits as long as it takes. A release that runs out keeps its slot until the

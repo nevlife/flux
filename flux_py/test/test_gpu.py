@@ -90,7 +90,7 @@ def test_a_frame_written_on_the_device_reaches_host_and_device_subscribers(node)
 
     frame = dev.take()
     assert frame.shape == (256,) and frame.dtype == np.float32 and frame.nbytes == 1024
-    with pytest.raises(RuntimeError, match="with sub.take"):
+    with pytest.raises(RuntimeError, match="with frame"):
         _ = frame.__cuda_array_interface__
     with frame as f:
         with torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
@@ -101,7 +101,7 @@ def test_a_frame_written_on_the_device_reaches_host_and_device_subscribers(node)
         assert cai["data"][1] is True and cai["data"][0] != 0 and cai["typestr"] == "<f4"
     # Its CUDA array interface's consumers hold the frame itself, so it goes with the frame.
     assert frame.valid
-    with pytest.raises(RuntimeError, match="with sub.take"):
+    with pytest.raises(RuntimeError, match="with frame"):
         _ = frame.__cuda_array_interface__
     del t, f, frame
     assert dev.take() is None  # refreshes the counters, which are as of the last take
@@ -514,7 +514,7 @@ def test_an_image_slot_publisher_reaches_a_subscriber(node):
     sub = flux.Subscription(node, topic("image"))
     frame = np.arange(4096, dtype=np.uint16)
     assert pub.publish(frame) == flux.Published.OK
-    np.testing.assert_array_equal(sub.take().view(np.uint16), frame)
+    np.testing.assert_array_equal(sub.take().array.view(np.uint16), frame)
     with pytest.raises(flux.Error):
         flux.Publisher(node, topic("image_arena"), image_slots="on")
     small = flux.Publisher(
@@ -645,8 +645,8 @@ CHILD = textwrap.dedent(
     with sub.take() as f:
         with torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
             assert float(torch.from_dlpack(f).sum()) == 8.0
-    assert float(cpu.take().sum()) == 1.25 * 128
-    assert cpu.take().tolist() == [2.0] * 4
+    assert float(cpu.take().array.sum()) == 1.25 * 128
+    assert cpu.take().array.tolist() == [2.0] * 4
     print("ok")
     """
 )

@@ -105,7 +105,7 @@ class Arrivals:
         while True:
             frame = self._sub.take_blocking(0.02)
             if frame is not None:
-                self.flux.append((time.monotonic(), int(frame[0])))
+                self.flux.append((time.monotonic(), int(frame.array[0])))
                 del frame
             elif self._done.is_set():
                 break
