@@ -5,11 +5,11 @@
 ```text
 flux topic list
 flux topic info <channel>
-flux topic hz <channel> [--window SEC]
+flux topic hz <channel>
 ```
 
 - 실행한 사용자의 채널만 보인다.
-- bash에서는 워크스페이스를 source하면 Tab 자동완성이 활성화된다. 하위 명령, `--window`, 이 호스트의 채널 이름을 완성한다.
+- bash에서는 워크스페이스를 source하면 Tab 자동완성이 활성화된다. 하위 명령과 이 호스트의 채널 이름을 완성한다.
 
 ## topic list
 
@@ -64,7 +64,7 @@ sampling /clidemo/image every 1s (Ctrl-C to stop)
      98.99 Hz   (99 frames in 1.00s)
 ```
 
-- `--window`로 지정한 초(기본 1, 최소 0.001)마다 발행 속도를 출력한다.
+- 1초마다 발행 속도를 출력한다. 구독 쪽 속도와 간격 통계는 `ros2 topic hz_flux`(bridge)로 본다.
 - 속도는 발행자가 commit한 프레임 수로 측정하므로 구독자의 수신과 관계가 없다.
 - 발행자가 재시작한 구간은 표시만 하고 다음 구간부터 다시 측정한다.
 - Ctrl-C로 종료한다.

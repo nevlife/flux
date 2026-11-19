@@ -154,8 +154,10 @@ b.commit__()
 ```
 
 ```python
-with sub.take() as frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stream)):
-    data = torch.from_dlpack(image.View(frame).data__device)
+frame = sub.take_blocking(1.0)  # None when nothing came
+if frame is not None:
+    with frame, torch.cuda.stream(torch.cuda.ExternalStream(frame.stream)):
+        data = torch.from_dlpack(image.View(frame).data__device)
 ```
 
 - 생성 모듈은 import 시 fingerprint를 등록하므로, `device="cuda"` 발행자도 C++처럼 슬롯이 호스트 메모리다.

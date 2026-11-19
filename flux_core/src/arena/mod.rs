@@ -170,17 +170,34 @@ unsafe impl Send for Arena {}
 
 static ARENA: OnceLock<Option<Arena>> = OnceLock::new();
 
-/// The arena size `FLUX_ARENA_BYTES` asks for, `MAX_ARENA_BYTES` when unset; None for 0 or a
-/// value that is not a number.
+/// The arena size `FLUX_ARENA_BYTES` asks for in bytes, `MAX_ARENA_BYTES` when unset; None for
+/// 0. A value that is not a number is refused with a message, as unset; one past the maximum is
+/// cut to it.
 pub fn configured() -> Option<usize> {
     static SIZE: OnceLock<Option<usize>> = OnceLock::new();
-    *SIZE.get_or_init(|| {
-        let bytes = match std::env::var("FLUX_ARENA_BYTES") {
-            Err(_) => MAX_ARENA_BYTES,
-            Ok(v) => v.trim().parse::<usize>().ok()?,
-        };
-        Some(bytes.min(MAX_ARENA_BYTES) & !4095).filter(|&n| n > 0)
-    })
+    *SIZE.get_or_init(|| sized(std::env::var("FLUX_ARENA_BYTES").ok().as_deref()))
+}
+
+fn sized(var: Option<&str>) -> Option<usize> {
+    let bytes = match var.map(|v| (v, v.trim().parse::<usize>())) {
+        None => MAX_ARENA_BYTES,
+        Some((_, Ok(n))) => {
+            if n > MAX_ARENA_BYTES {
+                eprintln!(
+                    "flux: FLUX_ARENA_BYTES={n} is past the most, {MAX_ARENA_BYTES}; using that"
+                );
+            }
+            n
+        }
+        Some((v, Err(_))) => {
+            eprintln!(
+                "flux: FLUX_ARENA_BYTES={v:?} is not a number of bytes; the arena keeps its \
+                 default, {MAX_ARENA_BYTES}"
+            );
+            MAX_ARENA_BYTES
+        }
+    };
+    Some(bytes.min(MAX_ARENA_BYTES) & !4095).filter(|&n| n > 0)
 }
 
 /// The process's arena, made on first use. None when it is off or could not be made, and in a
@@ -606,6 +623,20 @@ pub fn scope_leave() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A value that is not a number keeps the default instead of turning the arena off.
+    #[test]
+    fn the_arena_size_refuses_a_value_that_is_not_a_number() {
+        assert_eq!(sized(None), Some(MAX_ARENA_BYTES));
+        assert_eq!(sized(Some("16G")), Some(MAX_ARENA_BYTES));
+        assert_eq!(sized(Some("0")), None);
+        assert_eq!(sized(Some("8192")), Some(8192));
+        assert_eq!(sized(Some(" 4100 ")), Some(4096));
+        assert_eq!(
+            sized(Some(&(MAX_ARENA_BYTES * 2).to_string())),
+            Some(MAX_ARENA_BYTES)
+        );
+    }
 
     /// The pages of a block are reserved before it is written; a block whose pages cannot be has
     /// no effect, and the rest of the arena still serves.

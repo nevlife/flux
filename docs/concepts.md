@@ -55,7 +55,7 @@ arena는 발행 프로세스마다 하나 있는 공유 메모리다. 생성된 
 | 항목 | 동작 |
 | --- | --- |
 | 생성 시점 | 배열이 있는 첫 프레임 |
-| 크기 | 환경 변수 `FLUX_ARENA_BYTES`. 기본값이자 최대값은 16 GiB이고, 0이면 arena를 비활성화한다. 프로세스의 모든 발행자가 나눠 쓴다 |
+| 크기 | 환경 변수 `FLUX_ARENA_BYTES`(바이트 수). 기본값이자 최대값은 16 GiB이고, 0이면 arena를 비활성화한다. 숫자가 아닌 값은 메시지를 남기고 기본값을 쓰고, 최대값보다 큰 값은 최대값으로 줄인다. 프로세스의 모든 발행자가 나눠 쓴다 |
 | 공간이 모자라면 | commit이 `TOO_LARGE`를 낸다. SIGBUS는 발생하지 않는다 |
 | arena 비활성화 시 | 모든 가변 필드를 슬롯에 저장하고, 슬롯보다 큰 프레임의 commit이 `TOO_LARGE`를 낸다. 타입의 기본 슬롯에는 배열 자리가 없으므로 `slot_size`를 지정한다 |
 | 삭제 시점 | 발행 프로세스의 정상 종료. 죽은 프로세스의 arena는 다음 flux 프로세스가 지운다 |
@@ -129,3 +129,4 @@ fork한 자식 프로세스에서는 상속받은 채널이 사용 불가능하�
 
 - 메모리 정책은 C++ `flux::MemoryPolicy::Precommit`·`Lock`, Python `memory="precommit"`·`"lock"`, C `FLUX_MEMORY_PRECOMMIT`·`FLUX_MEMORY_LOCK`이다. `Precommit`은 페이지를 만들 때 잡고, `Lock`은 잡은 뒤 RAM에 잠근다. 요청한 대로 되지 않으면 생성이 실패한다.
 - Docker 기본 seccomp와 `--ipc` private, host 설정에서 동작을 확인했다. 컨테이너 사이의 채널 공유는 지원하지 않는다.
+- seccomp profile이 `futex_waitv`(Linux 5.16)를 막으면 executor 생성이 `Unsupported`로 실패한다. profile에서 허용하거나, 환경 변수 `FLUX_DISABLE_FUTEX_WAITV=1`로 구독마다 대기 스레드를 하나 두는 방식을 쓴다. 5.16보다 오래된 커널은 자동으로 그 방식을 쓴다.

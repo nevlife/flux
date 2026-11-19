@@ -4,24 +4,21 @@
 pub mod format;
 
 use std::fmt::Write as _;
-use std::time::Duration;
 
 use flux_core::{Topic, flatten_key};
 
 pub const USAGE: &str = "usage: flux topic list
        flux topic info <channel>
-       flux topic hz <channel> [--window SEC]
+       flux topic hz <channel>
 
-hz counts frames the publisher committed, not frames any subscriber received.";
-
-/// Below this, hz would print as fast as it can loop; the counter it reads has no finer use.
-const MIN_WINDOW: Duration = Duration::from_millis(1);
+hz prints each second the rate of frames the publisher committed, not frames any subscriber
+received.";
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
     List,
     Info(String),
-    Hz { channel: String, window: Duration },
+    Hz(String),
 }
 
 /// `argv` without the program name. Options may follow the verb in any order.
@@ -30,22 +27,9 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
     let (Some("topic"), Some(verb)) = (argv.first().map(String::as_str), argv.get(1)) else {
         return bad("expected `topic list`, `topic info` or `topic hz`".into());
     };
-    let mut window = None;
     let mut positional = Vec::new();
-    let mut it = argv[2..].iter();
-    while let Some(a) = it.next() {
+    for a in &argv[2..] {
         match a.as_str() {
-            "--window" if verb == "hz" => {
-                let v = it.next().ok_or("flux: --window needs a value")?;
-                match v.parse::<f64>().map(Duration::try_from_secs_f64) {
-                    Ok(Ok(w)) if w >= MIN_WINDOW => window = Some(w),
-                    _ => {
-                        return bad(format!(
-                            "--window must be a number of seconds from 0.001, got '{v}'"
-                        ));
-                    }
-                }
-            }
             o if o.starts_with('-') => return bad(format!("unknown option {o}")),
             p => positional.push(p.to_owned()),
         }
@@ -58,10 +42,7 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
         "list" if positional.is_empty() => Command::List,
         "list" => return bad("topic list takes no channel".into()),
         "info" => Command::Info(one(positional)?),
-        "hz" => Command::Hz {
-            channel: one(positional)?,
-            window: window.unwrap_or(Duration::from_secs(1)),
-        },
+        "hz" => Command::Hz(one(positional)?),
         v => return bad(format!("unknown verb topic {v}")),
     })
 }
@@ -76,19 +57,8 @@ pub fn complete(words: &[String], topics: &[Topic]) -> Vec<String> {
     let mut out: Vec<String> = match before.as_slice() {
         [] => vec!["topic".into()],
         ["topic"] => vec!["list".into(), "info".into(), "hz".into()],
-        [.., "--window"] => Vec::new(),
-        ["topic", verb @ ("info" | "hz"), rest @ ..] => {
-            if typed.starts_with('-') {
-                if *verb == "hz" && !rest.contains(&"--window") {
-                    vec!["--window".into()]
-                } else {
-                    Vec::new()
-                }
-            } else if !rest
-                .iter()
-                .enumerate()
-                .any(|(i, a)| !a.starts_with('-') && (i == 0 || rest[i - 1] != "--window"))
-            {
+        ["topic", "info" | "hz", rest @ ..] => {
+            if !typed.starts_with('-') && !rest.iter().any(|a| !a.starts_with('-')) {
                 topics.iter().map(|t| t.key.clone()).collect()
             } else {
                 Vec::new()
@@ -174,22 +144,12 @@ mod tests {
     }
 
     #[test]
-    fn hz_takes_a_window_after_the_channel() {
-        let c = parse(&argv("topic hz /cam --window 0.5")).unwrap();
+    fn hz_takes_one_channel() {
         assert_eq!(
-            c,
-            Command::Hz {
-                channel: "/cam".into(),
-                window: Duration::from_millis(500)
-            }
+            parse(&argv("topic hz /cam")).unwrap(),
+            Command::Hz("/cam".into())
         );
         assert_eq!(parse(&argv("topic list")).unwrap(), Command::List);
-    }
-
-    #[test]
-    fn hz_defaults_to_a_one_second_window() {
-        let c = parse(&argv("topic hz /cam")).unwrap();
-        assert!(matches!(c, Command::Hz { window, .. } if window == Duration::from_secs(1)));
     }
 
     #[test]
@@ -201,10 +161,7 @@ mod tests {
             "topic info",
             "topic info /a /b",
             "topic list /a",
-            "topic hz /a --window 0",
-            "topic hz /a --window nan",
-            "topic hz /a --window 1e300",
-            "topic hz /a --window 1e-300",
+            "topic hz /a --window 1",
             "topic info /a --window 1",
             "topic list --domain 3",
             "topic list --bogus",
@@ -239,12 +196,9 @@ mod tests {
     }
 
     #[test]
-    fn completion_offers_window_to_hz_once() {
+    fn completion_offers_no_options() {
         let t = [topic("/cam", true, 1)];
-        assert_eq!(completions("topic hz /cam --", &t), ["--window"]);
-        assert!(completions("topic hz /cam --window ", &t).is_empty());
-        assert!(completions("topic hz --window 2 --", &t).is_empty());
-        assert_eq!(completions("topic hz --window 2 ", &t), ["/cam"]);
+        assert!(completions("topic hz /cam --", &t).is_empty());
         assert!(completions("topic info --", &t).is_empty());
     }
 

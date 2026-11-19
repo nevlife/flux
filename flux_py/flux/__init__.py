@@ -339,7 +339,7 @@ class Subscription(_flux._Subscription):
         release="wait",
     ):
         """device="cuda" hands out Frames instead of numpy views: their memory is reachable
-        inside `with sub.take() as frame:` or the callback, and leaving either waits for the
+        inside `with frame:` or the callback, and leaving either waits for the
         subscription's stream before the slot goes back. fence_timeout, in seconds, bounds that
         wait; None waits as long as it takes. A release that runs out keeps its slot until the
         work is done, and counts in fence_failed. release="deferred" does not wait: the slot goes

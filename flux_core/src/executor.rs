@@ -369,7 +369,9 @@ fn merged_wait() -> Result<bool> {
     match e.raw_os_error() {
         Some(libc::ENOSYS) => Ok(false),
         Some(libc::EPERM) => Err(Error::Unsupported(
-            "futex_waitv is forbidden here (a seccomp profile)".into(),
+            "futex_waitv is forbidden here (a seccomp profile): allow it, or set \
+             FLUX_DISABLE_FUTEX_WAITV=1 for a thread per source"
+                .into(),
         )),
         _ => Err(Error::io("futex_waitv", "executor", e)),
     }

@@ -24,7 +24,7 @@ flux_generate_adapters(msg/Cloud.msg)
 | 파일 | 이름 |
 | --- | --- |
 | `include/<pkg>/flux/<snake>.hpp` | `<pkg>::flux_msg::<Msg>` |
-| `<pkg>_flux/<snake>.py` | `<pkg>_flux.<snake>.<Msg>`, `<pkg>_flux.<Msg>` |
+| `<pkg>_flux/<snake>.py` | `<pkg>_flux.<snake>.<Msg>`. 메시지 패키지가 만든 어댑터는 `<pkg>_flux.<Msg>`로도 import된다. 표준 메시지(`flux_std_adapters`)의 `sensor_msgs_flux` 등은 namespace 패키지라 `sensor_msgs_flux.image.Image`처럼 모듈로 import한다 |
 | `include/<pkg>/flux/<snake>_ros.hpp` | ROS 메시지 객체와 변환하는 `msg_to_frame()`, `frame_to_msg()`, `flux::RosAdapter<<pkg>::msg::<Msg>>` |
 | `<pkg>_flux/<snake>_ros.py` | 같은 함수의 Python 판과 `MESSAGE`(rclpy 메시지 클래스) |
 

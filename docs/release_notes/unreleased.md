@@ -49,6 +49,8 @@
 
 ### 버그 수정
 
+* `FLUX_ARENA_BYTES`에 숫자가 아닌 값(`16G` 등)을 주면 arena가 아무 말 없이 꺼졌다. 이제 메시지를 남기고 기본값을 쓴다. seccomp가 `futex_waitv`를 막아 executor 생성이 실패할 때, 오류가 `FLUX_DISABLE_FUTEX_WAITV=1`을 알려 준다
+
 * Python `Builder`가 빈 슬롯이 없을 때(`NullWriter`) `adopt__<name>`에서 `AttributeError`를 냈다. 이제 쓰지 않고 `False`를 돌려준다
 * Python에서 flux가 스스로 배열이 GPU에 있는지 볼 때 `Frame`의 `__cuda_array_interface__`를 읽어, 그 frame의 슬롯을 `Frame` 객체가 사라질 때까지 붙잡았다
 
@@ -273,3 +275,5 @@
     * mirror(`mirror_to_ros`)는 발행자에 준 QoS로 발행한다. 전에는 best-effort depth 1이라 기본 QoS(reliable)의 ROS 구독자가 받지 못했다.
     * Python `flux_wrapper.Executor.stop()`은 `cancel()`이 되었다. Python도 C++처럼, 패키지를 flux와 함께 빌드했을 때만 flux 경로를 쓴다.
     * CUDA 없이 빌드해도 `Buffer::stream()`, `View::stream()`, `View::after()`가 있다.
+
+20. `flux topic hz`의 `--window`를 지웠다. 1초마다 출력한다. 같은 이름의 `ros2 topic hz -w`는 메시지 개수를 받아, 같은 옵션 이름이 다른 뜻이었다. 구독 쪽 속도와 간격 통계는 `ros2 topic hz_flux`로 본다.

@@ -85,7 +85,8 @@ fn info(t: &Topic) -> u8 {
 
 /// From the segment's commit counter: frames the publisher committed, received or not.
 #[allow(clippy::cast_precision_loss)]
-fn hz(t: &Topic, name: &str, window: Duration) -> u8 {
+fn hz(t: &Topic, name: &str) -> u8 {
+    let window = Duration::from_secs(1);
     let first = read_channel_stats(&t.signpost);
     if !first.live {
         eprintln!("flux: '{name}' has no segment up; nothing is publishing");
@@ -128,7 +129,7 @@ fn run(command: &Command) -> Result<u8, String> {
     Ok(match command {
         Command::List => list(&topics),
         Command::Info(name) => info(find(&topics, name)?),
-        Command::Hz { channel, window } => hz(find(&topics, channel)?, channel, *window),
+        Command::Hz(channel) => hz(find(&topics, channel)?, channel),
     })
 }
 

@@ -606,7 +606,7 @@ private:
     }
     if (!scoped_) {
       throw flux_py::UsageError(
-        "flux: a CUDA frame's memory is handed out only inside `with sub.take() as frame:` or a "
+        "flux: a CUDA frame's memory is handed out only inside `with frame:` or a "
         "callback, since its release waits for the stream");
     }
   }

@@ -139,16 +139,6 @@ fn info_escapes_control_characters() {
 }
 
 #[test]
-fn a_window_too_long_or_too_short_is_refused() {
-    for w in ["1e300", "1e-300"] {
-        assert_eq!(
-            flux(&["topic", "hz", "/x", "--window", w]).status.code(),
-            Some(2)
-        );
-    }
-}
-
-#[test]
 fn a_missing_channel_or_a_bad_invocation_fails() {
     let out = flux(&["topic", "info", &key("none")]);
     assert_eq!(out.status.code(), Some(1));
@@ -185,14 +175,14 @@ fn hz_counts_published_frames_with_no_subscriber() {
             }
         });
         let mut child = Command::new(env!("CARGO_BIN_EXE_flux"))
-            .args(["topic", "hz", &k, "--window", "0.3"])
+            .args(["topic", "hz", &k])
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
         let out = child.stdout.take().unwrap();
         let lines = BufReader::new(out)
             .lines()
-            .take(4)
+            .take(3)
             .map_while(Result::ok)
             .collect();
         let _ = child.kill();
@@ -200,9 +190,9 @@ fn hz_counts_published_frames_with_no_subscriber() {
         stop.store(true, Ordering::Relaxed);
         lines
     });
-    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert_eq!(lines.len(), 3, "{lines:?}");
     assert!(
-        lines[0].ends_with("(from name) every 0.3s (Ctrl-C to stop)"),
+        lines[0].ends_with("(from name) every 1s (Ctrl-C to stop)"),
         "{lines:?}"
     );
     let rates: Vec<f64> = lines[1..]
@@ -211,7 +201,7 @@ fn hz_counts_published_frames_with_no_subscriber() {
         .collect();
     // About 200 Hz less sleep overshoot; far from 0 and from the 1/window a reader would see.
     assert!(
-        rates.len() == 3 && rates.iter().all(|&r| (50.0..400.0).contains(&r)),
+        rates.len() == 2 && rates.iter().all(|&r| (50.0..400.0).contains(&r)),
         "{lines:?}"
     );
 }
