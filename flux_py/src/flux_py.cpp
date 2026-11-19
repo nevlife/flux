@@ -459,9 +459,9 @@ public:
   auto dlpack(const nb::kwargs & kw) -> nb::object
   {
     if (!on_device()) {
-      // As numpy does for a read-only array: DLPack cannot say the memory is read-only.
-      throw nb::buffer_error(
-        "flux: a host frame is read-only, which DLPack cannot signal; use frame.array");
+      // numpy's own rules for a read-only array: numpy 2 exports it to a consumer that asks for
+      // DLPack 1.0 (max_version), which can mark it read-only; numpy 1 never does.
+      return host_array().attr("__dlpack__")(**kw);
     }
     const DeviceArray a = array();
     remember_stream(held_->streams, kw);
@@ -1733,9 +1733,13 @@ NB_MODULE(_flux, m)
     .def_prop_ro("array", &Frame::host_array)
     .def(
       "__array__",
-      [](const Frame & f, const nb::object & dtype, const nb::object &) {
-        nb::object a = f.host_array();
-        return dtype.is_none() ? a : a.attr("astype")(dtype);
+      [](const Frame & f, const nb::object & dtype, const nb::object & copy) {
+        // numpy 1 passes no copy and copies itself when asked; numpy 2 passes it and trusts it.
+        const nb::module_ np = nb::module_::import_("numpy");
+        if (copy.is_none()) {
+          return np.attr("asarray")(f.host_array(), "dtype"_a = dtype);
+        }
+        return np.attr("array")(f.host_array(), "dtype"_a = dtype, "copy"_a = copy);
       },
       "dtype"_a = nb::none(), "copy"_a = nb::none())
     .def("__bytes__", [](const Frame & f) { return f.host_array().attr("tobytes")(); })

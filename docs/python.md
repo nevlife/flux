@@ -105,7 +105,7 @@ flux.create_subscription(node, topic, qos, callback, *, fingerprint=flux.NO_SCHE
 
 - 콜백과 `take()`는 `flux.Frame`을 준다. `frame.array`는 슬롯을 가리키는 읽기 전용 numpy 배열이다. `np.asarray(frame)`도 같은 배열이고, `bytes(frame)`은 복사본이다. `shape`, `dtype`, `nbytes`, `aux`(aux 바이트)도 읽는다. `bfloat16` 프레임은 bit가 같은 `uint16` 배열로 읽힌다.
 - Frame이나 그 배열(과 slice, view)이 남아 있는 동안 구독은 그 슬롯을 점유한다. `frame.release()`나 `with frame:` 블록의 끝에서 Frame은 슬롯을 놓지만, 이미 내준 배열은 자기가 사라질 때까지 슬롯을 점유한다. 콜백 밖에서 쓸 값은 `frame.array.copy()`처럼 복사한다. 동시에 보유 가능한 프레임 수는 QoS `max_borrow`(기본 1)다.
-- CPU 구독의 Frame은 `__dlpack__`을 거절한다. numpy 1.x와 같은 이유로, DLPack은 메모리가 읽기 전용임을 표시하지 못한다. `frame.array`를 거쳐 넘긴다. GPU 구독의 Frame은 [gpu.md](gpu.md)에 있다.
+- CPU 구독의 Frame은 `np.array(frame, copy=..., dtype=...)`의 `copy`와 `dtype`을 numpy의 규칙대로 따른다. `__dlpack__`은 `frame.array`의 것과 같다. 읽기 전용 배열이라서 numpy 2는 DLPack 1.0을 요청한 소비자(`max_version`)에게만 읽기 전용 표시와 함께 내주고, numpy 1.x는 항상 거절한다. GPU 구독의 Frame은 [gpu.md](gpu.md)에 있다.
 - QoS에 거절되는 값이 있으면 생성자가 `flux.Error`를 던진다.
 
 ### flux.Executor

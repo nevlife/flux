@@ -68,6 +68,29 @@ def test_a_frame_reads_back_as_a_read_only_view(node):
     assert sub.take() is None
 
 
+def test_a_frame_converts_as_numpy_asks(node):
+    pub = flux.Publisher(node, topic("convert"), **SMALL)
+    sub = flux.Subscription(node, topic("convert"))
+    assert pub.publish(np.arange(4, dtype=np.float32))
+    f = sub.take()
+    assert np.shares_memory(np.asarray(f), f.array)
+    assert not np.shares_memory(np.array(f), f.array)
+    np.testing.assert_array_equal(np.asarray(f, dtype=np.float64), [0, 1, 2, 3])
+    assert bytes(f) == f.array.tobytes()
+    # DLPack 0.x cannot mark memory read-only, so numpy refuses it; numpy 2 exports to a 1.0
+    # consumer, with the flag set.
+    with pytest.raises(BufferError):
+        f.__dlpack__()
+    if np.lib.NumpyVersion(np.__version__) >= "2.0.0":
+        with pytest.raises(ValueError):
+            np.array(f, dtype=np.float64, copy=False)
+        d = np.from_dlpack(f)
+        assert np.shares_memory(d, f.array) and not d.flags.writeable
+    else:
+        with pytest.raises(BufferError):
+            np.from_dlpack(f)
+
+
 def test_bytes_and_every_dtype_round_trip(node):
     pub = flux.Publisher(node, topic("dtypes"), **SMALL)
     sub = flux.Subscription(node, topic("dtypes"), qos=flux.QoS(depth=4, max_borrow=2))
