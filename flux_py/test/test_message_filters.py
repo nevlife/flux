@@ -86,7 +86,7 @@ def spin_until(ex, done, limit=3.0, each=None):
         if each is not None:
             each()
         time.sleep(0.01)
-    ex.stop()
+    ex.cancel()
     t.join()
     return done()
 

@@ -135,7 +135,7 @@ def test_take_without_an_executor(node, capsys):
     while (frame := sub.take()) is not None:
         print("frame of", frame.nbytes, "bytes")
         del frame
-    frame = sub.take_blocking(100_000_000)
+    frame = sub.take_blocking(0.1)
     # [doc:/py_take_frames]
     assert frame is None
     assert capsys.readouterr().out.count("frame of 1 bytes") == 2

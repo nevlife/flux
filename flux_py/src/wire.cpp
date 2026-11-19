@@ -214,7 +214,8 @@ auto reader_get(nb::handle self, std::size_t off, nb::handle dtype) -> nb::objec
   const flux::wire::Reader w = r.reader();
   const std::uint8_t * p = w.block<std::uint8_t>(off, t.size).data();
   Reader::check(w, "scalar", off);
-  return flux_py::numpy_scalar(p, t.descr);
+  // A Python int, float or bool, as rclpy gives a message's scalar fields.
+  return flux_py::numpy_scalar(p, t.descr).attr("item")();
 }
 
 auto reader_span(nb::handle self, std::size_t off, nb::handle dtype) -> nb::object
@@ -319,6 +320,25 @@ public:
   [[nodiscard]] auto device() const noexcept -> int { return device_; }
   auto w() noexcept -> flux::wire::Writer & { return w_; }
 
+  // An array over the slot, made read-only by seal(): after the commit the slot is the
+  // subscribers', and its next frame the publisher's.
+  auto issue(void * p, std::size_t n, const DType & t, nb::handle self) -> nb::object
+  {
+    nb::object a = rw_array(p, n, t, self);
+    issued_.emplace_back(a);
+    return a;
+  }
+  void seal()
+  {
+    for (const nb::weakref & ref : issued_) {
+      const nb::object a = ref();
+      if (!a.is_none()) {
+        PyArray_CLEARFLAGS(flux_py::as_array(a), NPY_ARRAY_WRITEABLE);
+      }
+    }
+    issued_.clear();
+  }
+
   // A write that does not fit has latched bad() in wire.hpp before this raises.
   void check(const char * what, std::size_t off) const
   {
@@ -333,6 +353,7 @@ private:
   int device_ = -1;
   flux::wire::Writer w_;
   bool poisoned_ = false;
+  std::vector<nb::weakref> issued_;
 };
 
 template <class F>
@@ -366,7 +387,7 @@ auto writer_block(nb::handle self, std::size_t off, nb::handle dtype, std::size_
   void * p =
     by_size(t.size, [&](auto e) -> void * { return w.w().block<decltype(e)>(off, n).data(); });
   w.check("block", off);
-  return rw_array(p, n, t, self);
+  return w.issue(p, n, t, self);
 }
 
 // numpy 1.x wraps an int that does not fit, and numpy 2 a numpy integer: both raise
@@ -429,7 +450,7 @@ auto writer_alloc(nb::handle self, std::size_t off, nb::handle count, nb::handle
     void * p =
       by_size(t.size, [&](auto e) -> void * { return w.w().alloc<decltype(e)>(off, n).data(); });
     w.check("array", off);
-    return rw_array(p, n, t, self);
+    return w.issue(p, n, t, self);
   });
 }
 
@@ -844,9 +865,18 @@ auto flux_py::tensor_dlpack(
   return nb::cast(arr);
 }
 
-void bind_wire(nb::module_ & m)
+void bind_wire(nb::module_ & m, nb::handle error)
 {
-  static nb::exception<WireError> wire_error(m, "WireError", PyExc_ValueError);
+  static const nb::object wire_error =
+    flux_py::error_subclass(m, "WireError", error, PyExc_ValueError);
+  wire_error.attr("status") = m.attr("Status").attr("INVALID_ARGUMENT");
+  nb::register_exception_translator([](const std::exception_ptr & p, void *) {
+    try {
+      std::rethrow_exception(p);
+    } catch (const WireError & e) {
+      PyErr_SetString(wire_error.ptr(), e.what());
+    }
+  });
 
   nb::class_<Reader>(m, "Reader")
     .def(nb::init<nb::handle>(), "buf"_a)
@@ -902,6 +932,7 @@ void bind_wire(nb::module_ & m)
     .def("alloc", &writer_alloc, "off"_a, "n"_a.none(), "dtype"_a)
     .def("alloc_device", &writer_alloc_device, "off"_a, "n"_a.none(), "dtype"_a)
     .def("adopt", &writer_adopt, "off"_a, "array"_a, "dtype"_a)
+    .def("seal", &Writer::seal)
     .def("tensor", &writer_tensor, "at"_a, "dtype"_a, "shape"_a.none())
     .def("put_str", &writer_put_str, "off"_a, "s"_a.none())
     .def("put_strs", &writer_put_strs, "off"_a, "items"_a.none(), "count"_a = nb::none())

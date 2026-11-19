@@ -559,12 +559,11 @@ impl PyToMsg<'_> {
                     self.out.push(format!("{ind}{dst} = {tmp}"));
                 }
                 LeafKind::Fixed if p.leaf.count == 1 && byte => {
-                    self.out
-                        .push(format!("{ind}{dst} = bytes(({view}.{n}.item(),))"));
+                    self.out.push(format!("{ind}{dst} = bytes(({view}.{n},))"));
                 }
-                // A numpy integer is not a PyLong; rosidl's C converter asserts on it.
+                // A View's scalar is already a Python int or float, as rosidl's converter wants.
                 LeafKind::Fixed if p.leaf.count == 1 => {
-                    self.out.push(format!("{ind}{dst} = {view}.{n}.item()"));
+                    self.out.push(format!("{ind}{dst} = {view}.{n}"));
                 }
                 LeafKind::Column if byte => {
                     self.region(ind, &off, 1);

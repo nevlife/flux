@@ -8,10 +8,13 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
-// flux.wire's Reader, Writer and WireError, for generated Python adapters.
-void bind_wire(nanobind::module_ & m);
+// flux.wire's Reader, Writer and WireError (a subclass of `error`, flux.Error), for generated
+// Python adapters.
+void bind_wire(nanobind::module_ & m, nanobind::handle error);
 
 namespace flux
 {
@@ -20,6 +23,30 @@ class Frame;
 
 namespace flux_py
 {
+
+// Raised as flux.UsageError: a call the state does not allow (a released frame, an ended loan).
+struct UsageError : std::logic_error
+{
+  using std::logic_error::logic_error;
+};
+
+// Raised as flux.InvalidArgument.
+struct ArgumentError : std::invalid_argument
+{
+  using std::invalid_argument::invalid_argument;
+};
+
+// `name` in `m`, a subclass of flux.Error and the Python exception `also`.
+inline auto error_subclass(
+  nanobind::module_ & m, const char * name, nanobind::handle error,
+  PyObject * also) -> nanobind::object
+{
+  const std::string full = nanobind::cast<std::string>(m.attr("__name__")) + "." + name;
+  const nanobind::object bases = nanobind::steal(PyTuple_Pack(2, error.ptr(), also));
+  nanobind::object cls = nanobind::steal(PyErr_NewException(full.c_str(), bases.ptr(), nullptr));
+  m.attr(name) = cls;
+  return cls;
+}
 
 // n `dtype` elements at device address p, as a flux.wire.DeviceSpan holding `owner`.
 auto device_span(

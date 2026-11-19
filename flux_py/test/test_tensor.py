@@ -354,7 +354,7 @@ def test_cpp_publishes_and_python_reads_in_place(node, mod, driver):
             np.arange(4, dtype=np.int64).reshape(2, 2) - 3_000_000_000_000,
         ]
         for w in want:
-            frame = sub.take_blocking(5_000_000_000)
+            frame = sub.take_blocking(5.0)
             got = mod.View(frame).as_tensor__()
             assert got.dtype == w.dtype and got.ctypes.data % 64 == 0
             np.testing.assert_array_equal(got, w)

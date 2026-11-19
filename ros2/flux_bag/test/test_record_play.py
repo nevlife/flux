@@ -82,7 +82,7 @@ def play_into(sub, *args):
     )
     got = []
     while True:
-        frame = sub.take_blocking(50_000_000)
+        frame = sub.take_blocking(0.05)
         if frame is not None:
             got.append((frame.dtype, frame.shape, frame.copy()))
         elif play.poll() is not None:
@@ -296,7 +296,7 @@ def test_a_rate_too_slow_for_int64_nanoseconds_plays_slowly(node, tmp_path):
     got = 0
     end = time.monotonic() + 2.0
     while time.monotonic() < end:
-        got += sub.take_blocking(50_000_000) is not None
+        got += sub.take_blocking(0.05) is not None
     play.send_signal(signal.SIGINT)
     assert play.wait(timeout=10) == 0
     assert got == 1
@@ -492,7 +492,7 @@ def play_taking(takers, *args):
 
 def taker(sub, into):
     def take():
-        frame = sub.take_blocking(50_000_000)
+        frame = sub.take_blocking(0.05)
         if frame is None:
             return False
         into.append((frame.copy(), bytes(flux.aux(frame))))
@@ -669,7 +669,7 @@ def test_a_gpu_image_channel_is_recorded_and_played_to_cpu_and_cuda(node, tmp_pa
     on_cpu, on_gpu = [], []
 
     def take_gpu():
-        frame = gpu.take_blocking(50_000_000)
+        frame = gpu.take_blocking(0.05)
         if frame is None:
             return False
         with frame:
@@ -780,7 +780,7 @@ def test_play_loops_the_flux_frames(node, tmp_path):
     got = []
     end = time.monotonic() + 10
     while len(got) < 12 and time.monotonic() < end:
-        frame = sub.take_blocking(50_000_000)
+        frame = sub.take_blocking(0.05)
         if frame is not None:
             got.append(int(frame.copy()[0]))
     play.send_signal(signal.SIGINT)
@@ -863,7 +863,7 @@ def test_play_loops_the_ros_topics_and_the_flux_channels_together(node, tmp_path
         events = []
         end = time.monotonic() + 15
         while len(events) < 12 and time.monotonic() < end:
-            frame = sub.take_blocking(20_000_000)
+            frame = sub.take_blocking(0.02)
             if frame is not None:
                 events.append((time.monotonic(), f"F{int(frame.copy()[0])}"))
         play.send_signal(signal.SIGINT)
@@ -892,7 +892,7 @@ def test_play_publishes_the_clock_while_the_flux_frames_play(node, tmp_path):
         )
         arrivals = []
         while True:
-            frame = sub.take_blocking(20_000_000)
+            frame = sub.take_blocking(0.02)
             if frame is not None:
                 arrivals.append((time.monotonic(), int(frame.copy()[0])))
             elif play.poll() is not None:

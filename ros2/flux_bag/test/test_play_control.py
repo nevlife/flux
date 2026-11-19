@@ -103,7 +103,7 @@ class Arrivals:
 
     def _take(self):
         while True:
-            frame = self._sub.take_blocking(20_000_000)
+            frame = self._sub.take_blocking(0.02)
             if frame is not None:
                 self.flux.append((time.monotonic(), int(frame[0])))
                 del frame

@@ -460,7 +460,7 @@ public:
   void enter()
   {
     if (!valid()) {
-      throw std::runtime_error("flux: the frame is already released");
+      throw flux_py::UsageError("flux: the frame is already released");
     }
     scoped_ = true;
   }
@@ -506,7 +506,8 @@ public:
     const auto host = r.span<std::uint8_t>(at[6]);
     const auto dev = r.device<std::uint8_t>(at[6]);
     if (dev.data() == nullptr) {
-      throw std::runtime_error(
+      throw flux::Error(
+        flux::Status::Unsupported,
         "flux: this subscriber has no device address for the tensor's data (the publisher's "
         "arena was not registered with this GPU)");
     }
@@ -526,7 +527,7 @@ public:
   [[nodiscard]] auto copy_to_host() const -> nb::object
   {
     if (!valid()) {
-      throw std::runtime_error("flux: the frame is already released");
+      throw flux_py::UsageError("flux: the frame is already released");
     }
     std::vector<npy_intp> shape;
     for (const std::size_t d : shape_of(meta_)) {
@@ -543,7 +544,7 @@ public:
     void * dst = PyArray_DATA(flux_py::as_array(a));
     const auto n = static_cast<std::size_t>(meta_.nbytes);
     if (!without_gil([&] { return held_->v.copy_to(0, dst, n); })) {
-      throw std::runtime_error("flux: the frame's copy to the host failed");
+      throw flux::Error(flux::Status::Io, "flux: the frame's copy to the host failed");
     }
     return a;
   }
@@ -552,7 +553,7 @@ public:
   [[nodiscard]] auto aux() const -> nb::object
   {
     if (!valid()) {
-      throw std::runtime_error("flux: the frame is already released");
+      throw flux_py::UsageError("flux: the frame is already released");
     }
     const auto a = held_->v.aux();
     const nb::object descr = descr_of(flux::DType::U8);
@@ -591,7 +592,8 @@ private:
   {
     in_scope();
     if (held_->v.data() == nullptr) {
-      throw std::runtime_error(
+      throw flux::Error(
+        flux::Status::Unsupported,
         "flux: this GPU route has no host mapping to read a frame's fields through");
     }
     return held_->v;
@@ -600,10 +602,10 @@ private:
   void in_scope() const
   {
     if (!valid()) {
-      throw std::runtime_error("flux: the frame is already released");
+      throw flux_py::UsageError("flux: the frame is already released");
     }
     if (!scoped_) {
-      throw std::runtime_error(
+      throw flux_py::UsageError(
         "flux: a CUDA frame's memory is handed out only inside `with sub.take() as frame:` or a "
         "callback, since its release waits for the stream");
     }
@@ -735,10 +737,10 @@ public:
   auto array(nb::handle self) -> nb::object
   {
     if (!w_) {
-      throw std::runtime_error("flux: the loan is already committed or aborted");
+      throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
     if (w_.data() == nullptr) {
-      throw std::runtime_error(
+      throw flux_py::UsageError(
         "flux: the loan's payload is device memory; write it through __cuda_array_interface__ "
         "or __dlpack__");
     }
@@ -754,7 +756,7 @@ public:
   auto aux(nb::handle self) -> nb::object
   {
     if (!w_) {
-      throw std::runtime_error("flux: the loan is already committed or aborted");
+      throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
     const auto a = w_.aux();
     const nb::object descr = descr_of(flux::DType::U8);
@@ -773,7 +775,7 @@ public:
   void set_aux_len(std::size_t n)
   {
     if (!w_) {
-      throw std::runtime_error("flux: the loan is already committed or aborted");
+      throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
     w_.set_aux_len(n);
     aux_len_ = n;
@@ -785,7 +787,7 @@ public:
   auto copy_from(nb::handle src, std::size_t at) -> bool
   {
     if (!w_) {
-      throw std::runtime_error("flux: the loan is already committed or aborted");
+      throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
     const auto a = nb::cast<nb::ndarray<nb::ro, nb::c_contig, nb::device::cpu>>(src);
     const bool ok = without_gil([&] { return w_.copy_from(at, a.data(), a.nbytes()); });
@@ -801,13 +803,13 @@ public:
   void resize(std::size_t nbytes)
   {
     if (!w_) {
-      throw std::runtime_error("flux: the loan is already committed or aborted");
+      throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
     const std::size_t item = flux::dtype_size(dtype_);
     if (shape_.size() != 1 || nbytes % item != 0 || nbytes / item > loaned_) {
-      throw nb::value_error(("flux: resize(" + std::to_string(nbytes) +
-                             ") needs a 1-D loan of at least that many bytes, whole items")
-                              .c_str());
+      throw flux_py::ArgumentError(("flux: resize(" + std::to_string(nbytes) +
+                                    ") needs a 1-D loan of at least that many bytes, whole items")
+                                     .c_str());
     }
     shape_[0] = static_cast<npy_intp>(nbytes / item);
     resized_ = true;
@@ -895,10 +897,10 @@ private:
   auto device_array() -> DeviceArray
   {
     if (!w_) {
-      throw std::runtime_error("flux: the loan is already committed or aborted");
+      throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
     if (w_.device_ptr() == nullptr) {
-      throw std::runtime_error(
+      throw flux_py::UsageError(
         "flux: the publisher declared no device; write the loan through .array");
     }
     return {
@@ -995,20 +997,20 @@ public:
     std::vector<std::size_t> dims =
       shape ? *shape : std::vector<std::size_t>{ch_.slot_size() / flux::dtype_size(d)};
     if (dims.size() > flux::kMaxDims) {
-      throw nb::value_error("flux: more than 8 dimensions");
+      throw flux_py::ArgumentError("flux: more than 8 dimensions");
     }
     // The numpy view spans the shape, so a shape past the slot would write into the next one.
     std::uint64_t nbytes = flux::dtype_size(d);
     for (const std::size_t s : dims) {
       if (s != 0 && nbytes > UINT64_MAX / s) {
-        throw nb::value_error("flux: loan shape overflows");
+        throw flux_py::ArgumentError("flux: loan shape overflows");
       }
       nbytes *= s;
     }
     if (nbytes > ch_.slot_size()) {
-      throw nb::value_error(("flux: a loan of " + std::to_string(nbytes) +
-                             " bytes exceeds slot_size " + std::to_string(ch_.slot_size()))
-                              .c_str());
+      throw flux_py::ArgumentError(("flux: a loan of " + std::to_string(nbytes) +
+                                    " bytes exceeds slot_size " + std::to_string(ch_.slot_size()))
+                                     .c_str());
     }
     const std::vector<std::uint64_t> wide(dims.begin(), dims.end());
     flux::Loan w = ch_.loan(wide.data(), wide.size(), d);
@@ -1590,14 +1592,26 @@ NB_MODULE(_flux, m)
   m.attr("DEFAULT_TICK_NS") = FLUX_DEFAULT_TICK_NS;
   m.attr("DEFAULT_TURN_NS") = FLUX_DEFAULT_TURN_NS;
 
-  static nb::exception<flux::Error> error(m, "Error", PyExc_RuntimeError);
+  // Every error flux raises is a flux.Error, with its status; the subclasses are also the Python
+  // exceptions code expects for a bad argument and a call the state does not allow.
+  static nb::exception<flux::Error> error(m, "Error", PyExc_Exception);
+  static const nb::object invalid =
+    flux_py::error_subclass(m, "InvalidArgument", error, PyExc_ValueError);
+  static const nb::object usage =
+    flux_py::error_subclass(m, "UsageError", error, PyExc_RuntimeError);
   nb::register_exception_translator([](const std::exception_ptr & p, void *) {
     try {
       std::rethrow_exception(p);
     } catch (const flux::Error & e) {
-      const nb::object err = error(e.what());
+      const nb::handle cls =
+        e.status() == flux::Status::InvalidArgument ? nb::handle(invalid) : nb::handle(error);
+      const nb::object err = cls(e.what());
       err.attr("status") = nb::cast(e.status());
-      PyErr_SetObject(error.ptr(), err.ptr());
+      PyErr_SetObject(cls.ptr(), err.ptr());
+    } catch (const flux_py::UsageError & e) {
+      PyErr_SetString(usage.ptr(), e.what());
+    } catch (const flux_py::ArgumentError & e) {
+      PyErr_SetString(invalid.ptr(), e.what());
     }
   });
 
@@ -1614,6 +1628,8 @@ NB_MODULE(_flux, m)
     .value("IN_USE", flux::Status::InUse)
     .value("BUFFER_TOO_SMALL", flux::Status::BufferTooSmall)
     .value("NO_FRAME", flux::Status::NoFrame);
+  invalid.attr("status") = flux::Status::InvalidArgument;
+  usage.attr("status") = nb::none();
 
   nb::enum_<flux::Published>(m, "Published")
     .value("OK", flux::Published::Ok)
@@ -1642,7 +1658,7 @@ NB_MODULE(_flux, m)
           q->max_borrow(*max_borrow);
         }
       },
-      "depth"_a = nb::none(), "replay"_a = nb::none(), "max_borrow"_a = nb::none())
+      "depth"_a = nb::none(), nb::kw_only(), "replay"_a = nb::none(), "max_borrow"_a = nb::none())
     .def_prop_ro("depth", &flux::QoS::depth)
     .def_prop_ro("replay", &flux::QoS::replay)
     .def_prop_ro("max_borrow", [](const flux::QoS & q) { return q.max_borrow(); });
@@ -1810,7 +1826,7 @@ NB_MODULE(_flux, m)
   nb::class_<Executor>(m, "_Executor", nb::type_slots(executor_slots.data()))
     .def(nb::init<>())
     .def("add", &Executor::add, "sub"_a, "callback"_a, "priority"_a = 0)
-    .def("stop", &Executor::stop)
+    .def("cancel", &Executor::stop)
     .def("serve", &Executor::serve, "running"_a = nb::none())
     .def("open_bridge", &Executor::open_bridge)
     .def("close_bridge", &Executor::close_bridge)
@@ -1862,7 +1878,7 @@ NB_MODULE(_flux, m)
     },
     "fingerprint"_a);
 
-  bind_wire(m);
+  bind_wire(m, error);
   m.def("_arena_scope_enter", &flux_arena_scope_enter);
   m.def("_arena_scope_leave", &flux_arena_scope_leave);
 }

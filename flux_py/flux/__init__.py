@@ -19,9 +19,12 @@ from . import _flux
 from ._flux import _register_layout, _register_stamp_offset  # noqa: F401  generated code calls
 from ._flux import (
     NO_SCHEMA,
+    ChannelStats,
+    Endpoint,
     Error,
     FenceWait,
     Frame,
+    InvalidArgument,
     Loan,
     MemoryPolicy as _MemoryPolicy,
     Platform,
@@ -30,6 +33,9 @@ from ._flux import (
     Refused,
     Route,
     Status,
+    Topic,
+    UsageError,
+    WireError,
     aux,
     enumerate_topics,
     faulted,
@@ -41,11 +47,19 @@ from ._flux import (
 )
 
 __all__ = [
+    "DEFAULT_MAX_SUBSCRIBERS",
+    "DEFAULT_SLOT_COUNT",
+    "DEFAULT_SLOT_SIZE",
     "NO_SCHEMA",
+    "SLOT_STRING_BYTES",
+    "UNTYPED_SLOT_SIZE",
+    "ChannelStats",
+    "Endpoint",
     "Error",
     "Executor",
     "FenceWait",
     "Frame",
+    "InvalidArgument",
     "Loan",
     "PartitionedExecutor",
     "Platform",
@@ -56,6 +70,9 @@ __all__ = [
     "Route",
     "Status",
     "Subscription",
+    "Topic",
+    "UsageError",
+    "WireError",
     "arena_scope",
     "aux",
     "create_publisher",
@@ -91,13 +108,13 @@ _MIRROR_POLL_S = 0.1
 def _cuda(device):
     if device in ("cpu", "cuda"):
         return device == "cuda"
-    raise ValueError(f"flux: device is 'cpu' or 'cuda', not {device!r}")
+    raise InvalidArgument(f"flux: device is 'cpu' or 'cuda', not {device!r}")
 
 
 def _slot(alloc):
     if alloc in ("arena", "slot"):
         return alloc == "slot"
-    raise ValueError(f"flux: alloc is 'arena' or 'slot', not {alloc!r}")
+    raise InvalidArgument(f"flux: alloc is 'arena' or 'slot', not {alloc!r}")
 
 
 _MEMORY = ("default", "precommit", "lock")
@@ -106,7 +123,7 @@ _MEMORY = ("default", "precommit", "lock")
 def _memory(memory):
     if memory in _MEMORY:
         return _MemoryPolicy(_MEMORY.index(memory))
-    raise ValueError(f"flux: memory is one of {_MEMORY}, not {memory!r}")
+    raise InvalidArgument(f"flux: memory is one of {_MEMORY}, not {memory!r}")
 
 
 _IMAGE_SLOTS = ("auto", "off", "on")
@@ -115,7 +132,7 @@ _IMAGE_SLOTS = ("auto", "off", "on")
 def _image_slots(mode):
     if mode in _IMAGE_SLOTS:
         return _IMAGE_SLOTS.index(mode)
-    raise ValueError(f"flux: image_slots is one of {_IMAGE_SLOTS}, not {mode!r}")
+    raise InvalidArgument(f"flux: image_slots is one of {_IMAGE_SLOTS}, not {mode!r}")
 
 
 _IMAGE_ENCODINGS = ("", "bgra8", "rgba8", "mono8", "mono16", "nv12", "uyvy", "yuyv")
@@ -124,14 +141,18 @@ _IMAGE_ENCODINGS = ("", "bgra8", "rgba8", "mono8", "mono16", "nv12", "uyvy", "yu
 def _image_encoding(encoding):
     if encoding in _IMAGE_ENCODINGS:
         return _IMAGE_ENCODINGS.index(encoding)
-    raise ValueError(f"flux: image_encoding is one of {_IMAGE_ENCODINGS[1:]}, not {encoding!r}")
+    raise InvalidArgument(
+        f"flux: image_encoding is one of {_IMAGE_ENCODINGS[1:]}, not {encoding!r}"
+    )
 
 
 def _on_device(array):
-    if hasattr(array, "__cuda_array_interface__"):
-        return True
+    # A flux Frame is asked its device directly: reading its __cuda_array_interface__ would keep
+    # its slot until the Frame goes.
     dlpack_device = getattr(array, "__dlpack_device__", None)
-    return dlpack_device is not None and dlpack_device()[0] != 1
+    if dlpack_device is not None:
+        return dlpack_device()[0] != 1
+    return hasattr(array, "__cuda_array_interface__")
 
 
 @contextlib.contextmanager
@@ -154,7 +175,7 @@ def _timeout_ns(seconds):
     if seconds is None:
         return 0
     if seconds <= 0:
-        raise ValueError("flux: fence_timeout must be positive, or None for no bound")
+        raise InvalidArgument("flux: fence_timeout must be positive, or None for no bound")
     return max(1, int(seconds * 1e9))
 
 
@@ -310,7 +331,7 @@ class Subscription(_flux._Subscription):
         if callback is not None and not callable(callback):
             raise TypeError("flux: callback must be callable")
         if release not in ("wait", "deferred"):
-            raise ValueError('flux: release must be "wait" or "deferred"')
+            raise InvalidArgument('flux: release must be "wait" or "deferred"')
         bound = _timeout_ns(fence_timeout)
         self.topic_name = node.resolve_topic_name(topic)
         self.callback = callback
@@ -330,11 +351,11 @@ class Subscription(_flux._Subscription):
         self._set_fence_timeout(bound)
         self._set_release_deferred(release == "deferred")
 
-    def take_blocking(self, timeout_ns=-1):
-        """With no publisher yet it also waits for one; a negative timeout waits forever. None at
-        the timeout, once the node's context is shut down, and at once while max_borrow views
-        are held."""
-        return super().take_blocking(timeout_ns, self._context_ok)
+    def take_blocking(self, timeout_sec=None):
+        """With no publisher yet it also waits for one; None waits forever. None at the timeout,
+        once the node's context is shut down, and at once while max_borrow views are held."""
+        ns = -1 if timeout_sec is None else max(0, int(timeout_sec * 1e9))
+        return super().take_blocking(ns, self._context_ok)
 
     def _context_ok(self):
         return _all_ok([self._context])
@@ -382,7 +403,7 @@ class Executor:
         # Under the lock spin() takes, so a spin starting meanwhile cannot walk the sources.
         with self._lock:
             if self._spinning:
-                raise RuntimeError("flux: add() while spinning")
+                raise UsageError("flux: add() while spinning")
             sub = _with_callback(source)
             self._flux.add(sub, sub.callback, priority)
             _add_context(self._contexts, sub._context)
@@ -390,7 +411,7 @@ class Executor:
     def add_node(self, node):
         with self._lock:
             if self._spinning:
-                raise RuntimeError("flux: add_node() while spinning")
+                raise UsageError("flux: add_node() while spinning")
             if node not in self._nodes:
                 if self._ros is None:
                     self._ros = SingleThreadedExecutor(context=node.context)
@@ -404,7 +425,7 @@ class Executor:
         """Runs until stop(), a callback raises, or the rclpy context shuts down."""
         with self._lock:
             if self._spinning:
-                raise RuntimeError("flux: spin() while already spinning")
+                raise UsageError("flux: spin() while already spinning")
             self._spinning = True
         self._ended.clear()
         _live.add(self)
@@ -419,11 +440,11 @@ class Executor:
             _live.discard(self)
             self._ended.set()
 
-    def stop(self):
+    def cancel(self):
         """Ends spin() from any thread, callback or signal handler. Held if spin() has not
         started."""
         self._stop = True
-        self._flux.stop()
+        self._flux.cancel()
 
     def _contexts_ok(self):
         return _all_ok(self._contexts)
@@ -497,10 +518,10 @@ class PartitionedExecutor:
         if not isinstance(group, CallbackGroup):
             raise TypeError("flux: add() takes an rclpy CallbackGroup")
         if isinstance(group, ReentrantCallbackGroup):
-            raise ValueError("flux: a Reentrant group cannot run on one thread")
+            raise InvalidArgument("flux: a Reentrant group cannot run on one thread")
         sub = _with_callback(source)
         if any(s is sub for _, subs in self._groups.values() for s, _ in subs):
-            raise ValueError("flux: subscription assigned twice")
+            raise InvalidArgument("flux: subscription assigned twice")
         self._groups.setdefault(id(group), (group, []))[1].append((sub, priority))
 
     def add_node(self, node):
@@ -512,14 +533,14 @@ class PartitionedExecutor:
         """Runs `init` on the thread of `unit`, a group or a node, before it serves."""
         self._idle("on_thread_start")
         if id(unit) in self._init:
-            raise ValueError("flux: this group or node already has a thread-start hook")
+            raise InvalidArgument("flux: this group or node already has a thread-start hook")
         self._init[id(unit)] = (unit, init)
 
     def add_sync_group(self, *inputs):
         """The inputs of one synchronizer: all flux and in one group, refused otherwise."""
         self._idle("add_sync_group")
         if len(inputs) < 2:
-            raise ValueError("flux: a synchronizer has at least two inputs")
+            raise InvalidArgument("flux: a synchronizer has at least two inputs")
         self._sync.append(inputs)
 
     def spin(self):
@@ -550,7 +571,7 @@ class PartitionedExecutor:
             self._fail(e)
         finally:
             for c in children:
-                c.stop()
+                c.cancel()
             for c in children:
                 c.join()
             self._spinning = False
@@ -561,7 +582,7 @@ class PartitionedExecutor:
             failure, self._failure = self._failure, None
             raise failure
 
-    def stop(self):
+    def cancel(self):
         """Ends spin() from any thread. Held if spin() has not started."""
         self._stop = True
         self._wake.set()
@@ -573,7 +594,7 @@ class PartitionedExecutor:
 
     def _idle(self, what):
         if self._spinning:
-            raise RuntimeError(f"flux: {what}() while spinning")
+            raise UsageError(f"flux: {what}() while spinning")
 
     def _hook(self, unit):
         return self._init.get(id(unit), (None, None))[1]
@@ -589,21 +610,23 @@ class PartitionedExecutor:
         for key, (_, subs) in self._groups.items():
             if any(s is sub for s, _ in subs):
                 return key
-        raise ValueError("flux: a synchronizer input was never assigned to a group")
+        raise InvalidArgument("flux: a synchronizer input was never assigned to a group")
 
     def _check(self):
         served = set(self._groups) | {id(n) for n in self._nodes}
         if any(key not in served for key in self._init):
-            raise ValueError("flux: a thread-start hook names a group or node no thread serves")
+            raise InvalidArgument(
+                "flux: a thread-start hook names a group or node no thread serves"
+            )
         self._check_flux_only()
         for inputs in self._sync:
             if not all(isinstance(i, Subscription) or hasattr(i, "subscription") for i in inputs):
-                raise ValueError(
+                raise InvalidArgument(
                     "flux: a synchronizer mixing flux and ROS inputs needs one thread; "
                     "use flux.Executor"
                 )
             if len({self._group_of(_subscription_of(i)) for i in inputs}) > 1:
-                raise ValueError(
+                raise InvalidArgument(
                     "flux: a synchronizer's inputs are in different callback groups; put them in one"
                 )
 
@@ -613,7 +636,7 @@ class PartitionedExecutor:
             for kind in kinds:
                 for entity in getattr(node, kind):
                     if id(entity.callback_group) in self._groups:
-                        raise ValueError(
+                        raise InvalidArgument(
                             f"flux: a group with flux subscriptions also holds a ROS {kind[:-1]} "
                             f"of {node.get_name()}; rclpy would run it on another thread"
                         )
@@ -639,8 +662,8 @@ class _FluxThread:
     def start(self):
         self._thread.start()
 
-    def stop(self):
-        self._ex.stop()
+    def cancel(self):
+        self._ex.cancel()
 
     def join(self):
         self._thread.join()
@@ -674,7 +697,7 @@ class _RosThread:
     def start(self):
         self._thread.start()
 
-    def stop(self):
+    def cancel(self):
         self._stop = True
         if self._ex.context.ok():
             self._ex.wake()
@@ -709,7 +732,7 @@ def _subscription_of(source):
 def _with_callback(source):
     sub = _subscription_of(source)
     if sub.callback is None:
-        raise ValueError(
+        raise InvalidArgument(
             "flux: a Subscription without a callback gives an executor nothing to run; "
             "read it with take() instead"
         )
@@ -721,7 +744,7 @@ def _with_callback(source):
 def _before_exit():
     live = list(_live)
     for ex in live:
-        ex.stop()
+        ex.cancel()
     for ex in live:
         ex._ended.wait(1.0)
     _flux._before_exit()

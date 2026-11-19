@@ -330,10 +330,10 @@ def test_take_blocking_waits_for_a_late_publisher(node):
 
     t = threading.Thread(target=late)
     t.start()
-    got = sub.take_blocking(timeout_ns=2_000_000_000)
+    got = sub.take_blocking(timeout_sec=2.0)
     t.join()
     assert bytes(got) == b"hi"
-    assert sub.take_blocking(timeout_ns=10_000_000) is None
+    assert sub.take_blocking(timeout_sec=0.01) is None
 
 
 def test_take_blocking_returns_as_soon_as_a_frame_lands(node):
@@ -351,7 +351,7 @@ def test_take_blocking_returns_as_soon_as_a_frame_lands(node):
 
         t = threading.Thread(target=publish)
         t.start()
-        got = sub.take_blocking(timeout_ns=2_000_000_000)
+        got = sub.take_blocking(timeout_sec=2.0)
         late.append(time.monotonic() - sent[0])
         t.join()
         del got
@@ -370,7 +370,7 @@ def test_take_blocking_ends_when_the_context_shuts_down(node):
     got = {}
     threads = [
         threading.Thread(target=lambda: got.update(a=attached.take_blocking())),
-        threading.Thread(target=lambda: got.update(w=waiting.take_blocking(3_000_000_000))),
+        threading.Thread(target=lambda: got.update(w=waiting.take_blocking(3.0))),
     ]
     for t in threads:
         t.start()
@@ -418,7 +418,7 @@ def test_take_blocking_is_none_at_once_while_max_borrow_views_are_held(node):
     t = threading.Thread(target=lambda: (sub.take_blocking(), done.set()), daemon=True)
     t.start()
     assert done.wait(1.0)
-    assert sub.take_blocking(timeout_ns=2_000_000_000) is None
+    assert sub.take_blocking(timeout_sec=2.0) is None
     assert time.monotonic() - start < 0.5
     del held
 
@@ -458,7 +458,7 @@ def test_exit_with_a_thread_in_take_blocking_is_quiet(node):
 def test_a_second_thread_in_one_subscription_is_refused(node):
     sub = flux.Subscription(node, topic("two"))
     # With no publisher, take_blocking stays inside the subscription until its timeout.
-    t = threading.Thread(target=sub.take_blocking, kwargs={"timeout_ns": 300_000_000})
+    t = threading.Thread(target=sub.take_blocking, kwargs={"timeout_sec": 0.3})
     t.start()
     time.sleep(0.05)
     with pytest.raises(RuntimeError, match="two threads"):

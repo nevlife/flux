@@ -137,7 +137,7 @@ def test_a_callback_is_a_frames_scope(node):
         with torch.cuda.stream(torch.cuda.ExternalStream(frame.stream)):
             seen.append(float(torch.from_dlpack(frame).max()))
         seen.append(frame)
-        ex.stop()
+        ex.cancel()
 
     sub = flux.Subscription(node, topic("cb"), cb, device="cuda")
     ex.add(sub)
@@ -579,7 +579,7 @@ PEER = textwrap.dedent(
     node = Node("flux_gpu_peer")
     sub = flux.Subscription(node, sys.argv[1], qos=flux.QoS(depth=4, replay=4), device="cuda")
     for _ in range(4):
-        with sub.take_blocking(5_000_000_000) as f:
+        with sub.take_blocking(5.0) as f:
             with torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
                 print(float(torch.from_dlpack(f).sum()))
     """

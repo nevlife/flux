@@ -93,7 +93,7 @@ def run_until(node, sub, done, publish_once, ex=None):
     while not done.is_set() and time.monotonic() < deadline:
         publish_once()
         time.sleep(0.01)
-    ex.stop()
+    ex.cancel()
     spinner.join()
 
 
@@ -1035,7 +1035,7 @@ def echo(type_name, topic_in, topic_out):
     ex = flux_wrapper.Executor()
     ex.add(sub)
     ex.add_node(node)
-    stop = threading.Timer(30, ex.stop)
+    stop = threading.Timer(30, ex.cancel)
     stop.daemon = True
     stop.start()
     try:

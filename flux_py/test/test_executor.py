@@ -43,7 +43,7 @@ def spin_until(ex, done, limit=3.0):
     end = time.monotonic() + limit
     while not done() and time.monotonic() < end:
         time.sleep(0.005)
-    ex.stop()
+    ex.cancel()
     t.join()
     return done()
 
@@ -171,7 +171,7 @@ def test_flux_and_ros_callbacks_share_the_spin_thread(node, ros_executor):
         pub.publish(b"f")
         ros_pub.publish(String())
         time.sleep(0.02)
-    ex.stop()
+    ex.cancel()
     t.join()
     ros_node.destroy_node()
     assert threads["frame"] == set(spinner) and threads["msg"] == set(spinner)
@@ -196,7 +196,7 @@ def test_frames_that_keep_coming_do_not_starve_ros(node, ros_executor):
     while time.monotonic() < end:
         pub.publish(b"f")
         time.sleep(0.002)
-    ex.stop()
+    ex.cancel()
     t.join()
     ros_node.destroy_node()
     # 100 timer periods; each waits out at most one frame callback.
@@ -231,7 +231,7 @@ def test_a_dispatch_cut_short_finishes_before_the_next_frame(node):
         pub.publish(b"f")
         time.sleep(0.02)
     time.sleep(0.05)
-    ex.stop()
+    ex.cancel()
     t.join()
     ros_node.destroy_node()
     assert [len(g) for g in got] == [30, 30, 30]
@@ -257,7 +257,7 @@ def test_a_callback_error_leaves_spin_and_the_next_spin_delivers(node):
 
 def test_a_stop_before_spin_is_held(node):
     ex = flux.Executor()
-    ex.stop()
+    ex.cancel()
     ex.spin()
 
     pub = flux.Publisher(node, topic("held"), **SMALL)
@@ -272,7 +272,7 @@ def test_a_stop_before_spin_is_held(node):
     assert spin_until(ros, lambda: sub.attached)
     for _ in range(3):
         pub.publish(b"f")
-    ros.stop()
+    ros.cancel()
     ros.spin()
     ros_node.destroy_node()
     assert got == []
@@ -282,21 +282,21 @@ def test_misuse_is_refused(node):
     ex = flux.Executor()
     with pytest.raises(ValueError):
         ex.add(flux.Subscription(node, topic("nocb")))
-    ex.add(flux.Subscription(node, topic("cb"), callback=lambda v: ex.stop()))
+    ex.add(flux.Subscription(node, topic("cb"), callback=lambda v: ex.cancel()))
     assert len(ex) == 1
     t = threading.Thread(target=ex.spin)
     t.start()
     time.sleep(0.05)
     with pytest.raises(RuntimeError):
         ex.add(flux.Subscription(node, topic("late"), callback=print))
-    ex.stop()
+    ex.cancel()
     t.join()
 
 
 def test_an_executor_its_callback_closes_over_is_collected(node):
     def cycle():
         ex = flux.Executor()
-        ex.add(flux.Subscription(node, topic("cycle"), callback=lambda v: ex.stop()))
+        ex.add(flux.Subscription(node, topic("cycle"), callback=lambda v: ex.cancel()))
         return weakref.ref(ex)
 
     dead = cycle()
@@ -417,7 +417,7 @@ def test_frames_reach_a_spin_whose_ros_side_is_busy(node, ros_executor):
     p.stdin.flush()
     p.wait(timeout=20)
     time.sleep(0.1)
-    ex.stop()
+    ex.cancel()
     t.join()
     ros_node.destroy_node()
     assert len(got) >= 95
@@ -469,7 +469,7 @@ def test_stop_does_not_wait_for_the_rclpy_task_lock(node):
     stopped = threading.Event()
     # A signal handler runs on the thread that may be holding this lock.
     with ex._ros._tasks_lock:
-        threading.Thread(target=lambda: (ex.stop(), stopped.set()), daemon=True).start()
+        threading.Thread(target=lambda: (ex.cancel(), stopped.set()), daemon=True).start()
         assert stopped.wait(1)
     ros_node.destroy_node()
 
@@ -500,7 +500,7 @@ def test_two_threads_cannot_spin_at_once(node):
     for t in threads:
         t.start()
     time.sleep(0.3)
-    ex.stop()
+    ex.cancel()
     for t in threads:
         t.join(timeout=2)
     assert len(errors) == 1 and not any(t.is_alive() for t in threads)

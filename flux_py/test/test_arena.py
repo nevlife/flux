@@ -183,6 +183,30 @@ def test_a_frame_larger_than_its_slot_goes_through_the_arena(node, mod):
     check(mod.View(frame), "from python")
 
 
+def test_a_builders_arrays_are_read_only_after_the_commit(node, mod):
+    """The slot is the subscribers' after the commit: arrays handed out over it stop taking writes."""
+    pub, _ = channel(node, mod, topic("sealed"))
+    b = mod.build__(pub)
+    data = b.alloc__data(16)
+    data[:] = 1
+    assert b.commit__() == flux.Published.OK
+    with pytest.raises(ValueError):
+        data[0] = 2
+
+
+def test_a_builder_with_no_free_slot_takes_every_write_quietly(node, mod):
+    """As the C++ Writer with no buffer: alloc, adopt and the rest go nowhere, and commit says why."""
+    pub = flux.Publisher(
+        node, topic("full"), fingerprint=mod.FINGERPRINT__, slot_size=SLOT, slot_count=2
+    )
+    held = [pub.loan(), pub.loan()]
+    b = mod.build__(pub)
+    fill(b)
+    assert b.adopt__data(np.zeros(8, np.uint8)) is False
+    assert b.commit__() != flux.Published.OK
+    del held
+
+
 ONCE = """
 import sys
 
@@ -246,7 +270,7 @@ def test_python_reads_what_cpp_put_in_the_arena(node, mod, driver):
         [driver, "pub", t], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
     ) as p:
         assert p.stdout.readline().strip() == "ready"
-        check(mod.View(sub.take_blocking(5_000_000_000)), "from c++")
+        check(mod.View(sub.take_blocking(5.0)), "from c++")
         p.stdin.close()
 
 
@@ -291,7 +315,7 @@ def test_an_array_made_in_a_scope_goes_out_without_a_copy(node, mod):
         text=True,
     ) as p:
         assert p.stdout.readline().split() == ["True", "True", "True"]
-        v = mod.View(sub.take_blocking(5_000_000_000))
+        v = mod.View(sub.take_blocking(5.0))
         assert len(v.data) == RUN
         assert v.data[0] == 9 and v.data[-1] == 9
         p.stdin.close()

@@ -23,7 +23,7 @@ for i, kind in enumerate((Stamped, Plain)):
     topic = f"{sys.argv[1]}_{i}"
     pub = flux.Publisher(node, topic, fingerprint=kind.FINGERPRINT__, slot_size=64, slot_count=4)
     sub = flux.Subscription(
-        node, topic, fingerprint=kind.FINGERPRINT__, callback=lambda v: ex.stop()
+        node, topic, fingerprint=kind.FINGERPRINT__, callback=lambda v: ex.cancel()
     )
     ex.add(sub)
     b = kind.build__(pub)

@@ -32,7 +32,7 @@ class Subscriber(message_filters.SimpleFilter):
     slots than the queue is refused with flux.Error.
     """
 
-    def __init__(self, node, adapter, topic, queue_size, qos=None):
+    def __init__(self, node, adapter, topic, queue_size, *, qos=None):
         if not all(hasattr(adapter.View, f) for f in ("header__stamp", "header__frame_id")):
             raise TypeError("flux: a message_filters input needs a std_msgs/Header `header`")
         super().__init__()

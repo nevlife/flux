@@ -100,7 +100,7 @@ if frame is not None:
 | --- | --- |
 | 없음 | `with`나 콜백 종료 시 |
 | `__dlpack__` | 범위가 끝나고 그 캡슐로 만든 텐서가 모두 사라진 시점 |
-| `__cuda_array_interface__` | `Frame` 객체가 사라진 시점 |
+| `__cuda_array_interface__` | `Frame` 객체가 사라진 시점. 이 속성을 읽기만 해도(`hasattr` 포함) 그렇다. 받는 쪽이 `Frame` 객체를 쥐고 그 메모리를 읽기 때문이다 |
 
 ## 생성 메시지의 GPU 필드
 

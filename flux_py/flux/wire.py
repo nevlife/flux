@@ -57,6 +57,12 @@ class NullWriter:
     def alloc_device(self, off, n, dtype):
         return None
 
+    def adopt(self, off, array, dtype):
+        return False
+
+    def seal(self):
+        pass
+
     def put_str(self, off, s):
         pass
 

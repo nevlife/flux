@@ -105,7 +105,7 @@ geometry_msgs/Pose pose
 
 | `.msg` | C++ View | Python View | C++ Builder | Python Builder |
 | --- | --- | --- | --- | --- |
-| `uint32 width` | `v.width()` | `v.width` | `b.set__width(n)` | `b.width = n` |
+| `uint32 width` | `v.width()` | `v.width` -> `int`(실수는 `float`, rclpy와 같다) | `b.set__width(n)` | `b.width = n` |
 | `float32[] x` | `v.x()` -> `Span<const float>` | `v.x` -> ndarray | `b.alloc__x(n)` -> `Span<float>` | `b.alloc__x(n)` -> ndarray |
 | `float64[9] m` | `v.m()` -> `Span` | `v.m` -> ndarray | `b.m()` -> `Span` | `b.m` -> ndarray |
 | `string label` | `v.label()` -> `string_view` | `v.label` -> `str` | `b.set__label(s)` | `b.label = s` |

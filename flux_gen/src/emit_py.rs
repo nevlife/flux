@@ -453,6 +453,7 @@ class Builder:
         if self._w.bad:
             return _Published.TOO_LARGE  # a write failed: the frame is torn, as C++ refuses it
         p = self._loan.commit(nbytes=self._w.size)
+        self._w.seal()  # arrays handed out over the slot are read-only from here
         self._w, self._loan = _NullWriter(), None  # the slot is the subscribers' now
         return p
 

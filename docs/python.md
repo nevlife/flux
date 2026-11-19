@@ -71,7 +71,7 @@ if loan is not None:
 ```
 
 - `loan(shape=None, dtype="uint8")`은 빈 슬롯이 없으면 `None`을 반환한다. shape를 생략하면 슬롯 전체를 `uint8`로 loan한다. 슬롯보다 큰 shape는 `ValueError`다.
-- `loan.array`는 슬롯을 가리키는 쓰기 가능한 numpy 배열이고, commit이나 abort 후에는 읽기 전용이 된다.
+- `loan.array`는 슬롯을 가리키는 쓰기 가능한 numpy 배열이고, commit이나 abort 후에는 읽기 전용이 된다. 생성된 `Builder`가 내준 배열(`alloc__`, 고정 길이 배열)도 `commit__()` 뒤에는 읽기 전용이다. 다만 그 전에 만들어 둔 slice는 numpy가 따로 쓰기 가능 표시를 들고 있어 막지 못한다. commit 뒤에는 쓰지 않는다.
 - `commit(nbytes=None)`은 `flux.Published`를 반환한다. 1차원 loan은 `nbytes`로 줄여 발행 가능하다. 실패한 commit(`TOO_LARGE`)도 loan을 끝낸다.
 - `resize(nbytes)`는 1차원 loan의 길이를 loan한 길이 안에서 `nbytes`로 바꾼다. 그 뒤에 건네는 `array`, `__cuda_array_interface__`, `__dlpack__`과 `commit()`이 그 길이를 쓴다. 이미 건넨 배열의 길이는 그대로다. loan한 길이를 넘거나 원소 크기의 배수가 아니면 `ValueError`다.
 - commit하지 않은 `Loan`이 사라지거나 `abort()`를 호출하면 프레임은 발행되지 않는다.
@@ -114,10 +114,10 @@ flux.create_subscription(node, topic, qos, callback, *, fingerprint=flux.NO_SCHE
 | 멤버 | 뜻 |
 | --- | --- |
 | `Executor(rclpy_executor=None)` | 노드를 실행할 rclpy executor를 지정한다. 생략하면 첫 `add_node()`가 `SingleThreadedExecutor`를 생성한다 |
-| `add(source, priority=0)` | 콜백이 있는 `Subscription`이나 `flux.message_filters.Subscriber`를 추가한다. 콜백이 없으면 `ValueError` |
+| `add(source, priority=0)` | 콜백이 있는 `Subscription`이나 `flux.message_filters.Subscriber`를 추가한다. 콜백이 없으면 `flux.InvalidArgument` |
 | `add_node(node)` | rclpy 노드를 추가한다 |
-| `spin()` | `stop()`, 콜백 예외, rclpy context 종료 중 하나가 발생할 시점까지 실행한다 |
-| `stop()` | 어느 스레드, 콜백, signal handler에서든 spin을 끝낸다. spin 전에 호출하면 다음 `spin()`이 바로 끝난다 |
+| `spin()` | `cancel()`, 콜백 예외, rclpy context 종료 중 하나가 발생할 시점까지 실행한다 |
+| `cancel()` | 어느 스레드, 콜백, signal handler에서든 spin을 끝낸다. spin 전에 호출하면 다음 `spin()`이 바로 끝난다. C++와 rclcpp의 `cancel()`과 같은 이름이다 |
 
 - flux 구독만 있으면 executor는 rclpy executor 없이 실행된다. 대기 중에는 GIL을 해제하고, 콜백 호출 시와 100 ms 주기마다 GIL을 획득한다.
 - 노드가 있으면 helper 스레드가 GIL 없이 프레임을 기다렸다가 rclpy executor에 task를 넣는다.
@@ -135,14 +135,14 @@ sub = flux.create_subscription(node, "image", flux.QoS(), None)
 while (frame := sub.take()) is not None:
     print("frame of", frame.nbytes, "bytes")
     del frame
-frame = sub.take_blocking(100_000_000)
+frame = sub.take_blocking(0.1)
 ```
 
 - `take()`는 아직 받지 않은 가장 오래된 프레임을 반환하고, 없으면 `None`이다.
 - 루프의 `del frame`은 필수다. 변수가 앞 프레임을 점유한 채로 다음 `take()`를 호출하면 `max_borrow`(기본 1)에 걸려 `None`이 나온다.
-- executor가 처리하는 구독의 `take()`는 `RuntimeError`를 던진다.
+- executor가 처리하는 구독의 `take()`는 `flux.UsageError`(`RuntimeError`)를 던진다.
 
-`take_blocking(timeout_ns=-1)`은 프레임 도착 시까지 GIL을 해제하고 기다린다. 발행자가 아직 없으면 발행자도 기다린다.
+`take_blocking(timeout_sec=None)`은 프레임 도착 시까지 GIL을 해제하고 기다린다. 초 단위이고 `None`이면 무한히 기다린다(rclpy의 `timeout_sec`과 같다). 발행자가 아직 없으면 발행자도 기다린다.
 
 | 경우 | 결과 |
 | --- | --- |
@@ -244,12 +244,12 @@ ex.spin()
 
 | 멤버 | 뜻 |
 | --- | --- |
-| `add(source, group, priority=0)` | 구독을 그룹에 추가한다. Reentrant 그룹은 `ValueError`다 |
+| `add(source, group, priority=0)` | 구독을 그룹에 추가한다. Reentrant 그룹은 `flux.InvalidArgument`다 |
 | `add_node(node)` | 노드의 ROS 엔티티를 그 노드의 스레드에서 실행한다 |
 | `on_thread_start(unit, init)` | 그룹이나 노드의 스레드가 실행되기 전에 `init()`을 그 스레드에서 호출한다 |
 | `add_sync_group(*inputs)` | 한 synchronizer의 입력들을 알린다. 입력은 모두 flux 입력이고 한 그룹에 있어야 한다 |
 | `spin()` | 어느 스레드에서든 첫 오류가 발생하면 모든 스레드를 멈추고 그 오류를 여기서 낸다 |
-| `stop()` | 어느 스레드에서든 spin을 끝낸다 |
+| `cancel()` | 어느 스레드에서든 spin을 끝낸다 |
 
 - flux 구독을 넣은 그룹에 ROS 엔티티(구독, 타이머, 서비스 등)가 있으면 `spin()`이 거절한다. rclpy executor에는 엔티티를 그룹 단위로 넣는 것이 불가능해서, 그 엔티티가 노드의 스레드에서 실행되어 그룹의 상호 배제가 깨지기 때문이다.
 - flux 입력과 ROS 입력이 섞인 synchronizer는 `flux.Executor`로 실행한다.
@@ -284,13 +284,16 @@ ex.spin()
 
 ## 오류
 
+flux가 던지는 예외는 모두 `flux.Error`의 하위 클래스이고 `status` 속성(`flux.Status`, 잘못된 사용은 `None`)이 있다. 잘못된 타입의 인자만 Python 관례대로 `TypeError`다.
+
 | 예외 | 발생 경우 |
 | --- | --- |
-| `flux.Error`(`RuntimeError`) | 채널이 거절했다. `status` 속성이 `flux.Status` 값이다. 값의 뜻은 C++와 같다([cpp.md](cpp.md#오류)) |
-| `ValueError` | 잘못된 인자(슬롯보다 큰 loan, `device`, `fence_timeout`, `release` 값 등) |
+| `flux.Error`(`Exception`) | 채널이 거절했다. `status` 값의 뜻은 C++와 같다([cpp.md](cpp.md#오류)) |
+| `flux.InvalidArgument`(`flux.Error`, `ValueError`) | 잘못된 인자(슬롯보다 큰 loan, `device`, `memory`, `fence_timeout`, `release` 값 등). `status`는 `INVALID_ARGUMENT` |
+| `flux.UsageError`(`flux.Error`, `RuntimeError`) | 상태가 허락하지 않는 호출. 두 스레드가 한 구독을 동시에 사용, 해제한 frame이나 끝난 loan의 사용, spin 중의 `add()` |
+| `flux.WireError`(`flux.Error`, `ValueError`) | 어댑터의 `View`가 스키마와 맞지 않는 프레임을 읽었거나 `Builder`의 쓰기가 슬롯을 넘었다 |
 | `TypeError` | 받지 않는 dtype, 콜백이 아닌 값 |
-| `RuntimeError` | 두 스레드가 한 구독을 동시에 사용했다. fork로 상속받은 구독을 사용했다 |
-| `flux.wire.WireError` | 어댑터의 `View`가 스키마와 맞지 않는 프레임을 읽었다 |
+| `OverflowError` | `Builder`의 정수 필드에 범위를 넘는 값을 넣었다 |
 
 ## 채널 목록
 

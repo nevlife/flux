@@ -49,6 +49,9 @@
 
 ### 버그 수정
 
+* Python `Builder`가 빈 슬롯이 없을 때(`NullWriter`) `adopt__<name>`에서 `AttributeError`를 냈다. 이제 쓰지 않고 `False`를 돌려준다
+* Python에서 flux가 스스로 배열이 GPU에 있는지 볼 때 `Frame`의 `__cuda_array_interface__`를 읽어, 그 frame의 슬롯을 `Frame` 객체가 사라질 때까지 붙잡았다
+
 <!--
     새 항목은 이슈 번호 순으로 넣는다.
 -->
@@ -219,19 +222,34 @@
     ```
 
 16. C++ API의 이름과 모양을 다른 언어와 맞췄다.
+    * `flux::WriteSlot`은 `flux::Loan`, `flux::FrameView`는 `flux::Frame`이 되었다. 두 타입은 `[[nodiscard]]`다.
+    * `flux::Status`는 C enum의 별칭에서 `enum class`(`Status::NotReady` 등)가 되었다. `e.status() == FLUX_NOT_READY`는 `e.status() == flux::Status::NotReady`로 고친다.
+    * 타입이 있는 `loan`은 shape가 먼저다(`loan({h, w, 3}, DType::U8)`). `take_blocking`은 `std::chrono::nanoseconds`를 받는다. QoS의 `borrow_limit()`은 `max_borrow()`가 되었다.
+    * 설정 실패는 모두 `flux::Error`다. 전에는 `std::invalid_argument`, `std::runtime_error`인 곳이 있었다. `spin_some()` 등은 `flux::Error`(`Status::Unsupported`)를 던진다.
+    * `take()`와 `take_blocking()`은 발행자의 거절을 던지지 않고 빈 결과와 `refusal()`로 알린다. 남은 예외는 잘못된 사용의 `std::logic_error`뿐이다.
+    * `Publisher`는 이동할 수 없다. `Subscription`과 `message_filters::Subscriber`의 `attach()`, `deliver_one()`, `channel()`, `watch()`, `endpoint()`는 executor 전용이라 private이 되었고, `gpu::Stream::raw()`도 private이다. 구독이 붙은 발행자의 슬롯은 새 `slot_size()`, `slot_count()`, `aux_size()`로 읽는다.
 
-* `flux::WriteSlot`은 `flux::Loan`, `flux::FrameView`는 `flux::Frame`이 되었다. 두 타입은 `[[nodiscard]]`다.
-* `flux::Status`는 C enum의 별칭에서 `enum class`(`Status::NotReady` 등)가 되었다. `e.status() == FLUX_NOT_READY`는 `e.status() == flux::Status::NotReady`로 고친다.
-* 타입이 있는 `loan`은 shape가 먼저다(`loan({h, w, 3}, DType::U8)`). `take_blocking`은 `std::chrono::nanoseconds`를 받는다. QoS의 `borrow_limit()`은 `max_borrow()`가 되었다.
-* 설정 실패는 모두 `flux::Error`다. 전에는 `std::invalid_argument`, `std::runtime_error`인 곳이 있었다. `spin_some()` 등은 `flux::Error`(`Status::Unsupported`)를 던진다.
-* `take()`와 `take_blocking()`은 발행자의 거절을 던지지 않고 빈 결과와 `refusal()`로 알린다. 남은 예외는 잘못된 사용의 `std::logic_error`뿐이다.
-* `Publisher`는 이동할 수 없다. `Subscription`과 `message_filters::Subscriber`의 `attach()`, `deliver_one()`, `channel()`, `watch()`, `endpoint()`는 executor 전용이라 private이 되었고, `gpu::Stream::raw()`도 private이다. 구독이 붙은 발행자의 슬롯은 새 `slot_size()`, `slot_count()`, `aux_size()`로 읽는다.
+    ```cpp
+    // 전
+    flux::WriteSlot slot = pub->loan(flux::DType::F32, {kPoints, 3});
+    flux::FrameView f = sub->take_blocking(100'000'000);
+    // 후
+    flux::Loan slot = pub->loan({kPoints, 3}, flux::DType::F32);
+    flux::Frame f = sub->take_blocking(std::chrono::milliseconds(100));
+    ```
 
-   ```cpp
-   // 전
-   flux::WriteSlot slot = pub->loan(flux::DType::F32, {kPoints, 3});
-   flux::FrameView f = sub->take_blocking(100'000'000);
-   // 후
-   flux::Loan slot = pub->loan({kPoints, 3}, flux::DType::F32);
-   flux::Frame f = sub->take_blocking(std::chrono::milliseconds(100));
-   ```
+17. Python API를 다른 언어와 맞췄다.
+    * flux가 던지는 예외의 부모가 `flux.Error`(`Exception`)다. 전에는 `RuntimeError`였다. 잘못된 인자는 `flux.InvalidArgument`(`ValueError`이기도 하다), 상태가 허락하지 않는 호출은 `flux.UsageError`(`RuntimeError`이기도 하다), 스키마가 맞지 않는 읽기와 쓰기는 `flux.WireError`(`ValueError`이기도 하다)다. `except RuntimeError`로 `flux.Error`를 받던 코드는 `except flux.Error`로 고친다.
+    * `Executor.stop()`과 `PartitionedExecutor.stop()`, `flux_wrapper.Executor.stop()`은 `cancel()`이 되었다. `take_blocking(timeout_ns=)`은 `take_blocking(timeout_sec=)`(초, `None`이면 무한)이 되었다.
+    * `flux.QoS`의 `replay`, `max_borrow`와 `flux.message_filters.Subscriber`의 `qos`는 이름으로만 받는다. `flux.MemoryPolicy`는 없어지고 `memory="default"|"precommit"|"lock"`이 되었다.
+    * 생성된 `View`의 정수, 실수 필드는 numpy 스칼라 대신 Python `int`, `float`다. rclpy 메시지와 같다.
+    * 생성된 `Builder`가 내준 배열은 `commit__()` 뒤 읽기 전용이다.
+
+    ```python
+    # 전
+    frame = sub.take_blocking(100_000_000)
+    ex.stop()
+    # 후
+    frame = sub.take_blocking(0.1)
+    ex.cancel()
+    ```

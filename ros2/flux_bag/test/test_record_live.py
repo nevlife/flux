@@ -334,7 +334,7 @@ def test_frames_with_fields_in_the_arena_are_recorded_and_play_back_as_they_were
     )
     got = []
     while True:
-        frame = sub.take_blocking(50_000_000)
+        frame = sub.take_blocking(0.05)
         if frame is not None:
             img = Image.View(frame.copy())
             got.append((img.width, int(np.asarray(img.data)[-1])))
@@ -388,7 +388,7 @@ def test_frames_with_fields_in_the_gpu_arena_are_recorded_and_play_back_as_they_
     )
     got = []
     while True:
-        frame = sub.take_blocking(50_000_000)
+        frame = sub.take_blocking(0.05)
         if frame is not None:
             img = Image.View(frame.copy())
             data = np.asarray(img.data)

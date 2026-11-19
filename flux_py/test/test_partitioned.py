@@ -59,7 +59,7 @@ class Spinning:
             self.error = e
 
     def stop(self):
-        self.ex.stop()
+        self.ex.cancel()
         self.thread.join()
         return self.error
 
@@ -169,7 +169,7 @@ def test_a_callback_error_stops_every_thread_and_reaches_spin(node):
     pa.publish(b"x")
     with pytest.raises(KeyError):
         ex.spin()
-    ex.stop()
+    ex.cancel()
     ex.spin()
 
 

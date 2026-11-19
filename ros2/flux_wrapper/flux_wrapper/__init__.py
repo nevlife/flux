@@ -749,9 +749,9 @@ class Executor:
     def spin(self):
         self._ex.spin()
 
-    def stop(self):
-        """Ends spin(), from any thread."""
+    def cancel(self):
+        """Ends spin(), from any thread, as flux.Executor.cancel() and rclcpp's cancel()."""
         if use_flux():
-            self._ex.stop()
+            self._ex.cancel()
         else:
             self._ex.shutdown(timeout_sec=0)
