@@ -904,10 +904,19 @@ mod tests {
                 tv_sec: 0,
                 tv_nsec: 300_000_000,
             };
+            // Raw syscalls, not the libc functions: a sanitizer intercepts those, and its
+            // interceptor can wait on a lock another thread of the parent held at the clone.
             // SAFETY: plain syscall.
-            unsafe { libc::nanosleep(&raw const nap, std::ptr::null_mut()) };
+            unsafe {
+                libc::syscall(
+                    libc::SYS_nanosleep,
+                    &raw const nap,
+                    std::ptr::null_mut::<libc::timespec>(),
+                )
+            };
             // SAFETY: ends the child without running the parent's destructors.
-            unsafe { libc::_exit(0) };
+            unsafe { libc::syscall(libc::SYS_exit_group, 0) };
+            unreachable!("exit_group returned");
         }
         drop(p);
         let again = open();

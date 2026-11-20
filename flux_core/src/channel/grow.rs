@@ -229,8 +229,10 @@ fn lock_no_more() -> bool {
     // SAFETY: a valid rlimit, lowering this process's own.
     let set = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &raw const lim) };
     assert_eq!(set, 0);
-    // SAFETY: plain syscall. Root locks past the limit.
-    unsafe { libc::geteuid() != 0 }
+    // A page past the limit locks anyway as root, and under a sanitizer, whose mlock does nothing.
+    let probe = 0u8;
+    // SAFETY: locks the page holding a local, which outlives the call.
+    unsafe { libc::mlock((&raw const probe).cast(), 1) != 0 }
 }
 
 const LOCKED: MemoryPolicy = MemoryPolicy {
