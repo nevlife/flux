@@ -868,19 +868,29 @@ mod channel {
         dev.set_qos(QoS::new(20).unwrap()).unwrap();
         let start = p.slots_ready();
         FAIL_MAP.store(true, Ordering::Relaxed);
-        for i in 0..15u8 {
-            let w = loan_soon(&mut p);
+        let mut i = 0u8;
+        let mut frame = |p: &mut Channel| {
+            let w = loan_soon(p);
             fill(memset, w.device_ptr(), i, 4096, &w.stream());
             assert_eq!(w.commit_len(4096), Published::Ok);
             let v = dev.take().unwrap();
             let got = read_back(copy, v.device_ptr(), 4096);
             assert!(got.iter().all(|&b| b == i), "frame {i} reads {}", got[0]);
-            drop(v);
-        }
+            i = i.wrapping_add(1);
+        };
+        // A claim only asks the filler, which lags behind it under load: publish until the filler
+        // has tried the chunk that fails, then twice as many frames as there can be slots, so the
+        // slots added after the failure are written and read too.
         assert!(
-            !FAIL_MAP.load(Ordering::Relaxed),
+            soon(|| {
+                frame(&mut p);
+                !FAIL_MAP.load(Ordering::Relaxed)
+            }),
             "the filler grew past a chunk"
         );
+        for _ in 0..2 * crate::sizing::SLOT_ALLOC_MAX_SLOTS {
+            frame(&mut p);
+        }
         assert!(soon(|| p.slots_ready() > start));
     }
 
