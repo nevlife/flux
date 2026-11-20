@@ -430,13 +430,19 @@ pub(super) fn note_unregister(base: usize) {
 /// True in a child of this test binary that runs only `test` with `env` set; the parent runs that
 /// child and checks that it passed.
 fn child(test: &str, env: &str) -> bool {
+    child_with(test, env, &[])
+}
+
+/// `child`, with `vars` set in the child as well.
+fn child_with(test: &str, env: &str, vars: &[(&str, &str)]) -> bool {
     if std::env::var_os(env).is_some() {
         return true;
     }
     let out = crate::sys::test_output(
         std::process::Command::new(std::env::current_exe().unwrap())
             .args([test, "--exact", "--include-ignored"])
-            .env(env, "1"),
+            .env(env, "1")
+            .envs(vars.iter().copied()),
     );
     let log = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -1226,6 +1232,46 @@ mod channel {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(segment_mappings(&name), 0, "kept after the device was done");
+    }
+
+    /// An aborted loan of a slot with device blocks waits for its stream. The publisher dropped
+    /// meanwhile still gives the blocks back once the stream passes: 48 MiB of a 64 MiB arena fits
+    /// again only then.
+    #[test]
+    fn an_aborted_loan_outliving_its_publisher_frees_its_device_blocks_once_done() {
+        const BLOCK: usize = 48 << 20;
+        let me = "an_aborted_loan_outliving_its_publisher_frees_its_device_blocks_once_done";
+        if gpu().is_none()
+            || !super::child_with(
+                &format!("gpu::tests::channel::{me}"),
+                "FLUX_GATED_TEST",
+                &[("FLUX_ARENA_BYTES", "67108864")],
+            )
+        {
+            return;
+        }
+        let _route = Forced::route(super::Route::ShmDirect);
+        let stream = Stream::create().unwrap();
+        let mut p = publisher(&topic("abheld"), stream.clone());
+        let gate = Gate::on(&stream);
+        {
+            let w = p.loan().unwrap();
+            // SAFETY: w is live.
+            assert!(unsafe { w.heap().unwrap().alloc_device(BLOCK, 256) }.is_some());
+        }
+        drop(p);
+        drop(gate);
+        assert!(stream.wait());
+        let mut q = publisher(&topic("abnext"), Stream::create().unwrap());
+        let fits = |q: &mut Channel| {
+            let w = q.loan().unwrap();
+            // SAFETY: w is live.
+            unsafe { w.heap().unwrap().alloc_device(BLOCK, 256) }.is_some()
+        };
+        assert!(
+            soon(|| fits(&mut q)),
+            "the aborted loan's blocks never came back"
+        );
     }
 
     struct Sub(Channel, std::sync::Arc<AtomicU32>);

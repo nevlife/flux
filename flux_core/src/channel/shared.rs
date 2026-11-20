@@ -196,7 +196,21 @@ pub(super) struct Deferred {
 impl Deferred {
     pub(super) fn orphan(self) {
         let late = self.late.clone();
-        late.hand_off(Box::new(self));
+        late.hand_off(Box::new(Orphaned(self)));
+    }
+}
+
+/// Deferred work whose channel went first, which the GPU waiter lets go once it is done. A claim
+/// that was never published is given back then, so the publisher's drop, which letting go may run,
+/// frees the slot's arena blocks; held claimed, the slot would keep them for the process's life.
+struct Orphaned(Deferred);
+
+impl Drop for Orphaned {
+    fn drop(&mut self) {
+        let d = &self.0;
+        if d.seam == Seam::Commit && d.late.done() && !d.late.failed() {
+            d.keep.abort(d.slot);
+        }
     }
 }
 
@@ -862,8 +876,8 @@ impl ChannelShared {
     }
 
     /// The channel is going: what it already reaped is given back here, on its thread; the rest
-    /// waits on the waiter, which only lets it go. The borrows it held stay counted until the
-    /// process's subscriber number is let go, as for a subscriber that died.
+    /// waits on the waiter, which lets it go once done (`Orphaned`). The borrows it held stay
+    /// counted until the process's subscriber number is let go, as for a subscriber that died.
     pub(super) fn orphan_late(&self) {
         self.reap_late();
         let pending = {
