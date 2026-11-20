@@ -31,6 +31,9 @@ endif()
 add_subdirectory(${NANOBIND_DIR} ${CMAKE_CURRENT_BINARY_DIR}/nanobind EXCLUDE_FROM_ALL)
 
 nanobind_add_module(_flux NB_STATIC src/flux_py.cpp src/wire.cpp)
+# nanobind 2.4 hands memcpy a null source when a bound method gets no arguments, and UBSan's
+# nonnull check stops the process there (fixed in nanobind 2.10). No effect without -fsanitize.
+target_compile_options(nanobind-static PRIVATE -fno-sanitize=nonnull-attribute)
 # numpy's C API makes arrays an order of magnitude faster than nb::ndarray's numpy.array() call.
 execute_process(
   COMMAND ${Python_EXECUTABLE} -c "import numpy; print(numpy.get_include())"
