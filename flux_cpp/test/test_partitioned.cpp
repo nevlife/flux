@@ -352,9 +352,16 @@ TEST_F(Partitioned, AHookForEveryThreadGetsItsNodeAndGroup)
   EXPECT_THROW(ex.on_thread_start([](const auto &, const auto &) {}), flux::Error);
   Spinning spin(ex);
   ASSERT_TRUE(eventually([&] { return ticks > 0; }));
+  // Each group's thread starts on its own: the default group's may reach its hook after the timer
+  // has run on the other.
+  const auto * default_group = node_->get_node_base_interface()->get_default_callback_group().get();
+  ASSERT_TRUE(eventually([&] {
+    const std::lock_guard<std::mutex> lk(m);
+    return hooked.count(default_group) != 0;
+  }));
   const std::lock_guard<std::mutex> lk(m);
   EXPECT_EQ(hooked.count(group.get()), 1u);
-  EXPECT_EQ(hooked.count(node_->get_node_base_interface()->get_default_callback_group().get()), 1u);
+  EXPECT_EQ(hooked.count(default_group), 1u);
   EXPECT_EQ(specific_after, group_thread);
 }
 
