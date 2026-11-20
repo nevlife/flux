@@ -240,11 +240,10 @@ fn grow(
             undo(false);
             return Err(fail("cuMemMap"));
         }
+        // The device only, also for HOST_NUMA: with the host granted as well, an Orin driver
+        // (r595) refuses a memset across two chunks. Readers' CPUs reach a chunk through its fd.
         let device = location(Place::Device, t.device);
-        let host_too = matches!(t.place, Place::HostNuma(_)).then(|| location(t.place, t.device));
-        if access(vmm, at, device, MEM_ACCESS_READ_WRITE) != SUCCESS
-            || host_too.is_some_and(|h| access(vmm, at, h, MEM_ACCESS_READ_WRITE) != SUCCESS)
-        {
+        if access(vmm, at, device, MEM_ACCESS_READ_WRITE) != SUCCESS {
             undo(true);
             return Err(fail("cuMemSetAccess"));
         }
@@ -378,13 +377,6 @@ impl GpuArena {
 
     pub fn device_ptr(&self, off: u64) -> u64 {
         self.target.base + off
-    }
-
-    /// Where the CPU reaches `off`: only a `HOST_NUMA` arena's bytes have such an address.
-    pub fn host_ptr(&self, off: u64) -> Option<*mut u8> {
-        #[allow(clippy::cast_possible_truncation)]
-        matches!(self.target.place, Place::HostNuma(_))
-            .then(|| (self.target.base + off) as usize as *mut u8)
     }
 
     /// Chunks made so far; a frame names how many its blocks reach.

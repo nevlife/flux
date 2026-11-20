@@ -17,14 +17,12 @@ const CHILD: &str = "FLUX_GPU_ARENA_CHILD";
 
 type Memset = unsafe extern "C" fn(u64, u8, usize) -> i32;
 type CopyDtoH = unsafe extern "C" fn(*mut c_void, u64, usize) -> i32;
-type CopyHtoD = unsafe extern "C" fn(u64, *const c_void, usize) -> i32;
 type Attribute = unsafe extern "C" fn(*mut i32, i32, i32) -> i32;
 const HOST_NUMA_VMM_SUPPORTED: i32 = 141;
 
 struct Cuda {
     memset: Memset,
     copy: CopyDtoH,
-    upload: CopyHtoD,
     attribute: Attribute,
     /// Keeps a context current on this thread for the copies.
     _stream: Stream,
@@ -51,15 +49,12 @@ fn cuda() -> Option<Cuda> {
     let memset = unsafe { std::mem::transmute::<*mut c_void, Memset>(sym(c"cuMemsetD8_v2")) };
     // SAFETY: cuMemcpyDtoH_v2's C signature.
     let copy = unsafe { std::mem::transmute::<*mut c_void, CopyDtoH>(sym(c"cuMemcpyDtoH_v2")) };
-    // SAFETY: cuMemcpyHtoD_v2's C signature.
-    let upload = unsafe { std::mem::transmute::<*mut c_void, CopyHtoD>(sym(c"cuMemcpyHtoD_v2")) };
     // SAFETY: cuDeviceGetAttribute's C signature.
     let attribute =
         unsafe { std::mem::transmute::<*mut c_void, Attribute>(sym(c"cuDeviceGetAttribute")) };
     Some(Cuda {
         memset,
         copy,
-        upload,
         attribute,
         _stream: stream,
     })
@@ -127,13 +122,8 @@ fn publish_runs(cu: &Cuda, test: &str, place: Place) {
     {
         let off = a.alloc(len, 64).unwrap();
         let fill = 0x30 + u8::try_from(i).unwrap();
-        if let Some(p) = a.host_ptr(off) {
-            // SAFETY: a HOST_NUMA block of len bytes this process may write.
-            unsafe { std::ptr::write_bytes(p, fill, len) };
-        } else {
-            // SAFETY: off..off+len is device memory the arena holds.
-            assert_eq!(unsafe { (cu.memset)(a.device_ptr(off), fill, len) }, 0);
-        }
+        // SAFETY: off..off+len is device memory the arena holds.
+        assert_eq!(unsafe { (cu.memset)(a.device_ptr(off), fill, len) }, 0);
         runs.push(format!("{off}:{len}"));
     }
     assert!(a.chunks() >= 3);
@@ -282,10 +272,8 @@ fn a_frame_names_its_device_run_to_a_subscriber_in_another_process() {
         assert!(heap.gpu);
         // SAFETY: w is live.
         let (at, off) = unsafe { heap.alloc_device(len, 256) }.unwrap();
-        // A copy, not a memset: on HOST_NUMA the driver refuses a memset across two chunks.
-        let src = vec![fill; len];
-        // SAFETY: the run is len bytes of device memory this frame owns; src holds len bytes.
-        assert_eq!(unsafe { (cu.upload)(at, src.as_ptr().cast(), len) }, 0);
+        // SAFETY: the run is len bytes of device memory this frame owns.
+        assert_eq!(unsafe { (cu.memset)(at, fill, len) }, 0);
         let d = w.data_mut();
         d[..8].copy_from_slice(&(GPU_POS + off).to_le_bytes());
         d[8..16].copy_from_slice(&(len as u64).to_le_bytes());
