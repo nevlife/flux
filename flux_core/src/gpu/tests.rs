@@ -968,26 +968,38 @@ mod channel {
         let _forks = crate::sys::TEST_FORKS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let base = format!("/dev/shm/flux.gpu.{}", std::process::id());
-        let (dead, live, binding) = (
-            format!("{base}.1"),
-            format!("{base}.2"),
-            format!("{base}.3.{}", std::process::id()),
-        );
+        let pid = std::process::id();
+        let base = format!("/dev/shm/flux.gpu.{pid}");
+        // Bound and not listening yet, as `bind_listening` leaves both kinds of endpoint between
+        // its bind and its listen.
+        let bindings = [
+            crate::gpu::bind_name(&format!("{base}.3"), pid.cast_signed()),
+            crate::gpu::bind_name(
+                &format!("/dev/shm/flux.gpu.arena-{pid:016x}"),
+                pid.cast_signed(),
+            ),
+        ];
+        let (dead, live) = (format!("{base}.1"), format!("{base}.2"));
         drop(UnixListener::bind(&dead).unwrap());
         let _listening = UnixListener::bind(&live).unwrap();
-        drop(UnixListener::bind(&binding).unwrap());
-        for path in [&dead, &live, &binding] {
+        for b in &bindings {
+            drop(UnixListener::bind(b).unwrap());
+        }
+        for path in [&dead, &live].into_iter().chain(&bindings) {
             crate::gpu::remove_dead_endpoint(path.trim_start_matches("/dev/shm/"));
         }
         assert!(std::fs::symlink_metadata(&dead).is_err());
         assert!(std::fs::symlink_metadata(&live).is_ok());
-        assert!(
-            std::fs::symlink_metadata(&binding).is_ok(),
-            "a bind of seconds ago"
-        );
+        for b in &bindings {
+            assert!(
+                std::fs::symlink_metadata(b).is_ok(),
+                "{b}, bound seconds ago"
+            );
+        }
         let _ = std::fs::remove_file(&live);
-        let _ = std::fs::remove_file(&binding);
+        for b in &bindings {
+            let _ = std::fs::remove_file(b);
+        }
     }
 
     #[test]

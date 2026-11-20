@@ -35,6 +35,8 @@ use driver::{
     MEM_HOST_REGISTER_DEVICEMAP, MEM_HOST_REGISTER_PORTABLE, MEM_HOST_REGISTER_READ_ONLY,
     NOT_READY, SUCCESS,
 };
+#[cfg(test)]
+pub(crate) use fd::bind_name;
 pub(crate) use fd::remove_dead_endpoint;
 pub(crate) use image::{IMAGE_SLOT_ALIGN, ImageExport, ImageImport};
 pub(crate) use vmm::{

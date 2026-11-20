@@ -16,6 +16,8 @@ const RECV_TIMEOUT_NS: u64 = 1_000_000_000;
 
 pub(crate) const ENDPOINT_PREFIX: &str = "flux.gpu.";
 const STALE_BIND: std::time::Duration = std::time::Duration::from_secs(10);
+/// Marks a name bound and not yet renamed into place. No endpoint name holds it.
+const BINDING: &str = ".bind-";
 
 /// The address and the length `bind` and `connect` take for a socket file.
 fn path_addr(path: &str) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
@@ -602,7 +604,7 @@ impl Drop for FdServer {
 /// only a socket that answers; the rename also replaces one a dead publisher of a reused inode
 /// left. Returns the file's inode, by which Drop knows the file is still its own.
 fn bind_listening(listen: RawFd, endpoint: &str) -> Result<u64> {
-    let tmp = format!("{endpoint}.{}", sys::getpid());
+    let tmp = bind_name(endpoint, sys::getpid());
     let (addr, len) = path_addr(&tmp)?;
     unlink(&tmp);
     // SAFETY: addr and len describe a sockaddr_un.
@@ -628,6 +630,11 @@ fn bind_listening(listen: RawFd, endpoint: &str) -> Result<u64> {
     file_ino(endpoint).ok_or_else(|| Error::io("stat", endpoint, io::Error::last_os_error()))
 }
 
+/// The name `endpoint` is bound under until it listens.
+pub(crate) fn bind_name(endpoint: &str, pid: libc::pid_t) -> String {
+    format!("{endpoint}{BINDING}{pid}")
+}
+
 fn cpath(path: &str) -> io::Result<std::ffi::CString> {
     std::ffi::CString::new(path).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
 }
@@ -642,9 +649,9 @@ fn unlink(path: &str) {
 }
 
 /// For the sweep: removes `name` in /dev/shm if it is this user's endpoint and dead. A renamed
-/// endpoint is dead when nothing listens on it. A name still carrying its binder's pid is renamed
-/// microseconds after the bind, so one that old is left over; the pid itself may be another pid
-/// namespace's.
+/// endpoint is dead when nothing listens on it. A bind name (`BINDING` and the binder's pid) is
+/// renamed microseconds after the bind, so one that old is left over; the pid itself may be
+/// another pid namespace's. Between its bind and its listen nothing answers on it either.
 pub(crate) fn remove_dead_endpoint(name: &str) {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let Some(rest) = name.strip_prefix(ENDPOINT_PREFIX) else {
@@ -657,7 +664,7 @@ pub(crate) fn remove_dead_endpoint(name: &str) {
     if !meta.file_type().is_socket() || meta.uid() != sys::euid() {
         return;
     }
-    let dead = if rest.split('.').nth(2).is_some() {
+    let dead = if rest.contains(BINDING) {
         meta.modified()
             .ok()
             .and_then(|t| t.elapsed().ok())
