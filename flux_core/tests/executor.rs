@@ -164,6 +164,7 @@ impl Feed {
             ch: None,
             st: Arc::new(Stats::default()),
             on_deliver: None,
+            on_empty: None,
         }
     }
 }
@@ -194,7 +195,10 @@ struct TestSource {
     ch: Option<Channel>,
     st: Arc<Stats>,
     on_deliver: Option<Box<dyn FnMut() + Send>>,
+    on_empty: Option<Box<OnEmpty>>,
 }
+
+type OnEmpty = dyn FnMut(&Channel) + Send;
 
 impl TestSource {
     /// Shares the log with other sources, so it shows the order the pass visited them in.
@@ -213,6 +217,12 @@ impl TestSource {
 
     fn on_deliver(mut self, f: impl FnMut() + Send + 'static) -> TestSource {
         self.on_deliver = Some(Box::new(f));
+        self
+    }
+
+    /// Runs after a take that found nothing, before the pass goes on.
+    fn on_empty(mut self, f: impl FnMut(&Channel) + Send + 'static) -> TestSource {
+        self.on_empty = Some(Box::new(f));
         self
     }
 }
@@ -244,6 +254,9 @@ impl Source for TestSource {
             return Ok(false);
         }
         let Some(v) = self.ch.as_mut().and_then(Channel::take) else {
+            if let (Some(f), Some(ch)) = (self.on_empty.as_mut(), self.ch.as_ref()) {
+                f(ch);
+            }
             return Ok(false);
         };
         self.st.last_id.store(v.data()[0], Ordering::Relaxed);
@@ -974,6 +987,42 @@ fn an_orphaned_channel_restarts_the_entry_without_leaking_the_gate() {
     assert_eq!(f.gate(), 1);
     f.publish(2);
     assert_eq!(ex.dispatch().unwrap(), 1);
+    assert_eq!(st.last_id(), 2);
+}
+
+/// The take that re-attaches finds the restarted publisher's segment empty, and its first frame
+/// lands before the executor gates the new word, so the publisher wakes no one for it. The
+/// executor must not then sleep on that frame.
+#[test]
+fn a_frame_landing_as_the_take_reattaches_is_not_slept_on() {
+    let f = Feed::new("reattach_race");
+    let (s, st) = f.source(1);
+    let publish = f.publisher();
+    let mut attached = None;
+    let s = s.on_empty(move |ch| {
+        let g = ch.attach_generation();
+        if attached.replace(g).is_some_and(|before| before != g) {
+            publish(2);
+        }
+    });
+    let mut ex = executor();
+    ex.add(s, 0).unwrap();
+    f.publish(1);
+    assert_eq!(ex.dispatch().unwrap(), 1);
+    // An empty take: the next one checks for a restart.
+    assert_eq!(ex.dispatch().unwrap(), 0);
+    f.restart();
+    ex.dispatch().unwrap();
+    if st.delivered() < 2 {
+        let t0 = Instant::now();
+        ex.wait_for_work(1_000_000_000).unwrap();
+        assert!(
+            ms_since(t0) < 500,
+            "slept {} ms on a committed frame",
+            ms_since(t0)
+        );
+        ex.dispatch().unwrap();
+    }
     assert_eq!(st.last_id(), 2);
 }
 

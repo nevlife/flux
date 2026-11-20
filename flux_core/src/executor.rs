@@ -578,6 +578,9 @@ impl<'a> Executor<'a> {
                     if sync(e) {
                         e.seq = e.bound.as_ref().map_or(0, |b| b.sh.wake_seq());
                         e.probed = false;
+                        // Judged before the new word had this gate: a frame committed in between
+                        // woke no one, and the sample above already counts it. Take again.
+                        e.blocked = false;
                     }
                 }
             }
