@@ -219,6 +219,17 @@ TEST(Channel, AMovedFromChannelIsEmpty)
   EXPECT_EQ(moved.publish("a", 1), flux::Published::Ok);
 }
 
+// flux::gpu_fingerprint is computed again at compile time; a split from the C ABI would leave a
+// GPU channel unread between C++ and Python or C.
+TEST(Channel, TheGpuFingerprintIsTheCAbis)
+{
+  for (const std::uint64_t base :
+       {std::uint64_t{0}, std::uint64_t{1}, std::uint64_t{0x1234},
+        std::uint64_t{0x8000000000000000}, std::numeric_limits<std::uint64_t>::max()}) {
+    EXPECT_EQ(flux::gpu_fingerprint(base), flux_gpu_fingerprint(base)) << base;
+  }
+}
+
 // Built with -fsanitize=signed-integer-overflow, which aborts on an overflowing deadline.
 // Under an executor, a refused attach leaves the subscription out, even once a place frees, until
 // its publisher restarts: the executor's other sources must not stop for it.
