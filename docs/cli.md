@@ -32,7 +32,7 @@ CHANNEL         SEGMENT  ENDPOINTS
 ```text
 channel      /clidemo/image
 fingerprint  0x0000000000000000
-signpost     /flux.v11.d0..clidemo.image.0000000000000000
+signpost     /flux.v12.d0..clidemo.image.0000000000000000
 segment      up, epoch 1
 slots        4 x 1 MiB
 subscribers  up to 16 processes

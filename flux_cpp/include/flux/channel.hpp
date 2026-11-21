@@ -486,6 +486,12 @@ public:
   {
     return flux_frame_after(raw(), s.raw());
   }
+  // Orders what s queues next after the channel stream's work so far, on the device: work on s
+  // then reads the copies the take made.
+  [[nodiscard]] auto before(const gpu::Stream & s) const noexcept -> bool
+  {
+    return flux_frame_before(raw(), s.raw());
+  }
   // The frame's aux bytes, in host memory whatever the payload is.
   [[nodiscard]] auto aux() const noexcept -> wire::Span<const std::uint8_t>
   {

@@ -1113,6 +1113,17 @@ pub unsafe extern "C" fn flux_frame_after(v: *const flux_frame, s: *const flux_s
         .is_some_and(|fv| fv.stream().after(&other))
 }
 
+/// Orders what `s` queues next after the frame's channel stream so far, on the device.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_frame_before(v: *const flux_frame, s: *const flux_stream) -> bool {
+    // SAFETY: s is null or a live stream.
+    let other = unsafe { stream_of(s) };
+    // SAFETY: valid view storage.
+    unsafe { view_ref(v) }
+        .get()
+        .is_some_and(|fv| other.after(&fv.stream()))
+}
+
 /// The payload is device memory: frames and loans have no host bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn flux_channel_device_backed(ch: *const flux_channel) -> bool {

@@ -64,6 +64,7 @@ public:
   {
     return static_cast<std::size_t>(b_.len);
   }
+  [[nodiscard]] auto exporter() const noexcept -> nb::handle { return b_.obj; }
 
 private:
   Py_buffer b_{};
@@ -176,6 +177,7 @@ public:
     return {buf_.data(), buf_.size(), heap_, gpu_};
   }
   [[nodiscard]] auto device() const noexcept -> int { return device_; }
+  [[nodiscard]] auto source() const noexcept -> nb::handle { return buf_.exporter(); }
 
   static void check(const flux::wire::Reader & r, const char * what, std::size_t off)
   {
@@ -803,7 +805,8 @@ auto reader_device(nb::handle self, std::size_t off, nb::handle dtype) -> nb::ob
     return std::pair<const void *, std::size_t>(s.data(), s.size());
   });
   Reader::check(w, "device array", off);
-  return p == nullptr ? nb::none() : flux_py::device_span(self, p, n, dtype, r.device(), true);
+  return p == nullptr ? nb::none()
+                      : flux_py::device_span(self, r.source(), p, n, dtype, r.device(), true);
 }
 
 // n elements in the GPU arena on the loan's device, as a DLPack tensor to write on the loan's
@@ -823,7 +826,7 @@ auto writer_alloc_device(nb::handle self, std::size_t off, nb::handle count, nb:
         "flux: device array at " + std::to_string(off) +
         " found no room in the GPU arena, or the publisher declared no device");
     }
-    return flux_py::device_span(self, p, n, dtype, w.device(), false);
+    return flux_py::device_span(self, nb::handle(), p, n, dtype, w.device(), false);
   });
 }
 

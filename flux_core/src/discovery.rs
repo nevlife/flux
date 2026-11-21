@@ -791,37 +791,43 @@ mod tests {
     #[test]
     fn a_publisher_of_another_layout_is_reported() {
         let name = signpost_name(&format!("/d{}_skew", std::process::id()), NO_SCHEMA).unwrap();
-        // Layout 10, the last without the domain in the name.
+        let ours = name
+            .strip_prefix(&format!("/flux.v{LAYOUT_VERSION}."))
+            .unwrap();
+        // Layout 10, the last without the domain in the name, and 11, the last before this one.
         let bare = name
             .strip_prefix(&format!("/{}", super::channel_prefix()))
             .unwrap();
-        let theirs = format!("/flux.v{}.{bare}", LAYOUT_VERSION - 1);
-        let planted = crate::sys::shm_open(&theirs, libc::O_CREAT | libc::O_RDWR).unwrap();
-        // In use, as the other build holds it; a sweep would remove it otherwise.
-        assert!(crate::sys::lock_read(
-            std::os::fd::AsRawFd::as_raw_fd(&planted),
-            crate::layout::SIGNPOST_USER_BYTE
-        ));
-        let start = std::time::Instant::now();
-        let err = loop {
-            let map = SignpostMap::open(&name).unwrap();
-            match open_subscriber_fd(&map) {
-                Err(Error::NotReady(_)) if start.elapsed().as_millis() < 1000 => {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+        for (v, rest) in [(10, bare), (11, ours)] {
+            let theirs = format!("/flux.v{v}.{rest}");
+            let planted = crate::sys::shm_open(&theirs, libc::O_CREAT | libc::O_RDWR).unwrap();
+            // In use, as the other build holds it; a sweep would remove it otherwise.
+            assert!(crate::sys::lock_read(
+                std::os::fd::AsRawFd::as_raw_fd(&planted),
+                crate::layout::SIGNPOST_USER_BYTE
+            ));
+            let start = std::time::Instant::now();
+            let err = loop {
+                let map = SignpostMap::open(&name).unwrap();
+                match open_subscriber_fd(&map) {
+                    Err(Error::NotReady(_)) if start.elapsed().as_millis() < 1000 => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    Err(e) => break e,
+                    Ok(_) => panic!("attached to nothing"),
                 }
-                Err(e) => break e,
-                Ok(_) => panic!("attached to nothing"),
-            }
-        };
-        crate::sys::shm_unlink(&theirs);
-        drop(planted);
-        let text = err.to_string();
-        assert!(matches!(err, Error::Mismatch(_)), "{text}");
-        assert!(
-            text.contains(&format!("v{LAYOUT_VERSION}"))
-                && text.contains(&format!("v{}", LAYOUT_VERSION - 1)),
-            "{text}"
-        );
+            };
+            crate::sys::shm_unlink(&theirs);
+            drop(planted);
+            // The listing is kept this long; the next layout's name must not meet this one's.
+            std::thread::sleep(std::time::Duration::from_nanos(super::SKEW_PROBE_NS));
+            let text = err.to_string();
+            assert!(matches!(err, Error::Mismatch(_)), "layout {v}: {text}");
+            assert!(
+                text.contains(&format!("v{LAYOUT_VERSION}")) && text.contains(&format!("v{v} ")),
+                "{text}"
+            );
+        }
     }
 
     #[test]

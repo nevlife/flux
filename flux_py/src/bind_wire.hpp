@@ -48,10 +48,10 @@ inline auto error_subclass(
   return cls;
 }
 
-// n `dtype` elements at device address p, as a flux.wire.DeviceSpan holding `owner`.
+// n `dtype` at device p: a DeviceSpan holding `owner`, ordered with take result `frame`.
 auto device_span(
-  nanobind::handle owner, const void * p, std::size_t n, nanobind::handle dtype, int device,
-  bool readonly) -> nanobind::object;
+  nanobind::handle owner, nanobind::handle frame, const void * p, std::size_t n,
+  nanobind::handle dtype, int device, bool readonly) -> nanobind::object;
 
 // The view a take result's array holds and its stream's device (-1 for none); null for others.
 auto frame_of(nanobind::handle buf, int * device) -> const flux::Frame *;

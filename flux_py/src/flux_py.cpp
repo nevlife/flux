@@ -323,25 +323,26 @@ auto dlpack_of(const DeviceArray & a, nb::handle owner) -> nb::object
   return nb::cast(arr);
 }
 
-// The stream a DLPack consumer names, which the channel's own fence does not cover. None and -1
-// ask for no ordering, and CUDA orders the legacy default stream (1) with the channel's blocking
-// stream itself.
-void remember_stream(std::vector<flux::gpu::Stream> & streams, const nb::kwargs & kw)
+// The stream a DLPack consumer names, which the channel's own fence does not cover; null when it
+// names none. None and -1 ask for no ordering, and CUDA orders the legacy default stream (1) with
+// the channel's blocking stream itself.
+auto remember_stream(std::vector<flux::gpu::Stream> & streams, const nb::kwargs & kw)
+  -> const flux::gpu::Stream *
 {
   if (!kw.contains("stream") || kw["stream"].is_none()) {
-    return;
+    return nullptr;
   }
   const auto handle = nb::cast<std::intptr_t>(kw["stream"]);
   if (handle == -1 || handle == 0 || handle == 1) {
-    return;
+    return nullptr;
   }
   void * native = ptr_of(static_cast<std::uint64_t>(handle));
   for (const flux::gpu::Stream & s : streams) {
     if (s.native() == native) {
-      return;
+      return &s;
     }
   }
-  streams.push_back(flux::gpu::Stream::from_native(native));
+  return &streams.emplace_back(flux::gpu::Stream::from_native(native));
 }
 
 auto wait_all(const std::vector<flux::gpu::Stream> & streams) -> bool
@@ -386,6 +387,17 @@ struct FrameHold
     // NOLINTNEXTLINE(bugprone-unused-return-value)
     std::make_unique<flux::Frame>(std::move(v)).release();
   }
+  // The release waits for the consumer's stream, and the consumer's stream for the copies the
+  // take made: DLPack's producer orders both.
+  void hand_to(const nb::kwargs & kw)
+  {
+    const flux::gpu::Stream * s = remember_stream(streams, kw);
+    if (s != nullptr && !v.before(*s)) {
+      throw flux::Error(
+        flux::Status::Io,
+        "flux: the device refused to order the consumer's stream after the frame");
+    }
+  }
   [[nodiscard]] auto ordered() const -> bool
   {
     for (const flux::gpu::Stream & s : streams) {
@@ -418,10 +430,13 @@ public:
     scoped_(scoped)
   {
   }
+  // held_ changes only under the GIL; the hold itself goes without it, after any thread copying
+  // from it, which holds its own reference.
   ~Frame()
   {
     if (held_) {
-      without_gil([this] { held_.reset(); });
+      std::shared_ptr<FrameHold> h = std::move(held_);
+      without_gil([&h] { h.reset(); });
     }
   }
   Frame(Frame &&) noexcept = default;
@@ -443,7 +458,8 @@ public:
     if (!held_ || cai_out_) {
       return;
     }
-    without_gil([this] { held_.reset(); });
+    std::shared_ptr<FrameHold> h = std::move(held_);
+    without_gil([&h] { h.reset(); });
   }
 
   auto cai() -> nb::dict
@@ -464,7 +480,7 @@ public:
       return host_array().attr("__dlpack__")(**kw);
     }
     const DeviceArray a = array();
-    remember_stream(held_->streams, kw);
+    held_->hand_to(kw);
     return dlpack_of(a, hold());
   }
 
@@ -491,7 +507,7 @@ public:
         "flux: this subscriber has no device address for the tensor's data (the publisher's "
         "arena was not registered with this GPU)");
     }
-    remember_stream(held_->streams, kw);
+    held_->hand_to(kw);
     const auto addr = addr_of(dev.data() + (f.data - host.data()));
     return flux_py::tensor_dlpack(f, addr, hold(), nb::device::cuda::value, device_);
   }
@@ -548,7 +564,8 @@ public:
     }
     void * dst = PyArray_DATA(flux_py::as_array(a));
     const auto n = static_cast<std::size_t>(meta_.nbytes);
-    if (!without_gil([&] { return held_->v.copy_to(0, dst, n); })) {
+    const std::shared_ptr<FrameHold> h = held_;
+    if (!without_gil([&] { return h->v.copy_to(0, dst, n); })) {
       throw flux::Error(flux::Status::Io, "flux: the frame's copy to the host failed");
     }
     return a;
@@ -668,11 +685,18 @@ namespace
 class DeviceSpan
 {
 public:
-  DeviceSpan(const DeviceArray & a, nb::handle owner) : a_(a), owner_(nb::borrow(owner)) {}
+  DeviceSpan(const DeviceArray & a, nb::handle owner, std::shared_ptr<FrameHold> frame)
+  : a_(a), owner_(nb::borrow(owner)), frame_(std::move(frame))
+  {
+  }
 
   [[nodiscard]] auto cai() const -> nb::dict { return cuda_array_interface(a_); }
-  [[nodiscard]] auto dlpack(const nb::kwargs & /*kw*/) const -> nb::object
+  // A take result's field is handed out as the frame is: ordered both ways with the consumer.
+  [[nodiscard]] auto dlpack(const nb::kwargs & kw) const -> nb::object
   {
+    if (frame_) {
+      frame_->hand_to(kw);
+    }
     return dlpack_of(a_, owner_);
   }
   [[nodiscard]] auto dlpack_device() const -> nb::tuple
@@ -689,23 +713,39 @@ public:
 private:
   DeviceArray a_;
   nb::object owner_;
+  std::shared_ptr<FrameHold> frame_;
 };
 
 }  // namespace
 
+namespace
+{
+
+// The frame a take result's array holds, null for other bytes.
+auto hold_of(nb::handle buf) -> const std::shared_ptr<FrameHold> *
+{
+  PyObject * base = PyArray_Check(buf.ptr()) != 0 ? PyArray_BASE(flux_py::as_array(buf)) : nullptr;
+  if (base != nullptr && PyCapsule_IsValid(base, kFrameCapsule) != 0) {
+    return static_cast<const std::shared_ptr<FrameHold> *>(
+      PyCapsule_GetPointer(base, kFrameCapsule));
+  }
+  return nullptr;
+}
+
+}  // namespace
+
 auto flux_py::device_span(
-  nb::handle owner, const void * p, std::size_t n, nb::handle dtype, int device,
+  nb::handle owner, nb::handle frame, const void * p, std::size_t n, nb::handle dtype, int device,
   bool readonly) -> nb::object
 {
-  return nb::cast(DeviceSpan({addr_of(p), dtype_named(dtype), {n}, device, readonly}, owner));
+  const std::shared_ptr<FrameHold> * h = frame.is_valid() ? hold_of(frame) : nullptr;
+  return nb::cast(DeviceSpan(
+    {addr_of(p), dtype_named(dtype), {n}, device, readonly}, owner, h != nullptr ? *h : nullptr));
 }
 
 auto flux_py::frame_of(nb::handle buf, int * device) -> const flux::Frame *
 {
-  PyObject * base = PyArray_Check(buf.ptr()) != 0 ? PyArray_BASE(flux_py::as_array(buf)) : nullptr;
-  if (base != nullptr && PyCapsule_IsValid(base, kFrameCapsule) != 0) {
-    const auto * h =
-      static_cast<const std::shared_ptr<FrameHold> *>(PyCapsule_GetPointer(base, kFrameCapsule));
+  if (const std::shared_ptr<FrameHold> * h = hold_of(buf)) {
     *device = (*h)->device;
     return &(*h)->v;
   }
@@ -737,6 +777,7 @@ public:
 
   auto array(nb::handle self) -> nb::object
   {
+    idle();
     if (!w_) {
       throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
@@ -756,6 +797,7 @@ public:
   // The slot's whole aux region, sealed with the arrays at commit.
   auto aux(nb::handle self) -> nb::object
   {
+    idle();
     if (!w_) {
       throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
@@ -775,6 +817,7 @@ public:
   // Past the aux region, the commit is TOO_LARGE.
   void set_aux_len(std::size_t n)
   {
+    idle();
     if (!w_) {
       throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
@@ -787,11 +830,12 @@ public:
   // abort, in case it is page-locked. False past the capacity, or when the copy was not queued.
   auto copy_from(nb::handle src, std::size_t at) -> bool
   {
+    idle();
     if (!w_) {
       throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
     const auto a = nb::cast<nb::ndarray<nb::ro, nb::c_contig, nb::device::cpu>>(src);
-    const bool ok = without_gil([&] { return w_.copy_from(at, a.data(), a.nbytes()); });
+    const bool ok = busy([&] { return w_.copy_from(at, a.data(), a.nbytes()); });
     if (ok) {
       sources_.emplace_back(nb::borrow(src));
     }
@@ -803,6 +847,7 @@ public:
   // before keep their length.
   void resize(std::size_t nbytes)
   {
+    idle();
     if (!w_) {
       throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
@@ -823,7 +868,7 @@ public:
     if (!nbytes && resized_) {
       nbytes = static_cast<std::size_t>(shape_[0]) * flux::dtype_size(dtype_);
     }
-    const std::optional<flux::Published> p = without_gil([&]() -> std::optional<flux::Published> {
+    const std::optional<flux::Published> p = busy([&]() -> std::optional<flux::Published> {
       if (!writers_done()) {
         return std::nullopt;
       }
@@ -840,16 +885,18 @@ public:
   // lets go of it.
   void abort()
   {
+    idle();
     end();
     seal();
   }
 
-  [[nodiscard]] auto valid() const noexcept -> bool { return w_.valid(); }
+  [[nodiscard]] auto valid() const noexcept -> bool { return !busy_ && w_.valid(); }
   auto capacity() noexcept -> std::size_t { return w_.capacity(); }
 
   // The loan's arena handle for a wire Writer, None without an arena.
   [[nodiscard]] auto heap() const -> nb::object
   {
+    idle();
     const flux::wire::Heap h = w_.heap();
     if (h.channel == nullptr) {
       return nb::none();
@@ -864,7 +911,7 @@ public:
   auto dlpack(nb::handle self, const nb::kwargs & kw) -> nb::object
   {
     const DeviceArray a = device_array();
-    remember_stream(writers_, kw);
+    (void)remember_stream(writers_, kw);
     return dlpack_of(a, self);
   }
   [[nodiscard]] auto dlpack_device() const -> nb::tuple
@@ -874,13 +921,34 @@ public:
   [[nodiscard]] auto stream() const noexcept -> std::uintptr_t { return addr_of(w_.stream()); }
 
 private:
+  // One thread at a time: a call that lets go of the GIL marks the loan busy, and another thread's
+  // call meanwhile is refused instead of reaching the loan while that one does.
+  void idle() const
+  {
+    if (busy_) {
+      throw flux_py::UsageError("flux: the loan is in use by another thread");
+    }
+  }
+  template <class F>
+  auto busy(F f) -> decltype(f())
+  {
+    idle();
+    busy_ = true;
+    auto r = without_gil(f);
+    busy_ = false;
+    return r;
+  }
+
+  // Not refused when busy: abort checked, and a dropped Loan has no caller left.
   void end()
   {
+    busy_ = true;
     without_gil([this] {
       if (w_.valid() && writers_done()) {
         w_.abort();
       }
     });
+    busy_ = false;
   }
 
   // The streams the loan's tensors were handed to, waited for before the slot is published or
@@ -897,6 +965,7 @@ private:
 
   auto device_array() -> DeviceArray
   {
+    idle();
     if (!w_) {
       throw flux_py::UsageError("flux: the loan is already committed or aborted");
     }
@@ -922,6 +991,7 @@ private:
   }
 
   flux::Loan w_;
+  bool busy_ = false;
   flux::DType dtype_;
   std::vector<npy_intp> shape_;
   std::size_t loaned_;  // a 1-D loan's items as loaned, the most resize() takes

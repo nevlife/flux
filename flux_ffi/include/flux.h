@@ -16,7 +16,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define FLUX_ABI_VERSION 6
+#define FLUX_ABI_VERSION 7
 
 #define FLUX_MAX_DIMS 8
 
@@ -569,6 +569,9 @@ flux_status flux_channel_set_release_mode(const struct flux_channel *ch, int32_t
 
 // Orders the frame's channel stream after what `s` queued so far, on the device, not the host.
 bool flux_frame_after(const struct flux_frame *v, const struct flux_stream *s);
+
+// Orders what `s` queues next after the frame's channel stream so far, on the device.
+bool flux_frame_before(const struct flux_frame *v, const struct flux_stream *s);
 
 // The payload is device memory: frames and loans have no host bytes.
 bool flux_channel_device_backed(const struct flux_channel *ch);

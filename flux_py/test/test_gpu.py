@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import warnings
 from pathlib import Path
@@ -487,6 +488,86 @@ def test_every_cpu_field_of_a_slot_frame_reaches_a_gpu_reader(node, blob):
     _cpu_fields_reach_a_gpu_reader(
         node, blob, "cpu_slot_fields", slot_size=4 << 20, slot_count=4, alloc="slot"
     )
+
+
+def test_a_device_field_on_its_own_stream_is_waited_for_before_the_release(node, blob):
+    """A field's DLPack tensor names its stream, as a Frame's does: the slot goes back after it."""
+    t, fp = topic("span_own"), blob.FINGERPRINT__
+    pub = flux.Publisher(node, t, fingerprint=fp, slot_size=4 << 20, slot_count=2, alloc="slot")
+    dev = flux.Subscription(node, t, fingerprint=fp, qos=flux.QoS(depth=2), device="cuda")
+    n = 1 << 20
+
+    def publish(value):
+        b = blob.build__(pub)
+        b.alloc__data(n)[:] = value
+        assert b.commit__() == flux.Published.OK
+
+    torch.empty(1, device="cuda").clone()  # loads the kernel, which would wait for the sleep
+    torch.cuda.synchronize()
+    publish(1)
+    mine = torch.cuda.Stream()
+    with dev.take() as f, torch.cuda.stream(mine):
+        torch.cuda._sleep(200_000_000)
+        out = torch.from_dlpack(blob.View(f).data__device).clone()
+    for value in range(2, 5):
+        publish(value)
+    mine.synchronize()
+    assert out.unique().tolist() == [1]
+
+
+def test_a_frame_released_while_another_thread_copies_it_is_kept_until_the_copy_ends(node):
+    """The copy holds the frame: a release from another thread meanwhile takes effect after it."""
+    pub = flux.Publisher(node, topic("race"), device="cuda", slot_size=16 << 20, slot_count=2)
+    sub = flux.Subscription(node, topic("race"), qos=flux.QoS(depth=1), device="cuda")
+    copied = 0
+    for value in range(1, 41):
+        loan = pub.loan((4 << 20,), "float32")
+        write_on_device(loan, value)
+        assert loan.commit() == flux.Published.OK
+        f = sub.take()
+        got = []
+
+        def copy(f=f, got=got):
+            try:
+                got.append(f.copy_to_host())
+            except flux.UsageError:  # released before the copy began
+                got.append(None)
+
+        t = threading.Thread(target=copy)
+        t.start()
+        f.release()
+        t.join()
+        if got[0] is not None:
+            copied += 1
+            assert np.unique(got[0]).tolist() == [value]
+    assert copied > 0
+
+
+def test_a_loan_ended_by_two_threads_at_once_is_ended_once(node):
+    """A second thread's commit or abort while one runs is refused, not run on the same loan."""
+    pub = flux.Publisher(node, topic("lrace"), device="cuda", slot_size=1 << 22, slot_count=2)
+    sub = flux.Subscription(node, topic("lrace"), qos=flux.QoS(depth=2), device="cuda")
+    for _ in range(40):
+        loan = pub.loan((1 << 20,), "float32")
+        write_on_device(loan, 1)
+        results = []
+
+        def end(how, loan=loan, results=results):
+            try:
+                results.append(loan.commit() if how == "commit" else loan.abort())
+            except flux.UsageError:
+                results.append("refused")
+
+        threads = [threading.Thread(target=end, args=(h,)) for h in ("commit", "abort")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(results) == 2
+        f = sub.take()
+        assert results.count(flux.Published.OK) == (0 if f is None else 1)
+        if f is not None:
+            f.release()
 
 
 def test_a_slot_publisher_takes_the_slot_defaults(node):
