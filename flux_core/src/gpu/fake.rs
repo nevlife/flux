@@ -324,12 +324,20 @@ unsafe extern "C" fn stream_wait_event(stream: Handle, ev: Handle, _flags: c_uin
     })
 }
 
+thread_local! {
+    /// Set to fail the next `cuMemHostRegister` made on this thread.
+    static FAIL_REGISTER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 unsafe extern "C" fn host_register(p: *mut c_void, _bytes: usize, flags: c_uint) -> CuResult {
     call(|s| {
         let ctx = match context(s) {
             Ok(c) => c,
             Err(rc) => return rc,
         };
+        if FAIL_REGISTER.replace(false) {
+            return INVALID_VALUE;
+        }
         if s.registrations.contains_key(&(p as usize)) {
             return ALREADY_REGISTERED;
         }
@@ -445,6 +453,16 @@ pub(crate) fn finish(stream: &Stream) {
 }
 
 /// The work queued on `stream` and not yet finished fails with `rc`, as one launch's error does.
+/// Fails the next registration this thread makes.
+pub(crate) fn fail_next_register() {
+    FAIL_REGISTER.set(true);
+}
+
+/// True while the failure `fail_next_register` asked for has not happened yet.
+pub(crate) fn register_failure_pending() -> bool {
+    FAIL_REGISTER.get()
+}
+
 pub(crate) fn fail(stream: &Stream, rc: CuResult) {
     changed(|s| {
         if let Some(st) = s.streams.get_mut(&native(stream)) {

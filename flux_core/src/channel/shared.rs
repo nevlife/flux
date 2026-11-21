@@ -771,8 +771,9 @@ impl ChannelShared {
     }
 
     /// Whether this subscriber reaches `slot`: its import of a device payload and its copy have
-    /// memory there, mapped or given now if not. False when the device refused or the publisher's
-    /// chunks have not come: nothing was copied, so the borrow can go back.
+    /// memory there, mapped or given now if not, and a registered slot its registration. False when
+    /// the device refused or the publisher's chunks have not come: nothing was copied, so the
+    /// borrow can go back.
     pub(super) fn reach(&self, slot: u32) -> bool {
         if !self.seg.reach_image(slot) {
             return false;
@@ -792,6 +793,10 @@ impl ChannelShared {
                 staged: Staged::Host { buf, .. },
                 ..
             }) => buf.back(end).is_ok(),
+            Some(GpuState {
+                staged: Staged::Registered,
+                ..
+            }) => self.device_ptr(slot) != 0,
             _ => true,
         }
     }
@@ -806,8 +811,8 @@ impl ChannelShared {
         };
         let at = self.slot_offset(slot);
         match &g.staged {
-            Staged::InPlace => true,
-            Staged::Registered => self.device_ptr(slot) != 0,
+            // In place, or registered by `reach`.
+            Staged::InPlace | Staged::Registered => true,
             Staged::Device(buf) => {
                 // Pinned, the copy leaves the calling thread; a slot that will not pin is copied
                 // anyway.

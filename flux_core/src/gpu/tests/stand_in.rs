@@ -111,6 +111,56 @@ fn a_timed_out_commit_holds_its_claim_until_the_work_is_done() {
     assert!(s.take().is_none(), "nothing was published");
 }
 
+/// A failed registration of an added slot queued no copy, so its borrow goes back: at
+/// `max_borrow` 1 a kept one would refuse every later take.
+#[test]
+fn a_failed_registration_of_an_added_slot_gives_its_borrow_back() {
+    if !stand_in("a_failed_registration_of_an_added_slot_gives_its_borrow_back") {
+        return;
+    }
+    let name = topic("sireg");
+    let mut p = Channel::create_on(
+        &name,
+        1 << 16,
+        0,
+        DEFAULT_MAX_SUBSCRIBERS,
+        0,
+        NO_SCHEMA,
+        MemoryPolicy::default(),
+        Stream::create().unwrap(),
+        trace::NO_STAMP,
+        None,
+    )
+    .unwrap();
+    let mut s = Channel::open_on(
+        &name,
+        NO_SCHEMA,
+        MemoryPolicy::default(),
+        Stream::create().unwrap(),
+        trace::NO_STAMP,
+    )
+    .unwrap();
+    s.set_qos(QoS::new(20).unwrap().max_borrow(1).unwrap())
+        .unwrap();
+    fake::fail_next_register();
+    // The filler adds slots off this thread: publish until a take has met an added one.
+    assert!(
+        crate::channel::soon(|| {
+            assert_eq!(p.publish(b"frame"), Published::Ok);
+            let _ = s.take();
+            !fake::register_failure_pending()
+        }),
+        "no take registered an added slot"
+    );
+    for _ in 0..4 {
+        assert_eq!(p.publish(b"frame"), Published::Ok);
+        assert!(
+            s.take().is_some(),
+            "the failed registration kept its borrow"
+        );
+    }
+}
+
 #[test]
 fn a_deferred_release_holds_its_borrow_until_the_work_is_done() {
     if !stand_in("a_deferred_release_holds_its_borrow_until_the_work_is_done") {
