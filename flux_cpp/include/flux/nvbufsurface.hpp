@@ -33,7 +33,7 @@ struct ImageFormatHint
 // is imported once and is the slot itself; any other frame is copied into a surface of the
 // cache's own, counted in copies(). A slot is known by the file its fd names, not the number: a
 // re-attached subscription's slots may take the old ones' numbers. The old surfaces stay until the
-// cache goes. One thread at a time; it must not outlive the channel.
+// cache goes or clear(). One thread at a time; it must not outlive the channel.
 class NvBufSurfaces
 {
 public:
@@ -42,15 +42,21 @@ public:
   auto operator=(const NvBufSurfaces &) -> NvBufSurfaces & = delete;
   NvBufSurfaces(NvBufSurfaces &&) = delete;
   auto operator=(NvBufSurfaces &&) -> NvBufSurfaces & = delete;
-  ~NvBufSurfaces()
+  ~NvBufSurfaces() { clear(); }
+
+  // Lets every surface go, for one that the channel's restart left behind: once
+  // `attach_generation()` changed and no engine or caller still uses a surface from before.
+  void clear()
   {
     for (auto & [file, s] : imported_) {
       NvBufSurfaceDestroy(s);  // closes its dup of the slot's fd
     }
+    imported_.clear();
     for (auto & [key, s] : own_) {
       NvBufSurfaceUnMap(s, 0, -1);
       NvBufSurfaceDestroy(s);
     }
+    own_.clear();
   }
 
   // The slot's surface, or for another frame a copy as `hint` describes it. Null when neither

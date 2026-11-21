@@ -8,10 +8,14 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 namespace
@@ -157,6 +161,27 @@ TEST_F(NvBuf, TwoCachesOfOneSlotBothHandItToVic)
   EXPECT_EQ(vic_rgba(from_view, 848, 480), kRgba) << "the other import outlives the first";
 }
 
+// The dmabufs this process has open: the slots its channels map, and each surface's dup.
+auto dmabufs_open() -> int
+{
+  int n = 0;
+  for (const auto & e : std::filesystem::directory_iterator("/proc/self/fd")) {
+    std::error_code ec;
+    const auto to = std::filesystem::read_symlink(e.path(), ec).string();
+    n += static_cast<int>(!ec && to.find("dmabuf") != std::string::npos);
+  }
+  return n;
+}
+
+// Up to 2 s for the replaced channel's mapping to go, which the reaper thread lets go.
+auto settles_at(int want) -> bool
+{
+  for (int i = 0; i < 200 && dmabufs_open() != want; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return dmabufs_open() == want;
+}
+
 // The publisher restarts and the subscriber re-attaches: its new slots' fds may take the numbers
 // of the old ones, and the cache must hand VIC the new slot, not the old one under that number.
 TEST_F(NvBuf, AReattachedChannelsSlotIsNotTheOldOneOfTheSameFd)
@@ -188,10 +213,11 @@ TEST_F(NvBuf, AReattachedChannelsSlotIsNotTheOldOneOfTheSameFd)
     ASSERT_EQ(vic_rgba(surfaces.surface(v), 848, 480), kRgba);
   }
 
-  // A re-attach opens the new slots before it closes the old ones, so the numbers come back on
-  // the restart after.
+  // A re-attach opens the new slots before it closes the old ones, and the reaper closes those
+  // later, so the numbers come back on a restart after the old ones are closed.
+  const int settled = dmabufs_open();
   bool reused = false;
-  for (std::uint8_t add = 50; add <= 150 && !reused; add += 50) {
+  for (std::uint8_t add = 40, r = 1; add <= 160 && !reused; add += 40, ++r) {
     pub.reset();
     pub = std::make_unique<flux::detail::Channel>(
       flux::detail::Channel::create_config(name, c, flux::kNoSchema));
@@ -208,9 +234,52 @@ TEST_F(NvBuf, AReattachedChannelsSlotIsNotTheOldOneOfTheSameFd)
       EXPECT_EQ(vic_rgba(s, 848, 480), rgba(add)) << "fd " << fd;
     }
     old_fds.insert(old_fds.end(), fds.begin(), fds.end());
+    // Each generation's slots stay held by the cache's dups alone.
+    ASSERT_TRUE(settles_at(settled + 2 * r)) << settled << " then " << dmabufs_open();
   }
   // Without a reused number the test above would pass on any cache.
   EXPECT_TRUE(reused);
+}
+
+// Each restart of the publisher leaves the cache a surface per old slot, holding its dmabuf;
+// clear() lets them go, and the current slots are imported again on their next frame.
+TEST_F(NvBuf, ClearLetsTheSlotsOfAReplacedChannelGo)
+{
+  flux_publisher_config c = flux_publisher_config_default();
+  c.alloc = FLUX_ALLOC_SLOT;
+  c.slot_count = 2;
+  c.image_encoding = FLUX_IMAGE_BGRA8;
+  c.image_width = 848;
+  c.image_height = 480;
+  const std::string name = unique_name("clear");
+  auto pub = std::make_unique<flux::detail::Channel>(
+    flux::detail::Channel::create_config(name, c, flux::kNoSchema));
+  flux::detail::Watch watch(name);
+  auto sub = flux::detail::Channel::open(watch, flux::kNoSchema, flux::QoS(2));
+  flux::NvBufSurfaces surfaces;
+  // Both slots once, each frame through VIC.
+  auto both = [&](std::uint8_t add) {
+    for (int k = 0; k < 2; ++k) {
+      flux::Loan w = pub->loan();
+      ASSERT_TRUE(w);
+      fill_bgra(static_cast<std::uint8_t *>(w.data()), 848, 480, w.image_layout()->pitch[0], add);
+      ASSERT_EQ(w.commit(w.image_layout()->bytes), flux::Published::Ok);
+      flux::Frame v = sub.take_blocking(5'000'000'000);
+      ASSERT_TRUE(v);
+      ASSERT_EQ(vic_rgba(surfaces.surface(v), 848, 480), rgba(add));
+    }
+  };
+  both(0);
+  const int first = dmabufs_open();
+  pub.reset();
+  pub = std::make_unique<flux::detail::Channel>(
+    flux::detail::Channel::create_config(name, c, flux::kNoSchema));
+  both(50);
+  // The old slots are gone from both channels, but the cache's two dups still hold them.
+  EXPECT_TRUE(settles_at(first + 2)) << first << " then " << dmabufs_open();
+  surfaces.clear();
+  both(100);
+  EXPECT_TRUE(settles_at(first)) << first << " then " << dmabufs_open();
 }
 
 TEST_F(NvBuf, AFrameOutsideAnImageSlotIsCopiedForVic)
