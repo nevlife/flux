@@ -526,6 +526,10 @@ public:
     }
     static_assert(wire::kWireHeap == FLUX_ARENA_BASE && wire::kWireGpu == FLUX_GPU_ARENA_BASE);
     static_assert(wire::kArenaUnit == FLUX_ARENA_UNIT && wire::kGpuBase == FLUX_GPU_ARENA_POS);
+    // The trailers, padded to their 8-byte boundary.
+    static_assert(wire::kHeapTrailer == FLUX_ARENA_TRAILER_BYTES + 7);
+    static_assert(wire::kGpuTrailer == FLUX_GPU_ARENA_TRAILER_BYTES + 7);
+    static_assert(wire::kGpuArenaSpan == FLUX_MAX_GPU_ARENA_BYTES);
     static_assert(sizeof(wire::GpuBlock) == sizeof(flux_gpu_block));
     static_assert(offsetof(wire::GpuBlock, host) == offsetof(flux_gpu_block, host));
     static_assert(offsetof(wire::GpuBlock, device) == offsetof(flux_gpu_block, device));

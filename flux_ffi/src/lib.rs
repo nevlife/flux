@@ -50,6 +50,10 @@ pub const FLUX_GPU_ARENA_BASE: u64 = 0xC000_0000;
 // Arena descriptor offsets count 16-byte units. Readers use byte positions (GPU arena from POS).
 pub const FLUX_ARENA_UNIT: u64 = 16;
 pub const FLUX_GPU_ARENA_POS: u64 = 0x4_8000_0000;
+// Bytes a frame with arena blocks ends in: the arena's trailer, and with GPU blocks both trailers.
+pub const FLUX_ARENA_TRAILER_BYTES: u64 = 64;
+pub const FLUX_GPU_ARENA_TRAILER_BYTES: u64 = 128;
+pub const FLUX_MAX_GPU_ARENA_BYTES: u64 = 0x4_0000_0000;
 
 const _: () = {
     assert!(FLUX_MAX_DIMS == flux_core::MAX_DIMS);
@@ -70,6 +74,9 @@ const _: () = {
     assert!(FLUX_GPU_ARENA_BASE == flux_core::arena::GPU_BASE);
     assert!(FLUX_ARENA_UNIT == flux_core::arena::UNIT);
     assert!(FLUX_GPU_ARENA_POS == flux_core::arena::GPU_POS);
+    assert!(FLUX_ARENA_TRAILER_BYTES == flux_core::arena::TRAILER_BYTES as u64);
+    assert!(FLUX_GPU_ARENA_TRAILER_BYTES == flux_core::arena::GPU_TRAILER_BYTES as u64);
+    assert!(FLUX_MAX_GPU_ARENA_BYTES == flux_core::arena::MAX_GPU_ARENA_BYTES as u64);
     assert!(flux_gen::wire::HEAP_POS as u64 == flux_core::arena::HEAP_POS);
     assert!(flux_gen::wire::GPU_POS as u64 == flux_core::arena::GPU_POS);
     assert!(flux_gen::wire::UNIT as u64 == flux_core::arena::UNIT);

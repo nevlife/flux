@@ -18,6 +18,7 @@
 * `flux` 명령의 bash Tab 자동완성. 하위 명령, `--window`, 이 호스트에 보이는 채널 이름을 채운다
 * 외장 GPU에서 CPU와 GPU의 네 조합을 모두 받는다. GPU 메모리 채널의 CPU 구독과 호스트 메모리 채널의 GPU 구독은 구독자가 take마다 한 번 복사한다. GPU 메모리 채널의 `publish(호스트 배열)`은 슬롯으로 복사해 발행한다. 전에는 각각 `MISMATCH`, `INVALID_ARGUMENT`, `WrongDevice`였다
 * C ABI가 기본값 상수 `FLUX_DEFAULT_SLOT_SIZE`, `FLUX_DEFAULT_SLOT_COUNT`, `FLUX_DEFAULT_TURN_NS`를 내보낸다
+* C ABI가 arena trailer의 크기와 GPU arena의 최대 크기를 `FLUX_ARENA_TRAILER_BYTES`, `FLUX_GPU_ARENA_TRAILER_BYTES`, `FLUX_MAX_GPU_ARENA_BYTES`로 내보낸다. C++ `flux/wire.hpp`의 같은 상수가 이 값과 다르면 컴파일되지 않는다
 * `record_flux`와 `play_flux`가 `ros2 bag record`, `ros2 bag play`의 옵션을 모두 받는다. 인자의 정의, 검사, 변환은 설치된 `ros2bag`의 것이다. bag 나누기(`-b`, `-d`), rosbag2 압축(`--compression-mode`, `--storage-preset-profile zstd_fast`), snapshot, QoS override, 반복(`-l`), remap, `--start-offset`, `--playback-duration` 등이 flux 채널에도 적용된다. 옵션마다 flux 채널에 적용되는 방식은 [ros2_tools.md](../ros2_tools.md#flux_bag)에 있다
 * `flux_bag`이 `record_flux`의 `FluxFrame` 만들기를 라이브러리 `flux_bag::flux_bag_frames`(`flux_bag::FrameEncoder`)로 내보낸다. 다른 녹화기도 같은 형식의 bag을 쓴다
 * 발행자가 같은 이름의 ROS 2 토픽도 발행 가능하다(C++ `mirror_to_ros()`, Python `mirror_to_ros=True`). ROS 2 구독자가 있는 동안만 변환한다. `flux_bridge`는 다른 ROS 2 발행자가 있는 토픽을 중계하지 않고, `echo_flux`·`hz_flux`는 mirror만 있어도 동작한다
