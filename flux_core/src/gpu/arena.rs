@@ -223,8 +223,21 @@ fn grow(
         let at = t.base + off as u64;
         let mut h: AllocHandle = 0;
         let p = prop(t.place, t.device);
+        #[cfg(test)]
+        let refused = tests::FAIL_CREATE.with(|c| match c.get() {
+            Some(0) => {
+                c.set(None);
+                true
+            }
+            n => {
+                c.set(n.map(|n| n - 1));
+                false
+            }
+        });
+        #[cfg(not(test))]
+        let refused = false;
         // SAFETY: valid pointers; CHUNK is a multiple of the granularity.
-        if unsafe { (vmm.create)(&raw mut h, CHUNK, &raw const p, 0) } != SUCCESS {
+        if refused || unsafe { (vmm.create)(&raw mut h, CHUNK, &raw const p, 0) } != SUCCESS {
             return Err(fail("cuMemCreate"));
         }
         let undo = |mapped: bool| {
@@ -824,6 +837,31 @@ mod tests {
     thread_local! {
         /// Set to fail the next device grant of an imported chunk on this thread.
         pub(super) static FAIL_GRANT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// Set to `Some(n)` to make `n` more chunks on this thread, then fail the next.
+        pub(super) static FAIL_CREATE: std::cell::Cell<Option<u32>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// A block needing two new chunks, the second of which could not be made: the first stays
+    /// mapped, and once memory is back the arena grows past it instead of mapping it again.
+    #[test]
+    fn a_grow_that_failed_at_its_second_chunk_grows_again() {
+        let Ok((core, _)) = vmm::vmm() else { return };
+        if vmm::device_handle(core, 0).is_none() {
+            return;
+        }
+        let a = GpuArena::create(0, 4 * CHUNK, None).unwrap();
+        // From offset 0 past 64 MiB: chunks 1 and 2 on top of the first.
+        let bytes = 2 * CHUNK + (4 << 20);
+        FAIL_CREATE.set(Some(1));
+        assert!(
+            a.alloc(bytes, 256).is_none(),
+            "the second chunk was refused"
+        );
+        let b = a
+            .alloc(bytes, 256)
+            .expect("the arena grows once memory is back");
+        a.free(b);
     }
 
     /// A chunk the device may not read is not counted as mapped, where a later frame reaching it

@@ -84,8 +84,13 @@ impl Heap {
             return Ok(());
         }
         let to = round_up(end, self.step).min(self.size);
-        grow(self.committed, to)?;
-        self.committed = to;
+        // A step at a time: one that fails leaves those before it made, and the next reach must
+        // start after them, since the GPU arena cannot map a chunk twice.
+        while self.committed < to {
+            let next = (self.committed + self.step).min(to);
+            grow(self.committed, next)?;
+            self.committed = next;
+        }
         Ok(())
     }
 
@@ -269,6 +274,43 @@ mod tests {
 
     fn no_grow(_: u64, _: u64) -> io::Result<()> {
         unreachable!("all of a test heap is usable")
+    }
+
+    /// A grow that fails partway leaves the steps before the failure made. The next reach starts
+    /// after them: the GPU arena cannot map a chunk twice.
+    #[test]
+    fn a_grow_that_fails_partway_counts_the_steps_it_made() {
+        use std::cell::{Cell, RefCell};
+        const STEP: u64 = 4096;
+        // Eight steps, in words.
+        let mut mem = vec![0u64; 8 * 4096 / 8];
+        let base = NonNull::new(mem.as_mut_ptr().cast::<u8>()).unwrap();
+        let made = RefCell::new(Vec::new());
+        let fail_at = Cell::new(None);
+        let mut grow = |from: u64, to: u64| -> io::Result<()> {
+            let mut at = from;
+            while at < to {
+                if made.borrow().contains(&at) {
+                    return Err(io::Error::other("step made twice"));
+                }
+                if fail_at.get() == Some(at) {
+                    fail_at.set(None);
+                    return Err(io::Error::other("out of memory"));
+                }
+                made.borrow_mut().push(at);
+                at += STEP;
+            }
+            Ok(())
+        };
+        let mut h = Heap::new(base, 8 * STEP, STEP, Some(&mut grow)).unwrap();
+        assert_eq!(h.committed, STEP);
+        // The block reaches into the third step: the second is made, the third fails.
+        fail_at.set(Some(2 * STEP));
+        assert!(h.alloc(2 * STEP, 16, &mut grow).is_none());
+        assert_eq!(h.committed, 2 * STEP, "the second step was made");
+        let p = h.alloc(2 * STEP, 16, &mut grow).expect("memory is back");
+        assert_eq!(*made.borrow(), [0, STEP, 2 * STEP]);
+        h.free(p);
     }
 
     fn heap(bytes: usize) -> (Vec<u64>, Heap) {
