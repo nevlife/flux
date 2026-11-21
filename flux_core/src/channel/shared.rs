@@ -152,6 +152,20 @@ enum CopyBuf {
 // SAFETY: the block pointers are into `buf`, which the copy owns.
 unsafe impl Send for SlotCopy {}
 
+impl SlotCopy {
+    /// A buffer of at least `total` bytes, made by `make` when the one held is smaller. None when
+    /// `make` fails, and then none is held, so the next frame makes one whatever its size.
+    fn reserve(&mut self, total: usize, make: impl FnOnce(usize) -> Option<CopyBuf>) -> Option<()> {
+        if self.cap < total {
+            self.buf = None;
+            self.cap = 0;
+            self.buf = Some(make(total)?);
+            self.cap = total;
+        }
+        Some(())
+    }
+}
+
 /// Arena memory a frame owns. Each host block has its arena offset and length.
 pub enum Owned {
     Block(u64, u32),
@@ -386,11 +400,7 @@ impl ChannelShared {
                 });
                 total = total.next_multiple_of(COPY_ALIGN) + usize::try_from(len).ok()?;
             }
-            if c.cap < total {
-                c.buf = None;
-                c.buf = Some(make(total)?);
-                c.cap = total;
-            }
+            c.reserve(total, make)?;
             let mut place = 0usize;
             for b in &mut c.blocks {
                 place = place.next_multiple_of(COPY_ALIGN);
@@ -1325,3 +1335,21 @@ thread_local! {
 /// Where an `add_waiter` counted: a lease can arrive before the matching remove.
 #[derive(Clone, Copy)]
 pub(crate) struct Waiter(Option<u32>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A buffer that could not be made leaves none held: a later frame needing less makes one
+    /// rather than copying into the buffer that went.
+    #[test]
+    fn a_copy_buffer_that_could_not_be_made_is_made_by_the_next_frame() {
+        let host = |n| gpu::HostBuffer::new(n, n, 0).ok().map(CopyBuf::Host);
+        let Some(first) = host(4096) else { return };
+        let mut c = SlotCopy::default();
+        assert!(c.reserve(4096, |_| Some(first)).is_some());
+        assert!(c.reserve(8192, |_| None).is_none(), "out of memory");
+        assert!(c.reserve(1024, host).is_some());
+        assert!(c.buf.is_some(), "a later frame has no buffer to copy into");
+    }
+}
