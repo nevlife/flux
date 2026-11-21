@@ -4,6 +4,8 @@
 
 ## 패키지 설정
 
+`flux_py`는 빌드 시의 numpy에 맞춰 컴파일된다. numpy 2로 빌드하면 numpy 1.x와 2.x 모두에서 사용 가능하다. numpy 1.x(Jazzy 기본)로 빌드하면 numpy 2에서 import되지 않는다.
+
 ```xml
 <exec_depend>flux_py</exec_depend>
 <exec_depend>flux_std_adapters</exec_depend>  <!-- sensor_msgs_flux 같은 표준 메시지 어댑터를 사용하는 경우 -->
