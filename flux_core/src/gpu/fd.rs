@@ -420,6 +420,11 @@ impl Mailbox {
         }
     }
 
+    /// Drops the connection: the next `collect` asks again from its `have`.
+    pub(crate) fn reconnect(&mut self) {
+        self.conn = None;
+    }
+
     /// The chunks from index `have` on that have come; a first use waits up to `RECV_TIMEOUT_NS`
     /// for `want` of them in all. `NotReady` when nobody serves the endpoint; fewer than `want`
     /// otherwise, and the caller refuses the frame.

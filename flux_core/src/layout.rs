@@ -202,7 +202,8 @@ pub struct ControlHeader {
     pub image_encoding: u32,
     pub image_width: u32,
     pub image_height: u32,
-    _reserved2: [u8; 32],
+    /// Read by nothing in flux; there for whoever opens a segment with a hex dump.
+    note: [u8; 32],
     /// Waits by a process with no subscriber number here: the publisher's own, or a heap
     /// channel's. Others count under their number in the words after this header, one store
     /// each, so a dead number's count is taken back whole. The publisher skips the wake syscall
@@ -211,6 +212,8 @@ pub struct ControlHeader {
     pub waiters: AtomicI32,
     _reserved3: [u8; 60],
 }
+
+const NOTE: [u8; 32] = *b"hello world!\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
 impl ControlHeader {
     pub(crate) const fn new(
@@ -240,7 +243,7 @@ impl ControlHeader {
             image_encoding: 0,
             image_width: 0,
             image_height: 0,
-            _reserved2: [0; 32],
+            note: NOTE,
             waiters: AtomicI32::new(0),
             _reserved3: [0; 60],
         }
@@ -473,6 +476,7 @@ const _: () = {
     assert!(offset_of!(ControlHeader, depth_high) == 80);
     assert!(offset_of!(ControlHeader, image_encoding) == 84);
     assert!(offset_of!(ControlHeader, image_height) == 92);
+    assert!(offset_of!(ControlHeader, note) == 96);
     assert!(offset_of!(ControlHeader, waiters) == 128);
 
     assert!(size_of::<Signpost>() == CACHE_LINE);
@@ -521,9 +525,22 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_AUX_SIZE, MAX_SLOT_COUNT, MAX_SUBSCRIBERS, PAYLOAD_ALIGN, SegmentLayout, align_up,
-        layout_config_ok,
+        ControlHeader, MAX_AUX_SIZE, MAX_SLOT_COUNT, MAX_SUBSCRIBERS, PAYLOAD_ALIGN, SegmentLayout,
+        StorageKind, align_up, layout_config_ok,
     };
+
+    #[test]
+    fn a_segment_says_hello() {
+        let l = SegmentLayout {
+            slot_size: 64,
+            slot_count: 2,
+            max_subscribers: 16,
+            aux_size: 0,
+        };
+        let h = ControlHeader::new(l, 0, StorageKind::HostInline, 2);
+        assert_eq!(&h.note[..12], b"hello world!");
+        assert!(h.note[12..].iter().all(|&b| b == 0));
+    }
 
     /// Without aux every offset is where layout version 6 put it.
     #[test]

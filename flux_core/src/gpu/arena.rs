@@ -598,6 +598,10 @@ impl GpuArenaImport {
             }
             Ok(())
         });
+        if r.is_err() {
+            // The chunk that failed and the rest of the batch come again on the next connection.
+            inner.mail.reconnect();
+        }
         let cpu = match inner.cpu {
             Cpu::None => 0,
             Cpu::Import => usize::try_from(self.base).unwrap_or(0),
@@ -646,20 +650,34 @@ impl GpuArenaImport {
             unsafe { (vmm.release)(h) };
             return Err(Error::Unsupported("cuMemMap failed".into()));
         }
+        #[cfg(test)]
+        let refused = tests::FAIL_GRANT.replace(false);
+        #[cfg(not(test))]
+        let refused = false;
+        let granted = if refused
+            || access(
+                vmm,
+                at,
+                location(Place::Device, self.device),
+                MEM_ACCESS_READ,
+            ) != SUCCESS
+        {
+            Err(Error::Unsupported("cuMemSetAccess failed".into()))
+        } else if let Place::HostNuma(_) = self.place {
+            self.reach_from_cpu(vmm, inner, fd, off)
+        } else {
+            Ok(())
+        };
+        // A chunk counts once it can be read; unmapped and released, it comes again.
+        if let Err(e) = granted {
+            // SAFETY: mapped above at this size.
+            unsafe { (vmm.unmap)(at, CHUNK) };
+            // SAFETY: imported above.
+            unsafe { (vmm.release)(h) };
+            return Err(e);
+        }
         inner.handles.push(h);
         ledger::made(Held::Import(at), CHUNK);
-        if access(
-            vmm,
-            at,
-            location(Place::Device, self.device),
-            MEM_ACCESS_READ,
-        ) != SUCCESS
-        {
-            return Err(Error::Unsupported("cuMemSetAccess failed".into()));
-        }
-        if let Place::HostNuma(_) = self.place {
-            self.reach_from_cpu(vmm, inner, fd, off)?;
-        }
         Ok(())
     }
 
@@ -802,6 +820,35 @@ impl Drop for GpuArenaImport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// Set to fail the next device grant of an imported chunk on this thread.
+        pub(super) static FAIL_GRANT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// A chunk the device may not read is not counted as mapped, where a later frame reaching it
+    /// would be handed out and a kernel reading it would fault. It comes again on the next reach.
+    #[test]
+    fn a_chunk_whose_device_grant_failed_is_not_counted_as_mapped() {
+        let Ok((core, _)) = vmm::vmm() else { return };
+        if vmm::device_handle(core, 0).is_none() {
+            return;
+        }
+        let a = GpuArena::create(0, 64 << 20, Some(Place::Device)).unwrap();
+        let b = a.alloc(4096, 256).expect("a block in the first chunk");
+        let f = a.frame();
+        let m = GpuArenaImport::open_id(f.id, f.size, f.place, 0).unwrap();
+        FAIL_GRANT.set(true);
+        assert!(m.reach(1).is_err(), "the grant failed");
+        assert_eq!(
+            m.mapped.load(Ordering::Acquire),
+            0,
+            "counted a chunk without its grant"
+        );
+        m.reach(1).expect("the chunk again, granted this time");
+        assert_eq!(m.mapped.load(Ordering::Acquire), 1);
+        a.free(b);
+    }
 
     fn frame(place: Place) -> GpuFrame {
         GpuFrame {
