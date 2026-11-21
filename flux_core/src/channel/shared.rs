@@ -1041,9 +1041,15 @@ impl ChannelShared {
         sl.publish_ns.store(now, Ordering::Relaxed);
         self.seg.index_entry(ticket).store(s, Ordering::Relaxed);
         sl.commit_ticket.store(ticket, Ordering::Release); // order: ticket
+        #[cfg(test)]
+        if let Some(f) = BEFORE_LATEST.take() {
+            f();
+        }
 
         let ctrl = self.seg.ctrl();
-        ctrl.latest.store(ticket, Ordering::Release); // order: latest
+        // Commits may overlap: a store from the older ticket landing last would hide the newer
+        // frame, since a take reads up to `latest`.
+        ctrl.latest.fetch_max(ticket, Ordering::Release); // order: latest
         // Dekkers with wait(): bump, then read waiters; wait announces, then reads the word.
         ctrl.wakeup.fetch_add(1, Ordering::SeqCst); // order: wakeup
         let woke = ctrl.waiters.load(Ordering::SeqCst) > 0 // order: waiters
@@ -1307,6 +1313,13 @@ fn try_claim(sl: &SlotHeader, readers: &[AtomicU32], in_use: impl Fn(Ordering) -
         return false;
     }
     true
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Runs once on this thread between a commit's ticket and its `latest`, to order two commits.
+    pub(super) static BEFORE_LATEST: std::cell::Cell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// Where an `add_waiter` counted: a lease can arrive before the matching remove.

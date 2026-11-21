@@ -235,6 +235,36 @@ fn a_loan_commits_on_another_thread() {
     assert_eq!(s.take().unwrap().data(), &[3; 8]);
 }
 
+/// Two loans commit on two threads and the older ticket's `latest` lands last: a take reads up to
+/// `latest`, so the newer frame must stay the one it reaches.
+#[test]
+fn an_older_commit_finishing_last_leaves_the_newer_frame_visible() {
+    let (sh, mut p, mut s) = pair();
+    let mut older = p.loan().unwrap();
+    let mut newer = p.loan().unwrap();
+    older.data_mut()[..8].copy_from_slice(&[1; 8]);
+    newer.data_mut()[..8].copy_from_slice(&[2; 8]);
+    let (at_tx, at_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let first = std::thread::spawn(move || {
+        super::shared::BEFORE_LATEST.set(Some(Box::new(move || {
+            at_tx.send(()).unwrap();
+            go_rx.recv().unwrap();
+        })));
+        older.commit_len(8)
+    });
+    at_rx.recv().unwrap(); // ticket 1 is in its slot, its `latest` not stored yet
+    assert_eq!(newer.commit_len(8), Published::Ok);
+    go_tx.send(()).unwrap();
+    assert_eq!(first.join().unwrap(), Published::Ok);
+    assert_eq!(sh.seg.ctrl().latest.load(Ordering::Acquire), 2);
+    let mut last = None;
+    while let Some(v) = s.take() {
+        last = Some(v.data()[0]);
+    }
+    assert_eq!(last, Some(2), "the frame of ticket 2 is never taken");
+}
+
 #[test]
 fn commit_and_take_carry_the_frames_stamp() {
     let sh = Arc::new(ChannelShared::new(
