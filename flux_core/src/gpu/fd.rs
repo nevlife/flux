@@ -18,6 +18,8 @@ pub(crate) const ENDPOINT_PREFIX: &str = "flux.gpu.";
 const STALE_BIND: std::time::Duration = std::time::Duration::from_secs(10);
 /// Marks a name bound and not yet renamed into place. No endpoint name holds it.
 const BINDING: &str = ".bind-";
+/// Marks a name a sweep moved an endpoint to, to check it. No endpoint name holds it.
+const SWEEPING: &str = ".sweep-";
 
 /// The address and the length `bind` and `connect` take for a socket file.
 fn path_addr(path: &str) -> Result<(libc::sockaddr_un, libc::socklen_t)> {
@@ -609,6 +611,7 @@ impl Drop for FdServer {
 /// only a socket that answers; the rename also replaces one a dead publisher of a reused inode
 /// left. Returns the file's inode, by which Drop knows the file is still its own.
 fn bind_listening(listen: RawFd, endpoint: &str) -> Result<u64> {
+    use std::os::unix::fs::MetadataExt;
     let tmp = bind_name(endpoint, sys::getpid());
     let (addr, len) = path_addr(&tmp)?;
     unlink(&tmp);
@@ -626,13 +629,15 @@ fn bind_listening(listen: RawFd, endpoint: &str) -> Result<u64> {
         if unsafe { libc::listen(listen, 16) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        std::fs::rename(&tmp, endpoint)
+        // Before the rename: a sweep may hold the endpoint name aside for a moment after it.
+        let ino = std::fs::symlink_metadata(&tmp)?.ino();
+        std::fs::rename(&tmp, endpoint)?;
+        Ok(ino)
     })();
-    if let Err(e) = placed {
+    placed.map_err(|e| {
         unlink(&tmp);
-        return Err(Error::io("listen", endpoint, e));
-    }
-    file_ino(endpoint).ok_or_else(|| Error::io("stat", endpoint, io::Error::last_os_error()))
+        Error::io("listen", endpoint, e)
+    })
 }
 
 /// The name `endpoint` is bound under until it listens.
@@ -653,10 +658,30 @@ fn unlink(path: &str) {
     let _ = std::fs::remove_file(path);
 }
 
+/// `renameat2` with `flags`.
+fn rename2(from: &str, to: &str, flags: libc::c_uint) -> io::Result<()> {
+    let (from, to) = (cpath(from)?, cpath(to)?);
+    // SAFETY: valid C strings; renameat2 reads them only.
+    let rc = unsafe {
+        libc::renameat2(
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            flags,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// For the sweep: removes `name` in /dev/shm if it is this user's endpoint and dead. A renamed
 /// endpoint is dead when nothing listens on it. A bind name (`BINDING` and the binder's pid) is
 /// renamed microseconds after the bind, so one that old is left over; the pid itself may be
-/// another pid namespace's. Between its bind and its listen nothing answers on it either.
+/// another pid namespace's. Between its bind and its listen nothing answers on it either. A name a
+/// sweep moved an endpoint to (`SWEEPING`) is left over the same way.
 pub(crate) fn remove_dead_endpoint(name: &str) {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let Some(rest) = name.strip_prefix(ENDPOINT_PREFIX) else {
@@ -669,19 +694,67 @@ pub(crate) fn remove_dead_endpoint(name: &str) {
     if !meta.file_type().is_socket() || meta.uid() != sys::euid() {
         return;
     }
-    let dead = if rest.contains(BINDING) {
+    let passing = rest.contains(BINDING) || rest.contains(SWEEPING);
+    let dead = if passing {
         meta.modified()
             .ok()
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age > STALE_BIND)
     } else {
-        socket(libc::SOCK_NONBLOCK).is_ok_and(|s| {
-            let r = connect(s.as_raw_fd(), &path);
-            matches!(r, Ok(Err(e)) if e.raw_os_error() == Some(libc::ECONNREFUSED))
-        })
+        refuses(&path)
     };
-    if dead && file_ino(&path) == Some(meta.ino()) {
-        unlink(&path);
+    if !dead {
+        return;
+    }
+    if passing {
+        if file_ino(&path) == Some(meta.ino()) {
+            unlink(&path);
+        }
+        return;
+    }
+    remove_if_dead(&path);
+}
+
+/// Whether a connect to the socket file at `path` is refused: nothing listens on it, now or later.
+fn refuses(path: &str) -> bool {
+    socket(libc::SOCK_NONBLOCK).is_ok_and(|s| {
+        let r = connect(s.as_raw_fd(), path);
+        matches!(r, Ok(Err(e)) if e.raw_os_error() == Some(libc::ECONNREFUSED))
+    })
+}
+
+/// Removes the endpoint at `path` if it is dead. A segment that reused a dead one's inode number
+/// has its endpoint name, and its server may rename a live socket onto it at any moment, so the
+/// endpoint is moved to a name of this sweep's first and judged there. The inode is no proof: a
+/// sweep that puts a live one back can make the name hold an inode it held before. A live one
+/// goes back. If the name was taken meanwhile, by one another sweep put back, the two are
+/// exchanged and the one from the name is judged in turn; if the name is empty again by the
+/// exchange, the one held is judged and put back again. A name has at most one live endpoint, so
+/// this ends within a few turns; one still held after `TURNS` stays under this sweep's name,
+/// which a later sweep removes as it does a stale bind name. The model checking harness's endpoint
+/// model holds these steps.
+fn remove_if_dead(path: &str) {
+    const TURNS: usize = 8;
+    static TURN: AtomicU32 = AtomicU32::new(0);
+    let turn = TURN.fetch_add(1, Ordering::Relaxed);
+    let moved = format!("{path}{SWEEPING}{}.{turn}", sys::getpid());
+    if std::fs::rename(path, &moved).is_err() {
+        return;
+    }
+    for _ in 0..TURNS {
+        if refuses(&moved) {
+            unlink(&moved);
+            return;
+        }
+        match rename2(&moved, path, libc::RENAME_NOREPLACE) {
+            Err(e) if e.raw_os_error() == Some(libc::EEXIST) => {}
+            _ => return,
+        }
+        if let Err(e) = rename2(&moved, path, libc::RENAME_EXCHANGE)
+            && e.raw_os_error() != Some(libc::ENOENT)
+        {
+            return;
+        }
     }
 }
 
@@ -706,6 +779,75 @@ mod tests {
 
     fn endpoint(name: &str) -> String {
         format!("/dev/shm/flux.gpu.test-{name}-{}", std::process::id())
+    }
+
+    /// A sweep that judged the old endpoint dead must not remove the live one a new server
+    /// renamed over it in the meantime. Tries the window many times: it is microseconds wide.
+    #[test]
+    fn a_sweep_does_not_remove_an_endpoint_renamed_over_a_dead_one() {
+        use std::sync::Barrier;
+        let path = endpoint("sweeprace");
+        let name = path.strip_prefix("/dev/shm/").unwrap().to_owned();
+        let tries = 20_000;
+        let mut removed = 0;
+        for _ in 0..tries {
+            {
+                let dead = socket(0).unwrap();
+                let (addr, len) = super::path_addr(&path).unwrap();
+                unlink(&path);
+                // SAFETY: addr and len describe a sockaddr_un.
+                let rc = unsafe { libc::bind(dead.as_raw_fd(), (&raw const addr).cast(), len) };
+                assert_eq!(rc, 0);
+            }
+            let go = Arc::new(Barrier::new(2));
+            let g = Arc::clone(&go);
+            let n = name.clone();
+            let sweeper = std::thread::spawn(move || {
+                g.wait();
+                super::remove_dead_endpoint(&n);
+            });
+            let live = socket(0).unwrap();
+            go.wait();
+            let ino = bind_listening(live.as_raw_fd(), &path).unwrap();
+            sweeper.join().unwrap();
+            if super::file_ino(&path) != Some(ino) {
+                removed += 1;
+            }
+            unlink(&path);
+        }
+        assert_eq!(
+            removed, 0,
+            "a sweep removed the live endpoint {removed} times in {tries}"
+        );
+    }
+
+    /// What a sweep moves aside to judge goes back if it answers, and leaves nothing behind.
+    #[test]
+    fn a_sweep_puts_back_a_live_endpoint_and_removes_a_dead_one() {
+        let path = endpoint("sweepback");
+        let leftovers = || {
+            let mine = format!("{}{}", &path["/dev/shm/".len()..], super::SWEEPING);
+            std::fs::read_dir("/dev/shm")
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with(&mine))
+                .count()
+        };
+        let live = socket(0).unwrap();
+        let ino = bind_listening(live.as_raw_fd(), &path).unwrap();
+        super::remove_if_dead(&path);
+        assert_eq!(super::file_ino(&path), Some(ino), "the live endpoint went");
+        unlink(&path);
+        // Bound and never listening: a child another test forks meanwhile may hold a copy of
+        // `live`, which would go on answering.
+        let dead = socket(0).unwrap();
+        let (addr, len) = super::path_addr(&path).unwrap();
+        // SAFETY: addr and len describe a sockaddr_un.
+        let rc = unsafe { libc::bind(dead.as_raw_fd(), (&raw const addr).cast(), len) };
+        assert_eq!(rc, 0);
+        super::remove_if_dead(&path);
+        assert_eq!(super::file_ino(&path), None, "the dead endpoint stayed");
+        assert_eq!(leftovers(), 0);
     }
 
     /// A publisher slow to answer leaves the subscriber in `poll` while signals arrive.

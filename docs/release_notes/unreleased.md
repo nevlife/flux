@@ -52,6 +52,7 @@
 
 * 한 발행자의 loan 둘을 두 스레드가 동시에 commit하고 먼저 시작한 commit이 나중에 끝나면, 나중 프레임이 다음 commit까지 어느 구독자에게도 보이지 않았다. 마지막 프레임이면 끝내 전달되지 않았다. 이제 commit이 끝나는 순서와 상관없이 가장 새 프레임이 보인다
 * 발행자가 재시작한 직후, 바로 앞의 take에서 프레임을 받은 구독자의 첫 take가 옛 발행자를 읽어 빈 결과를 냈다. `take_blocking`은 이미 와 있는 프레임을 두고 약 100 ms를 기다렸고, executor는 다음 tick에서야 새 발행자를 따라갔다. 이제 take마다 재시작을 확인한다
+* GPU 경로의 endpoint 소켓을 정리하는 sweep이, 죽은 발행자의 세그먼트 inode 번호를 다시 받아 같은 이름을 갖게 된 새 발행자의 endpoint를 지울 수 있었다. 그러면 그 채널의 구독자는 GPU 메모리를 받지 못했다. 이제 sweep은 endpoint를 자기 이름으로 옮긴 뒤 판정하고, 살아 있으면 되돌린다
 
 * flux 컨테이너(`flux_components`의 `component_container`)에 다른 ABI의 flux로 빌드한 컴포넌트를 올리면, ABI 검사가 컨테이너의 값으로 비교되어 통과했다. 이제 컴포넌트가 자기 헤더의 값으로 검사해 `flux::Error`(`Status::Mismatch`)로 거절된다
 
