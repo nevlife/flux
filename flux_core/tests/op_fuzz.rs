@@ -555,16 +555,13 @@ impl Model {
     fn take(&mut self, j: usize, stats: &mut Stats) -> String {
         let cur = self.cur();
         let outstanding = |s: &SubModel| s.held.iter().filter(|v| v.seg == s.seg).count();
-        let s = &self.subs[j];
-        if s.stalled > 0 || outstanding(s) >= s.q.borrow as usize {
-            if s.seg != cur {
-                let (seg, number) = self.lease(j);
-                let s = &mut self.subs[j];
-                (s.seg, s.number, s.cursor, s.stalled) = (seg, number, 0, 0);
-                stats.reattaches += 1;
-            } else if s.stalled >= PROBE_EVERY {
-                self.subs[j].stalled = 0;
-            }
+        if self.subs[j].seg != cur {
+            let (seg, number) = self.lease(j);
+            let s = &mut self.subs[j];
+            (s.seg, s.number, s.cursor, s.stalled) = (seg, number, 0, 0);
+            stats.reattaches += 1;
+        } else if self.subs[j].stalled >= PROBE_EVERY {
+            self.subs[j].stalled = 0;
         }
         let s = &mut self.subs[j];
         if outstanding(s) >= s.q.borrow as usize {

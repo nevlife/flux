@@ -1038,16 +1038,13 @@ impl Channel {
         self.cursor = newest.saturating_sub(u64::from(self.qos.durability().replay));
     }
 
-    /// A rotation check is one load from a mapping already held, so every stalled take does it,
-    /// and so does a take at `max_borrow`, which never stalls. The orphan probe costs syscalls:
-    /// every `PROBE_EVERY` stalled takes, at most once per `PROBE_NS`.
+    /// A rotation check is one load from a mapping already held, so every take does it: the take
+    /// right after one that delivered may be the first since a restart. The orphan probe costs
+    /// syscalls: every `PROBE_EVERY` stalled takes, at most once per `PROBE_NS`.
     fn maybe_reattach(&mut self) {
         let Some(signpost) = self.signpost.as_ref() else {
             return;
         };
-        if self.stalled_polls == 0 && self.can_borrow() {
-            return;
-        }
         let rotated = self.attachable(signpost.epoch());
         if !rotated && self.stalled_polls < PROBE_EVERY {
             return;

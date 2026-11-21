@@ -206,6 +206,43 @@ fn subscriber_follows_a_restarted_publisher() {
     assert_eq!(s.take().unwrap().data(), b"two");
 }
 
+/// The take right after one that delivered sees a restart too: no take stalled in between.
+#[test]
+fn the_take_after_a_delivered_one_follows_a_restarted_publisher() {
+    let _g = shared();
+    let t = Topic::new("restart_at_once");
+    let mut p = publisher(&t, 2);
+    let mut s = subscriber(&t);
+    assert_eq!(p.publish(b"one"), Published::Ok);
+    assert_eq!(s.take().unwrap().data(), b"one");
+    drop(p);
+    let mut p = publisher(&t, 2);
+    assert_eq!(p.publish(b"two"), Published::Ok);
+    assert_eq!(s.take().map(|v| v.data().to_vec()), Some(b"two".to_vec()));
+}
+
+/// A blocking take does not sleep on the wake word of a publisher that is gone.
+#[test]
+fn a_blocking_take_after_a_delivered_one_does_not_sleep_through_a_restart() {
+    let _g = shared();
+    let t = Topic::new("restart_blocking");
+    let mut p = publisher(&t, 2);
+    let mut s = subscriber(&t);
+    assert_eq!(p.publish(b"one"), Published::Ok);
+    assert_eq!(s.take().unwrap().data(), b"one");
+    drop(p);
+    let mut p = publisher(&t, 2);
+    assert_eq!(p.publish(b"two"), Published::Ok);
+    let t0 = Instant::now();
+    let v = s.take_blocking(1_000_000_000);
+    let took = t0.elapsed();
+    assert_eq!(v.map(|v| v.data().to_vec()), Some(b"two".to_vec()));
+    assert!(
+        took < Duration::from_millis(50),
+        "{took:?} for a frame already there"
+    );
+}
+
 /// A view keeps the old mapping alive by itself, so holding one must not keep the subscriber on
 /// a publisher that is gone: a `message_filters` queue holds views for as long as a match is late.
 #[test]

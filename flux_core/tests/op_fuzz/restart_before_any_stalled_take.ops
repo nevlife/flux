@@ -1,0 +1,6 @@
+# Found when take began to check for a restart every time: before, a take that no stalled one
+# came before read the old publisher's segment and found nothing.
+slots=2 s0=8,2,1 s1=7,1,3
+p restart
+p publish 420
+s1 take
