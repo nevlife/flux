@@ -7,10 +7,12 @@
 #include <nvbufsurftransform.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -22,16 +24,17 @@ auto unique_name(const std::string & what) -> std::string
     "/nvb" + std::to_string(getpid()) + "_" + std::to_string(n++) + "_" + what);
 }
 
-// One BGRA pixel value everywhere, rows `pitch` apart.
-void fill_bgra(std::uint8_t * p, std::uint32_t w, std::uint32_t h, std::uint32_t pitch)
+// One BGRA pixel value everywhere, rows `pitch` apart: 10, 20, 30, 40, each plus `add`.
+void fill_bgra(
+  std::uint8_t * p, std::uint32_t w, std::uint32_t h, std::uint32_t pitch, std::uint8_t add = 0)
 {
   for (std::uint32_t y = 0; y < h; ++y) {
     for (std::uint32_t x = 0; x < w; ++x) {
       std::uint8_t * px = p + std::size_t{y} * pitch + std::size_t{x} * 4;
-      px[0] = 10;
-      px[1] = 20;
-      px[2] = 30;
-      px[3] = 40;
+      px[0] = 10 + add;
+      px[1] = 20 + add;
+      px[2] = 30 + add;
+      px[3] = 40 + add;
     }
   }
 }
@@ -62,7 +65,12 @@ auto vic_rgba(NvBufSurface * src, std::uint32_t w, std::uint32_t h) -> std::uint
   return px;
 }
 
-constexpr std::uint32_t kRgba = 30U | (20U << 8) | (10U << 16) | (40U << 24);
+// fill_bgra's pixel after VIC's conversion to RGBA.
+constexpr auto rgba(std::uint32_t add) -> std::uint32_t
+{
+  return (30U + add) | ((20U + add) << 8) | ((10U + add) << 16) | ((40U + add) << 24);
+}
+constexpr std::uint32_t kRgba = rgba(0);
 
 class NvBuf : public ::testing::Test
 {
@@ -147,6 +155,62 @@ TEST_F(NvBuf, TwoCachesOfOneSlotBothHandItToVic)
   EXPECT_EQ(vic_rgba(from_view, 848, 480), kRgba);
   mine.reset();
   EXPECT_EQ(vic_rgba(from_view, 848, 480), kRgba) << "the other import outlives the first";
+}
+
+// The publisher restarts and the subscriber re-attaches: its new slots' fds may take the numbers
+// of the old ones, and the cache must hand VIC the new slot, not the old one under that number.
+TEST_F(NvBuf, AReattachedChannelsSlotIsNotTheOldOneOfTheSameFd)
+{
+  flux_publisher_config c = flux_publisher_config_default();
+  c.alloc = FLUX_ALLOC_SLOT;
+  c.slot_count = 2;
+  c.image_encoding = FLUX_IMAGE_BGRA8;
+  c.image_width = 848;
+  c.image_height = 480;
+  const std::string name = unique_name("again");
+  auto pub = std::make_unique<flux::detail::Channel>(
+    flux::detail::Channel::create_config(name, c, flux::kNoSchema));
+  flux::detail::Watch watch(name);
+  auto sub = flux::detail::Channel::open(watch, flux::kNoSchema, flux::QoS(2));
+  flux::NvBufSurfaces surfaces;
+  std::vector<int> old_fds;
+  auto send = [&](std::uint8_t add) {
+    flux::Loan w = pub->loan();
+    ASSERT_TRUE(w);
+    fill_bgra(static_cast<std::uint8_t *>(w.data()), 848, 480, w.image_layout()->pitch[0], add);
+    ASSERT_EQ(w.commit(w.image_layout()->bytes), flux::Published::Ok);
+  };
+  for (int k = 0; k < 2; ++k) {
+    send(0);
+    flux::Frame v = sub.take();
+    ASSERT_TRUE(v);
+    old_fds.push_back(v.dmabuf_fd());
+    ASSERT_EQ(vic_rgba(surfaces.surface(v), 848, 480), kRgba);
+  }
+
+  // A re-attach opens the new slots before it closes the old ones, so the numbers come back on
+  // the restart after.
+  bool reused = false;
+  for (std::uint8_t add = 50; add <= 150 && !reused; add += 50) {
+    pub.reset();
+    pub = std::make_unique<flux::detail::Channel>(
+      flux::detail::Channel::create_config(name, c, flux::kNoSchema));
+    std::vector<int> fds;
+    for (int k = 0; k < 2; ++k) {
+      send(add);
+      flux::Frame v = sub.take_blocking(5'000'000'000);
+      ASSERT_TRUE(v);
+      const int fd = v.dmabuf_fd();
+      reused = reused || std::find(old_fds.begin(), old_fds.end(), fd) != old_fds.end();
+      fds.push_back(fd);
+      NvBufSurface * s = surfaces.surface(v);
+      ASSERT_NE(s, nullptr);
+      EXPECT_EQ(vic_rgba(s, 848, 480), rgba(add)) << "fd " << fd;
+    }
+    old_fds.insert(old_fds.end(), fds.begin(), fds.end());
+  }
+  // Without a reused number the test above would pass on any cache.
+  EXPECT_TRUE(reused);
 }
 
 TEST_F(NvBuf, AFrameOutsideAnImageSlotIsCopiedForVic)

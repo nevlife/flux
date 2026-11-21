@@ -6,6 +6,7 @@
 #include "flux/channel.hpp"
 
 #include <nvbufsurface.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstddef>
@@ -14,6 +15,7 @@
 #include <map>
 #include <optional>
 #include <tuple>
+#include <utility>
 
 namespace flux
 {
@@ -29,7 +31,9 @@ struct ImageFormatHint
 
 // NvBufSurfaces of one channel's frames for an engine (VIC, NVENC, NVJPG). An image slot's surface
 // is imported once and is the slot itself; any other frame is copied into a surface of the
-// cache's own, counted in copies(). One thread at a time; it must not outlive the channel.
+// cache's own, counted in copies(). A slot is known by the file its fd names, not the number: a
+// re-attached subscription's slots may take the old ones' numbers. The old surfaces stay until the
+// cache goes. One thread at a time; it must not outlive the channel.
 class NvBufSurfaces
 {
 public:
@@ -40,7 +44,7 @@ public:
   auto operator=(NvBufSurfaces &&) -> NvBufSurfaces & = delete;
   ~NvBufSurfaces()
   {
-    for (auto & [fd, s] : imported_) {
+    for (auto & [file, s] : imported_) {
       NvBufSurfaceDestroy(s);  // closes its dup of the slot's fd
     }
     for (auto & [key, s] : own_) {
@@ -109,7 +113,14 @@ private:
     if (fd < 0 || !l) {
       return nullptr;
     }
-    if (const auto it = imported_.find(fd); it != imported_.end()) {
+    struct stat st
+    {
+    };
+    if (::fstat(fd, &st) != 0) {
+      return nullptr;
+    }
+    const std::pair<dev_t, ino_t> file{st.st_dev, st.st_ino};
+    if (const auto it = imported_.find(file); it != imported_.end()) {
       return it->second;
     }
     // The library's own parameters for the format, then flux's planes over them.
@@ -142,7 +153,7 @@ private:
       return nullptr;
     }
     s->numFilled = 1;
-    imported_.emplace(fd, s);
+    imported_.emplace(file, s);
     return s;
   }
 
@@ -180,7 +191,7 @@ private:
     return s;
   }
 
-  std::map<int, NvBufSurface *> imported_;
+  std::map<std::pair<dev_t, ino_t>, NvBufSurface *> imported_;
   std::map<std::tuple<ImageEncoding, std::uint32_t, std::uint32_t>, NvBufSurface *> own_;
   std::uint64_t copies_ = 0;
 };
