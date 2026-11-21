@@ -1335,6 +1335,56 @@ mod channel {
         assert_eq!(got.load(Ordering::Relaxed), 2);
     }
 
+    /// As above, with the frame released deferred in the pass whose take re-attached: the channel
+    /// that take made has had no pass yet to learn which executor to poke.
+    #[test]
+    fn the_executor_wakes_when_deferred_work_of_a_reattached_channel_is_done() {
+        let me = "the_executor_wakes_when_deferred_work_of_a_reattached_channel_is_done";
+        if gpu().is_none() || !alone(me) {
+            return;
+        }
+        let _route = Forced::route(super::Route::ShmDirect);
+        let name = topic("rwake_re");
+        let p = publisher(&name, Stream::create().unwrap());
+        let stream = Stream::create().unwrap();
+        let mut s = subscriber(&name, stream.clone()).unwrap();
+        let q = QoS::new(4)
+            .unwrap()
+            .transient_local(4)
+            .max_borrow(1)
+            .unwrap();
+        s.set_qos(q).unwrap();
+        s.set_release_mode(crate::ReleaseMode::Deferred);
+        let got = std::sync::Arc::new(AtomicU32::new(0));
+        let mut ex = crate::executor::Executor::new().unwrap();
+        ex.add(Sub(s, std::sync::Arc::clone(&got)), 0).unwrap();
+        ex.dispatch().unwrap();
+        assert_eq!(got.load(Ordering::Relaxed), 0);
+        drop(p);
+        let mut p = publisher(&name, Stream::create().unwrap());
+        for _ in 0..2 {
+            assert_eq!(p.publish(b"frame"), Published::Ok);
+        }
+        let gate = Gate::on(&stream);
+        ex.dispatch().unwrap();
+        assert_eq!(
+            got.load(Ordering::Relaxed),
+            1,
+            "the second waits for the first's slot"
+        );
+        let opener = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(gate);
+        });
+        let t0 = std::time::Instant::now();
+        ex.wait_for_work(5_000_000_000).unwrap();
+        let woke = t0.elapsed();
+        opener.join().unwrap();
+        assert!(woke < std::time::Duration::from_secs(2), "{woke:?}");
+        ex.dispatch().unwrap();
+        assert_eq!(got.load(Ordering::Relaxed), 2);
+    }
+
     #[test]
     fn a_bounded_wait_ends_soon_after_the_work_does() {
         if gpu().is_none() || !alone("a_bounded_wait_ends_soon_after_the_work_does") {

@@ -1101,6 +1101,14 @@ impl Channel {
                 return false;
             }
         };
+        // The executor serving the old channel serves this one: a release deferred before its next
+        // pass, the one that would tell this channel, pokes it all the same.
+        let waker = self.sh.gpu_waker.lock().clone();
+        *sh.gpu_waker.lock() = waker;
+        sh.gpu_waker_of.store(
+            self.sh.gpu_waker_of.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
         self.sh.orphan_late();
         sys::retire(std::mem::replace(&mut self.sh, sh));
         self.signpost_epoch = epoch;
