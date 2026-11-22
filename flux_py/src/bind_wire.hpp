@@ -48,10 +48,10 @@ inline auto error_subclass(
   return cls;
 }
 
-// n `dtype` at device p: a DeviceSpan holding `owner`, ordered with take result `frame`.
+// n `dtype` at device p: a DeviceSpan holding `owner`, ordered with take result `frame` or `loan`.
 auto device_span(
   nanobind::handle owner, nanobind::handle frame, const void * p, std::size_t n,
-  nanobind::handle dtype, int device, bool readonly) -> nanobind::object;
+  nanobind::handle dtype, int device, bool readonly, nanobind::handle loan) -> nanobind::object;
 
 // The view a take result's array holds and its stream's device (-1 for none); null for others.
 auto frame_of(nanobind::handle buf, int * device) -> const flux::Frame *;

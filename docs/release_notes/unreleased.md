@@ -58,6 +58,7 @@
 * Python에서 생성된 View의 장치 필드(`<필드>__device`)를 `torch.from_dlpack`으로 받으면, flux가 torch의 스트림을 무시했다. 그래서 torch 작업이 끝나기 전에 슬롯이 돌아가 다음 frame에 덮일 수 있었다. 이제 `Frame.__dlpack__`처럼 해제가 그 스트림을 기다린다. `Frame`과 필드 모두, 소비자 스트림의 다음 작업이 take의 복사 뒤에 돌도록 순서도 건다
 * Python에서 한 `Frame`을 두 스레드가 쓰는 동안, 한 스레드의 `copy_to_host`와 다른 스레드의 `release()`가 겹치면 해제된 메모리를 읽거나 두 번 해제할 수 있었다. 이제 복사는 frame을 붙잡은 채 돌고, 해제는 그 복사가 끝난 뒤에 된다. 한 `Loan`에 두 스레드가 동시에 `commit`, `abort`, `copy_from`을 부르면 나중 호출은 `flux.UsageError`다
 * Python에서 프레임을 `bytes(frame)`이나 numpy로 복사해 두었다가 나중에 생성된 `View`로 읽으면, arena에 있던 필드가 그사이 다른 프레임이 쓴 값으로 나왔다. 복사본에는 arena의 위치만 있기 때문이다. 이제 그 필드를 읽으면 `flux.wire.WireError`다. 프레임을 해제한 뒤에도 읽으려면 `View.copy__()`로 복사한다
+* Python Builder의 장치 필드(`alloc_device__<필드>`)를 torch가 자기 스트림에서 쓰면, `commit__()`이 그 쓰기를 기다리지 않아 덜 쓴 프레임이 발행될 수 있었다. 이제 `Loan`을 넘길 때처럼 그 스트림을 기다린다
 
 * flux 컨테이너(`flux_components`의 `component_container`)에 다른 ABI의 flux로 빌드한 컴포넌트를 올리면, ABI 검사가 컨테이너의 값으로 비교되어 통과했다. 이제 컴포넌트가 자기 헤더의 값으로 검사해 `flux::Error`(`Status::Mismatch`)로 거절된다
 

@@ -476,6 +476,29 @@ def test_a_device_field_goes_through_the_gpu_arena(node, blob):
     np.testing.assert_array_equal(h.items[1].ids, np.full(300, 7, np.uint16))
 
 
+def test_a_device_field_written_on_its_own_stream_is_waited_for_before_the_commit(node, blob):
+    """A Builder's device field hands its tensor's stream to the loan, as the Loan itself does."""
+    t, fp = topic("arena_own"), blob.FINGERPRINT__
+    pub = flux.Publisher(node, t, fingerprint=fp, device="cuda", **SMALL)
+    sub = flux.Subscription(node, t, fingerprint=fp, qos=flux.QoS(depth=4), device="cuda")
+    # Loads the kernels, whose first use would wait for the sleep.
+    warm = torch.zeros(1, device="cuda", dtype=torch.uint8).mul_(0).add_(1)
+    assert bool((warm == 1).all())
+    n = 1 << 20
+    b = blob.build__(pub)
+    b.name = "late"
+    span = b.alloc_device__data(n)  # before the sleep: growing the arena waits for the device
+    mine = torch.cuda.Stream()
+    with torch.cuda.stream(mine):
+        torch.cuda._sleep(200_000_000)
+        # A kernel, not fill_: on Orin a memset holds back the other streams too.
+        torch.from_dlpack(span).mul_(0).add_(0x5A)
+    assert b.commit__() == flux.Published.OK
+    with sub.take() as f, torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
+        got = torch.from_dlpack(blob.View(f).data__device)
+        assert bool((got == 0x5A).all())
+
+
 def test_a_builder_without_a_device_refuses_a_device_field(node, blob):
     pub = flux.Publisher(node, topic("arena_cpu"), fingerprint=blob.FINGERPRINT__, **SMALL)
     b = blob.build__(pub)

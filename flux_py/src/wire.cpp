@@ -324,9 +324,12 @@ auto heap_of(nb::handle h, int * device) -> flux::wire::Heap
 class Writer
 {
 public:
-  // `heap` is a loan's `_heap`, or None.
-  Writer(nb::handle buf, std::size_t scalar_bytes, nb::handle heap)
-  : buf_(buf, true), w_(buf_.data(), buf_.size(), scalar_bytes, heap_of(heap, &device_))
+  // `heap` is a loan's `_heap`, or None; `loan` the Loan, which waits for the streams its device
+  // fields are handed to.
+  Writer(nb::handle buf, std::size_t scalar_bytes, nb::handle heap, nb::handle loan)
+  : buf_(buf, true),
+    w_(buf_.data(), buf_.size(), scalar_bytes, heap_of(heap, &device_)),
+    loan_(nb::borrow(loan))
   {
     if (w_.bad()) {
       throw WireError(
@@ -340,6 +343,7 @@ public:
   [[nodiscard]] auto size() const noexcept -> std::size_t { return w_.size(); }
   [[nodiscard]] auto device() const noexcept -> int { return device_; }
   auto w() noexcept -> flux::wire::Writer & { return w_; }
+  [[nodiscard]] auto loan() const noexcept -> nb::handle { return loan_; }
 
   // An array over the slot, made read-only by seal(): after the commit the slot is the
   // subscribers', and its next frame the publisher's.
@@ -375,6 +379,7 @@ private:
   flux::wire::Writer w_;
   bool poisoned_ = false;
   std::vector<nb::weakref> issued_;
+  nb::object loan_;
 };
 
 template <class F>
@@ -824,8 +829,9 @@ auto reader_device(nb::handle self, std::size_t off, nb::handle dtype) -> nb::ob
     return std::pair<const void *, std::size_t>(s.data(), s.size());
   });
   r.check(w, "device array", off);
-  return p == nullptr ? nb::none()
-                      : flux_py::device_span(self, r.source(), p, n, dtype, r.device(), true);
+  return p == nullptr
+           ? nb::none()
+           : flux_py::device_span(self, r.source(), p, n, dtype, r.device(), true, nb::none());
 }
 
 // n elements in the GPU arena on the loan's device, as a DLPack tensor to write on the loan's
@@ -845,7 +851,7 @@ auto writer_alloc_device(nb::handle self, std::size_t off, nb::handle count, nb:
         "flux: device array at " + std::to_string(off) +
         " found no room in the GPU arena, or the publisher declared no device");
     }
-    return flux_py::device_span(self, nb::handle(), p, n, dtype, w.device(), false);
+    return flux_py::device_span(self, nb::handle(), p, n, dtype, w.device(), false, w.loan());
   });
 }
 
@@ -946,8 +952,8 @@ void bind_wire(nb::module_ & m, nb::handle error)
 
   nb::class_<Writer>(m, "Writer")
     .def(
-      nb::init<nb::handle, std::size_t, nb::handle>(), "buf"_a, "scalar_bytes"_a,
-      "heap"_a = nb::none())
+      nb::init<nb::handle, std::size_t, nb::handle, nb::handle>(), "buf"_a, "scalar_bytes"_a,
+      "heap"_a = nb::none(), "loan"_a = nb::none())
     .def_prop_ro("bad", &Writer::bad)
     .def_prop_ro("size", &Writer::size)
     .def("poison", &Writer::poison)

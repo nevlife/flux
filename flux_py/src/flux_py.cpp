@@ -326,7 +326,7 @@ auto dlpack_of(const DeviceArray & a, nb::handle owner) -> nb::object
 // The stream a DLPack consumer names, which the channel's own fence does not cover; null when it
 // names none. None and -1 ask for no ordering, and CUDA orders the legacy default stream (1) with
 // the channel's blocking stream itself.
-auto remember_stream(std::vector<flux::gpu::Stream> & streams, const nb::kwargs & kw)
+auto remember_stream(std::vector<flux::gpu::Stream> & streams, const nb::dict & kw)
   -> const flux::gpu::Stream *
 {
   if (!kw.contains("stream") || kw["stream"].is_none()) {
@@ -685,8 +685,9 @@ namespace
 class DeviceSpan
 {
 public:
-  DeviceSpan(const DeviceArray & a, nb::handle owner, std::shared_ptr<FrameHold> frame)
-  : a_(a), owner_(nb::borrow(owner)), frame_(std::move(frame))
+  DeviceSpan(
+    const DeviceArray & a, nb::handle owner, std::shared_ptr<FrameHold> frame, nb::handle loan)
+  : a_(a), owner_(nb::borrow(owner)), frame_(std::move(frame)), loan_(nb::borrow(loan))
   {
   }
 
@@ -696,6 +697,8 @@ public:
   {
     if (frame_) {
       frame_->hand_to(kw);
+    } else if (loan_.is_valid() && !loan_.is_none()) {
+      loan_.attr("_write_on")(kw);  // a Builder's field: the commit waits for that stream
     }
     return dlpack_of(a_, owner_);
   }
@@ -714,6 +717,7 @@ private:
   DeviceArray a_;
   nb::object owner_;
   std::shared_ptr<FrameHold> frame_;
+  nb::object loan_;
 };
 
 }  // namespace
@@ -736,11 +740,12 @@ auto hold_of(nb::handle buf) -> const std::shared_ptr<FrameHold> *
 
 auto flux_py::device_span(
   nb::handle owner, nb::handle frame, const void * p, std::size_t n, nb::handle dtype, int device,
-  bool readonly) -> nb::object
+  bool readonly, nb::handle loan) -> nb::object
 {
   const std::shared_ptr<FrameHold> * h = frame.is_valid() ? hold_of(frame) : nullptr;
   return nb::cast(DeviceSpan(
-    {addr_of(p), dtype_named(dtype), {n}, device, readonly}, owner, h != nullptr ? *h : nullptr));
+    {addr_of(p), dtype_named(dtype), {n}, device, readonly}, owner, h != nullptr ? *h : nullptr,
+    loan));
 }
 
 auto flux_py::frame_of(nb::handle buf, int * device) -> const flux::Frame *
@@ -908,6 +913,13 @@ public:
   }
 
   auto cai() -> nb::dict { return cuda_array_interface(device_array()); }
+  // The DLPack arguments a Builder's device field was handed out with: its stream is waited for
+  // before the commit, as one this Loan's own tensors were handed to.
+  void write_on(const nb::dict & kw)
+  {
+    idle();
+    (void)remember_stream(writers_, kw);
+  }
   auto dlpack(nb::handle self, const nb::kwargs & kw) -> nb::object
   {
     const DeviceArray a = device_array();
@@ -1834,6 +1846,7 @@ NB_MODULE(_flux, m)
     .def_prop_ro("aux", [](nb::handle self) { return nb::inst_ptr<Loan>(self)->aux(self); })
     .def_prop_rw("aux_len", &Loan::aux_len, &Loan::set_aux_len)
     .def_prop_ro("_heap", &Loan::heap)
+    .def("_write_on", &Loan::write_on, "kwargs"_a)
     .def_prop_ro("_image_pitch", &Loan::image_pitch)
     .def_prop_ro("__cuda_array_interface__", &Loan::cai)
     .def(

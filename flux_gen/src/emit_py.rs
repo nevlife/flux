@@ -436,7 +436,7 @@ class Builder:
     def __init__(self, buf, loan=None):
         # No buffer is a build__ that found no free slot: writes go nowhere, as in C++.
         self._w = (
-            _Writer(buf, SCALAR_BYTES__, getattr(loan, "_heap", None))
+            _Writer(buf, SCALAR_BYTES__, getattr(loan, "_heap", None), loan)
             if buf is not None
             else _NullWriter()
         )
