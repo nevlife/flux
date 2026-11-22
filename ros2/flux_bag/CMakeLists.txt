@@ -93,7 +93,10 @@ if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
   ament_add_pytest_test(test_verbs test/test_verbs.py)
   ament_add_pytest_test(test_record_play test/test_record_play.py TIMEOUT 120)
-  ament_add_pytest_test(test_play_control test/test_play_control.py TIMEOUT 120)
+  # On Fast DDS, rclpy's MultiThreadedExecutor starves this test's flux reader thread: it is
+  # skipped there, and Fast DDS is the default RMW. Cyclone, so it runs everywhere.
+  ament_add_pytest_test(test_play_control test/test_play_control.py TIMEOUT 120
+    ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp)
   ament_add_pytest_test(test_record_live test/test_record_live.py TIMEOUT 120)
 
   # The verbs are how the programs get their options; by hand they only say so.

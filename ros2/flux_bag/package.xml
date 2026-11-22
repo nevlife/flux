@@ -33,6 +33,7 @@
   <test_depend>flux_std_adapters</test_depend>
   <test_depend>python3-numpy</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>rmw_cyclonedds_cpp</test_depend>
   <test_depend>rosbag2_compression_zstd</test_depend>
   <test_depend>rosbag2_interfaces</test_depend>
   <test_depend>rosbag2_py</test_depend>
