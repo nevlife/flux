@@ -1,4 +1,5 @@
 #include "flux_wrapper/flux_wrapper.hpp"
+#include "flux_wrapper/message_filters.hpp"
 
 #include <flux_wrapper_test_msgs/msg/bar.hpp>
 #include <flux_wrapper_test_msgs/msg/blob.hpp>
@@ -13,6 +14,8 @@
 #endif
 
 #include <gtest/gtest.h>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <message_filters/synchronizer.h>
 #include <rcutils/logging.h>
 #include <signal.h>
 #include <spawn.h>
@@ -2119,3 +2122,60 @@ TEST_F(WrapperTest, AFalseLoanHandsOutNoData)
 }
 
 }  // namespace
+
+// The same code pairs two topics by stamp over flux and over ROS: each pair's Views read the
+// frames they came from, and a View the synchronizer queued still reads after its callback.
+TEST_F(WrapperTest, AMessageFiltersSynchronizerPairsTwoTopicsByStamp)
+{
+  using flux_wrapper::message_filters::Stamped;
+  using flux_wrapper::message_filters::Subscriber;
+  using Policy = ::message_filters::sync_policies::ApproximateTime<Stamped<Image>, Stamped<Image>>;
+  const rclcpp::QoS qos(10);
+  flux_wrapper::Publisher<Image> lpub(node(), "sync_left", qos);
+  flux_wrapper::Publisher<Image> rpub(node(), "sync_right", qos);
+  Subscriber<Image> left(node(), "sync_left", qos, 10);
+  Subscriber<Image> right(node(), "sync_right", qos, 10);
+  ::message_filters::Synchronizer<Policy> sync(Policy(10), left, right);
+  std::vector<std::pair<std::int32_t, std::uint8_t>> got;
+  std::atomic<bool> done{false};
+  using Ptr = std::shared_ptr<const Stamped<Image>>;
+  const auto on_pair = [&](const Ptr & l, const Ptr & r) {
+    EXPECT_EQ(l->header.stamp, r->header.stamp);
+    EXPECT_EQ(l->header.frame_id, "camera");
+    EXPECT_EQ(l->view->stamp(), l->header.stamp);
+    EXPECT_EQ(l->view->data()[0] + 100, r->view->data()[0]);
+    got.emplace_back(l->header.stamp.sec, l->view->data()[0]);
+    done = got.size() >= 3;
+  };
+  sync.registerCallback(std::bind(on_pair, std::placeholders::_1, std::placeholders::_2));
+  std::int32_t sec = 0;
+  run_until(done, [&] {
+    ++sec;
+    const auto v = static_cast<std::uint8_t>(sec);
+    EXPECT_TRUE(lpub.publish(image(sec, {v, v, v, v, v, v})));
+    EXPECT_TRUE(rpub.publish(image(sec, std::vector<std::uint8_t>(6, v + 100))));
+  });
+  ASSERT_GE(got.size(), 3U);
+  for (const auto & [s, v] : got) {
+    EXPECT_EQ(static_cast<std::uint8_t>(s), v);
+  }
+  EXPECT_EQ(left.subscription().uses_flux(), expect_flux());
+  EXPECT_GE(left.forwarded(), 3U);
+  EXPECT_EQ(left.unreadable(), 0U);
+}
+
+// A negative stamp is no ROS time: the filter counts it instead of forwarding it to a synchronizer
+// that would throw on it.
+TEST_F(WrapperTest, AMessageFiltersInputDropsANegativeStamp)
+{
+  const rclcpp::QoS qos(10);
+  flux_wrapper::Publisher<Image> pub(node(), "sync_negative", qos);
+  flux_wrapper::message_filters::Subscriber<Image> in(node(), "sync_negative", qos, 4);
+  std::atomic<bool> done{false};
+  run_until(done, [&] {
+    EXPECT_TRUE(pub.publish(image(-1, {1, 2, 3, 4, 5, 6})));
+    done = in.unreadable() > 0;
+  });
+  EXPECT_GT(in.unreadable(), 0U);
+  EXPECT_EQ(in.forwarded(), 0U);
+}

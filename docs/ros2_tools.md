@@ -159,6 +159,32 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
 - 보유된 슬롯에는 발행자가 쓰지 않는다. 프레임이 버려지지 않으려면 발행자의 `slot_count`가 같은 토픽의 모든 구독이 동시에 점유하는 수보다 1 이상 커야 한다.
 - ROS 경로에서 `max_borrow`는 `Cuda` 구독의 GPU 버퍼 수만 정한다. 버퍼가 모두 점유되어 있으면 그 메시지를 건너뛰고 오류 로그를 한 번 남긴다. Reentrant 그룹에서 콜백이 `max_borrow`개보다 많이 겹치는 경우도 같다. 호스트 구독에는 제한이 없다.
 
+### message_filters
+
+`flux_wrapper::message_filters::Subscriber<Msg>`(`flux_wrapper/message_filters.hpp`)는 토픽 하나를 `message_filters`의 synchronizer나 `Cache`에 넣는다. flux 경로인지 ROS 경로인지는 `Subscription`과 같이 정해지므로, 같은 코드가 flux를 넣은 빌드와 뺀 빌드에서 모두 동작한다. 최상위 `std_msgs/Header header`가 있는 타입만 받는다.
+
+```cpp
+#include <flux_wrapper/message_filters.hpp>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <message_filters/synchronizer.h>
+
+using flux_wrapper::message_filters::Stamped;
+using Policy = message_filters::sync_policies::ApproximateTime<Stamped<Image>, Stamped<Image>>;
+using Ptr = std::shared_ptr<const Stamped<Image>>;
+
+flux_wrapper::message_filters::Subscriber<Image> left(node, "left", rclcpp::QoS(10), 10);
+flux_wrapper::message_filters::Subscriber<Image> right(node, "right", rclcpp::QoS(10), 10);
+message_filters::Synchronizer<Policy> sync(Policy(10), left, right);
+sync.registerCallback(std::function<void(const Ptr &, const Ptr &)>(
+  [](const Ptr & l, const Ptr & r) { use(l->view->data(), r->view->data()); }));
+```
+
+- synchronizer가 받는 메시지는 `Stamped<Msg>`다. `header`는 메시지 header의 사본이고, `view`는 `std::shared_ptr<const View<Msg>>`다(`HeldCallback`과 같다). flux 경로에서는 `view`가 살아 있는 동안 슬롯을 보유한다.
+- 네 번째 인자는 synchronizer나 `Cache`의 큐 크기다. 큐에 든 메시지가 View를 보유하고 필터는 버리기 전에 새 것을 넣으므로, `max_borrow`를 큐 크기 + 1로 올린다. flux 경로에서는 슬롯이 그보다 많지 않은 발행자를 거절한다.
+- stamp가 음수인 메시지는 ROS 시각이 아니어서 필터가 예외를 던진다. 그래서 넘기지 않고 `unreadable()`로 센다. 넘긴 수는 `forwarded()`다.
+- 일반 ROS 구독(`message_filters::Subscriber<Imu>` 등)과 같은 synchronizer에 함께 넣을 수 있다.
+- Python은 `flux_wrapper.message_filters.Subscriber(node, msg_type, topic, qos, queue_size)`다. synchronizer가 받는 메시지는 `header`와 `view`를 가진 `Stamped`이고, 구독은 `flux_wrapper.Executor`에 `add()`한다.
+
 ### GPU(C++)
 
 - `PublisherOptions::device = flux_wrapper::Device::Cuda`면 메시지의 `data`를 GPU 메모리째 보낸다. `data`가 있는 타입만 지원한다. 없는 타입은 발행자와 구독 모두 토픽 이름과 함께 경고를 남기고 `Cpu`가 된다. `loan.alloc_buffer(n)`이 데이터 자리를 할당하고, `on_device()`가 GPU 메모리인지 알려 준다. `copy_from(src, n)`은 원본이 호스트 메모리든 GPU 메모리든 받는다. 커널이 직접 쓰는 경우에는 `device_ptr()`와 `stream()`을 사용하고, publish가 그 스트림의 작업이 완료된 뒤 발행한다.
@@ -175,8 +201,8 @@ flux_wrapper::Subscription<my_msgs::msg::Foo> sub(
 
 ### Python
 
-- Python 모듈 `flux_wrapper`도 같은 구조다. 다만 `max_borrow`와 `HeldCallback`은 없다. `create_publisher(node, msg_type, topic, qos, **options)`, `create_subscription(node, msg_type, topic, qos, callback, **options)`는 C++과 같은 순서이고, 클래스 생성자 `Subscription(node, msg_type, topic, callback, qos, ...)`는 rclpy 순서다. `ENABLE_FLUX=1`이고, 패키지를 flux와 함께 빌드했고(C++와 같은 조건), `flux`를 import 가능하면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`하고, spin은 `cancel()`로 끝낸다.
-- flux 경로에서는 View와 그 `data`가 참조되는 동안 슬롯을 잡는다. Python 구독은 한 번에 하나를 잡으므로(C++ `max_borrow` 1과 같다), 콜백 뒤에 View를 남기면 그것이 사라질 때까지 다음 프레임이 발행자의 링에서 기다린다. 남길 값은 `to_msg()`로 복사한다. ROS 경로의 View는 메시지를 잡을 뿐이라 구독이 멈추지 않는다.
+- Python 모듈 `flux_wrapper`도 같은 구조다. 다만 `HeldCallback`은 없다. `Subscription(..., max_borrow=n)`은 C++의 `SubscriptionOptions::max_borrow`와 같다. `create_publisher(node, msg_type, topic, qos, **options)`, `create_subscription(node, msg_type, topic, qos, callback, **options)`는 C++과 같은 순서이고, 클래스 생성자 `Subscription(node, msg_type, topic, callback, qos, ...)`는 rclpy 순서다. `ENABLE_FLUX=1`이고, 패키지를 flux와 함께 빌드했고(C++와 같은 조건), `flux`를 import 가능하면 flux 경로다. 구독은 `flux_wrapper.Executor`에 `add()`하고, spin은 `cancel()`로 끝낸다.
+- flux 경로에서는 View와 그 `data`가 참조되는 동안 슬롯을 잡는다. 기본 `max_borrow` 1에서는 콜백 뒤에 View를 남기면 그것이 사라질 때까지 다음 프레임이 발행자의 링에서 기다린다. 남길 값은 `to_msg()`로 복사한다. ROS 경로의 View는 메시지를 잡을 뿐이라 구독이 멈추지 않는다.
 - flux 경로에서는 메시지 타입의 rosidl 모듈 이름(`my_msgs.msg._foo`)으로 어댑터 모듈 `my_msgs_flux.foo`와 `my_msgs_flux.foo_ros`를 찾고, `foo_ros.MESSAGE`가 그 타입인지 확인한다. 찾지 못하면 찾은 모듈 이름과 함께 `TypeError`를 던진다. include는 필요 없다.
 - loan에 쓰는 방법은 C++와 같다. `Image`와 `PointCloud2`는 필드를 ROS 메시지의 이름으로 대입하고, `loan.set_from(msg)`로 `data`를 뺀 필드를 한 번에 쓴다. 그 밖의 타입은 `loan.set_from(msg)`로 쓰고, 최상위 header가 있으면 `loan.header`만 따로 대입한다(C++ `set_header()`). 다른 필드를 대입하면 `AttributeError`다.
 - flux 경로에서는 쓰는 즉시 슬롯에 쓰므로, 슬롯에 들어가지 않는 필드가 있으면 그 자리에서 loan이 `False`가 되고 `publish()`가 거짓인 `PublishResult`(`status`는 `"too_large"`)를 반환한다.

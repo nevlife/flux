@@ -120,6 +120,7 @@
 * GPU arena: C++ `wire::DeviceSpan`, `wire::GpuHeap`, `wire::GpuBlock`, `Writer::alloc_device`, `Reader::device`, `Frame::gpu_heap`, 생성된 `alloc_device__<name>`와 `<name>__device`. C `flux_heap.gpu`, `flux_heap_alloc_device`, `flux_gpu_heap`, `flux_gpu_block`, `flux_view_gpu_heap`, `flux_layout_register`, `FLUX_GPU_HEAP_BASE`, `FLUX_ARENA_UNIT`, `FLUX_GPU_HEAP_POS`. C++ `wire::Ref`, `wire::position`, `wire::wire`. arena 필드를 프레임 안으로 복사: C `flux_schema_inline_arena`, C++ `Schemas::Type::inline_arena`, `flux::in_arena`. Python 생성된 `alloc_device__<name>`와 `<name>__device`, `flux.wire.DeviceSpan`, `flux.wire.Reader.device`, `flux.wire.Writer.alloc_device`
 
 * 소비자 스트림을 frame의 스트림 뒤에 세우기: C `flux_frame_before`, C++ `Frame::before`
+* `flux_wrapper::message_filters::Subscriber`와 `Stamped`(C++), `flux_wrapper.message_filters`(Python): flux 경로와 ROS 경로에서 같은 코드로 `message_filters`의 synchronizer에 토픽을 넣는다. Python `flux_wrapper.Subscription(max_borrow=...)`
 * Python 생성 `View.copy__()`. C++ `Schemas::Type::inline_arena`가 Frame 대신 프레임 바이트와 arena를 받는 형태
 
 ### 호환이 깨지는 변경

@@ -701,9 +701,24 @@ class Subscription:
     device="cuda" has every frame's data on the device (View.on_device): a device="cuda"
     publisher's in its slot, a "cpu" publisher's as this subscription's copy beside its host bytes.
     A type without a root data is "cpu", with a warning.
+
+    max_borrow is how many Views may be alive at once, as C++ SubscriptionOptions::max_borrow: on
+    the flux path a View holds its slot, so one kept past its callback stops the next frames once
+    max_borrow are kept, and a publisher of max_borrow slots or fewer is refused.
     """
 
-    def __init__(self, node, msg_type, topic, callback, qos, *, callback_group=None, device="cpu"):
+    def __init__(
+        self,
+        node,
+        msg_type,
+        topic,
+        callback,
+        qos,
+        *,
+        callback_group=None,
+        device="cpu",
+        max_borrow=1,
+    ):
         self.callback_group = callback_group
         self._flux = None
         self._gpu = None
@@ -711,9 +726,11 @@ class Subscription:
         logger = node.get_logger()
         cuda = _cuda_usable(logger, topic, device, msg_type)
         self._cuda = cuda
+        if max_borrow < 1:
+            raise ValueError("flux_wrapper: max_borrow must be >= 1")
         if use_flux():
             adapter = _adapter(msg_type)[0]
-            q = _flux.QoS(depth=_depth(qos))
+            q = _flux.QoS(depth=_depth(qos), max_borrow=max_borrow)
 
             def on_typed(f):
                 v = adapter.View(f)
@@ -730,6 +747,8 @@ class Subscription:
                 qos=q,
                 device="cuda" if cuda else "cpu",
             )
+            # Views kept past the callback hold slots, and the publisher needs one to write into.
+            self._flux._require_slots(max_borrow + 1)
             if not _root_data(msg_type):
                 return
             rejects = self._rejects
@@ -797,6 +816,8 @@ class Executor:
         self._ex = _flux.Executor() if use_flux() else None
 
     def add(self, subscription):
+        """A Subscription, or a flux_wrapper.message_filters.Subscriber."""
+        subscription = getattr(subscription, "subscription", subscription)
         if subscription._flux is not None:
             self._ex.add(subscription._flux)
         if subscription._gpu is not None:

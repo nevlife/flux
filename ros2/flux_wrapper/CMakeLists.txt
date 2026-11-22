@@ -10,6 +10,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(builtin_interfaces REQUIRED)
+find_package(message_filters REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rosidl_typesupport_introspection_cpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -30,7 +31,7 @@ target_include_directories(flux_wrapper INTERFACE
 # The introspection type support copies a message but its data (detail/copy_but_data.hpp).
 target_link_libraries(flux_wrapper INTERFACE
   rclcpp::rclcpp rosidl_typesupport_introspection_cpp::rosidl_typesupport_introspection_cpp
-  ${builtin_interfaces_TARGETS} ${sensor_msgs_TARGETS} ${std_msgs_TARGETS})
+  message_filters::message_filters ${builtin_interfaces_TARGETS} ${sensor_msgs_TARGETS} ${std_msgs_TARGETS})
 set(flux_dependencies)
 if(FLUX_WRAPPER_WITH_FLUX)
   find_package(flux_cpp REQUIRED)
@@ -95,7 +96,7 @@ install(DIRECTORY include/ DESTINATION include/${PROJECT_NAME})
 install(TARGETS flux_wrapper EXPORT export_flux_wrapper)
 ament_export_targets(export_flux_wrapper)
 ament_export_dependencies(
-  builtin_interfaces rclcpp rosidl_typesupport_introspection_cpp sensor_msgs std_msgs
+  builtin_interfaces message_filters rclcpp rosidl_typesupport_introspection_cpp sensor_msgs std_msgs
   ${flux_dependencies})
 
 ament_python_install_package(${PROJECT_NAME})

@@ -1048,3 +1048,68 @@ if __name__ == "__main__":
     import sys
 
     echo(*sys.argv[1:])
+
+
+def test_a_message_filters_synchronizer_pairs_two_topics_by_stamp(node):
+    """The same code pairs two topics by stamp over flux and over ROS: each pair's Views read the
+    frames they came from, and a View the synchronizer queued still reads after its callback."""
+    import message_filters
+
+    from flux_wrapper.message_filters import Subscriber
+
+    lpub = flux_wrapper.Publisher(node, Image, "sync_left", 10)
+    rpub = flux_wrapper.Publisher(node, Image, "sync_right", 10)
+    left = Subscriber(node, Image, "sync_left", 10, 10)
+    right = Subscriber(node, Image, "sync_right", 10, 10)
+    sync = message_filters.ApproximateTimeSynchronizer([left, right], 10, 0.01)
+    got, done = [], threading.Event()
+
+    def on_pair(lm, rm):
+        assert lm.header.stamp == rm.header.stamp and lm.header.frame_id == "camera"
+        assert lm.view.data[0] + 100 == rm.view.data[0]
+        got.append((lm.header.stamp.sec, int(lm.view.data[0])))
+        if len(got) >= 3:
+            done.set()
+
+    sync.registerCallback(on_pair)
+    ex = flux_wrapper.Executor()
+    ex.add(left)
+    ex.add(right)
+    sec = [0]
+
+    def publish_once():
+        sec[0] += 1
+        m = image(sec[0])
+        lpub.publish(m)
+        m.data = bytes(b + 100 for b in m.data)
+        rpub.publish(m)
+
+    run_until(node, None, done, publish_once, ex)
+    assert len(got) >= 3 and all(s == v for s, v in got)
+    assert left.subscription.uses_flux == EXPECT_FLUX
+    assert left.forwarded >= 3 and left.unreadable == 0
+
+
+def test_a_message_filters_input_drops_a_negative_stamp(node):
+    from flux_wrapper.message_filters import Subscriber
+
+    pub = flux_wrapper.Publisher(node, Image, "sync_negative", 10)
+    sub = Subscriber(node, Image, "sync_negative", 10, 4)
+    done = threading.Event()
+    m = image(1)
+    m.header.stamp.sec = -1
+
+    def publish_once():
+        pub.publish(m)
+        if sub.unreadable:
+            done.set()
+
+    run_until(node, sub, done, publish_once)
+    assert sub.unreadable > 0 and sub.forwarded == 0
+
+
+def test_a_message_filters_input_needs_a_header(node):
+    from flux_wrapper.message_filters import Subscriber
+
+    with pytest.raises(TypeError, match="header"):
+        Subscriber(node, String, "sync_none", 10, 4)

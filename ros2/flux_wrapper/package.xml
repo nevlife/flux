@@ -15,6 +15,7 @@
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <depend>builtin_interfaces</depend>
+  <depend>message_filters</depend>
   <depend>rclcpp</depend>
   <depend>rosidl_typesupport_introspection_cpp</depend>
   <depend>sensor_msgs</depend>
