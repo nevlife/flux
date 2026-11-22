@@ -220,7 +220,7 @@ public:
     }
     if (loan.builder_) {
       if (!loan.builder_->ok__() && loan.over_.field != nullptr) {
-        (void)loan.builder_->commit__();  // refused: the slot goes back
+        // Nothing is committed; the slot goes back when the caller's Loan goes.
         overflow(loan.over_, "", "slot", flux_->slot_size());
         return PublishResult(Published::TooLarge);
       }

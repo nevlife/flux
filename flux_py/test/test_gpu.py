@@ -334,6 +334,30 @@ def tensor_msg(tmp_path_factory):
     sys.path.remove(str(out))
 
 
+def host_pointer_of(device_ptr):
+    """The host address CUDA has for a device address of registered host memory, else None."""
+    import ctypes
+
+    cuda = ctypes.CDLL("libcuda.so.1")
+    out = ctypes.c_void_p()
+    host_pointer = 4  # CU_POINTER_ATTRIBUTE_HOST_POINTER
+    rc = cuda.cuPointerGetAttribute(ctypes.byref(out), host_pointer, ctypes.c_uint64(device_ptr))
+    return out.value if rc == 0 else None
+
+
+def file_offset_of(addr):
+    """The mapped file and offset in it that `addr` reads, from /proc/self/maps."""
+    if addr is None:
+        return None
+    with open("/proc/self/maps") as maps:
+        for line in maps:
+            f = line.split()
+            lo, hi = (int(x, 16) for x in f[0].split("-"))
+            if lo <= addr < hi:
+                return f[3], int(f[4]), int(f[2], 16) + addr - lo
+    return None
+
+
 def tensor_channel(node, m, name):
     """A host publisher and a CUDA subscription of a tensor message."""
     pub = flux.Publisher(node, topic(name), fingerprint=m.FINGERPRINT__, **SMALL)
@@ -354,8 +378,13 @@ def test_a_tensor_message_hands_out_its_data_on_the_device(node, tensor_msg):
         host = v.as_tensor__()
         with torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
             t = torch.from_dlpack(v)
-            # `data` is in the publisher's arena, which this subscriber copied to the device.
             np.testing.assert_array_equal(t.cpu().numpy(), values)
+        # `data` is in the publisher's arena. An integrated GPU reads it in place: the tensor's
+        # address is a registered mapping of the same file bytes the View reads. A discrete one
+        # copies it.
+        if flux.probe().integrated:
+            mapped = file_offset_of(host_pointer_of(t.data_ptr()))
+            assert mapped is not None and mapped == file_offset_of(host.ctypes.data)
         assert t.device.type == "cuda" and t.shape == (6, 8)
         np.testing.assert_array_equal(host, values)
     with pytest.raises(RuntimeError, match="already released"):
