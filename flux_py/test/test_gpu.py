@@ -628,6 +628,94 @@ def test_a_slot_publisher_takes_the_slot_defaults(node):
         flux.Publisher(node, topic("slot_past_max"), alloc="slot", slot_size=32 << 20)
 
 
+def _until(done, what):
+    until = time.monotonic() + 2
+    while not done():
+        assert time.monotonic() < until, what
+        time.sleep(0.001)
+
+
+def test_a_slot_left_to_flux_grows_past_a_frame_and_the_subscription_follows(node):
+    """The frame past the slot is refused; the frames after it go to larger slots."""
+    t = topic("grow")
+    pub = flux.Publisher(node, t, alloc="slot", slot_count=4)
+    sub = flux.Subscription(node, t)
+    slot = pub.slot_size
+    frame = np.full(slot + 1, 7, dtype=np.uint8)
+    assert pub.publish(frame) == flux.Published.TOO_LARGE
+    _until(lambda: pub.publish(frame) == flux.Published.OK, "the slot did not grow")
+    assert pub.slot_size == 2 * slot
+    got = []
+    _until(lambda: got.append(sub.take()) or got[-1] is not None, "no frame after the resize")
+    np.testing.assert_array_equal(got[-1], frame)
+    assert sub.resizes == 1
+
+
+def test_a_gpu_memory_channel_grows_past_a_frame_for_host_and_device_subscribers(node):
+    """A device="cuda" slot left to flux grows as an alloc="slot" one does."""
+    t = topic("grow_dev")
+    pub = flux.Publisher(node, t, device="cuda", slot_count=2)
+    cpu = flux.Subscription(node, t)
+    dev = flux.Subscription(node, t, device="cuda")
+    slot = pub.slot_size
+    frame = np.full(slot + 1, 7, dtype=np.uint8)
+    assert pub.publish(frame) == flux.Published.TOO_LARGE
+    _until(lambda: pub.publish(frame) == flux.Published.OK, "the slot did not grow")
+    assert pub.slot_size == 2 * slot
+    got = []
+    _until(lambda: got.append(cpu.take()) or got[-1] is not None, "no host frame after the resize")
+    np.testing.assert_array_equal(got[-1], frame)
+    seen = []
+    _until(lambda: seen.append(dev.take()) or seen[-1] is not None, "no device frame")
+    with seen[-1] as f:
+        with torch.cuda.stream(torch.cuda.ExternalStream(f.stream)):
+            d = torch.from_dlpack(f)
+            assert d.numel() == slot + 1 and int(d.sum()) == 7 * (slot + 1)
+    assert cpu.resizes == 1 and dev.resizes == 1
+
+
+def test_growth_best_fit_static_and_a_given_size(node):
+    best = flux.Publisher(node, topic("best"), alloc="slot", slot_count=4, growth="best_fit")
+    fixed = flux.Publisher(node, topic("static"), alloc="slot", slot_count=4, growth="static")
+    given = flux.Publisher(node, topic("given"), alloc="slot", slot_count=4, slot_size=4 << 20)
+    frame = np.zeros((4 << 20) + 1, dtype=np.uint8)
+    for p in (best, fixed, given):
+        assert p.publish(frame) == flux.Published.TOO_LARGE
+    _until(lambda: best.publish(frame) == flux.Published.OK, "best_fit did not grow")
+    assert best.slot_size == (4 << 20) + 4096
+    time.sleep(0.05)
+    assert fixed.publish(frame) == flux.Published.TOO_LARGE
+    assert given.publish(frame) == flux.Published.TOO_LARGE
+    with pytest.raises(Exception, match="growth"):
+        flux.Publisher(node, topic("bad_growth"), alloc="slot", growth="double")
+
+
+def test_a_generated_frame_past_its_slot_asks_for_larger_slots(node):
+    """The write that does not fit raises; the frame's builder after it fits."""
+    from flux.wire import WireError
+    from sensor_msgs_flux.image import Image
+
+    t = topic("grow_gen")
+    pub = flux.Publisher(node, t, fingerprint=Image.FINGERPRINT__, alloc="slot", slot_count=4)
+    slot = pub.slot_size
+
+    def build():
+        b = Image.build__(pub)
+        b.alloc__data(slot)[:] = 7
+        return b.commit__()
+
+    def fits():
+        try:
+            return build() == flux.Published.OK
+        except WireError:
+            return False
+
+    with pytest.raises(WireError):
+        build()
+    _until(fits, "the slot did not grow")
+    assert pub.slot_size == 2 * slot
+
+
 def test_a_slot_publisher_that_allocs_on_subscriber_publishes_once_one_attaches(node):
     pub = flux.Publisher(node, topic("on_sub"), alloc="slot", alloc_on_subscriber=True)
     frame = np.arange(8, dtype=np.uint8)

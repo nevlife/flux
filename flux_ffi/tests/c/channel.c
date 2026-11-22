@@ -1,6 +1,7 @@
 #include "check.h"
 
 #include <pthread.h>
+#include <stddef.h>
 #include <time.h>
 
 static void heap_views_and_loans(void)
@@ -320,6 +321,63 @@ static void a_config_is_read_up_to_its_size(void)
   CHECK(flux_channel_create(name, &big.c, 0, 3, NULL, &p) == FLUX_INVALID_ARGUMENT);
 }
 
+// A config of ABI 6, which ends before `growth`, is still read: growth is then the default. A
+// growth that is no FLUX_GROWTH_* is refused.
+static void a_config_without_growth_is_read_and_an_unknown_growth_refused(void)
+{
+  char name[256];
+  test_signpost("config_v6", name, sizeof name);
+  flux_publisher_config c = flux_publisher_config_default();
+  CHECK(c.growth == FLUX_GROWTH_POWER_OF_TWO);
+  c.size = (uint32_t)offsetof(flux_publisher_config, growth);
+  c.slot_size = 32;
+  c.growth = 7;  // past the size: not read
+  flux_channel * p = NULL;
+  CHECK(flux_channel_create(name, &c, 0, FLUX_MEMORY_DEFAULT, NULL, &p) == FLUX_OK);
+  flux_channel_free(p);
+  c.size = sizeof c;
+  CHECK(flux_channel_create(name, &c, 0, FLUX_MEMORY_DEFAULT, NULL, &p) == FLUX_INVALID_ARGUMENT);
+}
+
+// A FLUX_ALLOC_SLOT publisher with no slot size refuses a frame past its slot, then moves to
+// larger slots, and its subscriber follows it there.
+static void a_slot_left_to_flux_grows_past_a_frame(void)
+{
+  char name[256];
+  test_signpost("grows", name, sizeof name);
+  flux_publisher_config c = flux_publisher_config_default();
+  c.alloc = FLUX_ALLOC_SLOT;
+  c.slot_count = 4;
+  flux_channel * p = NULL;
+  flux_channel * s = NULL;
+  CHECK(flux_channel_create(name, &c, 0, FLUX_MEMORY_DEFAULT, NULL, &p) == FLUX_OK);
+  CHECK(flux_channel_open(name, 0, FLUX_MEMORY_DEFAULT, NULL, &s) == FLUX_OK);
+  const uint32_t slot = flux_channel_slot_size(p);
+  const size_t n = (size_t)slot + 1;
+  uint8_t * big = calloc(n, 1);
+  CHECK(big != NULL);
+  CHECK(flux_channel_publish(p, big, n) == FLUX_PUBLISHED_TOO_LARGE);
+  flux_published r = FLUX_PUBLISHED_TOO_LARGE;
+  for (int i = 0; i < 2000 && r != FLUX_PUBLISHED_OK; ++i) {
+    usleep(1000);
+    r = flux_channel_publish(p, big, n);
+  }
+  CHECK(r == FLUX_PUBLISHED_OK && flux_channel_slot_size(p) == 2 * slot);
+  flux_frame v = {0};
+  flux_status t = FLUX_NO_FRAME;
+  for (int i = 0; i < 2000 && t != FLUX_OK; ++i) {
+    t = flux_channel_take(s, &v);
+    if (t != FLUX_OK) {
+      usleep(1000);
+    }
+  }
+  CHECK(t == FLUX_OK && flux_channel_resizes(s) == 1);
+  flux_frame_release(&v);
+  free(big);
+  flux_channel_free(s);
+  flux_channel_free(p);
+}
+
 // A loan says why there is none, and a take tells no frame from a frame.
 static void loans_and_takes_say_why(void)
 {
@@ -358,6 +416,8 @@ int main(void)
   a_failure_during_thread_exit_returns_its_status();
   a_watch_sees_the_publisher_come_up();
   a_config_is_read_up_to_its_size();
+  a_config_without_growth_is_read_and_an_unknown_growth_refused();
+  a_slot_left_to_flux_grows_past_a_frame();
   loans_and_takes_say_why();
   printf("ok\n");
   return 0;

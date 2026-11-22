@@ -607,7 +607,8 @@ public:
 
   [[nodiscard]] auto bad() const noexcept -> bool { return bad_; }
   explicit operator bool() const noexcept { return !bad_; }
-  [[nodiscard]] auto size() const noexcept -> std::size_t { return used_; }  // bytes to commit
+  // Bytes to commit; past the capacity once a field did not fit in a slot with no arena.
+  [[nodiscard]] auto size() const noexcept -> std::size_t { return used_; }
   [[nodiscard]] auto base() const noexcept -> std::byte * { return base_; }
 
   template <class T>
@@ -854,6 +855,9 @@ private:
       if (start <= cap && n <= (cap - start) / esize && start + n * esize <= limit) {
         p = base_ + start;
         where = start;
+        used_ = start + n * esize;
+      } else if (!heap && start <= limit && n <= (limit - start) / esize) {
+        // Past the slot: size() keeps counting, and the commit asks for that many bytes.
         used_ = start + n * esize;
       }
     } else if (n <= 0xFFFFFFFFu && n <= heap_.size / esize) {

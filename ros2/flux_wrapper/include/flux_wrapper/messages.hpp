@@ -80,8 +80,11 @@ enum class Device { Cpu, Cuda };
 
 // flux only: where a publisher puts a message's variable-length fields, as flux::Alloc. Slot keeps
 // them all in the slot, where an integrated GPU subscriber reads them in place; a message past the
-// slot is refused.
+// slot is refused, and a slot_size of 0 grows for the next (Growth).
 enum class Alloc { Arena, Slot };
+
+// flux only: how a slot left to flux grows past a message, as flux::Growth.
+enum class Growth { PowerOfTwo, BestFit, Static };
 
 // flux only: whether a publisher's slots are image slots, as flux::ImageSlots. Auto makes them for
 // an image format.

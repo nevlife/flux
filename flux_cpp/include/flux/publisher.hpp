@@ -26,6 +26,7 @@ struct PublisherOptions
   std::uint32_t slot_count = FLUX_DEFAULT_SLOT_COUNT;
   std::uint32_t max_slot_size = 0;
   std::uint32_t max_slot_count = 0;
+  Growth growth = Growth::PowerOfTwo;
   Device device = Device::Cpu;
   gpu::Stream stream;
   MemoryPolicy memory = {};

@@ -1,5 +1,6 @@
 //! The thread that gives a fixed-slot publisher's slots their memory, so its loans never do: the
-//! start slots once a subscriber has attached, then one more each time a claim asks for it.
+//! start slots once a subscriber has attached, then one more each time a claim asks for it. It
+//! also makes the segment a growable publisher moves to (`resize`).
 
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -60,6 +61,13 @@ pub(super) fn ask(sh: &ChannelShared) {
     }
 }
 
+/// Has the filler look over its channels, for a resize `want_larger` asked for.
+pub(super) fn wake() {
+    if let Some(tx) = sender() {
+        let _ = tx.send(Ask::Slot);
+    }
+}
+
 fn run(rx: &Receiver<Ask>) {
     let mut watched: Vec<(Weak<ChannelShared>, MemoryPolicy)> = Vec::new();
     let mut waiting = false;
@@ -87,6 +95,7 @@ fn run(rx: &Receiver<Ask>) {
 
 /// One pass over `sh`; true while it still waits for its first subscriber.
 fn fill(sh: &ChannelShared, mem: MemoryPolicy) -> bool {
+    sh.make_resized();
     let seg = &sh.seg;
     let start = sh.fill_start.load(Ordering::Relaxed);
     if start != 0 {

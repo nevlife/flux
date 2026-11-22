@@ -183,6 +183,38 @@ def test_slots_changed_mid_recording_play_back_whole(node, tmp_path):
     assert got[:small] == sizes[:small] and got.count(100_000) >= 10
 
 
+# A publisher whose slot was left to flux moves to larger slots for a frame past them: the frames
+# after it carry the larger slot, and the player makes its publisher with it.
+def test_a_publisher_that_grew_its_slots_plays_back_whole(node, tmp_path):
+    k = key("grow")
+    bag = str(tmp_path / "bag")
+    pub = flux.Publisher(node, k, alloc="slot")
+    rec = record(bag, k)
+    time.sleep(0.5)
+    big = 5 << 20
+    for i in range(10):
+        assert pub.publish(np.full(1000, i, dtype=np.uint8))
+        time.sleep(0.02)
+    assert not pub.publish(np.zeros(big, dtype=np.uint8))
+    deadline = time.monotonic() + 5
+    while not pub.publish(np.full(big, 0, dtype=np.uint8)):
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    for i in range(1, 10):
+        assert pub.publish(np.full(big, i, dtype=np.uint8))
+        time.sleep(0.05)
+    stop(rec)
+    del pub
+    gc.collect()
+    recorded = [(struct.unpack_from("<I", bytes(f.meta))[0], len(f.data)) for _, f in frames(bag)]
+    assert {(4 << 20, 1000), (8 << 20, big)} <= set(recorded)
+
+    sub = flux.Subscription(node, k, qos=flux.QoS(depth=16))
+    got = [a.size for _, _, a in play_into(sub, bag)]
+    small = [n for _, n in recorded].count(1000)
+    assert got[:small] == [1000] * small and got.count(big) >= 5
+
+
 # A channel that refuses the recorder's subscription is left out until its publisher restarts;
 # the bag goes on.
 def test_a_channel_that_refuses_the_recorder_is_left_out_until_it_restarts(node, tmp_path):

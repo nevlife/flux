@@ -547,7 +547,9 @@ public:
         return flux::Published::Backpressure;  // the loan never happened
       }}
       if (!ok__()) {{
-        return flux::Published::TooLarge;
+        // A frame past the slot commits the length it wanted: refused all the same, it asks a
+        // publisher whose slot size was left to flux for larger slots.
+        return w_.size() > s->capacity() ? s->commit(w_.size()) : flux::Published::TooLarge;
       }}
       const flux::Published p = s->commit(w_.size());
       w_ = flux::wire::Writer(nullptr, 0, kScalarBytes);  // the slot is the subscribers' now

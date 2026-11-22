@@ -137,8 +137,9 @@ pub struct Segment {
     /// Publisher only: the segment fd holding a read lock on `PUBLISHER_LOCK_BYTE`.
     pub(crate) publisher: Option<LiveFd>,
     /// Publisher only: the signpost, holding `SIGNPOST_PUBLISHER_BYTE`. Dropped after the
-    /// segment is unlinked.
-    pub(crate) signpost: Option<SignpostMap>,
+    /// segment is unlinked. A resize moves it to the new segment (`take_resized`), so a loan
+    /// still out on this one does not keep the lock.
+    pub(crate) signpost: PiMutex<Option<Arc<SignpostMap>>>,
     name: String,
     id: SegmentId,
     payload_readonly: bool,
@@ -265,7 +266,7 @@ impl Segment {
                 backing,
             }),
             publisher: None,
-            signpost: None,
+            signpost: PiMutex::new(None),
             name,
             id,
             payload_readonly: false,
@@ -487,7 +488,7 @@ impl Segment {
             header: self.header,
             map: Arc::clone(&self.map),
             publisher: None,
-            signpost: None,
+            signpost: PiMutex::new(None),
             name: self.name.clone(),
             id: self.id,
             payload_readonly: self.payload_readonly,

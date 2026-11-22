@@ -21,7 +21,7 @@ use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::MetadataExt;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use crate::arena;
@@ -30,8 +30,8 @@ use crate::gpu;
 use crate::layout::{
     CACHE_LINE, ControlHeader, HeaderConfig, INIT_READY, LAYOUT_VERSION, MAGIC,
     PUBLISHER_LOCK_BYTE, SIGNPOST_BOOTSTRAP_BYTE, SIGNPOST_BYTES, SIGNPOST_MAGIC,
-    SIGNPOST_PUBLISHER_BYTE, SIGNPOST_USER_BYTE, Signpost, SignpostPage, StorageKind,
-    layout_config_ok,
+    SIGNPOST_PUBLISHER_BYTE, SIGNPOST_USER_BYTE, SegmentLayout, Signpost, SignpostPage,
+    StorageKind, layout_config_ok,
 };
 use crate::segment::{Segment, SegmentId, checked_layout, init_header};
 use crate::sys::{self, LiveFd};
@@ -249,6 +249,11 @@ impl SignpostMap {
         self.sp().epoch.load(Ordering::Acquire) // order: sp_epoch
     }
 
+    /// The last epoch a publisher moved to for larger slots; read after `epoch`.
+    pub(crate) fn resized_epoch(&self) -> u32 {
+        self.sp().resized_epoch.load(Ordering::Relaxed)
+    }
+
     /// Woken by every publisher that stores a new epoch.
     pub(crate) fn epoch_word(&self) -> &AtomicU32 {
         &self.sp().epoch
@@ -346,6 +351,66 @@ pub(crate) fn open_publisher_segment_in(
     ready: u32,
 ) -> Result<Segment> {
     let layout = checked_layout(slot_size, slot_count, max_subscribers, aux_size)?;
+    sweep_dead_once();
+
+    let map = SignpostMap::open(name)?;
+    if !sys::lock_write(map.fd().raw(), SIGNPOST_PUBLISHER_BYTE) {
+        return Err(Error::PublisherExists(name.to_owned()));
+    }
+    let map = Arc::new(map);
+    let last = map.epoch();
+    // A predecessor that crashed after this process swept. With the signpost lock held, no
+    // segment under it has a live publisher.
+    if last != 0 {
+        remove_if_dead(&segment_name(name, last), PUBLISHER_LOCK_BYTE);
+    }
+    let (seg, epoch) = segment_under(&map, layout, fingerprint, payload, ready)?;
+    // A predecessor's resize names none of this publisher's epochs.
+    map.sp().resized_epoch.store(0, Ordering::Relaxed);
+    advertise(&map, epoch);
+    Ok(seg)
+}
+
+/// A segment like `seg`, the publisher's, with slots of `slot_size` and memory for `ready` of
+/// them, under the signpost `seg` holds; not advertised until `advertise_resized`.
+pub(crate) fn resized_segment(
+    seg: &Segment,
+    slot_size: u32,
+    payload: SegmentPayload,
+    ready: u32,
+) -> Result<(Segment, u32)> {
+    let Some(map) = seg.signpost.lock().clone() else {
+        return Err(Error::InvalidArgument(
+            "only a publisher resizes its slots".into(),
+        ));
+    };
+    let l = seg.layout();
+    let layout = checked_layout(slot_size, l.slot_count, l.max_subscribers, l.aux_size)?;
+    segment_under(&map, layout, seg.header().fingerprint, payload, ready)
+}
+
+/// Points the signpost at `epoch`, a segment `resized_segment` made, as a resize.
+pub(crate) fn advertise_resized(map: &SignpostMap, epoch: u32) {
+    map.sp().resized_epoch.store(epoch, Ordering::Relaxed);
+    advertise(map, epoch);
+}
+
+fn advertise(map: &SignpostMap, epoch: u32) {
+    map.sp().epoch.store(epoch, Ordering::Release); // order: sp_epoch
+    // For subscriptions waiting for a publisher. Rare enough to need no gate.
+    sys::futex_wake(&map.sp().epoch);
+}
+
+/// A segment of `layout` at the next free epoch under `map`, whose publisher lock the caller
+/// holds, and that epoch; holding `map` for its lifetime.
+fn segment_under(
+    map: &Arc<SignpostMap>,
+    layout: SegmentLayout,
+    fingerprint: u64,
+    payload: SegmentPayload,
+    ready: u32,
+) -> Result<(Segment, u32)> {
+    let name = map.name();
     let image = match payload {
         SegmentPayload::Image(_, f) => Some(f),
         _ => None,
@@ -375,18 +440,7 @@ pub(crate) fn open_publisher_segment_in(
     } else {
         layout.payload_offset() + ready as usize * layout.payload_stride()
     };
-    sweep_dead_once();
-
-    let map = SignpostMap::open(name)?;
-    if !sys::lock_write(map.fd().raw(), SIGNPOST_PUBLISHER_BYTE) {
-        return Err(Error::PublisherExists(name.to_owned()));
-    }
     let last = map.epoch();
-    // A predecessor that crashed after this process swept. With the signpost lock held, no
-    // segment under it has a live publisher.
-    if last != 0 {
-        remove_if_dead(&segment_name(name, last), PUBLISHER_LOCK_BYTE);
-    }
     // 0 means "no publisher", so the count skips it on wrapping.
     let mut epoch = last.wrapping_add(1).max(1);
     for _ in 0..MAX_EPOCH_TRIES {
@@ -426,11 +480,8 @@ pub(crate) fn open_publisher_segment_in(
         seg.publisher = Some(live);
         // Dropping seg on failure unlinks it; nothing was advertised.
         give_payload(&seg, payload, ready)?;
-        map.sp().epoch.store(epoch, Ordering::Release); // order: sp_epoch
-        // For subscriptions waiting for a publisher. Rare enough to need no gate.
-        sys::futex_wake(&map.sp().epoch);
-        seg.signpost = Some(map);
-        return Ok(seg);
+        *seg.signpost.get_mut() = Some(Arc::clone(map));
+        return Ok((seg, epoch));
     }
     Err(Error::NotReady(format!(
         "no free segment name under '{name}'"

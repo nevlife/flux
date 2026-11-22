@@ -78,6 +78,8 @@ struct PublisherOptions
   std::uint32_t slot_count = 0;
   std::uint32_t max_slot_size = 0;
   std::uint32_t max_slot_count = 0;
+  // flux only, as flux::PublisherOptions: how a slot_size of 0 grows past a message.
+  Growth growth = Growth::PowerOfTwo;
   // flux with Alloc::Slot or Device::Cuda only: the slots get memory once a subscriber attaches,
   // and publish() is false until then. For topics nobody may subscribe to.
   bool alloc_on_subscriber = false;
@@ -122,6 +124,9 @@ public:
       o.slot_count = options.slot_count;
       o.max_slot_size = options.max_slot_size;
       o.max_slot_count = options.max_slot_count;
+      o.growth = options.growth == Growth::BestFit  ? flux::Growth::BestFit
+                 : options.growth == Growth::Static ? flux::Growth::Static
+                                                    : flux::Growth::PowerOfTwo;
       o.alloc_on_subscriber = options.alloc_on_subscriber;
       o.image_slots = options.image_slots == ImageSlots::On    ? flux::ImageSlots::On
                       : options.image_slots == ImageSlots::Off ? flux::ImageSlots::Off
@@ -220,8 +225,10 @@ public:
     }
     if (loan.builder_) {
       if (!loan.builder_->ok__() && loan.over_.field != nullptr) {
-        // Nothing is committed; the slot goes back when the caller's Loan goes.
-        overflow(loan.over_, "", "slot", flux_->slot_size());
+        // Refused, and tells a slot left to flux the size to grow to (Growth).
+        const std::uint32_t slot = flux_->slot_size();
+        (void)loan.builder_->commit__();
+        overflow(loan.over_, "", "slot", slot);
         return PublishResult(Published::TooLarge);
       }
       return report(loan.builder_->commit__());

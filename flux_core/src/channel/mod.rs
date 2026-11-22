@@ -74,6 +74,21 @@ pub enum Alloc {
     Slot = 1,
 }
 
+/// How a publisher whose slot size was left to flux (`Alloc::Slot`, or a GPU memory channel) grows
+/// its slot past a frame that does not fit: a new segment of the larger slot, epoch rotated. A
+/// given `slot_size` never grows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(i32)]
+pub enum Growth {
+    /// The frame's size rounded up to a power of two.
+    #[default]
+    PowerOfTwo = 0,
+    /// The frame's size rounded up to a page.
+    BestFit = 1,
+    /// Never: a frame past the slot is refused, as with a given size.
+    Static = 2,
+}
+
 /// Whether a fixed-slot publisher's slots are image slots: on an integrated GPU, each slot a
 /// dmabuf of its own that engines such as VIC read in place (`gpu::ImageExport`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -96,6 +111,9 @@ pub struct PublisherConfig {
     /// `Alloc::Slot` and GPU memory channels only: the largest slot and the most slots it may
     /// grow to.
     pub max_slot_size: u32,
+    /// `Alloc::Slot` and GPU memory channels with `slot_size` 0 only: how the slot grows past a
+    /// frame that does not fit, up to `max_slot_size`.
+    pub growth: Growth,
     pub max_slot_count: u32,
     pub max_subscribers: u32,
     pub aux_size: u32,
@@ -117,6 +135,7 @@ impl Default for PublisherConfig {
             slot_size: 0,
             slot_count: 0,
             max_slot_size: 0,
+            growth: Growth::PowerOfTwo,
             max_slot_count: 0,
             max_subscribers: DEFAULT_MAX_SUBSCRIBERS,
             aux_size: 0,
@@ -300,6 +319,8 @@ pub struct Channel {
     stalled_polls: u32,
     last_probe_ns: u64,
     attach_gen: u32,
+    /// Re-attaches to a publisher that moved to larger slots, not a new one.
+    resizes: u64,
     signpost: Option<Arc<SignpostMap>>,
     signpost_epoch: u32,
     /// The caller's, for a re-attach: the old segment's header is writable by any peer.
@@ -442,6 +463,7 @@ impl Channel {
             config.max_slot_count,
             scalar_bytes,
             stream.declared(),
+            config.growth,
         )?;
         check_slot_count(plan.slot_count)?;
         let filled = plan.fixed && filler::available();
@@ -479,6 +501,18 @@ impl Channel {
         sh.filled = filled;
         if later {
             sh.fill_start.store(plan.start, Ordering::Relaxed);
+        }
+        // The filler makes the larger segment; without one the slot stays.
+        if filled && plan.grow_to > 0 && !image {
+            let _ = sh.grow.set(Arc::new(resize::Grow::new(
+                config.growth,
+                slot_size,
+                plan.grow_to,
+                payload,
+                mem,
+                &stream,
+                &fence,
+            )));
         }
         let mut ch = Channel::with_shared(Arc::new(sh).traced(), mem);
         ch.stream = stream;
@@ -595,6 +629,7 @@ impl Channel {
             stalled_polls: 0,
             last_probe_ns: 0,
             attach_gen: next_attach_generation(),
+            resizes: 0,
             signpost: None,
             signpost_epoch: 0,
             fingerprint: 0,
@@ -626,9 +661,11 @@ impl Channel {
     }
 
     fn publish_meta(&mut self, data: &[u8], meta: FrameMeta) -> Published {
+        self.take_resized();
         let refused = if !self.can_publish() {
             Some((Published::NotPublisher, trace::CLAIM_NOT_PUBLISHER))
         } else if !fits(&meta, self.sh.seg.layout()) || data.len() as u64 != meta.nbytes {
+            self.sh.want_larger(meta.nbytes);
             Some((Published::TooLarge, trace::CLAIM_TOO_LARGE))
         } else if !matches!(self.sh.fence(Seam::Commit), Fenced::Done) {
             // The stream is the caller's statement of where frames come from, so its work is
@@ -700,6 +737,7 @@ impl Channel {
         dt: DType,
         shape: &[u64],
     ) -> std::result::Result<Loan, Published> {
+        self.take_resized();
         // A wedged GPU fails every commit, and each failed commit keeps its slot.
         let refused = if !self.can_publish() {
             trace::CLAIM_NOT_PUBLISHER
@@ -1106,6 +1144,12 @@ impl Channel {
             self.sh.gpu_waker_of.load(Ordering::Relaxed),
             Ordering::Relaxed,
         );
+        if signpost.resized_epoch() == epoch {
+            self.resizes += 1;
+            // The frames still on the smaller slots are not taken from them any more.
+            let left = self.sh.seg.ctrl().latest.load(Ordering::Relaxed);
+            self.lost = self.lost.saturating_add(left.saturating_sub(self.cursor));
+        }
         self.sh.orphan_late();
         sys::retire(std::mem::replace(&mut self.sh, sh));
         self.signpost_epoch = epoch;
@@ -1161,6 +1205,12 @@ impl Channel {
     pub fn lost(&self) -> u64 {
         self.lost
     }
+    /// How often this subscriber followed its publisher to larger slots. Frames it had not
+    /// taken from the smaller ones are counted in `lost`.
+    pub fn resizes(&self) -> u64 {
+        self.resizes
+    }
+
     pub fn dropped(&self) -> u64 {
         self.sh.dropped.load(Ordering::Relaxed)
     }
@@ -1420,5 +1470,6 @@ mod loan;
 mod race;
 #[cfg(test)]
 mod release_twice;
+mod resize;
 mod shared;
 mod view;

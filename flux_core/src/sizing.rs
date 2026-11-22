@@ -1,7 +1,7 @@
 //! How large and how many slots a publisher gets when its caller passes 0. Every default and every
 //! rule for them is here; the bindings pass 0 through.
 
-use crate::channel::Alloc;
+use crate::channel::{Alloc, Growth};
 use crate::error::{Error, Result};
 use crate::layout::{MIN_SLOT_COUNT, PAYLOAD_ALIGN, align_up};
 use crate::qos::DEFAULT_DEPTH;
@@ -94,12 +94,30 @@ pub struct Plan {
     pub start: u32,
     /// Slots past `start` are added off the publish path (`channel::filler`).
     pub fixed: bool,
+    /// Up to this slot size the slot grows by `growth`; 0 when it never does.
+    pub grow_to: u32,
+}
+
+/// The slot a growable publisher moves to for a frame of `needed` bytes past its `current` slot:
+/// None when the frame fits, when `growth` is `Static`, or when the frame is past `max`.
+#[must_use]
+pub fn next_slot_size(growth: Growth, current: u32, needed: u64, max: u32) -> Option<u32> {
+    if needed <= u64::from(current) || needed > u64::from(max) {
+        return None;
+    }
+    let want = match growth {
+        Growth::Static => return None,
+        Growth::PowerOfTwo => needed.next_power_of_two(),
+        Growth::BestFit => needed.next_multiple_of(PAYLOAD_ALIGN as u64),
+    };
+    u32::try_from(want.min(u64::from(max))).ok()
 }
 
 /// The slots of a publisher. `Arena` as `slot_size`, `slot_count` and `start_slots`. `Slot`, and a
 /// GPU memory channel (a stream, no generated type: its payload is the frame's data), take the
 /// `SLOT_ALLOC_*` value for each 0 and reserve `max_count` slots, `count` of them at start; a
-/// `count` given alone is all the slots.
+/// `count` given alone is all the slots. Their size left at 0 grows by `growth` up to `max_size`.
+#[allow(clippy::too_many_arguments)]
 pub fn plan(
     alloc: Alloc,
     size: u32,
@@ -108,6 +126,7 @@ pub fn plan(
     max_count: u32,
     scalar_bytes: Option<u32>,
     gpu_stream: bool,
+    growth: Growth,
 ) -> Result<Plan> {
     let fixed = alloc == Alloc::Slot || (gpu_stream && scalar_bytes.is_none());
     if !fixed {
@@ -118,8 +137,10 @@ pub fn plan(
             slot_count,
             start: start_slots(count, slot_count),
             fixed: false,
+            grow_to: 0,
         });
     }
+    let grows = size == 0 && growth != Growth::Static;
     let or = |n: u32, default: u32| if n == 0 { default } else { n };
     let (size, max_size) = (
         or(size, SLOT_ALLOC_SLOT_SIZE),
@@ -150,6 +171,7 @@ pub fn plan(
         slot_count: reserve,
         start: count,
         fixed: true,
+        grow_to: if grows { max_size } else { 0 },
     })
 }
 
@@ -164,16 +186,64 @@ pub fn slot_count(asked: u32, slot_size: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use super::next_slot_size;
     use super::{
-        HOST_BOUND, Plan, SLOT_ALLOC_MAX_SLOTS, SLOT_ALLOC_SLOT_SIZE, SLOT_ALLOC_START_SLOTS,
-        START_SLOTS, UNTYPED_SLOT_SIZE, max_slots, plan, slot_count, slot_size, start_slots,
-        typed_slot_size,
+        HOST_BOUND, Plan, SLOT_ALLOC_MAX_SLOT_SIZE, SLOT_ALLOC_MAX_SLOTS, SLOT_ALLOC_SLOT_SIZE,
+        SLOT_ALLOC_START_SLOTS, START_SLOTS, UNTYPED_SLOT_SIZE, max_slots, plan, slot_count,
+        slot_size, start_slots, typed_slot_size,
     };
-    use crate::channel::Alloc;
+    use crate::channel::{Alloc, Growth};
+
+    /// A frame past the slot moves it to its size in a power of two, or in pages, up to the most
+    /// it may be; one that fits, one past the most and a `Static` publisher do not move it.
+    #[test]
+    fn a_frame_past_the_slot_grows_it_by_the_publishers_rule() {
+        const MIB: u32 = 1 << 20;
+        let max = 16 * MIB;
+        let next = |g, cur, needed: u32| next_slot_size(g, cur, u64::from(needed), max);
+        assert_eq!(next(Growth::PowerOfTwo, 4 * MIB, 5 * MIB), Some(8 * MIB));
+        assert_eq!(next(Growth::PowerOfTwo, 4 * MIB, 9 * MIB), Some(16 * MIB));
+        assert_eq!(
+            next(Growth::BestFit, 4 * MIB, 5 * MIB + 1),
+            Some(5 * MIB + 4096)
+        );
+        assert_eq!(next(Growth::PowerOfTwo, 4 * MIB, 4 * MIB), None, "fits");
+        assert_eq!(
+            next(Growth::PowerOfTwo, 4 * MIB, max + 1),
+            None,
+            "past the most"
+        );
+        assert_eq!(next(Growth::Static, 4 * MIB, 5 * MIB), None);
+        // Rounding past the most stops at the most: the frame still fits.
+        let capped = next_slot_size(Growth::PowerOfTwo, MIB, u64::from(9 * MIB), 12 * MIB);
+        assert_eq!(capped, Some(12 * MIB));
+    }
+
+    /// Only a size left to flux grows: a given one, `Static` and `Arena` do not.
+    #[test]
+    fn only_a_slot_size_left_to_flux_grows() {
+        let p = |alloc, size, growth| plan(alloc, size, 0, 0, 0, None, false, growth).unwrap();
+        assert_eq!(
+            p(Alloc::Slot, 0, Growth::PowerOfTwo).grow_to,
+            SLOT_ALLOC_MAX_SLOT_SIZE
+        );
+        assert_eq!(
+            p(Alloc::Slot, 0, Growth::BestFit).grow_to,
+            SLOT_ALLOC_MAX_SLOT_SIZE
+        );
+        assert_eq!(p(Alloc::Slot, 8 << 20, Growth::PowerOfTwo).grow_to, 0);
+        assert_eq!(p(Alloc::Slot, 0, Growth::Static).grow_to, 0);
+        assert_eq!(p(Alloc::Arena, 0, Growth::PowerOfTwo).grow_to, 0);
+        let gpu = plan(Alloc::Arena, 0, 0, 0, 0, None, true, Growth::PowerOfTwo).unwrap();
+        assert_eq!(
+            gpu.grow_to, SLOT_ALLOC_MAX_SLOT_SIZE,
+            "a GPU memory channel"
+        );
+    }
 
     #[test]
     fn a_slot_plan_takes_its_defaults_and_keeps_within_its_maxima() {
-        let defaults = plan(Alloc::Slot, 0, 0, 0, 0, Some(100), false).unwrap();
+        let defaults = plan(Alloc::Slot, 0, 0, 0, 0, Some(100), false, Growth::default()).unwrap();
         assert_eq!(
             defaults,
             Plan {
@@ -181,25 +251,58 @@ mod tests {
                 slot_count: SLOT_ALLOC_MAX_SLOTS,
                 start: SLOT_ALLOC_START_SLOTS,
                 fixed: true,
+                grow_to: SLOT_ALLOC_MAX_SLOT_SIZE,
             }
         );
-        let asked = plan(Alloc::Slot, 32 << 20, 20, 64 << 20, 24, None, false).unwrap();
+        let asked = plan(
+            Alloc::Slot,
+            32 << 20,
+            20,
+            64 << 20,
+            24,
+            None,
+            false,
+            Growth::default(),
+        )
+        .unwrap();
         assert_eq!(
             (asked.slot_size, asked.slot_count, asked.start),
             (32 << 20, 24, 20)
         );
-        let fixed = plan(Alloc::Slot, 0, 4, 0, 0, None, false).unwrap();
+        let fixed = plan(Alloc::Slot, 0, 4, 0, 0, None, false, Growth::default()).unwrap();
         assert_eq!((fixed.slot_count, fixed.start), (4, 4));
         assert!(fixed.fixed);
-        assert!(plan(Alloc::Slot, 17 << 20, 0, 0, 0, None, false).is_err());
-        assert!(plan(Alloc::Slot, 0, 17, 0, 0, None, false).is_err());
+        assert!(
+            plan(
+                Alloc::Slot,
+                17 << 20,
+                0,
+                0,
+                0,
+                None,
+                false,
+                Growth::default()
+            )
+            .is_err()
+        );
+        assert!(plan(Alloc::Slot, 0, 17, 0, 0, None, false, Growth::default()).is_err());
         // A GPU memory channel's payload is its data: it takes the same defaults.
         assert_eq!(
-            plan(Alloc::Arena, 0, 0, 0, 0, None, true).unwrap(),
+            plan(Alloc::Arena, 0, 0, 0, 0, None, true, Growth::default()).unwrap(),
             defaults
         );
         // Arena keeps the type's slot and the budgeted count.
-        let arena = plan(Alloc::Arena, 0, 0, 0, 0, Some(100), false).unwrap();
+        let arena = plan(
+            Alloc::Arena,
+            0,
+            0,
+            0,
+            0,
+            Some(100),
+            false,
+            Growth::default(),
+        )
+        .unwrap();
         assert_eq!(arena.slot_size, slot_size(0, Some(100), false));
         assert_eq!(arena.start, START_SLOTS);
         assert!(!arena.fixed);

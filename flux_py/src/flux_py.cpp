@@ -1019,7 +1019,8 @@ auto config(
   bool slot, std::uint32_t slot_size, std::uint32_t slot_count, std::uint32_t max_slot_size,
   std::uint32_t max_slot_count, std::uint32_t max_subscribers, std::uint32_t aux_size,
   bool on_subscriber, std::int32_t image_slots, std::uint32_t image_encoding,
-  std::uint32_t image_width, std::uint32_t image_height) -> flux_publisher_config
+  std::uint32_t image_width, std::uint32_t image_height,
+  std::int32_t growth) -> flux_publisher_config
 {
   flux_publisher_config c = flux_publisher_config_default();
   c.alloc = slot ? FLUX_ALLOC_SLOT : FLUX_ALLOC_ARENA;
@@ -1034,6 +1035,7 @@ auto config(
   c.image_encoding = image_encoding;
   c.image_width = image_width;
   c.image_height = image_height;
+  c.growth = growth;
   return c;
 }
 
@@ -1046,13 +1048,13 @@ public:
     flux::MemoryPolicy mem, std::uint32_t max_subscribers, bool cuda, std::uint32_t aux_size,
     bool slot, std::uint32_t max_slot_size, std::uint32_t max_slot_count, bool on_subscriber,
     std::int32_t image_slots, std::uint32_t image_encoding, std::uint32_t image_width,
-    std::uint32_t image_height)
+    std::uint32_t image_height, std::int32_t growth)
   : stream_(flux::gpu::stream_for(cuda ? flux::Device::Cuda : flux::Device::Cpu)),
     ch_(flux::detail::Channel::create_config(
       signpost,
       config(
         slot, slot_size, slot_count, max_slot_size, max_slot_count, max_subscribers, aux_size,
-        on_subscriber, image_slots, image_encoding, image_width, image_height),
+        on_subscriber, image_slots, image_encoding, image_width, image_height, growth),
       fingerprint, mem, stream_)),
     announced_(signpost, topic, label, true)
   {
@@ -1862,12 +1864,14 @@ NB_MODULE(_flux, m)
       nb::init<
         const std::string &, const std::string &, const std::string &, std::uint64_t, std::uint32_t,
         std::uint32_t, flux::MemoryPolicy, std::uint32_t, bool, std::uint32_t, bool, std::uint32_t,
-        std::uint32_t, bool, std::int32_t, std::uint32_t, std::uint32_t, std::uint32_t>(),
+        std::uint32_t, bool, std::int32_t, std::uint32_t, std::uint32_t, std::uint32_t,
+        std::int32_t>(),
       "signpost"_a, "topic"_a, "label"_a, "fingerprint"_a, "slot_size"_a, "slot_count"_a,
       "memory"_a, "max_subscribers"_a = FLUX_DEFAULT_MAX_SUBSCRIBERS, "cuda"_a = false,
       "aux_size"_a = 0, "slot"_a = false, "max_slot_size"_a = 0, "max_slot_count"_a = 0,
       "alloc_on_subscriber"_a = false, "image_slots"_a = FLUX_IMAGE_SLOTS_AUTO,
-      "image_encoding"_a = 0, "image_width"_a = 0, "image_height"_a = 0)
+      "image_encoding"_a = 0, "image_width"_a = 0, "image_height"_a = 0,
+      "growth"_a = FLUX_GROWTH_POWER_OF_TWO)
     .def("publish", &Publisher::publish, "array"_a)
     .def("loan", &Publisher::loan, "shape"_a = nb::none(), "dtype"_a = "uint8")
     .def_prop_ro("dropped", &Publisher::dropped)
@@ -1896,6 +1900,7 @@ NB_MODULE(_flux, m)
     .def_prop_ro("attached", [](Subscription & s) { return s.core().attached(); })
     .def_prop_ro("lost", [](Subscription & s) { return s.core().lost(); })
     .def_prop_ro("attach_generation", [](Subscription & s) { return s.core().attach_generation(); })
+    .def_prop_ro("resizes", [](Subscription & s) { return s.core().resizes(); })
     .def_prop_ro("refused", [](Subscription & s) { return s.core().refused(); })
     .def_prop_ro("fence_failed", [](Subscription & s) { return s.core().fence_failed(); })
     .def_prop_ro("fence_wait", [](Subscription & s) { return s.core().fence_wait(); })

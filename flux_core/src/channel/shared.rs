@@ -118,6 +118,10 @@ pub struct ChannelShared {
     pub(super) want_slot: AtomicBool,
     /// Publisher side: `Alloc::Slot`, so loans hand out no arena.
     pub(super) slot_only: AtomicBool,
+    /// Publisher only: how its slots grow, when their size was left to flux (`resize`). Set once
+    /// the publisher is on this channel: one `resize` made but not taken holds none, so it does
+    /// not keep itself.
+    pub(super) grow: OnceLock<Arc<super::resize::Grow>>,
     /// Subscriber side: the publisher's arena, mapped by the first frame that named it. One
     /// publisher process, so one arena, per segment.
     pub(super) arena_map: OnceLock<Arc<ArenaMap>>,
@@ -264,6 +268,7 @@ impl ChannelShared {
             fill_start: AtomicU32::new(0),
             want_slot: AtomicBool::new(false),
             slot_only: AtomicBool::new(false),
+            grow: OnceLock::new(),
             arena_map: OnceLock::new(),
             gpu_arena: OnceLock::new(),
             gpu_import: OnceLock::new(),
@@ -1163,6 +1168,14 @@ impl ChannelShared {
 
     pub fn wake_word(&self) -> &AtomicU32 {
         &self.seg.ctrl().wakeup
+    }
+
+    /// Wakes every subscriber parked on the segment, as a commit does, with no frame: for one the
+    /// publisher left, so they find the new epoch.
+    pub(super) fn wake_all(&self) {
+        let ctrl = self.seg.ctrl();
+        ctrl.wakeup.fetch_add(1, Ordering::SeqCst); // order: wakeup
+        sys::futex_wake(&ctrl.wakeup);
     }
 
     /// One store, under this process's subscriber number if it has one, so a process killed at

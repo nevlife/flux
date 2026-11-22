@@ -191,6 +191,35 @@ TEST_F(Ros, ASlotPublisherThatAllocsOnSubscriberPublishesOnceOneAttaches)
   EXPECT_TRUE(eventually([&] { return got >= 1; }));
 }
 
+// A generated frame past a slot left to flux is refused, and the frames after it go to larger
+// slots, which the subscription follows.
+TEST_F(Ros, AGeneratedFramePastASlotLeftToFluxMovesThePublisherToLargerSlots)
+{
+  using Image = sensor_msgs::flux_msg::Image;
+  flux::PublisherOptions po;
+  po.alloc = flux::Alloc::Slot;
+  po.slot_count = kSlots;
+  auto pub = flux::create_publisher(*node_, topic("grow"), po, Image::kFingerprint);
+  flux::Subscription sub(*node_, topic("grow"), flux::QoS(4), {}, {}, Image::kFingerprint);
+  const std::uint32_t slot = pub->slot_size();
+  const auto publish = [&] {
+    Image::Builder b = Image::build__(*pub);
+    const flux::wire::Span<std::uint8_t> data = b.alloc__data(slot);
+    std::fill(data.begin(), data.end(), 7);
+    return b.commit__();
+  };
+  EXPECT_EQ(publish(), flux::Published::TooLarge);
+  EXPECT_TRUE(eventually([&] { return publish() == flux::Published::Ok; }));
+  EXPECT_EQ(pub->slot_size(), 2 * slot);
+  flux::Frame f;
+  EXPECT_TRUE(eventually([&] { return static_cast<bool>(f = sub.take()); }));
+  const Image::View img(f);
+  ASSERT_TRUE(img.ok__());
+  EXPECT_EQ(img.data().size(), slot);
+  EXPECT_EQ(img.data()[slot - 1], 7);
+  EXPECT_EQ(sub.resizes(), 1U);
+}
+
 // Seven frames after the kept one go through a ring of four around its slot.
 TEST_F(Ros, AFrameMovedOutOfTheCallbackKeepsItsSlot)
 {

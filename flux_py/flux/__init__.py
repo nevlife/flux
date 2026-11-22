@@ -149,6 +149,15 @@ def _image_slots(mode):
     raise InvalidArgument(f"flux: image_slots is one of {_IMAGE_SLOTS}, not {mode!r}")
 
 
+_GROWTHS = ("power_of_two", "best_fit", "static")
+
+
+def _growth(rule):
+    if rule in _GROWTHS:
+        return _GROWTHS.index(rule)
+    raise InvalidArgument(f"flux: growth is one of {_GROWTHS}, not {rule!r}")
+
+
 _IMAGE_ENCODINGS = ("", "bgra8", "rgba8", "mono8", "mono16", "nv12", "uyvy", "yuyv")
 
 
@@ -265,12 +274,16 @@ class Publisher(_flux._Publisher):
         image_encoding="",
         image_width=0,
         image_height=0,
+        growth="power_of_two",
     ):
         """alloc="slot" keeps every variable-length field of a frame in its slot, where an
         integrated GPU reads it in place; a frame that does not fit is refused. "arena" puts them
         in the process's arena. With "slot", or a "cuda" publisher with no type, a size or count
         of 0 takes flux's fixed-slot default and the maxima bound the slots; alloc_on_subscriber
-        gives them memory once a subscriber attaches, and publish fails until then. image_slots="on", on
+        gives them memory once a subscriber attaches, and publish fails until then. A slot_size of
+        0 there grows past a frame that does not fit, up to max_slot_size: growth "power_of_two"
+        to the frame's size in a power of two, "best_fit" in pages, "static" never. That frame is
+        refused; the frames after it go to the larger slots. image_slots="on", on
         an integrated GPU with fixed slots, makes each slot a dmabuf of its own that engines such as
         VIC read in place, its size rounded up to 2 MiB; "auto" does for a format, "off" never does.
         image_encoding ("bgra8", "nv12", ...) with
@@ -306,6 +319,7 @@ class Publisher(_flux._Publisher):
             _image_encoding(image_encoding),
             image_width,
             image_height,
+            _growth(growth),
         )
         self._set_fence_timeout(bound)
         if mirror_to_ros:

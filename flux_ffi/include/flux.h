@@ -116,6 +116,12 @@
 
 #define FLUX_ALLOC_SLOT 1
 
+#define FLUX_GROWTH_POWER_OF_TWO 0
+
+#define FLUX_GROWTH_BEST_FIT 1
+
+#define FLUX_GROWTH_STATIC 2
+
 #define FLUX_IMAGE_SLOTS_AUTO 0
 
 #define FLUX_IMAGE_SLOTS_OFF 1
@@ -271,6 +277,7 @@ typedef struct flux_publisher_config {
   uint32_t image_encoding;
   uint32_t image_width;
   uint32_t image_height;
+  int32_t growth;
 } flux_publisher_config;
 
 // `replay` 0 is volatile, N is `transient_local(N)`.
@@ -580,6 +587,9 @@ uint64_t flux_channel_dropped(const struct flux_channel *ch);
 uint32_t flux_channel_subscriber_count(const struct flux_channel *ch);
 
 uint32_t flux_channel_attach_generation(const struct flux_channel *ch);
+
+// How often a subscriber followed its publisher to larger slots; frames not taken count in lost.
+uint64_t flux_channel_resizes(const struct flux_channel *ch);
 
 // Why takes find nothing until the publisher restarts: it refused us, or a slot missed our policy.
 flux_status flux_channel_attach_status(struct flux_channel *ch);

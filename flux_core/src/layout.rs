@@ -329,7 +329,11 @@ pub struct Signpost {
     pub magic: AtomicU32,
     pub version: AtomicU32,
     pub epoch: AtomicU32,
-    _reserved: [u8; 48],
+    /// The last epoch a publisher moved to for a larger slot, stored before `epoch`: a
+    /// subscriber that finds the two equal counts a resize, not a restart. In bytes once
+    /// reserved, so the layout version stays.
+    pub resized_epoch: AtomicU32,
+    _reserved: [u8; 44],
 }
 
 /// The exact channel key, which the signpost name only gives back flattened. Written once by the

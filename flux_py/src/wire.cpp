@@ -364,10 +364,15 @@ public:
     issued_.clear();
   }
 
-  // A write that does not fit has latched bad() in wire.hpp before this raises.
+  // A write that does not fit has latched bad() in wire.hpp before this raises. Past a slot with
+  // no arena, the loan first commits the length the frame wanted: refused, it asks a publisher
+  // whose slot size was left to flux for larger slots, as the C++ Builder's commit does.
   void check(const char * what, std::size_t off) const
   {
     if (w_.bad()) {
+      if (w_.size() > buf_.size() && !loan_.is_none()) {
+        loan_.attr("commit")(nb::arg("nbytes") = w_.size());
+      }
       throw WireError(
         "flux: " + std::string(what) + " at " + std::to_string(off) + " does not fit the slot");
     }

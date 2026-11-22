@@ -184,6 +184,15 @@ enum class Alloc : std::int32_t {
   Slot = FLUX_ALLOC_SLOT,
 };
 
+// How a slot whose size was left at 0 grows past a frame that does not fit (Alloc::Slot and GPU
+// memory channels): to the frame's size in a power of two, or in pages, or not at all. That frame
+// is refused; the publisher moves to the larger slots for the frames after it.
+enum class Growth : std::int32_t {
+  PowerOfTwo = FLUX_GROWTH_POWER_OF_TWO,
+  BestFit = FLUX_GROWTH_BEST_FIT,
+  Static = FLUX_GROWTH_STATIC,
+};
+
 // Whether a fixed-slot publisher's slots are image slots (docs/gpu.md). Auto makes them for an
 // image format.
 enum class ImageSlots : std::int32_t {
@@ -889,6 +898,10 @@ public:
   [[nodiscard]] auto attach_generation() const noexcept -> std::uint32_t
   {
     return ch_ ? flux_channel_attach_generation(ch_) : 0;
+  }
+  [[nodiscard]] auto resizes() const noexcept -> std::uint64_t
+  {
+    return ch_ ? flux_channel_resizes(ch_) : 0;
   }
   [[nodiscard]] auto orphaned() const noexcept -> bool { return ch_ && flux_channel_orphaned(ch_); }
   // Throws why takes find nothing until the publisher restarts: the restarted publisher refused

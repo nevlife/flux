@@ -104,6 +104,7 @@ auto config_of(const PublisherOptions & o) -> flux_publisher_config
   c.image_encoding = static_cast<std::uint32_t>(o.image_encoding);
   c.image_width = o.image_width;
   c.image_height = o.image_height;
+  c.growth = static_cast<std::int32_t>(o.growth);
   return c;
 }
 

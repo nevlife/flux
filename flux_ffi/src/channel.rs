@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use flux_core::{
-    Alloc, Channel, DType, Error, Frame, FrameMeta, ImageSlots, Loan, Mapped, MemoryPolicy,
+    Alloc, Channel, DType, Error, Frame, FrameMeta, Growth, ImageSlots, Loan, Mapped, MemoryPolicy,
     Published, PublisherConfig, PublisherWatch, QoS, ReleaseMode, signpost_name,
 };
 
@@ -322,6 +322,7 @@ pub struct flux_publisher_config {
     pub image_encoding: u32,
     pub image_width: u32,
     pub image_height: u32,
+    pub growth: i32,
 }
 
 pub const FLUX_IMAGE_NONE: u32 = 0;
@@ -382,14 +383,15 @@ pub extern "C" fn flux_publisher_config_default() -> flux_publisher_config {
         image_encoding: d.image_format.encoding as u32,
         image_width: d.image_format.width,
         image_height: d.image_format.height,
+        growth: d.growth as i32,
     }
 }
 
 #[allow(clippy::cast_possible_truncation)]
 const CONFIG_SIZE: u32 = size_of::<flux_publisher_config>() as u32;
-/// The size at ABI 6, the first with `size`. A later field leaves it, so an older caller's smaller
-/// struct is still read, the new fields as 0.
-const CONFIG_SIZE_V6: usize = size_of::<flux_publisher_config>();
+/// The size at ABI 6, the first with `size`, through `image_height`. A later field leaves it, so an
+/// older caller's smaller struct is still read, the new fields as 0.
+const CONFIG_SIZE_V6: usize = std::mem::offset_of!(flux_publisher_config, growth);
 
 /// `config` up to its `size`, over zeroes, which are the defaults. Bytes past what this library
 /// knows must be zero.
@@ -483,6 +485,16 @@ pub unsafe extern "C" fn flux_channel_create(
             c.image_encoding
         ))));
     };
+    let growth = match c.growth {
+        FLUX_GROWTH_POWER_OF_TWO => Growth::PowerOfTwo,
+        FLUX_GROWTH_BEST_FIT => Growth::BestFit,
+        FLUX_GROWTH_STATIC => Growth::Static,
+        g => {
+            return status(Err(Error::InvalidArgument(format!(
+                "growth {g} is no FLUX_GROWTH_*"
+            ))));
+        }
+    };
     let config = PublisherConfig {
         alloc,
         slot_size: c.slot_size,
@@ -498,6 +510,7 @@ pub unsafe extern "C" fn flux_channel_create(
             width: c.image_width,
             height: c.image_height,
         },
+        growth,
     };
     // SAFETY: stream is NULL or a live handle.
     let stream = unsafe { stream_of(stream) };
@@ -1098,6 +1111,10 @@ pub unsafe extern "C" fn flux_channel_set_release_mode(
 pub const FLUX_ALLOC_ARENA: i32 = 0;
 pub const FLUX_ALLOC_SLOT: i32 = 1;
 
+pub const FLUX_GROWTH_POWER_OF_TWO: i32 = 0;
+pub const FLUX_GROWTH_BEST_FIT: i32 = 1;
+pub const FLUX_GROWTH_STATIC: i32 = 2;
+
 pub const FLUX_IMAGE_SLOTS_AUTO: i32 = 0;
 pub const FLUX_IMAGE_SLOTS_OFF: i32 = 1;
 pub const FLUX_IMAGE_SLOTS_ON: i32 = 2;
@@ -1166,6 +1183,13 @@ pub unsafe extern "C" fn flux_channel_subscriber_count(ch: *const flux_channel) 
 pub unsafe extern "C" fn flux_channel_attach_generation(ch: *const flux_channel) -> u32 {
     // SAFETY: valid handle.
     unsafe { chan_ref(ch) }.attach_generation()
+}
+
+/// How often a subscriber followed its publisher to larger slots; frames not taken count in lost.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn flux_channel_resizes(ch: *const flux_channel) -> u64 {
+    // SAFETY: valid handle.
+    unsafe { chan_ref(ch) }.resizes()
 }
 
 /// Why takes find nothing until the publisher restarts: it refused us, or a slot missed our policy.

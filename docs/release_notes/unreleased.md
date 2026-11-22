@@ -34,6 +34,8 @@
 * 라이브러리가 만든 버퍼를 복사 없이 필드로 넘긴다(`LD_PRELOAD=libflux_heaphook.so`, C++ `flux::ArenaScope`, Python `flux.arena_scope()`, 생성된 `adopt__<name>`)
 * 생성된 ROS 쪽 헤더가 `flux::RosAdapter<pkg::msg::Foo>`로 ROS 타입에서 어댑터를 찾게 하고, 최상위 1바이트 `data` 배열이 있는 메시지에 `data`를 빼고 복사하는 `msg_to_frame_without_data()`, `frame_to_msg_without_data()`를 더한다(Python도 같다). 어댑터에 `kGpuData`(Python `GPU_DATA__`)가 있다. fingerprint는 바뀌지 않는다. `flux_std_adapters/ros.hpp`는 표준 타입의 ROS 쪽 헤더를 모두 include한다
 
+* `Alloc::Slot` 발행자와 GPU 메모리 채널이 `slot_size`를 0으로 두면, 슬롯에 들어가지 않는 프레임을 만난 뒤 슬롯을 키운다(`growth`: C++ `flux::Growth`, Python `growth=`, C `FLUX_GROWTH_*`, 기본 `PowerOfTwo`). 그 프레임은 `TOO_LARGE`로 실패하고, 그다음 프레임부터 큰 슬롯으로 보낸다. 구독은 따라 옮겨 가고 그 횟수를 센다(`resizes`). 옮기기 전 슬롯에서 받지 않은 프레임은 `lost`에 든다. flux_wrapper 발행자도 `growth`를 받는다. 녹화한 bag은 커진 슬롯을 프레임마다 적고, 재생은 그 크기로 발행자를 다시 만든다. `slot_size`를 준 발행자와 `Static`은 전처럼 고정이다. C의 `flux_publisher_config`는 끝에 `growth`가 늘었고, 이 필드가 없는 크기의 구조체도 받는다
+
 * `record_flux`가 필드를 arena에 저장한 프레임을 녹화한다. arena의 필드를 프레임 안으로 복사한 사본을 bag에 담으므로 `play_flux`와 `convert_flux`는 다른 프레임과 똑같이 읽는다. 그 타입이 설치되어 있어야 한다. GPU arena의 필드는 녹화기가 받은 호스트 사본에서 복사한다
 * `flux_tools`의 rviz2 PointCloud2 디스플레이가 점을 arena에 저장한 프레임을 표시한다
 * `flux_bridge`와 ROS 2 mirror가 필드를 arena(GPU arena 포함)에 저장한 프레임을 중계한다. view를 보유한 동안 arena의 필드까지 사본에 복사한 뒤 CDR로 바꾼다

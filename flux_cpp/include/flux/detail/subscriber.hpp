@@ -182,6 +182,11 @@ public:
   {
     return generation_.load(std::memory_order_relaxed);
   }
+  // Re-attaches that followed the publisher to larger slots, over the subscription's life.
+  [[nodiscard]] auto resizes() const noexcept -> std::uint64_t
+  {
+    return resizes_.load(std::memory_order_relaxed);
+  }
   [[nodiscard]] auto refused() const noexcept -> Refused
   {
     return {
@@ -350,6 +355,7 @@ private:
   void drop_channel()
   {
     lost_before_ += ch_->lost();
+    resizes_before_ += ch_->resizes();
     fence_failed_before_ += ch_->fence_failed();
     const gpu::FenceWait w = ch_->fence_wait();
     wait_before_.commit_ns += w.commit_ns;
@@ -367,6 +373,7 @@ private:
     const Refused r = ch_ ? ch_->refused() : Refused{};
     attached_.store(ch_.has_value(), std::memory_order_relaxed);
     lost_.store(lost_before_ + (ch_ ? ch_->lost() : 0), std::memory_order_relaxed);
+    resizes_.store(resizes_before_ + (ch_ ? ch_->resizes() : 0), std::memory_order_relaxed);
     generation_.store(ch_ ? ch_->attach_generation() : 0, std::memory_order_relaxed);
     refused_[0].store(r.max_borrow, std::memory_order_relaxed);
     refused_[1].store(r.no_reader, std::memory_order_relaxed);
@@ -443,6 +450,7 @@ private:
   std::optional<Channel> ch_;
   std::uint32_t min_slots_ = 0;
   std::uint64_t lost_before_ = 0;
+  std::uint64_t resizes_before_ = 0;
   std::string refusal_;
   bool refusal_reported_ = false;
   std::uint32_t refused_epoch_ = 0;
@@ -451,6 +459,7 @@ private:
   std::atomic<bool> served_{false};
   std::atomic<bool> attached_{false};
   std::atomic<std::uint64_t> lost_{0};
+  std::atomic<std::uint64_t> resizes_{0};
   std::atomic<std::uint32_t> generation_{0};
   std::array<std::atomic<std::uint64_t>, 5> refused_{};
   std::uint64_t fence_failed_before_ = 0;

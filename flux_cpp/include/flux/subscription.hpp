@@ -80,6 +80,7 @@ public:
   {
     return sub_.attach_generation();
   }
+  [[nodiscard]] auto resizes() const noexcept -> std::uint64_t { return sub_.resizes(); }
   [[nodiscard]] auto refused() const noexcept -> Refused { return sub_.refused(); }
   // The attached publisher's slots: their size, count and aux bytes; 0 while not attached.
   [[nodiscard]] auto slot_size() const noexcept -> std::uint32_t

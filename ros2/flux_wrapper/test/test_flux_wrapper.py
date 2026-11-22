@@ -375,6 +375,35 @@ def test_an_image_format_on_a_host_publisher_is_refused(node):
         )
 
 
+def test_a_slot_publisher_grows_past_an_image_that_did_not_fit(node):
+    """On the flux path alloc="slot" at the default slot refuses an image past it, then grows: past
+    it in the data, and in a field set_from() wrote."""
+    big = image(4)
+    big.height, big.step = 5 << 20, 1
+    big.width = 1
+    big.data = bytes(5 << 20)
+    got, done = {}, threading.Event()
+
+    def on_image(v):
+        got["n"] = len(v.to_msg().data)
+        done.set()
+
+    sub = flux_wrapper.Subscription(node, Image, "grow", on_image, 4)
+    pub = flux_wrapper.Publisher(node, Image, "grow", 4, alloc="slot")
+    if EXPECT_FLUX:
+        assert not pub.publish(big)
+    run_until(node, sub, done, lambda: pub.publish(big))
+    assert got["n"] == 5 << 20
+
+    named = image(5)
+    named.header.frame_id = "f" * (9 << 20)
+    done.clear()
+    if EXPECT_FLUX:
+        assert not pub.publish(named)
+    run_until(node, sub, done, lambda: pub.publish(named))
+    assert got["n"] == len(named.data)
+
+
 @needs_cuda
 @pytest.mark.skipif(not EXPECT_FLUX, reason="flux path only")
 def test_a_cuda_image_whose_step_is_not_the_slots_pitch_is_refused(node):

@@ -896,6 +896,37 @@ TEST_F(WrapperTest, ASlotPublisherThatAllocsOnSubscriberPublishesOnceOneAttaches
   EXPECT_TRUE(done);
 }
 
+// On the flux path an Alloc::Slot publisher left at its default slot refuses an image past the
+// slot, then grows the slot for the next one: past it in the data, and in a field set_from() wrote.
+TEST_F(WrapperTest, ASlotPublisherGrowsPastAnImageThatDidNotFit)
+{
+  flux_wrapper::PublisherOptions options;
+  options.alloc = flux_wrapper::Alloc::Slot;
+  auto pub = flux_wrapper::create_publisher<Image>(*node_, "grow", rclcpp::QoS(4), options);
+  std::atomic<std::size_t> got{0};
+  std::atomic<bool> done{false};
+  auto sub = flux_wrapper::create_subscription<Image>(
+    *node_, "grow", rclcpp::QoS(4), [&](const flux_wrapper::View<Image> & v) {
+      got = v.to_msg().data.size();
+      done = true;
+    });
+  const Image big = image(4, std::vector<std::uint8_t>(std::size_t{5} << 20, 7));
+  if (expect_flux()) {
+    EXPECT_FALSE(pub->publish(big));
+  }
+  run_until(done, [&] { (void)pub->publish(big); });
+  EXPECT_EQ(got.load(), big.data.size());
+
+  Image named = image(5, {1, 2, 3});
+  named.header.frame_id.assign(std::size_t{9} << 20, 'f');
+  done = false;
+  if (expect_flux()) {
+    EXPECT_FALSE(pub->publish(named));
+  }
+  run_until(done, [&] { (void)pub->publish(named); });
+  EXPECT_EQ(got.load(), named.data.size());
+}
+
 // A Cuda publisher with an image format puts the data at the start of an image slot.
 TEST_F(WrapperTest, ACudaImagePublisherWithAFormatReachesASubscriber)
 {

@@ -377,7 +377,8 @@ class Publisher:
 
 
     alloc="slot" keeps every variable-length field of a "cpu" message in its flux slot, where an
-    integrated GPU subscriber reads it in place; a message past the slot is refused.
+    integrated GPU subscriber reads it in place; a message past the slot is refused, and with
+    slot_size 0 the slot grows for the next as `growth` says, as flux.Publisher's.
     alloc_on_subscriber, with alloc="slot" or device="cuda", gives the slots memory once a
     subscriber attaches; publish() is False until then. image_slots, image_encoding ("bgra8",
     "nv12", ...), image_width and image_height go to the flux publisher as they are; a format
@@ -395,6 +396,7 @@ class Publisher:
         slot_count=0,
         max_slot_size=0,
         max_slot_count=0,
+        growth="power_of_two",
         mirror_to_ros=False,
         device="cpu",
         alloc="arena",
@@ -434,6 +436,7 @@ class Publisher:
                 slot_count=slot_count,
                 max_slot_size=max_slot_size,
                 max_slot_count=max_slot_count,
+                growth=growth,
                 mirror_to_ros=mirror_to_ros,
                 mirror_qos=qos,
                 device="cuda" if self._cuda else "cpu",

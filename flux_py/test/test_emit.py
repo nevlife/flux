@@ -778,7 +778,9 @@ def test_py_bridge_refuses_a_frame_that_reads_the_same_bytes_twice(tmp_path):
 
 def test_py_builder_refuses_to_commit_after_a_failed_write(built):
     # C++ latches a failed write and commit__() refuses the frame. Python raises at the write and
-    # must refuse the same commit, or a caller that caught the error publishes a torn frame.
+    # must refuse the same commit, or a caller that caught the error publishes a torn frame. A
+    # write past the slot commits the length the frame wanted, past the slot, which the channel
+    # refuses: that tells a growable publisher the size.
     flux = pytest.importorskip("flux")
     from flux.wire import WireError
 
@@ -799,7 +801,7 @@ def test_py_builder_refuses_to_commit_after_a_failed_write(built):
     with pytest.raises(ValueError):
         c.names = ["x", "y", "z"]
     assert c.commit__() == flux.Published.TOO_LARGE
-    assert committed == []
+    assert len(committed) == 1 and committed[0] > 64
 
 
 @pytest.mark.parametrize(

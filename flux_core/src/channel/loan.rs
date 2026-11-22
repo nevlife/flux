@@ -231,6 +231,7 @@ impl Loan {
             return (Published::NotPublisher, trace::LOAN_NOT_PUBLISHER);
         }
         if !fits(&self.meta, self.sh.seg.layout()) {
+            self.sh.want_larger(self.meta.nbytes);
             self.refuse();
             return (Published::TooLarge, trace::LOAN_TOO_LARGE);
         }
@@ -287,6 +288,8 @@ impl Loan {
             || n > m.nbytes
             || !n.is_multiple_of(u64::from(m.itemsize))
         {
+            // A writer that ran past the slot commits the length it wanted.
+            self.sh.want_larger(n);
             self.refuse();
             self.end(trace::LOAN_TOO_LARGE);
             return Published::TooLarge;
