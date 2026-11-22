@@ -53,7 +53,7 @@ PYTHON=~/venvs/flux-docs/bin/python src/flux/scripts/build_docs.sh
 - frame과 loan은 호출자가 마련한 256 B 저장소(`flux_frame`, `flux_loan`)에 담긴다. 0으로 채운 저장소는 빈 상태이고, 값으로 복사하지 않는다. loan 저장소는 commit한 뒤에도 `flux_loan_abort`로 끝낸다. commit한 메모리의 매핑을 그때까지 쥐고 있기 때문이다.
 - `size`가 첫 필드인 구조체(`flux_publisher_config`, `flux_source`)는 그 크기까지만 읽는다. `flux_publisher_config_default()`가 채운 값을 고쳐 쓰거나 `size = sizeof(...)`로 둔다. 나중 버전이 필드를 더해도 예전 호출자의 구조체를 읽고, 라이브러리가 모르는 필드가 0이 아니면 `FLUX_UNSUPPORTED`다.
 - loan은 `flux_published`로 이유를 돌려준다(빈 슬롯 없음 `BACKPRESSURE`, 구독자 채널 `NOT_PUBLISHER`, 사용 중 `IN_USE`, GPU 고장 `GPU_WEDGED`). take는 `flux_status`로 `FLUX_OK`, `FLUX_NO_FRAME`, `FLUX_IN_USE`를 돌려준다. 두 enum에서 같은 뜻의 값은 같은 번호다.
-- `flux_watch_*`, `flux_channel_open_watched`, `flux_stamp_offset*`, `flux_layout_register`, `flux_arena_acquire`/`_release`/`_scope_*`, `flux_frame_trace_channel`은 flux의 바인딩과 생성 코드가 쓰는 함수다. 안정된 API로 약속하지 않는다.
+- `flux_watch_*`, `flux_channel_open_watched`, `flux_stamp_offset*`, `flux_layout_register`, `flux_arena_scope_*`, `flux_frame_trace_channel`은 flux의 바인딩과 생성 코드가 쓰는 함수다. 안정된 API로 약속하지 않는다.
 - 오류는 `flux_status` 반환값과 스레드별 `flux_last_error()`로 알린다. 예외와 panic은 C ABI 경계를 넘지 않는다.
 - 채널 하나에서 발행, loan, take, QoS 설정은 한 번에 한 호출만 실행된다. 겹친 호출은 `*_IN_USE`를 받는다. commit은 겹쳐도 된다.
 - 접근자는 이 검사를 하지 않으므로, 같은 채널의 다른 호출과 겹치지 않게 호출한다.

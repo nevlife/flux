@@ -9,7 +9,7 @@ header = """/* Handles from _new/_create/_open go to their _free (NULL ok); poin
  * its loan. timeout_ns < 0 waits forever. flux_last_error() is per thread. Callbacks must not
  * unwind. One call at a time per channel: others get *_IN_USE; getters are unchecked, must not
  * overlap; commits may. A struct with a `size` first is read up to that size. flux_watch_*,
- * _open_watched, _stamp_offset*, _layout_register, _arena_acquire/_release/_scope_* and
+ * _open_watched, _stamp_offset*, _layout_register, _arena_scope_* and
  * _frame_trace_channel serve flux's own bindings, not a stable API. */"""
 
 [enum]

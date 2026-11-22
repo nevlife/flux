@@ -90,6 +90,7 @@ if frame is not None:
 - `device="cuda"` 구독의 `flux.Frame`은 GPU 메모리를 `with frame:` 블록이나 콜백 안에서만 제공하고(`frame.on_device`가 참), `shape`, `dtype`, `nbytes`, `stream`은 언제든 읽기 가능하다.
 - `Frame`과 `Loan`은 `__dlpack__`과 `__cuda_array_interface__`를 제공한다. torch는 읽기 전용인 `__cuda_array_interface__`를 받지 않으므로 `torch.from_dlpack()`을 사용한다. bf16은 `__dlpack__`으로만 받는다.
 - flux는 `__dlpack__(stream=s)`로 받은 소비자 측 스트림(torch의 현재 스트림)도 해제나 commit 전에 상한 없이 기다린다. 그래서 torch가 자기 스트림에서 읽고 쓰는 동안 슬롯이 넘어가지 않는다. 생성된 View의 `<필드>__device`도 같다.
+- 그 스트림은 frame이 해제될 때까지 지우지 않는다. flux는 해제할 때 스트림 핸들로 기다리므로, 먼저 지운 스트림은 기다리지 못한다. 기다리기가 실패하면 frame은 슬롯을 점유한 채 남는다(아래). 스레드별 기본 스트림(`cudaStreamPerThread`, 핸들 2)은 해제하는 스레드의 스트림으로 해석되므로, frame을 그 스트림을 쓴 스레드에서 해제한다.
 - 받은 frame에서는 반대 순서도 건다. 소비자 스트림의 다음 작업은 take가 frame의 스트림에 올린 복사 뒤에 돈다.
 - 이 대기가 실패하면 view나 loan은 `fence_failed`에 세지 않고 점유를 유지하며, 그 뒤의 take는 `refused.max_borrow`로 거절된다.
 - GPU 배열을 `publish()`에 넘기면 `TypeError`다. GPU 데이터는 loan에 쓴다.

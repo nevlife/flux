@@ -4,7 +4,7 @@
  * its loan. timeout_ns < 0 waits forever. flux_last_error() is per thread. Callbacks must not
  * unwind. One call at a time per channel: others get *_IN_USE; getters are unchecked, must not
  * overlap; commits may. A struct with a `size` first is read up to that size. flux_watch_*,
- * _open_watched, _stamp_offset*, _layout_register, _arena_acquire/_release/_scope_* and
+ * _open_watched, _stamp_offset*, _layout_register, _arena_scope_* and
  * _frame_trace_channel serve flux's own bindings, not a stable API. */
 
 #ifndef FLUX_H
@@ -409,14 +409,6 @@ bool flux_arena_adopt(const struct flux_arena *h,
 const uint8_t *flux_frame_arena(const struct flux_frame *v, size_t *size);
 
 bool flux_frame_gpu_arena(const struct flux_frame *v, struct flux_gpu_arena *out);
-
-// Maps the arena frame bytes name, for a reader without a frame, until `flux_arena_release`.
-const void *flux_arena_acquire(const uint8_t *frame,
-                               size_t len,
-                               const uint8_t **base,
-                               size_t *size);
-
-void flux_arena_release(const void *handle);
 
 // Routes this thread's allocations to the arena under the hook until `flux_arena_scope_leave`.
 bool flux_arena_scope_enter(void);

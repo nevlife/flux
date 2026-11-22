@@ -419,6 +419,12 @@ class View:
     """Read side. Aliases the frame: valid only while the flux view it came from is alive."""
 
 {view_init}
+
+    def copy__(self):
+        """A View of a copy of the frame, its fields in the publisher's arenas included, in memory
+        of its own: readable after the frame is released. Bytes copied otherwise (bytes(frame),
+        numpy) hold no arena fields, and reading one there raises WireError."""
+        return View(self._r.copy(FINGERPRINT__))
 {view}
 
 

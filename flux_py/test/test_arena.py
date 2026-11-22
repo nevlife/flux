@@ -183,6 +183,37 @@ def test_a_frame_larger_than_its_slot_goes_through_the_arena(node, mod):
     check(mod.View(frame), "from python")
 
 
+def test_a_copied_frame_refuses_its_arena_fields_and_copy__keeps_them(node):
+    """Copied bytes name the arena, whose blocks a later frame reuses: reading them there raises.
+    copy__() copies the arena fields in, so its View reads the frame after it is gone."""
+    from flux.wire import WireError
+    from sensor_msgs_flux.image import Image
+
+    t = topic("copy")
+    pub = flux.Publisher(node, t, fingerprint=Image.FINGERPRINT__, slot_size=SLOT, slot_count=4)
+    sub = flux.Subscription(node, t, fingerprint=Image.FINGERPRINT__)
+
+    def publish(value, encoding):
+        b = Image.build__(pub)
+        b.height, b.width, b.encoding, b.step = 1, RUN, encoding, RUN
+        b.alloc__data(RUN)[:] = value
+        assert b.commit__() == flux.Published.OK
+
+    publish(7, "mono8")
+    frame = sub.take()
+    copied = np.array(frame.array)
+    kept = Image.View(frame).copy__()
+    frame.release()
+    del frame
+    for _ in range(8):  # reuse the blocks the first frame's data was in
+        publish(1, "rgb8")
+        sub.take().release()
+    assert kept.encoding == "mono8" and kept.width == RUN
+    assert np.array_equal(kept.data, np.full(RUN, 7, np.uint8))
+    with pytest.raises(WireError, match="copy__"):
+        Image.View(copied).data
+
+
 def test_a_builders_arrays_are_read_only_after_the_commit(node, mod):
     """The slot is the subscribers' after the commit: arrays handed out over it stop taking writes."""
     pub, _ = channel(node, mod, topic("sealed"))

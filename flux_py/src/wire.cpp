@@ -7,6 +7,7 @@
 
 #include "bind_wire.hpp"
 #include "flux/channel.hpp"
+#include "flux/schemas.hpp"
 #include "numpy_api.hpp"
 
 #include <nanobind/nanobind.h>
@@ -153,19 +154,15 @@ public:
   {
     // A take result reaches its arena through its channel, which maps it once, and across PCIe
     // too: its device fields, or a GPU reader's copies.
+    // Other bytes, a copy of a frame among them, reach no arena: its blocks may hold another
+    // frame's fields by now.
     if (const flux::Frame * v = flux_py::frame_of(buf, &device_)) {
       heap_ = v->heap();
       gpu_ = v->gpu_heap();
-    }
-    if (heap_.empty()) {
-      const std::uint8_t * base = nullptr;
-      std::size_t n = 0;
-      arena_ = flux_arena_acquire(
-        reinterpret_cast<const std::uint8_t *>(buf_.data()), buf_.size(), &base, &n);  // NOLINT
-      heap_ = {reinterpret_cast<const std::byte *>(base), arena_ != nullptr ? n : 0};  // NOLINT
+      taken_ = true;
     }
   }
-  ~Reader() { flux_arena_release(arena_); }
+  ~Reader() = default;
   Reader(const Reader &) = delete;
   auto operator=(const Reader &) -> Reader & = delete;
   Reader(Reader &&) = delete;
@@ -179,19 +176,41 @@ public:
   [[nodiscard]] auto device() const noexcept -> int { return device_; }
   [[nodiscard]] auto source() const noexcept -> nb::handle { return buf_.exporter(); }
 
-  static void check(const flux::wire::Reader & r, const char * what, std::size_t off)
+  void check(const flux::wire::Reader & r, const char * what, std::size_t off) const
   {
     if (r.bad()) {
       throw WireError(
-        "flux: " + std::string(what) + " at " + std::to_string(off) + " escapes the frame");
+        "flux: " + std::string(what) + " at " + std::to_string(off) + " escapes the frame" +
+        (taken_ ? ""
+                : "; bytes copied out of a frame hold none of its fields in the publisher's "
+                  "arena: keep a frame with View(frame).copy__()"));
     }
+  }
+
+  // The frame with its arena fields copied in, in memory of its own: what a copy of it keeps.
+  [[nodiscard]] auto copy(std::uint64_t fingerprint) const -> nb::object
+  {
+    // The installed types, read once per process: bag recording reads the same.
+    static const flux::Schemas schemas;
+    if (!schemas.contains(fingerprint)) {
+      throw WireError(
+        "flux: copy__() reads the type's layout from its installed .msg, and none on "
+        "AMENT_PREFIX_PATH has this fingerprint: install the package that defines it");
+    }
+    std::vector<std::uint8_t> out(buf_.size());
+    schemas.at(fingerprint).inline_arena(buf_.data(), buf_.size(), heap_, gpu_, out);
+    auto n = static_cast<npy_intp>(out.size());
+    nb::object a = nb::steal(PyArray_SimpleNew(1, &n, NPY_UINT8));
+    if (!a.is_valid()) {
+      throw nb::python_error();
+    }
+    std::memcpy(PyArray_DATA(flux_py::as_array(a)), out.data(), out.size());
+    return a;
   }
 
 private:
   Buffer buf_;
-  // The arena the trailer of bytes that are no take result names, mapped while this reader and
-  // its views live.
-  const void * arena_ = nullptr;
+  bool taken_ = false;
   flux::wire::Span<const std::byte> heap_;
   flux::wire::GpuHeap gpu_;
   int device_ = -1;
@@ -204,7 +223,7 @@ auto reader_block(nb::handle self, std::size_t off, nb::handle dtype, std::size_
   const flux::wire::Reader w = r.reader();
   const void * p =
     by_size(t.size, [&](auto e) -> const void * { return w.block<decltype(e)>(off, n).data(); });
-  Reader::check(w, "block", off);
+  r.check(w, "block", off);
   return ro_array(p, n, t, self);
 }
 
@@ -215,7 +234,7 @@ auto reader_get(nb::handle self, std::size_t off, nb::handle dtype) -> nb::objec
   // Through the C++ Reader, so a scalar of an element in the publisher's arena is read there.
   const flux::wire::Reader w = r.reader();
   const std::uint8_t * p = w.block<std::uint8_t>(off, t.size).data();
-  Reader::check(w, "scalar", off);
+  r.check(w, "scalar", off);
   // A Python int, float or bool, as rclpy gives a message's scalar fields.
   return flux_py::numpy_scalar(p, t.descr).attr("item")();
 }
@@ -229,7 +248,7 @@ auto reader_span(nb::handle self, std::size_t off, nb::handle dtype) -> nb::obje
     const auto s = w.span<decltype(e)>(off);
     return std::pair<const void *, std::size_t>(s.data(), s.size());
   });
-  Reader::check(w, "span", off);
+  r.check(w, "span", off);
   return ro_array(p, n, t, self);
 }
 
@@ -246,7 +265,7 @@ auto reader_string(const Reader & r, std::size_t off) -> nb::str
 {
   const flux::wire::Reader w = r.reader();
   const std::string_view s = w.str(off);
-  Reader::check(w, "string", off);
+  r.check(w, "string", off);
   return decode(s);
 }
 
@@ -256,7 +275,7 @@ auto reader_strings(const Reader & r, std::size_t off) -> nb::list
 {
   const flux::wire::Reader w = r.reader();
   const std::size_t n = w.len(off, sizeof(flux::wire::Desc), alignof(flux::wire::Desc));
-  Reader::check(w, "string array", off);
+  r.check(w, "string array", off);
   if (n > w.budget() / sizeof(flux::wire::Desc)) {
     throw WireError("flux: string array at " + std::to_string(off) + " reads the same bytes twice");
   }
@@ -264,7 +283,7 @@ auto reader_strings(const Reader & r, std::size_t off) -> nb::list
   nb::list out;
   for (std::size_t i = 0; i < n; ++i) {
     const std::string_view s = w.str_at(off, i);
-    Reader::check(w, "string", off);
+    r.check(w, "string", off);
     if (s.size() > unread) {
       throw WireError(
         "flux: string array at " + std::to_string(off) + " reads the same bytes twice");
@@ -281,7 +300,7 @@ auto reader_elems(const Reader & r, std::size_t off, std::size_t stride, std::si
   check_layout(stride, align);
   const flux::wire::Reader w = r.reader();
   const std::size_t n = w.len(off, stride, align);
-  Reader::check(w, "element array", off);
+  r.check(w, "element array", off);
   return {w.desc(off).off, n};
 }
 
@@ -804,7 +823,7 @@ auto reader_device(nb::handle self, std::size_t off, nb::handle dtype) -> nb::ob
     const auto s = w.device<decltype(e)>(off);
     return std::pair<const void *, std::size_t>(s.data(), s.size());
   });
-  Reader::check(w, "device array", off);
+  r.check(w, "device array", off);
   return p == nullptr ? nb::none()
                       : flux_py::device_span(self, r.source(), p, n, dtype, r.device(), true);
 }
@@ -841,7 +860,9 @@ auto flux_py::read_tensor(const flux::wire::Reader & w, const TensorAt & at)
   const auto strides = w.span<std::int64_t>(at[4]);
   const auto byte_offset = w.get<std::uint64_t>(at[5]);
   const auto data = w.span<std::uint8_t>(at[6]);
-  Reader::check(w, "tensor", at[6]);
+  if (w.bad()) {
+    throw WireError("flux: tensor at " + std::to_string(at[6]) + " escapes the frame");
+  }
   TensorFields f{nullptr, t, {shape.begin(), shape.end()}, {strides.begin(), strides.end()}};
   const char * fault = flux::wire::tensor_fault(
     data.data(), data.size(), t, {f.shape.data(), f.shape.size()},
@@ -885,6 +906,7 @@ void bind_wire(nb::module_ & m, nb::handle error)
     .def(nb::init<nb::handle>(), "buf"_a)
     .def("__len__", &Reader::size)
     .def("budget", [](const Reader & r) { return r.reader().budget(); })
+    .def("copy", &Reader::copy, "fingerprint"_a)
     .def("get", &reader_get, "off"_a, "dtype"_a)
     .def("block", &reader_block, "off"_a, "dtype"_a, "count"_a)
     .def(
@@ -892,7 +914,7 @@ void bind_wire(nb::module_ & m, nb::handle error)
       [](const Reader & r, std::size_t off) {
         const flux::wire::Reader w = r.reader();
         const flux::wire::Ref d = w.desc(off);
-        Reader::check(w, "descriptor", off);
+        r.check(w, "descriptor", off);
         return std::pair<std::size_t, std::size_t>(d.off, d.len);
       },
       "off"_a)
@@ -905,7 +927,7 @@ void bind_wire(nb::module_ & m, nb::handle error)
         check_layout(stride, align);
         const flux::wire::Reader w = r.reader();
         const std::size_t at = w.elem(off, i, stride, align);
-        Reader::check(w, "element", off);
+        r.check(w, "element", off);
         return at;
       },
       "off"_a, "i"_a, "stride"_a, "align"_a)

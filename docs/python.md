@@ -205,6 +205,15 @@ print(img.width, img.height, img.encoding, img.data.shape)
 
 배열 필드(`img.data`)는 슬롯을 가리키는 읽기 전용 numpy 배열이다. 프레임이 스키마와 맞지 않으면 접근자가 `flux.wire.WireError`를 던진다.
 
+프레임을 해제한 뒤에도 읽으려면 `copy__()`로 복사한다. 반환값은 복사본을 읽는 `View`이고, 필드는 원래 `View`와 같은 방식으로 읽는다.
+
+```python
+kept = Image.View(frame).copy__()
+```
+
+- `copy__()`는 슬롯 밖(arena)에 있는 필드까지 복사한다. 메시지 타입의 필드 정보는 설치된 `.msg`에서 읽으므로, 그 타입의 패키지가 `AMENT_PREFIX_PATH`에 설치되어 있어야 한다. 프로세스에서 처음 부를 때 설치된 `.msg`를 읽는다.
+- `bytes(frame)`이나 numpy 복사(`np.array(frame.array)`)는 슬롯만 복사한다. 그 복사본으로 만든 `View`에서 arena에 있는 필드를 읽으면 `flux.wire.WireError`다. arena의 그 자리는 이미 다른 프레임이 사용했을 수 있기 때문이다.
+
 ROS 메시지 객체가 이미 있으면 `<pkg>_flux.<name>_ros` 모듈의 함수로 변환한다. 필드 전체를 복사한다.
 
 ```python

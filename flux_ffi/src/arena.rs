@@ -2,11 +2,10 @@
 //! arena of both, and the malloc hook's scope.
 
 use std::ffi::c_void;
-use std::sync::Arc;
 
 use flux_core::{Frame, GpuBlock, GpuHeap, Heap, Loan};
 
-use crate::channel::{LoanCell, bytes, flux_frame, flux_loan, view_ref};
+use crate::channel::{LoanCell, flux_frame, flux_loan, view_ref};
 
 /// A loan's arena: `channel` null for none, `base` null until made. A claim frees what it gave.
 #[repr(C)]
@@ -182,33 +181,6 @@ pub unsafe extern "C" fn flux_frame_gpu_arena(
         });
     };
     true
-}
-
-/// Maps the arena frame bytes name, for a reader without a frame, until `flux_arena_release`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_arena_acquire(
-    frame: *const u8,
-    len: usize,
-    base: *mut *const u8,
-    size: *mut usize,
-) -> *const c_void {
-    // SAFETY: the caller passes len readable bytes.
-    let Some(m) = flux_core::arena::map_for(unsafe { bytes(frame, len) }) else {
-        return std::ptr::null();
-    };
-    // SAFETY: base is valid for a write.
-    unsafe { base.write(m.bytes().as_ptr()) };
-    // SAFETY: size is valid for a write.
-    unsafe { size.write(m.bytes().len()) };
-    Arc::into_raw(m).cast()
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn flux_arena_release(handle: *const c_void) {
-    if !handle.is_null() {
-        // SAFETY: a handle flux_arena_acquire returned, released once.
-        drop(unsafe { Arc::from_raw(handle.cast::<flux_core::arena::ArenaMap>()) });
-    }
 }
 
 /// Routes this thread's allocations to the arena under the hook until `flux_arena_scope_leave`.

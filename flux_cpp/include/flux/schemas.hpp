@@ -54,10 +54,15 @@ public:
     // (Frame::gpu_heap()). Throws Error (Status::Mismatch) for a frame that does not match.
     void inline_arena(const Frame & v, std::vector<std::uint8_t> & out) const
     {
-      const auto * d = static_cast<const std::uint8_t *>(v.data());
-      const auto heap = v.heap();
+      inline_arena(v.data(), v.size(), v.heap(), v.gpu_heap(), out);
+    }
+    // As above, for a frame's bytes read with the arena `heap` and GPU arena `g` it names.
+    void inline_arena(
+      const void * data, std::size_t size, wire::Span<const std::byte> heap,
+      const wire::GpuHeap & g, std::vector<std::uint8_t> & out) const
+    {
+      const auto * d = static_cast<const std::uint8_t *>(data);
       const auto * h = reinterpret_cast<const std::uint8_t *>(heap.data());  // NOLINT
-      const wire::GpuHeap g = v.gpu_heap();
       flux_gpu_arena raw{};
       raw.device = g.device;
       raw.host = reinterpret_cast<const std::uint8_t *>(g.host);  // NOLINT
@@ -68,7 +73,7 @@ public:
       std::size_t n = 0;
       auto call = [&] {
         return flux_schema_inline_arena(
-          s_, d, v.size(), h, heap.size(), &raw, out.data(), out.size(), &n);
+          s_, d, size, h, heap.size(), &raw, out.data(), out.size(), &n);
       };
       flux_status s = call();
       if (s == FLUX_BUFFER_TOO_SMALL && n > out.size()) {

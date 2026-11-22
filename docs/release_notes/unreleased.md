@@ -57,6 +57,7 @@
 * GPU 필드를 복사하는 구독자(외장 GPU의 구독자, GPU arena를 읽는 CPU 구독자)가 복사 버퍼를 만들다 메모리가 모자라 한 번 실패하면, 그 뒤 같은 슬롯에 온 더 작은 frame은 버퍼 없이 복사를 시도해 GPU 필드를 잃었다. 버퍼는 지웠는데 버퍼 크기는 이전 값으로 남았기 때문이다. 이제 실패하면 크기도 0으로 저장하고, 다음 frame이 버퍼를 다시 만든다
 * Python에서 생성된 View의 장치 필드(`<필드>__device`)를 `torch.from_dlpack`으로 받으면, flux가 torch의 스트림을 무시했다. 그래서 torch 작업이 끝나기 전에 슬롯이 돌아가 다음 frame에 덮일 수 있었다. 이제 `Frame.__dlpack__`처럼 해제가 그 스트림을 기다린다. `Frame`과 필드 모두, 소비자 스트림의 다음 작업이 take의 복사 뒤에 돌도록 순서도 건다
 * Python에서 한 `Frame`을 두 스레드가 쓰는 동안, 한 스레드의 `copy_to_host`와 다른 스레드의 `release()`가 겹치면 해제된 메모리를 읽거나 두 번 해제할 수 있었다. 이제 복사는 frame을 붙잡은 채 돌고, 해제는 그 복사가 끝난 뒤에 된다. 한 `Loan`에 두 스레드가 동시에 `commit`, `abort`, `copy_from`을 부르면 나중 호출은 `flux.UsageError`다
+* Python에서 프레임을 `bytes(frame)`이나 numpy로 복사해 두었다가 나중에 생성된 `View`로 읽으면, arena에 있던 필드가 그사이 다른 프레임이 쓴 값으로 나왔다. 복사본에는 arena의 위치만 있기 때문이다. 이제 그 필드를 읽으면 `flux.wire.WireError`다. 프레임을 해제한 뒤에도 읽으려면 `View.copy__()`로 복사한다
 
 * flux 컨테이너(`flux_components`의 `component_container`)에 다른 ABI의 flux로 빌드한 컴포넌트를 올리면, ABI 검사가 컨테이너의 값으로 비교되어 통과했다. 이제 컴포넌트가 자기 헤더의 값으로 검사해 `flux::Error`(`Status::Mismatch`)로 거절된다
 
@@ -114,10 +115,11 @@
 * GPU 메모리 채널: C++ `flux::gpu_fingerprint`, `Schemas::contains_gpu`, `Schemas::at_gpu`, `Schemas::Type::with_data`. Python `flux.gpu_fingerprint`. C `flux_gpu_fingerprint`, `flux_schemas_find_gpu`, `flux_schema_with_data`
 * `flux_wrapper`: `SubscriptionOptions::max_borrow`, `Subscription::HeldCallback`, `View::after`
 * Python `Loan.resize`. `str(flux.Published)`이 C++ `flux::to_string`과 같은 문자열이다(전에는 `Published.TOO_LARGE` 같은 enum 이름)
-* arena: C++ `flux::ArenaScope`, `Loan::heap`, `Frame::heap`, `wire::Heap`, 생성된 `adopt__<name>`, `View::budget__`. Python `flux.arena_scope`, 생성된 `adopt__<name>`, `flux.wire.Reader.budget`. C `flux_heap`, `flux_loan_heap`, `flux_heap_alloc`, `flux_heap_adopt`, `flux_view_heap`, `flux_arena_acquire`, `flux_arena_release`, `flux_arena_scope_enter`, `flux_arena_scope_leave`, `FLUX_HEAP_BASE`. 라이브러리 `libflux_heaphook.so`
+* arena: C++ `flux::ArenaScope`, `Loan::heap`, `Frame::heap`, `wire::Heap`, 생성된 `adopt__<name>`, `View::budget__`. Python `flux.arena_scope`, 생성된 `adopt__<name>`, `flux.wire.Reader.budget`. C `flux_heap`, `flux_loan_heap`, `flux_heap_alloc`, `flux_heap_adopt`, `flux_view_heap`, `flux_arena_scope_enter`, `flux_arena_scope_leave`, `FLUX_HEAP_BASE`. 라이브러리 `libflux_heaphook.so`
 * GPU arena: C++ `wire::DeviceSpan`, `wire::GpuHeap`, `wire::GpuBlock`, `Writer::alloc_device`, `Reader::device`, `Frame::gpu_heap`, 생성된 `alloc_device__<name>`와 `<name>__device`. C `flux_heap.gpu`, `flux_heap_alloc_device`, `flux_gpu_heap`, `flux_gpu_block`, `flux_view_gpu_heap`, `flux_layout_register`, `FLUX_GPU_HEAP_BASE`, `FLUX_ARENA_UNIT`, `FLUX_GPU_HEAP_POS`. C++ `wire::Ref`, `wire::position`, `wire::wire`. arena 필드를 프레임 안으로 복사: C `flux_schema_inline_arena`, C++ `Schemas::Type::inline_arena`, `flux::in_arena`. Python 생성된 `alloc_device__<name>`와 `<name>__device`, `flux.wire.DeviceSpan`, `flux.wire.Reader.device`, `flux.wire.Writer.alloc_device`
 
 * 소비자 스트림을 frame의 스트림 뒤에 세우기: C `flux_frame_before`, C++ `Frame::before`
+* Python 생성 `View.copy__()`. C++ `Schemas::Type::inline_arena`가 Frame 대신 프레임 바이트와 arena를 받는 형태
 
 ### 호환이 깨지는 변경
 
