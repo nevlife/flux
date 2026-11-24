@@ -301,3 +301,13 @@
     * 배열은 `frame.array`(읽기 전용)다. `np.asarray(frame)`, `bytes(frame)`, `frame.shape`, `frame.dtype`은 그대로 쓴다. `frame[0]`, `frame.sum()`, `frame.copy()` 같은 numpy 연산은 `frame.array`에 한다.
     * `frame.release()`나 `with frame:`으로 슬롯을 일찍 돌려준다. 하지 않으면 전처럼 Frame과 그 배열이 사라질 때 돌려준다.
     * 생성된 `View(frame)`, `flux.aux(frame)`, `frame.aux`는 Frame과 그 배열을 모두 받는다.
+
+22. QoS `max_borrow`의 기본값이 1에서 4가 되었다(C, C++, Python, flux_wrapper). 기본값은 넉넉하게 두고 튜닝할 때 줄인다. flux_wrapper의 기본값은 flux QoS의 기본값을 따른다. flux_wrapper는 발행자 슬롯을 `max_borrow + 1` 이상으로 요구하므로, `slot_count`를 4 이하로 준 발행자는 기본값의 구독에서 거절된다. 전처럼 하나만 쥐려면 1을 준다.
+
+   ```cpp
+   // 전
+   flux_wrapper::SubscriptionOptions o;  // max_borrow 1
+   // 후
+   flux_wrapper::SubscriptionOptions o;
+   o.max_borrow = 1;
+   ```

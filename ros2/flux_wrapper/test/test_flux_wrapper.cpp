@@ -136,11 +136,16 @@ protected:
     const std::vector<std::vector<std::uint8_t>> & bad)
   {
     std::atomic<int> delivered{0};
+    // One view at a time, so the raw publisher's four slots do.
+    flux_wrapper::SubscriptionOptions sub_options;
+    sub_options.max_borrow = 1;
     flux_wrapper::Subscription<MsgT> sub(
-      *node_, topic, rclcpp::QoS(4), [&](const flux_wrapper::View<MsgT> & v) {
+      *node_, topic, rclcpp::QoS(4),
+      [&](const flux_wrapper::View<MsgT> & v) {
         EXPECT_EQ(v.frame_id(), "ok");
         ++delivered;
-      });
+      },
+      sub_options);
     // A host channel will do: the subscription parses the aux bytes the same way.
     flux::PublisherOptions options;
     options.slot_size = 4096;
@@ -483,11 +488,16 @@ TEST_F(WrapperTest, AMessageLargerThanItsSlotGoesOut)
 {
   constexpr std::size_t kBytes = 9u << 20;
   std::atomic<bool> done{false};
+  // One view at a time, so the publisher's two slots do.
+  flux_wrapper::SubscriptionOptions sub_options;
+  sub_options.max_borrow = 1;
   flux_wrapper::Subscription<Image> sub(
-    *node_, "large", rclcpp::QoS(1), [&](const flux_wrapper::View<Image> & v) {
+    *node_, "large", rclcpp::QoS(1),
+    [&](const flux_wrapper::View<Image> & v) {
       EXPECT_EQ(v.data().size(), kBytes);
       done = true;
-    });
+    },
+    sub_options);
   flux_wrapper::PublisherOptions options;
   options.slot_count = 2;
   flux_wrapper::Publisher<Image> pub(*node_, "large", rclcpp::QoS(1), options);
@@ -1158,6 +1168,7 @@ TEST_F(WrapperTest, CudaRosPathSkipsMessagesWhileItsBuffersAreHeld)
   std::atomic<int> sent{0};
   flux_wrapper::SubscriptionOptions sub_options;
   sub_options.device = flux_wrapper::Device::Cuda;
+  sub_options.max_borrow = 1;  // one device buffer, which the kept view holds
   flux_wrapper::Subscription<Image> sub(
     *node_, "cuda_skip", rclcpp::QoS(4),
     [&](std::shared_ptr<const flux_wrapper::View<Image>> v) {

@@ -45,6 +45,8 @@ try:
 except ImportError:
     _flux = None
 
+_DEFAULT_MAX_BORROW = _flux.QoS().max_borrow if _flux is not None else 4
+
 
 @functools.cache
 def use_flux():
@@ -720,7 +722,7 @@ class Subscription:
         *,
         callback_group=None,
         device="cpu",
-        max_borrow=1,
+        max_borrow=_DEFAULT_MAX_BORROW,
     ):
         self.callback_group = callback_group
         self._flux = None

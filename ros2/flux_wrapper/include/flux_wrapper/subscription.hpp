@@ -24,6 +24,18 @@
 
 namespace flux_wrapper
 {
+namespace detail
+{
+// flux's QoS max_borrow default; the number only in a build without flux.
+inline auto default_max_borrow() noexcept -> std::uint32_t
+{
+#ifdef USE_FLUX_ENABLED
+  return flux::QoS().max_borrow();
+#else
+  return 4;
+#endif
+}
+}  // namespace detail
 
 struct SubscriptionOptions
 {
@@ -40,8 +52,8 @@ struct SubscriptionOptions
   // past it waits in the publisher's ring, and a publisher of max_borrow slots or fewer is refused,
   // with flux::Error at construction or, under an executor, logged once and left out until it
   // restarts. Over ROS it bounds only the device buffers of Device::Cuda: a message that finds
-  // none free is skipped.
-  std::uint32_t max_borrow = 1;
+  // none free is skipped. flux's QoS default.
+  std::uint32_t max_borrow = detail::default_max_borrow();
 };
 
 namespace detail

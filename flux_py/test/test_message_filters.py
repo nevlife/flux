@@ -175,7 +175,7 @@ def test_a_cache_with_the_default_qos_keeps_up(node, Stamped):  # noqa: N803
 
 def test_a_publisher_with_no_more_slots_than_the_queue_is_refused(node, Stamped):  # noqa: N803
     pa = pub(node, Stamped, "few")
-    with pytest.raises(flux.Error, match="message_filters queue needs 9"):
+    with pytest.raises(flux.Error, match="subscription needs 9"):
         Subscriber(node, Stamped, pa.topic_name, 8).subscription.take()
 
 

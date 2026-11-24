@@ -28,12 +28,15 @@ pub struct QoS {
 /// A consumer's depth when it asks for none.
 pub const DEFAULT_DEPTH: u32 = 8;
 
+/// Views a consumer may hold at once when it asks for no number: loose, to be tightened when tuned.
+pub const DEFAULT_MAX_BORROW: u32 = 4;
+
 impl Default for QoS {
     fn default() -> Self {
         QoS {
             depth: DEFAULT_DEPTH,
             durability: Durability::volatile(),
-            max_borrow: 1,
+            max_borrow: DEFAULT_MAX_BORROW,
         }
     }
 }

@@ -2,7 +2,7 @@
 
 import message_filters
 
-from . import Subscription
+from . import _DEFAULT_MAX_BORROW, Subscription
 
 
 class Stamped:
@@ -17,7 +17,7 @@ class Stamped:
 
 class Subscriber(message_filters.SimpleFilter):
     """A topic as a message_filters input over flux or ROS; msg_type needs a root `header`.
-    max_borrow is queue_size + 1, as in C++. A negative stamp is counted in `unreadable`.
+    max_borrow is queue_size + 1 or the default, the larger, as in C++. A negative stamp is counted in `unreadable`.
     """
 
     def __init__(
@@ -38,7 +38,7 @@ class Subscriber(message_filters.SimpleFilter):
             qos,
             callback_group=callback_group,
             device=device,
-            max_borrow=queue_size + 1,
+            max_borrow=max(_DEFAULT_MAX_BORROW, queue_size + 1),
         )
         self._topic = topic
 

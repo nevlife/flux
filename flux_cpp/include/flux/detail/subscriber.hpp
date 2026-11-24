@@ -406,7 +406,8 @@ private:
     throw Error(
       Status::InvalidArgument,
       ("flux: " + signpost_ + " has " + std::to_string(have) +
-       " slots, and its message_filters queue needs " + std::to_string(min_slots_))
+       " slots, and this subscription needs " + std::to_string(min_slots_) +
+       ": the frames it may hold and one to write into")
         .c_str());
   }
 
