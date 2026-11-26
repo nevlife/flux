@@ -5,7 +5,7 @@ flux 채널은 DDS의 ROS 그래프에 없으므로 기본 ROS 2 도구(`ros2 to
 | 패키지 | 하는 일 | 복사 |
 | --- | --- | --- |
 | `flux_bridge` | flux 채널을 DDS 토픽으로 다시 발행한다 | 프레임마다 1, 그리고 CDR 쓰기와 DDS 전달 |
-| `flux_bag` | flux 채널을 rosbag2 bag에 녹화하고 flux로 재생한다 | 프레임마다 1. DDS를 거치지 않는다 |
+| `flux_bag` | flux 채널을 rosbag2 bag에 녹화하고 flux로 재생한다. DDS로 녹화한 bag의 토픽을 flux 채널로 바꾼다 | 프레임마다 1. DDS를 거치지 않는다 |
 | `flux_tools` | rviz2 디스플레이. 공유 메모리에서 바로 읽는다 | GPU 업로드 1 |
 
 bridge 없이 발행자가 직접 ROS 2 토픽도 발행 가능하다([발행자의 ROS 2 mirror](#발행자의-ros-2-mirror)).
@@ -29,7 +29,7 @@ bridge는 노드 하나(`flux_bridge_<pid>`)를 생성하고, `--poll` 간격(�
 | DDS QoS | depth 1, best-effort, volatile |
 | flux QoS | depth 1, `max_borrow` 1 |
 | 같은 이름의 채널 둘 | fingerprint가 다른 채널이 둘이면 signpost 순서로 첫 채널을 고른다 |
-| 하지 않는 것 | DDS -> flux 방향, 서비스, 액션, 파라미터 |
+| 하지 않는 것 | DDS -> flux 방향, 서비스, 액션, 파라미터. DDS로 녹화한 bag을 flux 구독자에게 재생하려면 [`convert_to_flux`](#ros-토픽을-flux-채널로-변환)로 바꾼다 |
 
 ### ros2 topic 하위 명령
 
