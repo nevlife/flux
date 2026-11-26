@@ -237,6 +237,7 @@ ros2 bag record_flux --topics /camera/image /imu   # 이름으로. flux와 ROS �
 ros2 bag record_flux -a -s mcap --storage-preset-profile zstd_fast   # 무손실 압축
 ros2 bag play_flux rosbag2_2026_10_23-10_00_00
 ros2 bag convert_flux rosbag2_2026_10_23-10_00_00 -o converted
+ros2 bag convert_to_flux ros_bag -o flux_bag --topics /velodyne_points   # ROS 토픽을 flux 채널로
 ```
 
 `record_flux`와 `play_flux`는 `ros2 bag record`, `ros2 bag play`의 옵션을 모두 받는다. 인자 정의, 검사, rosbag2 옵션으로의 변환은 설치된 `ros2bag`의 것을 그대로 쓴다. 그래서 ROS 토픽은 `ros2 bag record`, `ros2 bag play`와 똑같이 녹화, 재생되고, flux 채널은 같은 bag에 들어간다. 옵션 목록은 `-h`로 본다. 아래 표는 각 옵션이 flux 채널에 어떻게 적용되는지다.
@@ -341,6 +342,25 @@ bag의 flux 프레임을 ROS 메시지로 변환해 새 bag에 저장한다.
 - 스키마와 맞지 않는 프레임이나 codec이 `raw`가 아닌 프레임이 있으면 변환이 exit code 1로 멈춘다.
 - `--compression-mode file`이나 `message`로 압축한 bag도 읽는다. 출력은 압축하지 않은 bag이고, 저장 형식은 rosbag2 기본값이다.
 - ROS 메시지에는 aux를 담을 자리가 없으므로 aux는 버린다. `FluxFrame`으로 남는 프레임은 aux를 그대로 가진다.
+
+### ROS 토픽을 flux 채널로 변환
+
+```text
+ros2 bag convert_to_flux BAG -o OUT --topics TOPIC [TOPIC ...]
+```
+
+DDS로 녹화한 bag의 `TOPIC`을 `record_flux`가 녹화한 것과 같은 flux 채널로 바꿔 새 bag에 저장한다. 그 bag을 `play_flux`로 재생하면 flux 구독자가 받는다. 실행하면서 다시 녹화하지 않는다.
+
+| 대상 | 결과 |
+| --- | --- |
+| `TOPIC` | 토픽 `TOPIC/flux`의 `FluxFrame`이 된다. 채널 이름은 `TOPIC`이고 녹화 시각(recv, send)은 유지한다. 원래 ROS 토픽은 출력에 없다 |
+| 나머지 토픽 | 그대로 복사한다 |
+
+- `TOPIC`의 타입은 `sensor_msgs/msg/PointCloud2`, `sensor_msgs/msg/Image`, `sensor_msgs/msg/CompressedImage`다. 다른 타입, bag에 없는 토픽, `TOPIC/flux`가 이미 있는 bag은 거절한다.
+- 프레임은 모든 필드를 슬롯 안에 둔다(`Alloc::Slot` 발행자의 프레임과 같다). 재생 채널의 슬롯은 12개이고, 크기는 그 토픽에서 가장 큰 프레임을 담는 2의 거듭제곱(최소 4096 B)이다. 큰 프레임이 나중에 오면 크기가 그 뒤로 커지고, 재생은 그때 발행자를 다시 만든다.
+- 읽지 못하는 메시지가 있으면 토픽 이름과 함께 exit code 1로 멈춘다.
+- 받는 노드가 일반 ROS 구독(`rclcpp::Subscription`, image_transport 등)인 토픽은 바꾸지 않는다. 바꾸면 그 노드는 메시지를 받지 못한다.
+- `convert_flux`로 되돌리면 원래 ROS 메시지와 같은 CDR이 된다.
 
 ### aux를 담은 bag의 호환
 

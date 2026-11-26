@@ -1084,3 +1084,124 @@ def test_play_selects_flux_channels_by_name(node, tmp_path, args, played):
     got = {n: [] for n in subs}
     play_taking([taker(s, got[n]) for n, s in subs.items()], bag, *[x.format(a=a) for x in args])
     assert {n for n, frames_got in got.items() if frames_got} == set(played)
+
+
+def ros_bag(path, topics):
+    """A bag of ROS messages, {topic: (type name, [message])}, 0.1 s apart from 1 s."""
+    writer = rosbag2_py.SequentialWriter()
+    writer.open(rosbag2_py.StorageOptions(uri=path), rosbag2_py.ConverterOptions("cdr", "cdr"))
+    for n, (topic, (type_name, msgs)) in enumerate(topics.items()):
+        writer.create_topic(
+            rosbag2_py.TopicMetadata(id=n, name=topic, type=type_name, serialization_format="cdr")
+        )
+        for i, m in enumerate(msgs):
+            data = m if isinstance(m, bytes) else serialize_message(m)
+            writer.write(topic, data, 1_000_000_000 + i * 100_000_000)
+    del writer
+
+
+def sensor_topics():
+    from sensor_msgs.msg import CompressedImage, Image, PointCloud2, PointField
+    from std_msgs.msg import String
+
+    def cloud(i):
+        m = PointCloud2(height=1, width=1000, point_step=16, row_step=16000, is_dense=True)
+        m.header.frame_id = "velodyne"
+        m.header.stamp.sec = 100 + i
+        m.fields = [
+            PointField(name=n, offset=4 * k, datatype=7, count=1) for k, n in enumerate("xyzi")
+        ]
+        m.data = bytes((i + b) % 256 for b in range(16000))
+        return m
+
+    def image(i):
+        m = Image(height=4, width=6, encoding="rgb8", step=18)
+        m.header.frame_id = "cam"
+        m.data = bytes([i] * 72)
+        return m
+
+    def jpeg(i):
+        m = CompressedImage(format="jpeg")
+        m.header.frame_id = "cam"
+        m.data = bytes([0xFF, 0xD8, i, 0xFF, 0xD9])
+        return m
+
+    return {
+        "/points": ("sensor_msgs/msg/PointCloud2", [cloud(i) for i in range(3)]),
+        "/image": ("sensor_msgs/msg/Image", [image(i) for i in range(3)]),
+        "/image/compressed": ("sensor_msgs/msg/CompressedImage", [jpeg(i) for i in range(3)]),
+        "/chatter": ("std_msgs/msg/String", [String(data=f"hi {i}") for i in range(3)]),
+    }
+
+
+def convert_to_flux(bag, out, *topics):
+    """`ros2 bag convert_to_flux`, the verb and the program it becomes."""
+    return subprocess.run(
+        ["ros2", "bag", "convert_to_flux", bag, "-o", out, "--topics", *topics],
+        capture_output=True,
+        text=True,
+    )
+
+
+# The named ROS topics become flux channels at the same times and convert back to the same
+# messages; the other topics are copied.
+def test_ros_topics_convert_to_flux_channels_and_back(tmp_path):
+    from sensor_msgs_flux.compressed_image import CompressedImage as FluxJpeg
+    from sensor_msgs_flux.image import Image as FluxImage
+    from sensor_msgs_flux.point_cloud2 import PointCloud2 as FluxCloud
+
+    bag, out, back = (str(tmp_path / n) for n in ("bag", "flux", "back"))
+    topics = sensor_topics()
+    ros_bag(bag, topics)
+    converted = ["/points", "/image", "/image/compressed"]
+    run = convert_to_flux(bag, out, *converted)
+    assert run.returncode == 0, run.stderr
+    got = messages(out)
+    assert set(got) == {"/points/flux", "/image/flux", "/image/compressed/flux", "/chatter"}
+    fingerprints = {
+        "/points": FluxCloud.FINGERPRINT__,
+        "/image": FluxImage.FINGERPRINT__,
+        "/image/compressed": FluxJpeg.FINGERPRINT__,
+    }
+    for topic in converted:
+        assert got[topic + "/flux"][0] == FRAME_TYPE
+        assert [t for t, _ in got[topic + "/flux"][1]] == [t for t, _ in messages(bag)[topic][1]]
+        f = deserialize_message(got[topic + "/flux"][1][0][1], FluxFrame)
+        assert (f.flux_topic, f.fingerprint, f.codec) == (topic, fingerprints[topic], "raw")
+        slot_size, slot_count = struct.unpack_from("<II", bytes(f.meta))
+        assert slot_size >= len(f.data) and slot_count == 12
+    convert(out, back)
+    assert messages(back) == messages(bag)
+
+
+def test_a_converted_cloud_plays_to_a_flux_subscription(node, tmp_path):
+    from sensor_msgs_flux.point_cloud2 import PointCloud2 as FluxCloud
+
+    bag, out = str(tmp_path / "bag"), str(tmp_path / "flux")
+    k = key("points")
+    ros_bag(bag, {k: sensor_topics()["/points"]})
+    assert convert_to_flux(bag, out, k).returncode == 0
+    sub = flux.Subscription(node, k, fingerprint=FluxCloud.FINGERPRINT__, qos=flux.QoS(depth=16))
+    assert len(play_into(sub, out)) == 3
+
+
+@pytest.mark.parametrize(
+    "topic, error",
+    [
+        ("/nothing", "/nothing is not in the bag"),
+        ("/chatter", "/chatter: no flux frame for std_msgs/msg/String"),
+        ("/broken", "/broken: "),
+    ],
+)
+def test_convert_to_flux_refuses(tmp_path, topic, error):
+    bag, out = str(tmp_path / "bag"), str(tmp_path / "flux")
+    topics = sensor_topics()
+    # A PointCloud2 cut short: rmw cannot read it back.
+    topics["/broken"] = (
+        "sensor_msgs/msg/PointCloud2",
+        [serialize_message(topics["/points"][1][0])[:40]],
+    )
+    ros_bag(bag, topics)
+    run = convert_to_flux(bag, out, topic)
+    assert run.returncode == 1
+    assert error in run.stderr

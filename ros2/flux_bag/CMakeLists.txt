@@ -21,6 +21,8 @@ find_package(rosbag2_compression REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosbag2_storage REQUIRED)
 find_package(rosbag2_transport REQUIRED)
+find_package(flux_std_adapters REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -67,6 +69,17 @@ target_link_libraries(convert
   rosbag2_transport::rosbag2_transport)
 target_compile_options(convert PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(convert_to_flux src/convert_to_flux.cpp)
+target_include_directories(convert_to_flux PRIVATE include ${flux_std_adapters_INCLUDE_DIRS})
+target_link_libraries(convert_to_flux
+  flux_cpp::flux_cpp
+  rclcpp::rclcpp
+  rosbag2_cpp::rosbag2_cpp
+  rosbag2_storage::rosbag2_storage
+  rosbag2_transport::rosbag2_transport
+  ${sensor_msgs_TARGETS})
+target_compile_options(convert_to_flux PRIVATE -Wall -Wextra -Wpedantic)
+
 # libFuzzer targets: -DFLUX_FUZZ=ON with clang (-DCMAKE_CXX_COMPILER=clang++).
 option(FLUX_FUZZ "Build the libFuzzer targets" OFF)
 if(FLUX_FUZZ)
@@ -107,7 +120,7 @@ if(BUILD_TESTING)
   endforeach()
 endif()
 
-install(TARGETS record play convert DESTINATION lib/${PROJECT_NAME})
+install(TARGETS record play convert convert_to_flux DESTINATION lib/${PROJECT_NAME})
 install(TARGETS flux_bag_frames EXPORT export_${PROJECT_NAME}
   LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(FILES include/flux_bag/flux_frame_cdr.hpp include/flux_bag/frame_encoder.hpp
@@ -115,7 +128,7 @@ install(FILES include/flux_bag/flux_frame_cdr.hpp include/flux_bag/frame_encoder
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(flux_cpp)
 
-# The ros2 bag verbs (setup.cfg) are how a person runs the three programs above.
+# The ros2 bag verbs (setup.cfg) are how a person runs the programs above.
 ament_python_install_package(${PROJECT_NAME})
 
 ament_package()

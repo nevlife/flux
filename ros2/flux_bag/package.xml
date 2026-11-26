@@ -16,12 +16,14 @@
   <build_depend>flux_bridge</build_depend>
   <depend>flux_cpp</depend>
   <depend>flux_msgs</depend>
+  <depend>flux_std_adapters</depend>
   <depend>rclcpp</depend>
   <depend>rcutils</depend>
   <depend>rosbag2_compression</depend>
   <depend>rosbag2_cpp</depend>
   <depend>rosbag2_storage</depend>
   <depend>rosbag2_transport</depend>
+  <depend>sensor_msgs</depend>
   <depend>yaml_cpp_vendor</depend>
 
   <exec_depend>ament_index_python</exec_depend>
@@ -30,7 +32,6 @@
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>flux_py</test_depend>
-  <test_depend>flux_std_adapters</test_depend>
   <test_depend>python3-numpy</test_depend>
   <test_depend>python3-pytest</test_depend>
   <test_depend>rmw_cyclonedds_cpp</test_depend>
@@ -39,7 +40,6 @@
   <test_depend>rosbag2_py</test_depend>
   <test_depend>rosbag2_storage_mcap</test_depend>
   <test_depend>rosgraph_msgs</test_depend>
-  <test_depend>sensor_msgs</test_depend>
   <test_depend>std_msgs</test_depend>
 
   <export>

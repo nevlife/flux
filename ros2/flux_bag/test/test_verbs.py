@@ -35,8 +35,9 @@ def fields(options):
     return {a for a in dir(options) if not a.startswith("_")}
 
 
-def test_both_verbs_are_registered_under_ros2_bag():
-    assert {"record_flux", "play_flux"} <= {e.name for e in entry_points(group="ros2bag.verb")}
+def test_the_verbs_are_registered_under_ros2_bag():
+    verbs = {"record_flux", "play_flux", "convert_flux", "convert_to_flux"}
+    assert verbs <= {e.name for e in entry_points(group="ros2bag.verb")}
 
 
 # A field rosbag2 adds is a test failure here, not an option dropped on the way to the program.
